@@ -59,7 +59,7 @@ std::unique_ptr<u8[]> CopyToUnique(const u8* data, u32 len) noexcept
     if (data == nullptr || len == 0)
         return nullptr;
 
-    auto newdata = std::make_unique<u8[]>(len);
+    auto newdata = std::make_unique_for_overwrite<u8[]>(len);
     memcpy(newdata.get(), data, len);
     return newdata;
 }
