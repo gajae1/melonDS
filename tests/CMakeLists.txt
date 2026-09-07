@@ -64,3 +64,8 @@ if (MELONDS_BUILD_MICROBENCHMARKS)
     target_include_directories(BitfieldBenchmark PRIVATE ../src)
     target_compile_features(BitfieldBenchmark PRIVATE cxx_std_26)
 endif()
+
+add_executable(UTF8Paths UTF8Paths.cpp)
+target_include_directories(UTF8Paths PRIVATE ../src)
+target_compile_features(UTF8Paths PRIVATE cxx_std_26)
+add_test(NAME utf8-path-roundtrip COMMAND UTF8Paths)
