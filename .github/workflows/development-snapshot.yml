@@ -1,0 +1,28 @@
+name: Development source snapshot
+on:
+  push:
+    branches: [maintenance/verified-modernization]
+    paths: [.github/workflows/development-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Export tracked sources for offline verification
+        run: |
+          mkdir -p "$RUNNER_TEMP/source"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/source/melonDS-source.tar.gz"
+          git rev-parse HEAD > "$RUNNER_TEMP/source/COMMIT.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/source/TREE.txt"
+          cd "$RUNNER_TEMP/source"
+          sha256sum melonDS-source.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: development-source
+          path: ${{ runner.temp }}/source/
+          retention-days: 3
