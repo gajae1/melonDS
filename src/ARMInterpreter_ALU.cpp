@@ -17,6 +17,7 @@
 */
 
 #include <stdio.h>
+#include <bit>
 #include "ARM.h"
 #include "NDS.h"
 
@@ -1053,19 +1054,7 @@ void A_CLZ(ARM* cpu)
 
     u32 val = cpu->R[cpu->CurInstr & 0xF];
 
-    u32 res = 0;
-    while ((val & 0xFF000000) == 0)
-    {
-        res += 8;
-        val <<= 8;
-        val |= 0xFF;
-    }
-    while ((val & 0x80000000) == 0)
-    {
-        res++;
-        val <<= 1;
-        val |= 0x1;
-    }
+    const u32 res = std::countl_zero(val);
 
     cpu->R[(cpu->CurInstr >> 12) & 0xF] = res;
     cpu->AddCycles_C();

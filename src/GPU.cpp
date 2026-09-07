@@ -71,6 +71,10 @@ enum
                 VRAMDirty need to be reset for the respective VRAM bank.
 */
 
+GPU::GPU(melonDS::NDS& nds) noexcept : GPU(nds, nullptr)
+{
+}
+
 GPU::GPU(melonDS::NDS& nds, std::unique_ptr<Renderer>&& renderer) noexcept :
     NDS(nds),
     GPU2D_A(0, *this),

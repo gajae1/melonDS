@@ -108,12 +108,13 @@ public:
             }
 
             for (std::size_t i = 0; i < 3; ++i) {
-                if (interrupt_pending[i].exchange(false)) {
+                // Keep sequential consistency, but avoid a locked write when no IRQ is pending.
+                if (interrupt_pending[i].load() && interrupt_pending[i].exchange(false)) {
                     regs.ip[i] = 1;
                 }
             }
 
-            if (vinterrupt_pending.exchange(false)) {
+            if (vinterrupt_pending.load() && vinterrupt_pending.exchange(false)) {
                 regs.ipv = 1;
             }
 
@@ -3675,7 +3676,13 @@ private:
         return map.at(in);
     }
 
-    const std::vector<Matcher<Interpreter>> decoders = GetDecoderTable<Interpreter>();
+    static const std::vector<Matcher<Interpreter>>& SharedDecoders() {
+        // Matchers carry instruction handlers, not per-interpreter state. Construct
+        // lazily once; every call still passes its own Interpreter to the handler.
+        static const auto table = GetDecoderTable<Interpreter>();
+        return table;
+    }
+    const std::vector<Matcher<Interpreter>>& decoders = SharedDecoders();
 };
 
 } // namespace Teakra

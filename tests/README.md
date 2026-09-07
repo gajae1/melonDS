@@ -23,7 +23,7 @@ ctest --test-dir build-regression-sanitized --output-on-failure
 
 ## Coverage and limits
 
-There are ten CTest entries. No real DS/DSi, ROM, GPU driver or filesystem
+The original ten entries cover the areas below. No real DS/DSi, ROM, GPU driver or filesystem
 mutation is exercised. The optional microbenchmark measures only bitfield
 iteration, not emulator FPS; see `../docs/Cpp26.md`.
 
@@ -56,3 +56,24 @@ these tests narrow; use integrated core/game tests for broader changes.
 Passing this suite is not evidence of complete emulator compatibility or a
 measured performance improvement. No savestate format version is changed by
 these fixes. Section validation is not a complete malformed-state audit.
+
+## Expanded modernization and real-core tests
+
+The standalone suite now has 17 entries (the original ten plus seven C23,
+SIMD, software capture, header-completeness and network tests).
+A full-core build enables real Teakra instruction/event/state tests and
+hand-authored ARM frame/save/restore tests:
+
+```sh
+cmake -S . -B build-core-tests -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_QT_SDL=OFF -DENABLE_OGLRENDERER=OFF -DMELONDS_BUILD_TESTS=ON
+cmake --build build-core-tests --parallel 3
+ctest --test-dir build-core-tests --output-on-failure
+```
+
+This produces 21 entries on a supported JIT-enabled target, or 19 with
+`ENABLE_ASM=OFF`. The headless platform explicitly omits filesystem, network,
+AAC and host input/output; unexpected file use aborts. It does not replace
+real driver/game/physical-hardware regression tests. The full-core tests are
+not automatically sanitized by the standalone sanitizer configuration.
+See `../docs/ModernizationBatch.md` for exact scope and measurement limitations.

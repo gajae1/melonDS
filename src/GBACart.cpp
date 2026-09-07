@@ -844,6 +844,10 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
 
 std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, const u8* sramdata, u32 sramlen, void* userdata)
 {
+    // Validate the supplied length before padding can hide a truncated header.
+    if (romdata == nullptr || romlen < 0xB0 || romlen > (u32{1} << 31))
+        return nullptr;
+
     auto [romcopy, romcopylen] = PadToPowerOf2(romdata, romlen);
 
     return ParseROM(std::move(romcopy), romcopylen, CopyToUnique(sramdata, sramlen), sramlen, userdata);
@@ -862,9 +866,10 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
         return nullptr;
     }
 
-    if (romlen == 0)
+    // The game code occupies bytes 0xAC..0xAF; do not read a short header.
+    if (romlen < 0xB0 || romlen > (u32{1} << 31))
     {
-        Log(LogLevel::Error, "GBACart: romlen is zero\n");
+        Log(LogLevel::Error, "GBACart: ROM length is outside the supported range\n");
         return nullptr;
     }
 

@@ -45,8 +45,15 @@ void Net::RXEnqueue(const void* buf, int len)
 }
 
 
+void Net::SetDriver(std::unique_ptr<NetDriver>&& driver) noexcept
+{
+    std::lock_guard lock(DriverMutex);
+    Driver = std::move(driver);
+}
+
 int Net::SendPacket(u8* data, int len, int inst)
 {
+    std::lock_guard lock(DriverMutex);
     if (!Driver)
         return 0;
 
@@ -55,10 +62,12 @@ int Net::SendPacket(u8* data, int len, int inst)
 
 int Net::RecvPacket(u8* data, int inst)
 {
-    if (!Driver)
-        return 0;
-
-    Driver->RecvCheck();
+    {
+        std::lock_guard lock(DriverMutex);
+        if (!Driver)
+            return 0;
+        Driver->RecvCheck();
+    }
 
     int ret = 0;
     if (!Dispatcher.recvPacket(nullptr, nullptr, data, &ret, inst))

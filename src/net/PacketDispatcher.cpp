@@ -31,41 +31,28 @@ struct PacketHeader
 const u32 kPacketMagic = 0x4B504C4D;
 
 
-PacketDispatcher::PacketDispatcher() : mutex(Platform::Mutex_Create())
-{
-    instanceMask = 0;
-}
-
-PacketDispatcher::~PacketDispatcher()
-{
-    Platform::Mutex_Free(mutex);
-}
-
-
 void PacketDispatcher::registerInstance(int inst)
 {
-    Mutex_Lock(mutex);
+    if (inst < 0 || inst >= 16) return;
+    std::lock_guard lock(mutex);
 
     instanceMask |= (1 << inst);
     packetQueues[inst] = std::make_unique<PacketQueue>();
-
-    Mutex_Unlock(mutex);
 }
 
 void PacketDispatcher::unregisterInstance(int inst)
 {
-    Mutex_Lock(mutex);
+    if (inst < 0 || inst >= 16) return;
+    std::lock_guard lock(mutex);
 
     instanceMask &= ~(1 << inst);
     packetQueues[inst] = nullptr;
-
-    Mutex_Unlock(mutex);
 }
 
 
 void PacketDispatcher::clear()
 {
-    Mutex_Lock(mutex);
+    std::lock_guard lock(mutex);
     for (int i = 0; i < 16; i++)
     {
         if (!(instanceMask & (1 << i)))
@@ -73,7 +60,6 @@ void PacketDispatcher::clear()
 
         packetQueues[i]->Clear();
     }
-    Mutex_Unlock(mutex);
 }
 
 
@@ -81,10 +67,12 @@ void PacketDispatcher::sendPacket(const void* header, int headerlen, const void*
 {
     if (!header) headerlen = 0;
     if (!data) datalen = 0;
+    if (headerlen < 0 || datalen < 0) return;
     if ((!headerlen) && (!datalen)) return;
-    if ((sizeof(PacketHeader) + headerlen + datalen) >= 0x8000) return;
+    if (sizeof(PacketHeader) + static_cast<size_t>(headerlen) + static_cast<size_t>(datalen) >= 0x8000) return;
     if (sender < 0 || sender > 16) return;
 
+    std::lock_guard lock(mutex);
     recv_mask &= instanceMask;
     if (sender < 16) recv_mask &= ~(1 << sender);
     if (!recv_mask) return;
@@ -96,8 +84,6 @@ void PacketDispatcher::sendPacket(const void* header, int headerlen, const void*
     phdr.dataLength = datalen;
 
     int totallen = sizeof(phdr) + headerlen + datalen;
-
-    Mutex_Lock(mutex);
     for (int i = 0; i < 16; i++)
     {
         if (!(recv_mask & (1 << i)))
@@ -117,7 +103,6 @@ void PacketDispatcher::sendPacket(const void* header, int headerlen, const void*
         if (headerlen) queue->Write(header, headerlen);
         if (datalen) queue->Write(data, datalen);
     }
-    Mutex_Unlock(mutex);
 }
 
 bool PacketDispatcher::recvPacket(void *header, int *headerlen, void *data, int *datalen, int receiver)
@@ -125,19 +110,18 @@ bool PacketDispatcher::recvPacket(void *header, int *headerlen, void *data, int 
     if ((!header) && (!data)) return false;
     if (receiver < 0 || receiver > 15) return false;
 
-    Mutex_Lock(mutex);
+    std::lock_guard lock(mutex);
     PacketQueue* queue = packetQueues[receiver].get();
+    if (!queue) return false;
 
     PacketHeader phdr;
     if (!queue->Read(&phdr, sizeof(phdr)))
     {
-        Mutex_Unlock(mutex);
         return false;
     }
 
     if (phdr.magic != kPacketMagic)
     {
-        Mutex_Unlock(mutex);
         return false;
     }
 
@@ -155,6 +139,5 @@ bool PacketDispatcher::recvPacket(void *header, int *headerlen, void *data, int 
         else queue->Skip(phdr.dataLength);
     }
 
-    Mutex_Unlock(mutex);
     return true;
 }

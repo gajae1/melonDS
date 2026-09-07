@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <utility>
 #include "SPI_Firmware.h"
 #include "SPI.h"
 #include "Platform.h"
@@ -162,7 +163,7 @@ Firmware::UserData::UserData(int consoletype)
     Version = 5;
     BirthdayMonth = 1;
     BirthdayDay = 1;
-    Settings = Language::English | BacklightLevel::Max; // NOLINT(*-suspicious-enum-usage)
+    Settings = std::to_underlying(Language::English) | std::to_underlying(BacklightLevel::Max);
     memcpy(Nickname, DEFAULT_USERNAME.data(), DEFAULT_USERNAME.size() * sizeof(std::u16string_view::value_type));
     NameLength = DEFAULT_USERNAME.size();
     if (consoletype == 1)

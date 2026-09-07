@@ -1,5 +1,14 @@
 # Building melonDS
 
+## Current local modernization batch
+
+The new C sources require C23; project C++ and the maintained Teakra target use
+C++26. See [batch scope and tested configurations](docs/ModernizationBatch.md),
+[dependency candidate status](docs/DependencyAudit.md), and
+[manual CI policy](docs/CIBatch.md). This batch has not been fully built on all
+platforms. `MELONDS_CURRENT_TOOLCHAIN=ON` checks the audited current compiler
+versions; it does not install or select a compiler for you.
+
 ## Toolchain requirements for this fork
 
 Use **CMake 3.30 or newer** and a compiler supporting **C++26 mode** (GCC 14+
@@ -103,3 +112,17 @@ melonDS provides a Nix flake with support for both macOS and Linux. The [Nix pac
 
 * To run melonDS, just type `nix run github:gajae1/melonDS`.
 * To get a shell for development, clone the melonDS repository and type `nix develop` in its directory.
+
+## Current dependency profile
+
+`release-current-deps` selects Clang, the audited current-toolchain version
+floors, pinned vcpkg dependencies, and an independently installed **Qt 6.11.2**.
+Set `CMAKE_PREFIX_PATH` to that Qt installation. This profile does not download
+Qt or LLVM implicitly. Generic builds continue to accept the pinned registry
+Qt version instead. Windows uses its native Clang preset and can pass the same
+`-DMELONDS_USE_EXTERNAL_QT=ON -DCMAKE_PREFIX_PATH=... -DBUILD_STATIC=OFF` options
+with a matching MSVC SDK/runtime environment.
+
+The current Qt6 recommended macOS deployment floor is **13.0**; do not expect
+new artifacts to retain the old macOS 10.15/11 minimum. See
+`docs/ModernizationBatch.md` for verified and unverified configurations.

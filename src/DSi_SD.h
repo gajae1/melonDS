@@ -146,7 +146,7 @@ private:
     u32 Param;
     u16 ResponseBuffer[8];
 
-    std::array<std::unique_ptr<DSi_SDDevice>, 2> Ports {};
+    std::array<std::unique_ptr<DSi_SDDevice>, 2> Ports;
 
     u32 CurFIFO; // FIFO accessible for read/write
     FIFO<u16, 0x100> DataFIFO[2];

@@ -368,11 +368,11 @@ bool ValidateROM(u32 romlen, NDSHeader& header)
 
     if (header.ARM9ROMOffset < 0x200)
         return false;
-    if ((header.ARM9ROMOffset + header.ARM9Size) > romlen)
+    if (header.ARM9ROMOffset > romlen || header.ARM9Size > romlen - header.ARM9ROMOffset)
         return false;
     if (header.ARM7ROMOffset < 0x200)
         return false;
-    if ((header.ARM7ROMOffset + header.ARM7Size) > romlen)
+    if (header.ARM7ROMOffset > romlen || header.ARM7Size > romlen - header.ARM7ROMOffset)
         return false;
 
     return true;

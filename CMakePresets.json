@@ -65,7 +65,9 @@
       },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {
-          "hostOS": [ "Windows" ]
+          "hostOS": [
+            "Windows"
+          ]
         }
       }
     },
@@ -128,6 +130,39 @@
         "lhs": "${hostSystemName}",
         "rhs": "Darwin"
       }
+    },
+    {
+      "name": "release-clang",
+      "inherits": "base",
+      "description": "Clang release; set CC/CXX to choose an installed release",
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_ASM_COMPILER": "clang"
+      }
+    },
+    {
+      "name": "release-clang-current",
+      "inherits": "release-clang",
+      "description": "Audited current stable toolchain floors (does not install compilers)",
+      "cacheVariables": {
+        "MELONDS_CURRENT_TOOLCHAIN": "ON"
+      }
+    },
+    {
+      "name": "release-current-deps",
+      "inherits": "release-clang-current",
+      "description": "Current Clang + separately installed Qt 6.11.2 and pinned vcpkg dependencies",
+      "cacheVariables": {
+        "USE_VCPKG": "ON",
+        "MELONDS_USE_EXTERNAL_QT": "ON",
+        "BUILD_STATIC": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -170,6 +205,18 @@
       "name": "release-mac-arm64",
       "configurePreset": "release-mac-arm64",
       "displayName": "macOS Release (arm64)"
+    },
+    {
+      "name": "release-clang",
+      "configurePreset": "release-clang"
+    },
+    {
+      "name": "release-clang-current",
+      "configurePreset": "release-clang-current"
+    },
+    {
+      "name": "release-current-deps",
+      "configurePreset": "release-current-deps"
     }
   ]
 }

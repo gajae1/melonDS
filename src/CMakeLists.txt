@@ -43,6 +43,8 @@ add_library(core STATIC
     NDS.cpp
     NDSCart.cpp
     Platform.h
+    PixelConvert.cpp
+    PixelConvert.h
     ROMList.h
     ROMList.cpp
     FreeBIOS.h
@@ -85,6 +87,8 @@ add_library(core STATIC
 
 # Public headers use modern standard library facilities; consumers need this mode too.
 target_compile_features(core PUBLIC cxx_std_26)
+
+melonds_configure_pixel_kernels(core)
 
 if (ENABLE_GDBSTUB)
     message(NOTICE "Enabling GDB stub")
@@ -180,7 +184,9 @@ target_include_directories(core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
 set(BUILD_SHARED_LIBS OFF)
 add_subdirectory(teakra EXCLUDE_FROM_ALL)
 # Workaround for building teakra with -O0 on Windows either failing or hanging forever
-target_compile_options(teakra PRIVATE "$<$<CONFIG:DEBUG>:-Og>")
+if (WIN32 AND NOT MSVC)
+    target_compile_options(teakra PRIVATE "$<$<CONFIG:DEBUG>:-Og>")
+endif()
 target_link_libraries(core PRIVATE teakra)
 
 if (NOT MSVC)

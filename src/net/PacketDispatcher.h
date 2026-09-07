@@ -21,6 +21,7 @@
 
 #include <array>
 #include <memory>
+#include <mutex>
 #include "Platform.h"
 #include "types.h"
 #include "FIFO.h"
@@ -30,8 +31,8 @@ using PacketQueue = melonDS::RingBuffer<0x8000>;
 class PacketDispatcher
 {
 public:
-    PacketDispatcher();
-    ~PacketDispatcher();
+    PacketDispatcher() = default;
+    ~PacketDispatcher() = default;
 
     void registerInstance(int inst);
     void unregisterInstance(int inst);
@@ -42,8 +43,8 @@ public:
     bool recvPacket(void* header, int* headerlen, void* data, int* datalen, int receiver);
 
 private:
-    melonDS::Platform::Mutex* mutex;
-    melonDS::u16 instanceMask;
+    std::mutex mutex;
+    melonDS::u16 instanceMask = 0;
     std::array<std::unique_ptr<PacketQueue>, 16> packetQueues {};
 };
 

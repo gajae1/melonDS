@@ -19,6 +19,7 @@
 #include "NDS.h"
 #include "GPU_Soft.h"
 #include "GPU_ColorOp.h"
+#include "PixelConvert.h"
 
 namespace melonDS
 {
@@ -177,8 +178,7 @@ void SoftRenderer::DrawScanlineA(u32 line, u32* dst)
 
     case 1: // regular display
         {
-            for (int i = 0; i < 256; i+=2)
-                *(u64*)&dst[i] = *(u64*)&Output2D[0][i];
+            memcpy(dst, Output2D[0], 256 * sizeof(u32));
         }
         break;
 
@@ -240,8 +240,7 @@ void SoftRenderer::DrawScanlineB(u32 line, u32* dst)
 
     case 1: // regular display
         {
-            for (int i = 0; i < 256; i+=2)
-                *(u64*)&dst[i] = *(u64*)&Output2D[1][i];
+            memcpy(dst, Output2D[1], 256 * sizeof(u32));
         }
         break;
     }
@@ -303,7 +302,7 @@ void SoftRenderer::DoCapture(u32 line)
     }
 
     static_assert(VRAMDirtyGranularity == 512);
-    GPU.VRAMDirty[dstvram][(dstaddr * 2) / VRAMDirtyGranularity] = true;
+    GPU.VRAMDirty[dstvram][((dstaddr & 0xFFFF) * 2) / VRAMDirtyGranularity] = true;
 
     switch ((captureCnt >> 29) & 0x3)
     {
@@ -427,20 +426,9 @@ void SoftRenderer::ApplyMasterBrightness(u16 regval, u32* dst)
 
 void SoftRenderer::ExpandColor(u32* dst)
 {
-    // convert to 32-bit BGRA
-    // note: 32-bit RGBA would be more straightforward, but
-    // BGRA seems to be more compatible (Direct2D soft, cairo...)
-    for (int i = 0; i < 256; i+=2)
-    {
-        u64 c = *(u64*)&dst[i];
-
-        u64 r = (c << 18) & 0xFC000000FC0000;
-        u64 g = (c << 2) & 0xFC000000FC00;
-        u64 b = (c >> 14) & 0xFC000000FC;
-        c = r | g | b;
-
-        *(u64*)&dst[i] = c | ((c & 0x00C0C0C000C0C0C0) >> 6) | 0xFF000000FF000000;
-    }
+    // Resolve CPU/OS capabilities once, outside the pixel loop.
+    static const auto expand = PixelConvert::Select();
+    expand(dst, 256);
 }
 
 

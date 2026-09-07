@@ -19,6 +19,7 @@
 #ifndef MELONDS_UTILS_H
 #define MELONDS_UTILS_H
 
+#include <bit>
 #include <memory>
 #include "types.h"
 #include <utility>
@@ -31,7 +32,9 @@ namespace melonDS
 /// without copying anything.
 /// If \c data is \c nullptr, returns <tt>{nullptr, 0}</tt>.
 /// Otherwise, return a copy of \c data with zero-padding to the next power of 2.
-/// @post \c data is \c nullptr, even if it doesn't need to be copied.
+/// Null/empty inputs or lengths above 2^31 return {nullptr, 0}.
+/// Rejected inputs do not consume the owning pointer. On success it is consumed,
+/// including when the buffer is already a power of two.
 std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(std::unique_ptr<u8[]>&& data, u32 len) noexcept;
 
 std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(const u8* data, u32 len) noexcept;
@@ -39,17 +42,9 @@ std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(const u8* data, u32 len) noe
 std::unique_ptr<u8[]> CopyToUnique(const u8* data, u32 len) noexcept;
 
 template <typename T>
-T GetMSBit(T val)
+constexpr T GetMSBit(T val) noexcept
 {
-    val |= (val >>  1);
-    val |= (val >>  2);
-    val |= (val >>  4);
-
-    if constexpr(sizeof(val) > 1) val |= (val >>  8);
-    if constexpr(sizeof(val) > 2) val |= (val >> 16);
-    if constexpr(sizeof(val) > 4) val |= (val >> 32);
-    
-    return val - (val >> 1);
+    return std::bit_floor(val);
 }
 
 // convenience function for updating part of a register

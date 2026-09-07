@@ -57,7 +57,8 @@ class Renderer;
 class GPU
 {
 public:
-    explicit GPU(melonDS::NDS& nds, std::unique_ptr<Renderer>&& renderer = nullptr) noexcept;
+    explicit GPU(melonDS::NDS& nds) noexcept;
+    GPU(melonDS::NDS& nds, std::unique_ptr<Renderer>&& renderer) noexcept;
     ~GPU() noexcept;
     void Reset() noexcept;
     void Stop() noexcept;
@@ -804,7 +805,7 @@ private:
 
     u16 VMatch[2] {};
 
-    std::unique_ptr<Renderer> Rend = nullptr;
+    std::unique_ptr<Renderer> Rend;
 
     u16 VRAMCaptureBlockFlags[16];
 

@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.30)
-project(melonDSCoreRegressionTests LANGUAGES CXX)
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(melonDSCoreRegressionTests LANGUAGES C CXX)
+endif()
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# No C++ module units are used; do not require a separate dependency scanner.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 enable_testing()
 
 # Standalone: no Qt, SDL, BIOS images, ROMs, or full core build required.
@@ -69,3 +73,70 @@ add_executable(UTF8Paths UTF8Paths.cpp)
 target_include_directories(UTF8Paths PRIVATE ../src)
 target_compile_features(UTF8Paths PRIVATE cxx_std_26)
 add_test(NAME utf8-path-roundtrip COMMAND UTF8Paths)
+
+add_subdirectory(modernization)
+
+
+if (TARGET core)
+    find_package(Threads REQUIRED)
+    add_executable(TeakraExecution TeakraExecution.cpp PlatformSync.cpp ../src/Savestate.cpp)
+    target_include_directories(TeakraExecution PRIVATE ../src ../src/teakra/src)
+    target_link_libraries(TeakraExecution PRIVATE teakra Threads::Threads)
+    add_test(NAME teakra-execution-events-state COMMAND TeakraExecution)
+    set_tests_properties(teakra-execution-events-state PROPERTIES TIMEOUT 60)
+endif()
+
+if (TARGET core)
+    add_executable(CoreExecution CoreExecution.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(CoreExecution PRIVATE core Threads::Threads)
+    add_test(NAME core-interpreter-execution COMMAND CoreExecution interpreter)
+    if (ENABLE_JIT)
+        add_test(NAME core-jit-execution COMMAND CoreExecution jit)
+        add_test(NAME core-jit-fastmem-execution COMMAND CoreExecution fastmem)
+    endif()
+    set_tests_properties(core-interpreter-execution PROPERTIES TIMEOUT 30)
+    if (ENABLE_JIT)
+        set_tests_properties(core-jit-execution core-jit-fastmem-execution PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+add_executable(BufferUtilities BufferUtilities.cpp ../src/Utils.cpp)
+target_include_directories(BufferUtilities PRIVATE ../src)
+foreach(case IN ITEMS copies overflow null)
+    add_test(NAME buffer-${case} COMMAND BufferUtilities ${case})
+    set_tests_properties(buffer-${case} PROPERTIES TIMEOUT 5)
+endforeach()
+
+add_executable(StandardBitOps StandardBitOps.cpp)
+target_include_directories(StandardBitOps PRIVATE ../src)
+target_compile_definitions(StandardBitOps PRIVATE REQUIRE_CONSTEXPR)
+add_test(NAME standard-bit-operations COMMAND StandardBitOps)
+
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/ARMInterpreter_ALU.cpp" "void A_CLZ(ARM* cpu)"
+        "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc"
+    DEPENDS ExtractFunction.py ../src/ARMInterpreter_ALU.cpp
+    VERBATIM)
+add_executable(CountLeadingZeros CountLeadingZeros.cpp "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc")
+target_include_directories(CountLeadingZeros PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME arm-clz-semantics COMMAND CountLeadingZeros)
+
+if (TARGET core)
+    add_executable(CartROMBounds CartROMBounds.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(CartROMBounds PRIVATE core Threads::Threads)
+    add_test(NAME gba-rom-input-bounds COMMAND CartROMBounds)
+    set_tests_properties(gba-rom-input-bounds PROPERTIES TIMEOUT 10)
+endif()
+
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ROMHeaderMethod.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/NDSCart.cpp" "bool ValidateROM(u32 romlen, NDSHeader& header)"
+        "${CMAKE_CURRENT_BINARY_DIR}/ROMHeaderMethod.inc"
+    DEPENDS ExtractFunction.py ../src/NDSCart.cpp
+    VERBATIM)
+add_executable(ROMHeaderBounds ROMHeaderBounds.cpp "${CMAKE_CURRENT_BINARY_DIR}/ROMHeaderMethod.inc")
+target_include_directories(ROMHeaderBounds PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME nds-rom-header-bounds COMMAND ROMHeaderBounds)

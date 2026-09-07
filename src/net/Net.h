@@ -20,6 +20,7 @@
 #define NET_H
 
 #include <memory>
+#include <mutex>
 
 #include "types.h"
 #include "PacketDispatcher.h"
@@ -47,11 +48,11 @@ public:
     int SendPacket(u8* data, int len, int inst);
     int RecvPacket(u8* data, int inst);
 
-    void SetDriver(std::unique_ptr<NetDriver>&& driver) noexcept { Driver = std::move(driver); }
-    [[nodiscard]] std::unique_ptr<NetDriver>& GetDriver() noexcept { return Driver; }
-    [[nodiscard]] const std::unique_ptr<NetDriver>& GetDriver() const noexcept { return Driver; }
+    void SetDriver(std::unique_ptr<NetDriver>&& driver) noexcept;
 
 private:
+    // Lock order: DriverMutex -> Dispatcher. RXEnqueue never takes DriverMutex.
+    std::mutex DriverMutex;
     PacketDispatcher Dispatcher {};
     std::unique_ptr<NetDriver> Driver = nullptr;
 };

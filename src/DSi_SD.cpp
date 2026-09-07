@@ -62,7 +62,7 @@ enum
 };
 
 
-DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi, std::optional<DSi_NAND::NANDImage>&& nand, std::optional<FATStorage>&& sdcard) noexcept : DSi(dsi), Num(0)
+DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi, std::optional<DSi_NAND::NANDImage>&& nand, std::optional<FATStorage>&& sdcard) noexcept : DSi(dsi), Num(0), Ports{}
 {
     DSi.RegisterEventFuncs(Event_DSi_SDMMCTransfer, this,
                            {MakeEventThunk(DSi_SDHost, FinishTX),
@@ -75,7 +75,7 @@ DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi, std::optional<DSi_NAND::NANDImage>&& n
 }
 
 // Creates an SDIO host
-DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi) noexcept : DSi(dsi), Num(1)
+DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi) noexcept : DSi(dsi), Num(1), Ports{}
 {
     DSi.RegisterEventFuncs(Event_DSi_SDIOTransfer, this,
                            {MakeEventThunk(DSi_SDHost, FinishTX),

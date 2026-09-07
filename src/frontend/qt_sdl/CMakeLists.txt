@@ -65,7 +65,10 @@ set(SOURCES_QT_SDL
 option(USE_QT6 "Use Qt 6 instead of Qt 5" ON)
 
 if (USE_QT6)
-    find_package(Qt6 COMPONENTS Core Gui Widgets Network Multimedia OpenGL OpenGLWidgets Svg REQUIRED)
+    if (MELONDS_USE_EXTERNAL_QT)
+        set(MELONDS_QT_MIN_VERSION 6.11.2)
+    endif()
+    find_package(Qt6 ${MELONDS_QT_MIN_VERSION} COMPONENTS Core Gui Widgets Network Multimedia OpenGL OpenGLWidgets Svg REQUIRED)
     set(QT_LINK_LIBS Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::OpenGL Qt6::OpenGLWidgets)
 else()
     find_package(Qt5 COMPONENTS Core Gui Widgets Network Multimedia Svg REQUIRED)

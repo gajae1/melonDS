@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.30)
 project(teakra CXX)
 
 # Determine if we're built as a subproject (using add_subdirectory)
@@ -14,8 +14,10 @@ option(TEAKRA_BUILD_UNIT_TESTS "Build unit tests" ${MASTER_PROJECT})
 option(TEAKRA_RUN_TESTS "Run Teakra accuracy tests" OFF)
 
 # Set hard requirements for C++
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# No C++ module units are used; do not require a separate dependency scanner.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Warn on CMake API deprecations
@@ -34,7 +36,6 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMakeModules")
 # Compiler flags
 if (MSVC)
     set(TEAKRA_CXX_FLAGS
-        /std:c++latest # CMAKE_CXX_STANDARD as no effect on MSVC until CMake 3.10.
         /W3
         /permissive- # Stricter C++ standards conformance
         /MP

@@ -20,6 +20,7 @@
 #define ARM_H
 
 #include <algorithm>
+#include <bit>
 #include <optional>
 
 #include "types.h"
@@ -32,9 +33,9 @@
 
 namespace melonDS
 {
-inline u32 ROR(u32 x, u32 n)
+constexpr u32 ROR(u32 x, u32 n) noexcept
 {
-    return (x >> (n&0x1F)) | (x << ((32-n)&0x1F));
+    return std::rotr(x, static_cast<int>(n & 0x1F));
 }
 
 enum
