@@ -24,33 +24,31 @@ namespace melonDS
 {
 std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(std::unique_ptr<u8[]>&& data, u32 len) noexcept
 {
-    if (data == nullptr || len == 0)
+    if (data == nullptr || len == 0 || len > (u32{1} << 31))
         return {nullptr, 0};
 
-    if ((len & (len - 1)) == 0)
+    if (std::has_single_bit(len))
         return {std::move(data), len};
 
-    u32 newlen = 1;
-    while (newlen < len)
-        newlen <<= 1;
+    const u32 newlen = std::bit_ceil(len);
 
-    auto newdata = std::make_unique<u8[]>(newlen);
+    auto newdata = std::make_unique_for_overwrite<u8[]>(newlen);
     memcpy(newdata.get(), data.get(), len);
+    memset(newdata.get() + len, 0, newlen - len);
     data = nullptr;
     return {std::move(newdata), newlen};
 }
 
 std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(const u8* data, u32 len) noexcept
 {
-    if (len == 0)
+    if (data == nullptr || len == 0 || len > (u32{1} << 31))
         return {nullptr, 0};
 
-    u32 newlen = 1;
-    while (newlen < len)
-        newlen <<= 1;
+    const u32 newlen = std::bit_ceil(len);
 
-    auto newdata = std::make_unique<u8[]>(newlen);
+    auto newdata = std::make_unique_for_overwrite<u8[]>(newlen);
     memcpy(newdata.get(), data, len);
+    memset(newdata.get() + len, 0, newlen - len);
     return {std::move(newdata), newlen};
 }
 
