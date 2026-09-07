@@ -25,6 +25,7 @@
 
 #include <initializer_list>
 #include <algorithm>
+#include <bit>
 
 namespace melonDS
 {
@@ -118,10 +119,10 @@ struct NonStupidBitField
             done:;
             }
 
-            BitIdx = __builtin_ctzll(RemainingBits);
-            RemainingBits &= ~(1ULL << BitIdx);
+            BitIdx = std::countr_zero(RemainingBits);
+            RemainingBits &= RemainingBits - 1;
 
-            if ((Size & 0x3F) && BitIdx >= Size)
+            if ((Size & 0x3F) && DataIdx * 64 + BitIdx >= Size)
                 DataIdx = DataLength;
         }
 
@@ -175,9 +176,9 @@ struct NonStupidBitField
         {
             if (Data[i])
             {
-                u32 idx = __builtin_ctzll(Data[i]);
+                u32 idx = std::countr_zero(Data[i]);
                 if (idx + i * 64 < Size)
-                    return {*this, i, idx, Data[i] & ~(1ULL << idx)};
+                    return {*this, i, idx, Data[i] & (Data[i] - 1)};
             }
         }
         return End();
@@ -200,6 +201,9 @@ struct NonStupidBitField
 
     void SetRange(u32 startBit, u32 bitsCount)
     {
+        if (bitsCount == 0)
+            return;
+
         u32 startEntry = startBit >> 6;
         u64 entriesCount = (((startBit + bitsCount + 0x3F) & ~0x3F) >> 6) - startEntry;
 
@@ -221,6 +225,9 @@ struct NonStupidBitField
 
     bool CheckRange(u32 startBit, u32 bitsCount)
     {
+        if (bitsCount == 0)
+            return false;
+
         u32 startEntry = startBit >> 6;
         u64 entriesCount = (((startBit + bitsCount + 0x3F) & ~0x3F) >> 6) - startEntry;
         u64 res = 0;
@@ -248,7 +255,7 @@ struct NonStupidBitField
         for (int i = 0; i < DataLength; i++)
         {
             if (Data[i])
-                return i * 64 + __builtin_ctzll(Data[i]);
+                return i * 64 + std::countr_zero(Data[i]);
         }
         return -1;
     }
@@ -258,7 +265,7 @@ struct NonStupidBitField
         for (int i = DataLength - 1; i >= 0; i--)
         {
             if (Data[i])
-                return i * 64 + (63 - __builtin_clzll(Data[i]));
+                return i * 64 + (63 - std::countl_zero(Data[i]));
         }
         return -1;
     }

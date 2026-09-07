@@ -17,13 +17,13 @@ env:
 
 jobs:
   build:
-    continue-on-error: true
     strategy:
+      fail-fast: false
       matrix:
         arch:
-          - runner: ubuntu-22.04
+          - runner: ubuntu-24.04
             name: x86_64
-          - runner: ubuntu-22.04-arm
+          - runner: ubuntu-24.04-arm
             name: aarch64
 
     name: ${{ matrix.arch.name }}
@@ -35,10 +35,13 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install --allow-downgrades cmake ninja-build extra-cmake-modules libpcap0.8-dev libsdl2-dev libenet-dev \
-          qt6-{base,base-private,multimedia}-dev qt6-wayland libqt6svg6-dev libarchive-dev libzstd-dev libfuse2 libfaad-dev
+        sudo apt install --allow-downgrades g++-14 ninja-build extra-cmake-modules libpcap0.8-dev libsdl2-dev libenet-dev \
+          qt6-{base,base-private,multimedia}-dev qt6-wayland libqt6svg6-dev libarchive-dev libzstd-dev libfuse2t64 libfaad-dev python3-venv
+        python3 -m venv "$RUNNER_TEMP/cmake-env"
+        "$RUNNER_TEMP/cmake-env/bin/pip" install cmake==3.31.6
+        echo "$RUNNER_TEMP/cmake-env/bin" >> "$GITHUB_PATH"
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_INSTALL_PREFIX=/usr -DMELONDS_EMBED_BUILD_INFO=ON
+      run: cmake -B build -G Ninja -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_INSTALL_PREFIX=/usr -DMELONDS_EMBED_BUILD_INFO=ON
     - name: Build
       run: |
         cmake --build build
