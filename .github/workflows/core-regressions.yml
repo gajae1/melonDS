@@ -1,0 +1,43 @@
+name: Core regressions
+
+on:
+  push:
+    branches:
+      - master
+      - fix/core-regressions-20260907
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC
+            compiler: g++
+            flags: ""
+          - name: Clang ASan UBSan
+            compiler: clang++
+            flags: -fsanitize=address,undefined -fno-omit-frame-pointer
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: >-
+          cmake -S tests -B build-regression -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER="${{ matrix.compiler }}"
+          -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+          -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+      - name: Build
+        run: cmake --build build-regression --parallel 2
+      - name: Test
+        run: ctest --test-dir build-regression --output-on-failure

@@ -894,7 +894,7 @@ void GLRenderer::SyncVRAMCapture(u32 bank, u32 start, u32 len, bool complete)
         u32 pos = start;
         for (u32 i = 0; i < len;)
         {
-            u32 end = pos + len;
+            u32 end = pos + (len - i);
             if (end > 4)
                 end = 4;
 
