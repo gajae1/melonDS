@@ -1,7 +1,7 @@
 # Focused core regression tests
 
-Run from a complete melonDS source checkout. These tests require a C++17 compiler,
-CMake 3.16 or newer, and Python 3; Ninja is optional. They do not require Qt, SDL,
+Run from a complete melonDS source checkout. These tests require a compiler supporting C++26 mode,
+CMake 3.30 or newer, and Python 3; Ninja is optional. They do not require Qt, SDL,
 BIOS images, ROMs, or a GPU context.
 
 ```sh
@@ -22,6 +22,17 @@ ctest --test-dir build-regression-sanitized --output-on-failure
 ```
 
 ## Coverage and limits
+
+There are ten CTest entries. No real DS/DSi, ROM, GPU driver or filesystem
+mutation is exercised. The optional microbenchmark measures only bitfield
+iteration, not emulator FPS; see `../docs/Cpp26.md`.
+
+- `LanguageStandard` verifies the requested C++26 mode and standard bit operations.
+- `Bitfield` checks valid ranges, zero-length boundaries, partial-word padding,
+  and sparse/dense iteration against a bitwise reference.
+- `UTF8Paths` checks byte-preserving filesystem-path conversion for ASCII,
+  Korean, Japanese, non-BMP, long and empty strings, plus embedded-NUL byte
+  conversion. It does not open or modify files.
 
 - `SavestateSections` compiles the actual `src/Savestate.cpp`; only frontend
   logging is replaced. Five cases cover valid/reordered/header-only sections,
