@@ -24,6 +24,7 @@
 #include "FATIO.h"
 #include "FATStorage.h"
 #include "Platform.h"
+#include "UTF8.h"
 
 namespace melonDS
 {
@@ -433,7 +434,7 @@ bool FATStorage::ExportFile(const std::string& path, fs::path out)
                         err);
     }
 
-    fout = OpenFile(out.u8string(), FileMode::Write);
+    fout = OpenFile(UTF8ToString(out.u8string()), FileMode::Write);
     if (!fout)
     {
         f_close(&file);
@@ -851,7 +852,7 @@ bool FATStorage::ImportFile(const std::string& path, fs::path in)
     FileHandle* fin;
     FRESULT res;
 
-    fin = Platform::OpenFile(in.u8string(), FileMode::Read);
+    fin = Platform::OpenFile(UTF8ToString(in.u8string()), FileMode::Read);
     if (!fin)
         return false;
 
@@ -902,7 +903,7 @@ bool FATStorage::ImportDirectory(const std::string& sourcedir)
     // * files will be added if they aren't in the index, or if the size or last-modified-date don't match
     for (auto& entry : fs::recursive_directory_iterator(fs::u8path(sourcedir)))
     {
-        std::string fullpath = entry.path().u8string();
+        std::string fullpath = UTF8ToString(entry.path().u8string());
         std::string innerpath = fullpath.substr(srclen);
         if (innerpath[0] == '/' || innerpath[0] == '\\')
             innerpath = innerpath.substr(1);
@@ -1018,7 +1019,7 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
     // 'auto' size management: (size=0)
     // * if an index exists: the size from the index is used
     // * if no index, and an image file exists: the file size is used
-    // * if no image: if sourcing from a directory, size is calculated from that
+    // * if sourcing from a directory, size is calculated from that
     //   with a minimum 128MB extra, otherwise size is defaulted to 512MB
 
     bool isnew = !Platform::LocalFileExists(filename);
