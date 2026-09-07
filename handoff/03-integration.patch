@@ -1,0 +1,537 @@
+diff --git a/src/PixelConvert.h b/src/PixelConvert.h
+new file mode 100644
+index 0000000..7723e16
+--- /dev/null
++++ b/src/PixelConvert.h
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#ifndef MELONDS_PIXEL_CONVERT_H
++#define MELONDS_PIXEL_CONVERT_H
++#include <stddef.h>
++#include "types.h"
++namespace melonDS::PixelConvert
++{
++enum class Backend { Auto, Scalar, AVX2, AVX512 };
++using Function = void (*)(u32* pixels, size_t count) noexcept;
++// Input needs u32 alignment, not SIMD alignment. Conversion is in-place.
++void ExpandScalar(u32* pixels, size_t count) noexcept;
++bool IsSupported(Backend backend) noexcept;
++// Unsupported explicit requests fall back to Scalar, never to an illegal ISA.
++Function Select(Backend backend = Backend::Auto) noexcept;
++}
++#endif
+diff --git a/src/SPI_Firmware.cpp b/src/SPI_Firmware.cpp
+index 6db426c..fb3524f 100644
+--- a/src/SPI_Firmware.cpp
++++ b/src/SPI_Firmware.cpp
+@@ -16,6 +16,7 @@
+     with melonDS. If not, see http://www.gnu.org/licenses/.
+ */
+ 
++#include <utility>
+ #include "SPI_Firmware.h"
+ #include "SPI.h"
+ #include "Platform.h"
+@@ -162,7 +163,7 @@ Firmware::UserData::UserData(int consoletype)
+     Version = 5;
+     BirthdayMonth = 1;
+     BirthdayDay = 1;
+-    Settings = Language::English | BacklightLevel::Max; // NOLINT(*-suspicious-enum-usage)
++    Settings = std::to_underlying(Language::English) | std::to_underlying(BacklightLevel::Max);
+     memcpy(Nickname, DEFAULT_USERNAME.data(), DEFAULT_USERNAME.size() * sizeof(std::u16string_view::value_type));
+     NameLength = DEFAULT_USERNAME.size();
+     if (consoletype == 1)
+diff --git a/src/Utils.cpp b/src/Utils.cpp
+index 16633b9..f28bf8a 100644
+--- a/src/Utils.cpp
++++ b/src/Utils.cpp
+@@ -24,33 +24,31 @@ namespace melonDS
+ {
+ std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(std::unique_ptr<u8[]>&& data, u32 len) noexcept
+ {
+-    if (data == nullptr || len == 0)
++    if (data == nullptr || len == 0 || len > (u32{1} << 31))
+         return {nullptr, 0};
+ 
+-    if ((len & (len - 1)) == 0)
++    if (std::has_single_bit(len))
+         return {std::move(data), len};
+ 
+-    u32 newlen = 1;
+-    while (newlen < len)
+-        newlen <<= 1;
++    const u32 newlen = std::bit_ceil(len);
+ 
+-    auto newdata = std::make_unique<u8[]>(newlen);
++    auto newdata = std::make_unique_for_overwrite<u8[]>(newlen);
+     memcpy(newdata.get(), data.get(), len);
++    memset(newdata.get() + len, 0, newlen - len);
+     data = nullptr;
+     return {std::move(newdata), newlen};
+ }
+ 
+ std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(const u8* data, u32 len) noexcept
+ {
+-    if (len == 0)
++    if (data == nullptr || len == 0 || len > (u32{1} << 31))
+         return {nullptr, 0};
+ 
+-    u32 newlen = 1;
+-    while (newlen < len)
+-        newlen <<= 1;
++    const u32 newlen = std::bit_ceil(len);
+ 
+-    auto newdata = std::make_unique<u8[]>(newlen);
++    auto newdata = std::make_unique_for_overwrite<u8[]>(newlen);
+     memcpy(newdata.get(), data, len);
++    memset(newdata.get() + len, 0, newlen - len);
+     return {std::move(newdata), newlen};
+ }
+ 
+diff --git a/src/Utils.h b/src/Utils.h
+index 21cb361..025a59a 100644
+--- a/src/Utils.h
++++ b/src/Utils.h
+@@ -19,6 +19,7 @@
+ #ifndef MELONDS_UTILS_H
+ #define MELONDS_UTILS_H
+ 
++#include <bit>
+ #include <memory>
+ #include "types.h"
+ #include <utility>
+@@ -31,7 +32,9 @@ namespace melonDS
+ /// without copying anything.
+ /// If \c data is \c nullptr, returns <tt>{nullptr, 0}</tt>.
+ /// Otherwise, return a copy of \c data with zero-padding to the next power of 2.
+-/// @post \c data is \c nullptr, even if it doesn't need to be copied.
++/// Null/empty inputs or lengths above 2^31 return {nullptr, 0}.
++/// Rejected inputs do not consume the owning pointer. On success it is consumed,
++/// including when the buffer is already a power of two.
+ std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(std::unique_ptr<u8[]>&& data, u32 len) noexcept;
+ 
+ std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(const u8* data, u32 len) noexcept;
+@@ -39,17 +42,9 @@ std::pair<std::unique_ptr<u8[]>, u32> PadToPowerOf2(const u8* data, u32 len) noe
+ std::unique_ptr<u8[]> CopyToUnique(const u8* data, u32 len) noexcept;
+ 
+ template <typename T>
+-T GetMSBit(T val)
++constexpr T GetMSBit(T val) noexcept
+ {
+-    val |= (val >>  1);
+-    val |= (val >>  2);
+-    val |= (val >>  4);
+-
+-    if constexpr(sizeof(val) > 1) val |= (val >>  8);
+-    if constexpr(sizeof(val) > 2) val |= (val >> 16);
+-    if constexpr(sizeof(val) > 4) val |= (val >> 32);
+-    
+-    return val - (val >> 1);
++    return std::bit_floor(val);
+ }
+ 
+ // convenience function for updating part of a register
+diff --git a/src/frontend/qt_sdl/CMakeLists.txt b/src/frontend/qt_sdl/CMakeLists.txt
+index 31207f8..6a23005 100644
+--- a/src/frontend/qt_sdl/CMakeLists.txt
++++ b/src/frontend/qt_sdl/CMakeLists.txt
+@@ -65,7 +65,10 @@ set(SOURCES_QT_SDL
+ option(USE_QT6 "Use Qt 6 instead of Qt 5" ON)
+ 
+ if (USE_QT6)
+-    find_package(Qt6 COMPONENTS Core Gui Widgets Network Multimedia OpenGL OpenGLWidgets Svg REQUIRED)
++    if (MELONDS_USE_EXTERNAL_QT)
++        set(MELONDS_QT_MIN_VERSION 6.11.2)
++    endif()
++    find_package(Qt6 ${MELONDS_QT_MIN_VERSION} COMPONENTS Core Gui Widgets Network Multimedia OpenGL OpenGLWidgets Svg REQUIRED)
+     set(QT_LINK_LIBS Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::OpenGL Qt6::OpenGLWidgets)
+ else()
+     find_package(Qt5 COMPONENTS Core Gui Widgets Network Multimedia Svg REQUIRED)
+diff --git a/src/net/Net.cpp b/src/net/Net.cpp
+index 549111b..3914c37 100644
+--- a/src/net/Net.cpp
++++ b/src/net/Net.cpp
+@@ -45,8 +45,15 @@ void Net::RXEnqueue(const void* buf, int len)
+ }
+ 
+ 
++void Net::SetDriver(std::unique_ptr<NetDriver>&& driver) noexcept
++{
++    std::lock_guard lock(DriverMutex);
++    Driver = std::move(driver);
++}
++
+ int Net::SendPacket(u8* data, int len, int inst)
+ {
++    std::lock_guard lock(DriverMutex);
+     if (!Driver)
+         return 0;
+ 
+@@ -55,10 +62,12 @@ int Net::SendPacket(u8* data, int len, int inst)
+ 
+ int Net::RecvPacket(u8* data, int inst)
+ {
+-    if (!Driver)
+-        return 0;
+-
+-    Driver->RecvCheck();
++    {
++        std::lock_guard lock(DriverMutex);
++        if (!Driver)
++            return 0;
++        Driver->RecvCheck();
++    }
+ 
+     int ret = 0;
+     if (!Dispatcher.recvPacket(nullptr, nullptr, data, &ret, inst))
+diff --git a/src/net/Net.h b/src/net/Net.h
+index 97875a9..f8360a7 100644
+--- a/src/net/Net.h
++++ b/src/net/Net.h
+@@ -20,6 +20,7 @@
+ #define NET_H
+ 
+ #include <memory>
++#include <mutex>
+ 
+ #include "types.h"
+ #include "PacketDispatcher.h"
+@@ -47,11 +48,11 @@ public:
+     int SendPacket(u8* data, int len, int inst);
+     int RecvPacket(u8* data, int inst);
+ 
+-    void SetDriver(std::unique_ptr<NetDriver>&& driver) noexcept { Driver = std::move(driver); }
+-    [[nodiscard]] std::unique_ptr<NetDriver>& GetDriver() noexcept { return Driver; }
+-    [[nodiscard]] const std::unique_ptr<NetDriver>& GetDriver() const noexcept { return Driver; }
++    void SetDriver(std::unique_ptr<NetDriver>&& driver) noexcept;
+ 
+ private:
++    // Lock order: DriverMutex -> Dispatcher. RXEnqueue never takes DriverMutex.
++    std::mutex DriverMutex;
+     PacketDispatcher Dispatcher {};
+     std::unique_ptr<NetDriver> Driver = nullptr;
+ };
+diff --git a/src/net/PacketDispatcher.cpp b/src/net/PacketDispatcher.cpp
+index a045024..293eb1f 100644
+--- a/src/net/PacketDispatcher.cpp
++++ b/src/net/PacketDispatcher.cpp
+@@ -31,41 +31,28 @@ struct PacketHeader
+ const u32 kPacketMagic = 0x4B504C4D;
+ 
+ 
+-PacketDispatcher::PacketDispatcher() : mutex(Platform::Mutex_Create())
+-{
+-    instanceMask = 0;
+-}
+-
+-PacketDispatcher::~PacketDispatcher()
+-{
+-    Platform::Mutex_Free(mutex);
+-}
+-
+-
+ void PacketDispatcher::registerInstance(int inst)
+ {
+-    Mutex_Lock(mutex);
++    if (inst < 0 || inst >= 16) return;
++    std::lock_guard lock(mutex);
+ 
+     instanceMask |= (1 << inst);
+     packetQueues[inst] = std::make_unique<PacketQueue>();
+-
+-    Mutex_Unlock(mutex);
+ }
+ 
+ void PacketDispatcher::unregisterInstance(int inst)
+ {
+-    Mutex_Lock(mutex);
++    if (inst < 0 || inst >= 16) return;
++    std::lock_guard lock(mutex);
+ 
+     instanceMask &= ~(1 << inst);
+     packetQueues[inst] = nullptr;
+-
+-    Mutex_Unlock(mutex);
+ }
+ 
+ 
+ void PacketDispatcher::clear()
+ {
+-    Mutex_Lock(mutex);
++    std::lock_guard lock(mutex);
+     for (int i = 0; i < 16; i++)
+     {
+         if (!(instanceMask & (1 << i)))
+@@ -73,7 +60,6 @@ void PacketDispatcher::clear()
+ 
+         packetQueues[i]->Clear();
+     }
+-    Mutex_Unlock(mutex);
+ }
+ 
+ 
+@@ -81,10 +67,12 @@ void PacketDispatcher::sendPacket(const void* header, int headerlen, const void*
+ {
+     if (!header) headerlen = 0;
+     if (!data) datalen = 0;
++    if (headerlen < 0 || datalen < 0) return;
+     if ((!headerlen) && (!datalen)) return;
+-    if ((sizeof(PacketHeader) + headerlen + datalen) >= 0x8000) return;
++    if (sizeof(PacketHeader) + static_cast<size_t>(headerlen) + static_cast<size_t>(datalen) >= 0x8000) return;
+     if (sender < 0 || sender > 16) return;
+ 
++    std::lock_guard lock(mutex);
+     recv_mask &= instanceMask;
+     if (sender < 16) recv_mask &= ~(1 << sender);
+     if (!recv_mask) return;
+@@ -96,8 +84,6 @@ void PacketDispatcher::sendPacket(const void* header, int headerlen, const void*
+     phdr.dataLength = datalen;
+ 
+     int totallen = sizeof(phdr) + headerlen + datalen;
+-
+-    Mutex_Lock(mutex);
+     for (int i = 0; i < 16; i++)
+     {
+         if (!(recv_mask & (1 << i)))
+@@ -117,7 +103,6 @@ void PacketDispatcher::sendPacket(const void* header, int headerlen, const void*
+         if (headerlen) queue->Write(header, headerlen);
+         if (datalen) queue->Write(data, datalen);
+     }
+-    Mutex_Unlock(mutex);
+ }
+ 
+ bool PacketDispatcher::recvPacket(void *header, int *headerlen, void *data, int *datalen, int receiver)
+@@ -125,19 +110,18 @@ bool PacketDispatcher::recvPacket(void *header, int *headerlen, void *data, int
+     if ((!header) && (!data)) return false;
+     if (receiver < 0 || receiver > 15) return false;
+ 
+-    Mutex_Lock(mutex);
++    std::lock_guard lock(mutex);
+     PacketQueue* queue = packetQueues[receiver].get();
++    if (!queue) return false;
+ 
+     PacketHeader phdr;
+     if (!queue->Read(&phdr, sizeof(phdr)))
+     {
+-        Mutex_Unlock(mutex);
+         return false;
+     }
+ 
+     if (phdr.magic != kPacketMagic)
+     {
+-        Mutex_Unlock(mutex);
+         return false;
+     }
+ 
+@@ -155,6 +139,5 @@ bool PacketDispatcher::recvPacket(void *header, int *headerlen, void *data, int
+         else queue->Skip(phdr.dataLength);
+     }
+ 
+-    Mutex_Unlock(mutex);
+     return true;
+ }
+diff --git a/src/net/PacketDispatcher.h b/src/net/PacketDispatcher.h
+index 5bea446..8a0affe 100644
+--- a/src/net/PacketDispatcher.h
++++ b/src/net/PacketDispatcher.h
+@@ -21,6 +21,7 @@
+ 
+ #include <array>
+ #include <memory>
++#include <mutex>
+ #include "Platform.h"
+ #include "types.h"
+ #include "FIFO.h"
+@@ -30,8 +31,8 @@ using PacketQueue = melonDS::RingBuffer<0x8000>;
+ class PacketDispatcher
+ {
+ public:
+-    PacketDispatcher();
+-    ~PacketDispatcher();
++    PacketDispatcher() = default;
++    ~PacketDispatcher() = default;
+ 
+     void registerInstance(int inst);
+     void unregisterInstance(int inst);
+@@ -42,8 +43,8 @@ public:
+     bool recvPacket(void* header, int* headerlen, void* data, int* datalen, int receiver);
+ 
+ private:
+-    melonDS::Platform::Mutex* mutex;
+-    melonDS::u16 instanceMask;
++    std::mutex mutex;
++    melonDS::u16 instanceMask = 0;
+     std::array<std::unique_ptr<PacketQueue>, 16> packetQueues {};
+ };
+ 
+diff --git a/src/teakra/CMakeLists.txt b/src/teakra/CMakeLists.txt
+index c1615e0..0d4d0aa 100644
+--- a/src/teakra/CMakeLists.txt
++++ b/src/teakra/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-cmake_minimum_required(VERSION 3.8)
++cmake_minimum_required(VERSION 3.30)
+ project(teakra CXX)
+ 
+ # Determine if we're built as a subproject (using add_subdirectory)
+@@ -14,8 +14,10 @@ option(TEAKRA_BUILD_UNIT_TESTS "Build unit tests" ${MASTER_PROJECT})
+ option(TEAKRA_RUN_TESTS "Run Teakra accuracy tests" OFF)
+ 
+ # Set hard requirements for C++
+-set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CXX_STANDARD 26)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
++# No C++ module units are used; do not require a separate dependency scanner.
++set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+ set(CMAKE_CXX_EXTENSIONS OFF)
+ 
+ # Warn on CMake API deprecations
+@@ -34,7 +36,6 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMakeModules")
+ # Compiler flags
+ if (MSVC)
+     set(TEAKRA_CXX_FLAGS
+-        /std:c++latest # CMAKE_CXX_STANDARD as no effect on MSVC until CMake 3.10.
+         /W3
+         /permissive- # Stricter C++ standards conformance
+         /MP
+diff --git a/src/teakra/src/bit.h b/src/teakra/src/bit.h
+index 7379329..9059865 100644
+--- a/src/teakra/src/bit.h
++++ b/src/teakra/src/bit.h
+@@ -1,26 +1,18 @@
+ #pragma once
+ 
+-#include <limits>
++#include <bit>
+ #include <type_traits>
+-#ifdef _MSC_VER
+-#include <intrin.h>
+-#endif
+ 
+ namespace std20 {
+ 
+-// A simple (and not very correct) implementation of C++20's std::log2p1
++// Keep the existing call sites; delegate to the standard, zero-safe operation.
+ template <class T>
+ constexpr T log2p1(T x) noexcept {
+     static_assert(std::is_integral_v<T> && std::is_unsigned_v<T>);
+-    if (x == 0)
+-        return 0;
+-#ifdef _MSC_VER
+-    unsigned long index = 0;
+-    _BitScanReverse64(&index, x);
+-    return static_cast<T>(index) + 1;
+-#else
+-    return static_cast<T>(std::numeric_limits<unsigned long long>::digits - __builtin_clzll(x));
+-#endif
++    if constexpr (std::is_same_v<T, bool>)
++        return x;
++    else
++        return static_cast<T>(std::bit_width(x));
+ }
+ 
+ } // namespace std20
+diff --git a/src/teakra/src/interpreter.h b/src/teakra/src/interpreter.h
+index 04815ee..47cd6bd 100644
+--- a/src/teakra/src/interpreter.h
++++ b/src/teakra/src/interpreter.h
+@@ -108,12 +108,13 @@ public:
+             }
+ 
+             for (std::size_t i = 0; i < 3; ++i) {
+-                if (interrupt_pending[i].exchange(false)) {
++                // Keep sequential consistency, but avoid a locked write when no IRQ is pending.
++                if (interrupt_pending[i].load() && interrupt_pending[i].exchange(false)) {
+                     regs.ip[i] = 1;
+                 }
+             }
+ 
+-            if (vinterrupt_pending.exchange(false)) {
++            if (vinterrupt_pending.load() && vinterrupt_pending.exchange(false)) {
+                 regs.ipv = 1;
+             }
+ 
+@@ -3675,7 +3676,13 @@ private:
+         return map.at(in);
+     }
+ 
+-    const std::vector<Matcher<Interpreter>> decoders = GetDecoderTable<Interpreter>();
++    static const std::vector<Matcher<Interpreter>>& SharedDecoders() {
++        // Matchers carry instruction handlers, not per-interpreter state. Construct
++        // lazily once; every call still passes its own Interpreter to the handler.
++        static const auto table = GetDecoderTable<Interpreter>();
++        return table;
++    }
++    const std::vector<Matcher<Interpreter>>& decoders = SharedDecoders();
+ };
+ 
+ } // namespace Teakra
+diff --git a/tests/BufferUtilities.cpp b/tests/BufferUtilities.cpp
+new file mode 100644
+index 0000000..52913ec
+--- /dev/null
++++ b/tests/BufferUtilities.cpp
+@@ -0,0 +1,63 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "Utils.h"
++#include <cstdio>
++#include <cstring>
++#include <limits>
++#include <vector>
++
++using namespace melonDS;
++
++static int CheckCopies()
++{
++    std::vector<u8> source(4097);
++    for (size_t i = 0; i < source.size(); ++i)
++        source[i] = static_cast<u8>(i * 73 + 19);
++    for (u32 len = 1; len <= source.size(); ++len)
++    {
++        u32 expected = 1;
++        while (expected < len) expected *= 2;
++        auto [raw, rawSize] = PadToPowerOf2(source.data(), len);
++        auto owned = CopyToUnique(source.data(), len);
++        const auto original = owned.get();
++        auto [moved, movedSize] = PadToPowerOf2(std::move(owned), len);
++        if (!raw || !moved || owned || rawSize != expected || movedSize != expected)
++            return 1;
++        if (len == expected && moved.get() != original) return 2;
++        if (std::memcmp(raw.get(), source.data(), len) != 0 ||
++            std::memcmp(moved.get(), source.data(), len) != 0) return 3;
++        for (u32 i = len; i < expected; ++i)
++            if (raw[i] != 0 || moved[i] != 0) return 4;
++    }
++    return 0;
++}
++
++int main(int argc, char** argv)
++{
++    const char* mode = argc > 1 ? argv[1] : "copies";
++    if (std::strcmp(mode, "overflow") == 0)
++    {
++        // Rejected before allocation or reads; source deliberately holds one byte.
++        const u8 byte = 0xAB;
++        for (u32 len : {0x80000001U, std::numeric_limits<u32>::max()})
++        {
++            auto [result, size] = PadToPowerOf2(&byte, len);
++            if (result || size != 0) return 5;
++            auto owned = std::make_unique<u8[]>(1);
++            auto [moved, movedSize] = PadToPowerOf2(std::move(owned), len);
++            if (moved || movedSize != 0 || !owned) return 6;
++        }
++    }
++    else if (std::strcmp(mode, "null") == 0)
++    {
++        auto [result, size] = PadToPowerOf2(static_cast<const u8*>(nullptr), 12);
++        if (result || size != 0) return 7;
++        auto [empty, emptySize] = PadToPowerOf2(static_cast<const u8*>(nullptr), 0);
++        if (empty || emptySize != 0 || CopyToUnique(nullptr, 12)) return 8;
++    }
++    else if (std::strcmp(mode, "copies") == 0)
++    {
++        if (const int result = CheckCopies()) return result;
++    }
++    else return 9;
++    std::printf("ROM buffer %s: PASS\n", mode);
++}

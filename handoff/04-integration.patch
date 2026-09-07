@@ -1,0 +1,488 @@
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 7512db1..06452ba 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -1,7 +1,11 @@
+ cmake_minimum_required(VERSION 3.30)
+-project(melonDSCoreRegressionTests LANGUAGES CXX)
++if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
++    project(melonDSCoreRegressionTests LANGUAGES C CXX)
++endif()
+ set(CMAKE_CXX_STANDARD 26)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
++# No C++ module units are used; do not require a separate dependency scanner.
++set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+ enable_testing()
+ 
+ # Standalone: no Qt, SDL, BIOS images, ROMs, or full core build required.
+@@ -69,3 +73,70 @@ add_executable(UTF8Paths UTF8Paths.cpp)
+ target_include_directories(UTF8Paths PRIVATE ../src)
+ target_compile_features(UTF8Paths PRIVATE cxx_std_26)
+ add_test(NAME utf8-path-roundtrip COMMAND UTF8Paths)
++
++add_subdirectory(modernization)
++
++
++if (TARGET core)
++    find_package(Threads REQUIRED)
++    add_executable(TeakraExecution TeakraExecution.cpp PlatformSync.cpp ../src/Savestate.cpp)
++    target_include_directories(TeakraExecution PRIVATE ../src ../src/teakra/src)
++    target_link_libraries(TeakraExecution PRIVATE teakra Threads::Threads)
++    add_test(NAME teakra-execution-events-state COMMAND TeakraExecution)
++    set_tests_properties(teakra-execution-events-state PROPERTIES TIMEOUT 60)
++endif()
++
++if (TARGET core)
++    add_executable(CoreExecution CoreExecution.cpp PlatformSync.cpp PlatformHeadless.cpp)
++    target_link_libraries(CoreExecution PRIVATE core Threads::Threads)
++    add_test(NAME core-interpreter-execution COMMAND CoreExecution interpreter)
++    if (ENABLE_JIT)
++        add_test(NAME core-jit-execution COMMAND CoreExecution jit)
++        add_test(NAME core-jit-fastmem-execution COMMAND CoreExecution fastmem)
++    endif()
++    set_tests_properties(core-interpreter-execution PROPERTIES TIMEOUT 30)
++    if (ENABLE_JIT)
++        set_tests_properties(core-jit-execution core-jit-fastmem-execution PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
++    endif()
++endif()
++
++add_executable(BufferUtilities BufferUtilities.cpp ../src/Utils.cpp)
++target_include_directories(BufferUtilities PRIVATE ../src)
++foreach(case IN ITEMS copies overflow null)
++    add_test(NAME buffer-${case} COMMAND BufferUtilities ${case})
++    set_tests_properties(buffer-${case} PROPERTIES TIMEOUT 5)
++endforeach()
++
++add_executable(StandardBitOps StandardBitOps.cpp)
++target_include_directories(StandardBitOps PRIVATE ../src)
++target_compile_definitions(StandardBitOps PRIVATE REQUIRE_CONSTEXPR)
++add_test(NAME standard-bit-operations COMMAND StandardBitOps)
++
++add_custom_command(
++    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc"
++    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/../src/ARMInterpreter_ALU.cpp" "void A_CLZ(ARM* cpu)"
++        "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc"
++    DEPENDS ExtractFunction.py ../src/ARMInterpreter_ALU.cpp
++    VERBATIM)
++add_executable(CountLeadingZeros CountLeadingZeros.cpp "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc")
++target_include_directories(CountLeadingZeros PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
++add_test(NAME arm-clz-semantics COMMAND CountLeadingZeros)
++
++if (TARGET core)
++    add_executable(CartROMBounds CartROMBounds.cpp PlatformSync.cpp PlatformHeadless.cpp)
++    target_link_libraries(CartROMBounds PRIVATE core Threads::Threads)
++    add_test(NAME gba-rom-input-bounds COMMAND CartROMBounds)
++    set_tests_properties(gba-rom-input-bounds PROPERTIES TIMEOUT 10)
++endif()
++
++add_custom_command(
++    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ROMHeaderMethod.inc"
++    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/../src/NDSCart.cpp" "bool ValidateROM(u32 romlen, NDSHeader& header)"
++        "${CMAKE_CURRENT_BINARY_DIR}/ROMHeaderMethod.inc"
++    DEPENDS ExtractFunction.py ../src/NDSCart.cpp
++    VERBATIM)
++add_executable(ROMHeaderBounds ROMHeaderBounds.cpp "${CMAKE_CURRENT_BINARY_DIR}/ROMHeaderMethod.inc")
++target_include_directories(ROMHeaderBounds PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
++add_test(NAME nds-rom-header-bounds COMMAND ROMHeaderBounds)
+diff --git a/tests/CStandard.c b/tests/CStandard.c
+new file mode 100644
+index 0000000..b7e4c01
+--- /dev/null
++++ b/tests/CStandard.c
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include <stdio.h>
++#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202000L
++#error C23 dialect is required (draft mode accepted for older local verification compilers).
++#endif
++static_assert(sizeof(unsigned char) == 1);
++int main(void)
++{
++    const bool enabled = true;
++    typeof_unqual(enabled) copy = enabled;
++    copy = false;
++    printf("C23 mode: __STDC_VERSION__=%ld\n", (long)__STDC_VERSION__);
++    return copy;
++}
+diff --git a/tests/CartROMBounds.cpp b/tests/CartROMBounds.cpp
+new file mode 100644
+index 0000000..dbcb8e7
+--- /dev/null
++++ b/tests/CartROMBounds.cpp
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "NDS.h"
++#include "GBACart.h"
++#include <array>
++#include <cstdio>
++#include <memory>
++using namespace melonDS;
++int main()
++{
++    std::array<u8, 0x200> data{};
++    // Padding 0xAF bytes to 0x100 must not make a missing game-code byte valid.
++    if (GBACart::ParseROM(data.data(), 0xAF, nullptr)) return 1;
++    for (u32 size : {0U, 1U, 0x80U, 0xACU, 0xAFU, 0x80000001U, 0xFFFFFFFFU})
++    {
++        if (GBACart::ParseROM(data.data(), size, nullptr)) return 2;
++        auto owned = std::make_unique<u8[]>(data.size());
++        if (GBACart::ParseROM(std::move(owned), size, nullptr)) return 3;
++    }
++    if (GBACart::ParseROM(static_cast<const u8*>(nullptr), 0x200, nullptr)) return 4;
++    for (u32 size : {0xB0U, 0xC0U, 0x100U, 0x200U})
++        if (!GBACart::ParseROM(data.data(), size, nullptr)) return 5;
++    puts("GBA original length, overflow, null and minimal accepted input: PASS");
++}
+diff --git a/tests/CoreExecution.cpp b/tests/CoreExecution.cpp
+new file mode 100644
+index 0000000..b7d94db
+--- /dev/null
++++ b/tests/CoreExecution.cpp
+@@ -0,0 +1,82 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Hand-authored ARM instructions, real core/scheduler/software renderer.
++// No external ROM/BIOS; this is a regression test, NOT real-hardware validation.
++#include "Args.h"
++#include "NDS.h"
++#include "ARM.h"
++#include <cstdio>
++#include <cstring>
++#include <memory>
++#include <vector>
++using namespace melonDS;
++int main(int argc, char** argv) {
++    const bool jit = argc > 1 && std::strcmp(argv[1], "interpreter") != 0;
++    const bool fast = argc > 1 && std::strcmp(argv[1], "fastmem") == 0;
++#ifndef JIT_ENABLED
++    if (jit) return 77;
++#endif
++    NDSArgs args;
++    if (!jit) args.JIT = std::nullopt;
++    else args.JIT->FastMemory = fast;
++    auto nds = std::make_unique<NDS>(std::move(args));
++    nds->Reset();
++    RendererSettings settings{1, false, false, false};
++    nds->GetRenderer().SetRenderSettings(settings);
++    // r0=100 after a counted loop; store it then stay in a self-loop.
++    constexpr u32 code[] = {
++        0xE3A00000, // mov r0,#0
++        0xE3A01402, // mov r1,#0x02000000
++        0xE3A02064, // mov r2,#100
++        0xE2800001, // add r0,r0,#1
++        0xE2522001, // subs r2,r2,#1
++        0x1AFFFFFC, // bne back to add
++        0xE5810100, // str r0,[r1,#0x100]
++        0xE16F3F10, // clz r3,r0 -> 25
++        0xE5813104, // str r3,[r1,#0x104]
++        0xE3A04000, // mov r4,#0
++        0xE16F5F14, // clz r5,r4 -> 32
++        0xE5815108, // str r5,[r1,#0x108]
++        0xE3A06102, // mov r6,#0x80000000
++        0xE16F7F16, // clz r7,r6 -> 0
++        0xE581710C, // str r7,[r1,#0x10c]
++        0xEAFFFFFE  // b self
++    };
++    for (unsigned i=0;i<std::size(code);++i) nds->ARM9Write32(0x02000000+4*i,code[i]);
++    nds->ARM9Write32(0x02000200,0xEAFFFFFE);
++    nds->ARM9.JumpTo(0x02000000);
++    nds->ARM7.JumpTo(0x02000200);
++    // Exercise the software output conversion with a constant RGB555 VRAM line.
++    nds->ARM9Write16(0x04000304, 0x0203); // LCD, 2D A/B powered; default screen mapping
++    nds->ARM9Write8(0x04000240, 0x80);    // VRAM A -> LCDC
++    nds->ARM9Write32(0x04000000, 0x00020000); // Main display reads VRAM A
++    for (unsigned i=0;i<256*192;++i) nds->ARM9Write16(0x06800000+2*i,0x001F);
++    nds->Start();
++    const auto lines = nds->RunFrame();
++    if (!nds->IsRunning() || nds->ARM9Read32(0x02000100)!=100) {
++        std::fprintf(stderr,"execution failed: lines=%u result=%u r0=%u r1=%08x pc=%08x\n",lines,
++            nds->ARM9Read32(0x02000100),nds->ARM9.R[0],nds->ARM9.R[1],nds->ARM9.R[15]);
++        return 1;
++    }
++    if (nds->ARM9Read32(0x02000104) != 25 || nds->ARM9Read32(0x02000108) != 32 ||
++        nds->ARM9Read32(0x0200010C) != 0) return 8;
++    Savestate saved;
++    if (!nds->DoSavestate(&saved)) return 2;
++    saved.Finish();
++    if (saved.Error) return 3;
++    nds->ARM9Write32(0x02000100,0xDEADBEEF);
++    Savestate restore(saved.Buffer(),saved.Length(),false);
++    if (!nds->DoSavestate(&restore) || restore.Error || nds->ARM9Read32(0x02000100)!=100) return 4;
++    nds->RunFrame();
++    if (!nds->IsRunning() || nds->ARM9Read32(0x02000100)!=100) return 5;
++    void *top=nullptr, *bottom=nullptr;
++    if (!nds->GetRenderer().GetFramebuffers(&top,&bottom) || !top || !bottom) return 6;
++    const u32* screen = static_cast<const u32*>(bottom);
++    // 5-bit 31 is doubled to 6-bit 62, then replicated to 8-bit 251, not 255.
++    for (unsigned i=0;i<256*192;++i) {
++        if (screen[i]!=0xFFFB0000) {
++            std::fprintf(stderr,"framebuffer mismatch at %u: %08x\n",i,screen[i]);
++            return 7;
++        }
++    }
++    std::printf("core=%s fastmem=%d lines=%u ARM-result=100 save-restore=PASS pixels=49152\n",jit?"JIT":"interpreter",fast,lines);
++}
+diff --git a/tests/CountLeadingZeros.cpp b/tests/CountLeadingZeros.cpp
+new file mode 100644
+index 0000000..5fea59d
+--- /dev/null
++++ b/tests/CountLeadingZeros.cpp
+@@ -0,0 +1,74 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// The handler body is extracted from the production source at build time.
++#include "types.h"
++#include <bit>
++#include <chrono>
++#include <cstdio>
++#include <cstring>
++#include <iterator>
++
++using namespace melonDS;
++struct ARM
++{
++    u32 Num = 0, R[16]{}, CurInstr = 0xE16F3F11, CPSR = 0xA000001F;
++    u64 cycles = 0, undefined = 0;
++    void AddCycles_C() { ++cycles; }
++};
++static void A_UNK(ARM* cpu) { ++cpu->undefined; }
++#include "CLZMethod.inc"
++
++static unsigned Reference(u32 value)
++{
++    unsigned result = 0;
++    for (u32 bit = 0x80000000; bit && !(value & bit); bit >>= 1) ++result;
++    return result;
++}
++
++int main(int argc, char** argv)
++{
++    u32 corpus[8192];
++    u32 state = 0x12345678;
++    for (size_t i = 0; i < std::size(corpus); ++i)
++    {
++        state ^= state << 13; state ^= state >> 17; state ^= state << 5;
++        corpus[i] = i % 33 == 32 ? 0 : state >> (i % 33);
++    }
++    ARM cpu;
++    if (argc == 2 && std::strcmp(argv[1], "benchmark") == 0)
++    {
++        u64 sum = 0;
++        const auto begin = std::chrono::steady_clock::now();
++        for (unsigned repeat = 0; repeat < 2048; ++repeat)
++            for (const u32 value : corpus)
++            {
++                cpu.R[1] = value;
++                A_CLZ(&cpu);
++                sum += cpu.R[3];
++            }
++        const auto ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - begin).count();
++        std::printf("%.6f %llu\n", ns / (2048 * std::size(corpus)), static_cast<unsigned long long>(sum));
++        return 0;
++    }
++    for (const u32 value : corpus)
++    {
++        cpu.R[1] = value;
++        const u64 before = cpu.cycles;
++        A_CLZ(&cpu);
++        if (cpu.R[3] != Reference(value) || cpu.R[1] != value ||
++            cpu.cycles != before + 1 || cpu.CPSR != 0xA000001F || cpu.undefined) return 1;
++    }
++    for (unsigned i = 0; i < 32; ++i)
++    {
++        cpu.R[1] = u32{1} << i;
++        A_CLZ(&cpu);
++        if (cpu.R[3] != 31 - i) return 2;
++    }
++    cpu.R[1] = 0;
++    A_CLZ(&cpu);
++    if (cpu.R[3] != 32) return 3;
++    cpu.Num = 1;
++    const auto before = cpu.cycles;
++    A_CLZ(&cpu);
++    if (cpu.R[3] != 32 || cpu.cycles != before || cpu.undefined != 1) return 4;
++    puts("ARM CLZ values, zero, flags, tick call and ARM7 guard: PASS");
++}
+diff --git a/tests/HeaderCompleteness.cpp b/tests/HeaderCompleteness.cpp
+new file mode 100644
+index 0000000..9684ab8
+--- /dev/null
++++ b/tests/HeaderCompleteness.cpp
+@@ -0,0 +1,5 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "NDS.h"
++#include "GPU.h"
++#include "DSi_SD.h"
++int main() { return 0; }
+diff --git a/tests/NetworkConcurrency.cpp b/tests/NetworkConcurrency.cpp
+new file mode 100644
+index 0000000..9dfbf09
+--- /dev/null
++++ b/tests/NetworkConcurrency.cpp
+@@ -0,0 +1,57 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "net/Net.h"
++#include <array>
++#include <atomic>
++#include <barrier>
++#include <cstdio>
++#include <cstring>
++#include <thread>
++using namespace melonDS;
++namespace {
++struct Recorder : NetDriver {
++    std::atomic<unsigned> active{0};
++    std::atomic<bool> overlap{false};
++    void Call() noexcept {
++        if (active.fetch_add(1) != 0) overlap = true;
++        for (int i = 0; i < 8; ++i) std::this_thread::yield();
++        active.fetch_sub(1);
++    }
++    int SendPacket(u8*, int length) noexcept override { Call(); return length; }
++    void RecvCheck() noexcept override { Call(); }
++};
++int Queues() {
++    PacketDispatcher q;
++    std::array<u8, 128> out{};
++    int length = 7;
++    if (q.recvPacket(nullptr, nullptr, out.data(), &length, 0)) return 1;
++    q.registerInstance(-1); q.registerInstance(16); q.unregisterInstance(16);
++    q.registerInstance(0); q.registerInstance(15);
++    const u8 payload[] = {1,2,3,4};
++    q.sendPacket(nullptr, 0, payload, 4, 0, 0xffff);
++    if (q.recvPacket(nullptr,nullptr,out.data(),&length,0)) return 2;
++    if (!q.recvPacket(nullptr,nullptr,out.data(),&length,15) || length != 4 || memcmp(out.data(),payload,4)) return 3;
++    q.sendPacket(nullptr,0,payload,-1,16,0xffff);
++    if (q.recvPacket(nullptr,nullptr,out.data(),&length,15)) return 4;
++    q.unregisterInstance(15);
++    q.sendPacket(nullptr,0,payload,4,16,0xffff);
++    if (q.recvPacket(nullptr,nullptr,out.data(),&length,15)) return 5;
++    if (!q.recvPacket(nullptr,nullptr,out.data(),&length,0)) return 6;
++    return 0;
++}
++int Threads() {
++    Net net;
++    net.RegisterInstance(0); net.RegisterInstance(1);
++    auto driver = std::make_unique<Recorder>(); auto* recorder = driver.get();
++    net.SetDriver(std::move(driver));
++    std::barrier start(3);
++    std::thread sender([&] { u8 data[4]{}; start.arrive_and_wait(); for(int i=0;i<1000;++i) net.SendPacket(data,4,0); });
++    std::thread receiver([&] { u8 data[4]{}; start.arrive_and_wait(); for(int i=0;i<1000;++i) net.RecvPacket(data,1); });
++    start.arrive_and_wait(); sender.join(); receiver.join();
++    return recorder->overlap ? 10 : 0;
++}
++}
++int main(int argc, char** argv) {
++    const int result = argc > 1 && std::strcmp(argv[1],"threads") == 0 ? Threads() : Queues();
++    if (result) std::fprintf(stderr,"Network regression failed: %d\n", result);
++    return result;
++}
+diff --git a/tests/PixelConvert.cpp b/tests/PixelConvert.cpp
+new file mode 100644
+index 0000000..3fbd0eb
+--- /dev/null
++++ b/tests/PixelConvert.cpp
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include <algorithm>
++#include <array>
++#include <stdio.h>
++#include <vector>
++#include "PixelConvert.h"
++using namespace melonDS;
++using namespace PixelConvert;
++static u32 Reference(u32 c)
++{
++    const u32 r = c & 63, g = (c >> 8) & 63, b = (c >> 16) & 63;
++    return 0xFF000000 | (((r * 4) | (r / 16)) << 16) |
++           (((g * 4) | (g / 16)) << 8) | (b * 4) | (b / 16);
++}
++int main()
++{
++    unsigned tested = 0;
++    for (Backend backend : {Backend::Scalar, Backend::AVX2, Backend::AVX512, Backend::Auto})
++    {
++        const auto fn = Select(backend);
++        if (!IsSupported(backend) && fn != ExpandScalar) return 1;
++        fn(nullptr, 0);
++        std::vector<u32> values(64 * 64 * 64);
++        for (unsigned i = 0; i < values.size(); ++i)
++            values[i] = (i & 63) | (((i >> 6) & 63) << 8) | ((i >> 12) << 16) | 0xABC0C0C0;
++        const auto before = values;
++        fn(values.data(), values.size());
++        for (unsigned i = 0; i < values.size(); ++i)
++            if (values[i] != Reference(before[i])) return 2;
++        for (size_t offset = 0; offset < 16; ++offset)
++        for (size_t size : {0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257, 513})
++        {
++            // No readable SIMD-width padding at the end: sanitizers catch tail overreads.
++            std::vector<u32> input(size + offset);
++            u32 seed = 0xBADFEED;
++            for (auto& x : input) { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; x = seed; }
++            const auto original = input;
++            if (!input.empty()) fn(input.data() + offset, size);
++            for (size_t i = 0; i < input.size(); ++i)
++                if (input[i] != (i < offset ? original[i] : Reference(original[i]))) return 3;
++        }
++        ++tested;
++    }
++    printf("Pixel conversion: %u backends/selection modes; exhaustive RGB666 and tail tests PASS\n", tested);
++}
+diff --git a/tests/PlatformHeadless.cpp b/tests/PlatformHeadless.cpp
+new file mode 100644
+index 0000000..9506990
+--- /dev/null
++++ b/tests/PlatformHeadless.cpp
+@@ -0,0 +1,52 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Test-only headless host: no files, network, camera, microphone or AAC decoder.
++// Firmware and cartridge persistence requests are intentionally non-persistent.
++#include "Platform.h"
++#include <algorithm>
++#include <cstdlib>
++namespace melonDS::Platform {
++void SignalStop(StopReason, void*) {}
++FileHandle* OpenFile(const std::string&, FileMode) { return nullptr; }
++FileHandle* OpenLocalFile(const std::string&, FileMode) { return nullptr; }
++bool LocalFileExists(const std::string&) { return false; }
++bool CloseFile(FileHandle*) { std::abort(); }
++bool IsEndOfFile(FileHandle*) { std::abort(); }
++bool FileReadLine(char*, int, FileHandle*) { std::abort(); }
++u64 FilePosition(FileHandle*) { std::abort(); }
++bool FileSeek(FileHandle*, s64, FileSeekOrigin) { std::abort(); }
++void FileRewind(FileHandle*) { std::abort(); }
++u64 FileRead(void*, u64, u64, FileHandle*) { std::abort(); }
++bool FileFlush(FileHandle*) { std::abort(); }
++u64 FileWrite(const void*, u64, u64, FileHandle*) { std::abort(); }
++u64 FileWriteFormatted(FileHandle*, const char*, ...) { std::abort(); }
++u64 FileLength(FileHandle*) { std::abort(); }
++void WriteNDSSave(const u8*, u32, u32, u32, void*) {}
++void WriteGBASave(const u8*, u32, u32, u32, void*) {}
++void WriteFirmware(const Firmware&, u32, u32, void*) {}
++void WriteDateTime(int, int, int, int, int, int, void*) {}
++void MP_Begin(void*) {}
++void MP_End(void*) {}
++int MP_SendPacket(u8*, int, u64, void*) { return 0; }
++int MP_RecvPacket(u8*, u64*, void*) { return 0; }
++int MP_SendCmd(u8*, int, u64, void*) { return 0; }
++int MP_SendReply(u8*, int, u64, u16, void*) { return 0; }
++int MP_SendAck(u8*, int, u64, void*) { return 0; }
++int MP_RecvHostPacket(u8*, u64*, void*) { return 0; }
++u16 MP_RecvReplies(u8*, u64, u16, void*) { return 0; }
++int Net_SendPacket(u8*, int, void*) { return 0; }
++int Net_RecvPacket(u8*, void*) { return 0; }
++void Camera_Start(int, void*) {}
++void Camera_Stop(int, void*) {}
++void Camera_CaptureFrame(int, u32*, int, int, bool, void*) { std::abort(); }
++void Mic_Start(void*) {}
++void Mic_Stop(void*) {}
++int Mic_ReadInput(s16*, int, void*) { return 0; }
++AACDecoder* AAC_Init() { return nullptr; }
++void AAC_DeInit(AACDecoder*) {}
++bool AAC_Configure(AACDecoder*, int, int) { return false; }
++bool AAC_DecodeFrame(AACDecoder*, const void*, int, void*, int) { return false; }
++bool Addon_KeyDown(KeyType, void*) { return false; }
++float Addon_MotionQuery(MotionQueryType, void*) { return 0.f; }
++void Addon_RumbleStart(u32, void*) {}
++void Addon_RumbleStop(void*) {}
++}

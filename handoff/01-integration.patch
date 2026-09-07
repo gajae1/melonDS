@@ -1,0 +1,483 @@
+diff --git a/.github/workflows/build-ubuntu.yml b/.github/workflows/build-ubuntu.yml
+index fcbd1f1..1a50fbe 100644
+--- a/.github/workflows/build-ubuntu.yml
++++ b/.github/workflows/build-ubuntu.yml
+@@ -38,7 +38,7 @@ jobs:
+         sudo apt install --allow-downgrades g++-14 ninja-build extra-cmake-modules libpcap0.8-dev libsdl2-dev libenet-dev \
+           qt6-{base,base-private,multimedia}-dev qt6-wayland libqt6svg6-dev libarchive-dev libzstd-dev libfuse2t64 libfaad-dev python3-venv
+         python3 -m venv "$RUNNER_TEMP/cmake-env"
+-        "$RUNNER_TEMP/cmake-env/bin/pip" install cmake==3.31.6
++        "$RUNNER_TEMP/cmake-env/bin/pip" install cmake==4.4.3
+         echo "$RUNNER_TEMP/cmake-env/bin" >> "$GITHUB_PATH"
+     - name: Configure
+       run: cmake -B build -G Ninja -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_INSTALL_PREFIX=/usr -DMELONDS_EMBED_BUILD_INFO=ON
+ diff --git a/.github/workflows/core-regressions.yml b/.github/workflows/core-regressions.yml
+index 4cb6fe4..226f581 100644
+--- a/.github/workflows/core-regressions.yml
++++ b/.github/workflows/core-regressions.yml
+@@ -37,7 +37,7 @@ jobs:
+           sudo apt-get update
+           sudo apt-get install -y g++-14 clang-18
+           python3 -m venv "$RUNNER_TEMP/cmake-env"
+-          "$RUNNER_TEMP/cmake-env/bin/pip" install cmake==3.31.6
++          "$RUNNER_TEMP/cmake-env/bin/pip" install cmake==4.4.3
+           echo "$RUNNER_TEMP/cmake-env/bin" >> "$GITHUB_PATH"
+       - name: Configure
+         run: >-
+@@ -67,7 +67,7 @@ jobs:
+           sudo apt-get update
+           sudo apt-get install -y g++-14 ninja-build
+           python3 -m venv "$RUNNER_TEMP/cmake-env"
+-          "$RUNNER_TEMP/cmake-env/bin/pip" install cmake==3.31.6
++          "$RUNNER_TEMP/cmake-env/bin/pip" install cmake==4.4.3
+           echo "$RUNNER_TEMP/cmake-env/bin" >> "$GITHUB_PATH"
+       - name: Configure full core
+         run: >-
+diff --git a/BUILD.md b/BUILD.md
+index b581b0e..1eca878 100644
+--- a/BUILD.md
++++ b/BUILD.md
+@@ -1,5 +1,14 @@
+ # Building melonDS
+ 
++## Current local modernization batch
++
++The new C sources require C23; project C++ and the maintained Teakra target use
++C++26. See [batch scope and tested configurations](docs/ModernizationBatch.md),
++[dependency candidate status](docs/DependencyAudit.md), and
++[manual CI policy](docs/CIBatch.md). This batch has not been fully built on all
++platforms. `MELONDS_CURRENT_TOOLCHAIN=ON` checks the audited current compiler
++versions; it does not install or select a compiler for you.
++
+ ## Toolchain requirements for this fork
+ 
+ Use **CMake 3.30 or newer** and a compiler supporting **C++26 mode** (GCC 14+
+@@ -103,3 +112,17 @@ melonDS provides a Nix flake with support for both macOS and Linux. The [Nix pac
+ 
+ * To run melonDS, just type `nix run github:gajae1/melonDS`.
+ * To get a shell for development, clone the melonDS repository and type `nix develop` in its directory.
++
++## Current dependency profile
++
++`release-current-deps` selects Clang, the audited current-toolchain version
++floors, pinned vcpkg dependencies, and an independently installed **Qt 6.11.2**.
++Set `CMAKE_PREFIX_PATH` to that Qt installation. This profile does not download
++Qt or LLVM implicitly. Generic builds continue to accept the pinned registry
++Qt version instead. Windows uses its native Clang preset and can pass the same
++`-DMELONDS_USE_EXTERNAL_QT=ON -DCMAKE_PREFIX_PATH=... -DBUILD_STATIC=OFF` options
++with a matching MSVC SDK/runtime environment.
++
++The current Qt6 recommended macOS deployment floor is **13.0**; do not expect
++new artifacts to retain the old macOS 10.15/11 minimum. See
++`docs/ModernizationBatch.md` for verified and unverified configurations.
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index aa883a3..ecd386c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -9,7 +9,7 @@ set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+ 
+ set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
+ set(CMAKE_USER_MAKE_RULES_OVERRIDE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DefaultBuildFlags.cmake")
+-set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum OS X deployment version")
++set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum OS X deployment version")
+ 
+ option(USE_VCPKG "Use vcpkg for dependency packages" OFF)
+ if (USE_VCPKG)
+@@ -34,11 +34,34 @@ include(CheckIPOSupported)
+ include(SetupCCache)
+ include(Sanitizers)
+ 
+-set(CMAKE_C_STANDARD 11)
++set(CMAKE_C_STANDARD 23)
+ set(CMAKE_C_STANDARD_REQUIRED ON)
+ set(CMAKE_CXX_STANDARD 26)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
++# No C++ module units are used; do not require a separate dependency scanner.
++set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
++include(HostFeatures)
++
++option(MELONDS_CURRENT_TOOLCHAIN "Require the toolchain release floors audited for this fork" OFF)
++if (MELONDS_CURRENT_TOOLCHAIN)
++    if (CMAKE_VERSION VERSION_LESS 4.4.3)
++        message(FATAL_ERROR "Current-toolchain profile requires CMake 4.4.3 or newer")
++    endif()
++    foreach(language IN ITEMS C CXX)
++        if (CMAKE_${language}_COMPILER_ID STREQUAL "Clang")
++            if (CMAKE_${language}_COMPILER_VERSION VERSION_LESS 23.1.0)
++                message(FATAL_ERROR "Current-toolchain profile requires Clang 23.1.0 or newer (${language})")
++            endif()
++        elseif (CMAKE_${language}_COMPILER_ID STREQUAL "GNU")
++            if (CMAKE_${language}_COMPILER_VERSION VERSION_LESS 16.2.0)
++                message(FATAL_ERROR "Current-toolchain profile requires GCC 16.2.0 or newer (${language})")
++            endif()
++        else()
++            message(FATAL_ERROR "Use the generic build or a verified Clang/GCC toolchain")
++        endif()
++    endforeach()
++endif()
+ 
+ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
+@@ -66,8 +89,21 @@ detect_architecture("__i386__" x86)
+ detect_architecture("__arm__" ARM)
+ detect_architecture("__aarch64__" ARM64)
+ 
++option(ENABLE_ASM "Allow handwritten assembly, including native JIT linkage" ON)
++set(MELONDS_HAVE_ASM OFF)
++if (ENABLE_ASM)
++    include(CheckLanguage)
++    check_language(ASM)
++    if (CMAKE_ASM_COMPILER)
++        set(MELONDS_HAVE_ASM ON)
++    endif()
++endif()
++if (NOT MELONDS_HAVE_ASM)
++    message(STATUS "Assembler disabled/unavailable: using interpreter, native JIT disabled")
++endif()
++
+ cmake_dependent_option(ENABLE_JIT "Enable JIT recompiler" ON
+-    "ARCHITECTURE STREQUAL x86_64 OR ARCHITECTURE STREQUAL ARM64;NOT ARCHITECTURE STREQUAL x86_64 OR NOT APPLE" OFF)
++    "MELONDS_HAVE_ASM;ARCHITECTURE STREQUAL x86_64 OR ARCHITECTURE STREQUAL ARM64;NOT ARCHITECTURE STREQUAL x86_64 OR NOT APPLE" OFF)
+ cmake_dependent_option(ENABLE_JIT_PROFILING "Enable JIT profiling with VTune" OFF "ENABLE_JIT" OFF)
+ option(ENABLE_OGLRENDERER "Enable OpenGL renderer" ON)
+ 
+@@ -114,3 +150,9 @@ add_subdirectory(src)
+ if (BUILD_QT_SDL)
+     add_subdirectory(src/frontend/qt_sdl)
+ endif()
++
++option(MELONDS_BUILD_TESTS "Build focused regression and core integration tests" OFF)
++if (MELONDS_BUILD_TESTS)
++    enable_testing()
++    add_subdirectory(tests)
++endif()
+diff --git a/CMakePresets.json b/CMakePresets.json
+index d5b7711..6ae6066 100644
+--- a/CMakePresets.json
++++ b/CMakePresets.json
+@@ -65,7 +65,9 @@
+       },
+       "vendor": {
+         "microsoft.com/VisualStudioSettings/CMake/1.0": {
+-          "hostOS": [ "Windows" ]
++          "hostOS": [
++            "Windows"
++          ]
+         }
+       }
+     },
+@@ -128,6 +130,39 @@
+         "lhs": "${hostSystemName}",
+         "rhs": "Darwin"
+       }
++    },
++    {
++      "name": "release-clang",
++      "inherits": "base",
++      "description": "Clang release; set CC/CXX to choose an installed release",
++      "condition": {
++        "type": "notEquals",
++        "lhs": "${hostSystemName}",
++        "rhs": "Windows"
++      },
++      "cacheVariables": {
++        "CMAKE_C_COMPILER": "clang",
++        "CMAKE_CXX_COMPILER": "clang++",
++        "CMAKE_ASM_COMPILER": "clang"
++      }
++    },
++    {
++      "name": "release-clang-current",
++      "inherits": "release-clang",
++      "description": "Audited current stable toolchain floors (does not install compilers)",
++      "cacheVariables": {
++        "MELONDS_CURRENT_TOOLCHAIN": "ON"
++      }
++    },
++    {
++      "name": "release-current-deps",
++      "inherits": "release-clang-current",
++      "description": "Current Clang + separately installed Qt 6.11.2 and pinned vcpkg dependencies",
++      "cacheVariables": {
++        "USE_VCPKG": "ON",
++        "MELONDS_USE_EXTERNAL_QT": "ON",
++        "BUILD_STATIC": "OFF"
++      }
+     }
+   ],
+   "buildPresets": [
+@@ -170,6 +205,18 @@
+       "name": "release-mac-arm64",
+       "configurePreset": "release-mac-arm64",
+       "displayName": "macOS Release (arm64)"
++    },
++    {
++      "name": "release-clang",
++      "configurePreset": "release-clang"
++    },
++    {
++      "name": "release-clang-current",
++      "configurePreset": "release-clang-current"
++    },
++    {
++      "name": "release-current-deps",
++      "configurePreset": "release-current-deps"
+     }
+   ]
+ }
+diff --git a/cmake/ConfigureVcpkg.cmake b/cmake/ConfigureVcpkg.cmake
+index e2ed761..898f23b 100644
+--- a/cmake/ConfigureVcpkg.cmake
++++ b/cmake/ConfigureVcpkg.cmake
+@@ -41,6 +41,14 @@ if (UNIX AND NOT APPLE)
+     option(USE_SYSTEM_LIBSLIRP "Use system libslirp instead of the bundled version" ON)
+ endif()
+ 
++option(MELONDS_USE_EXTERNAL_QT "Use an independently installed Qt6 instead of vcpkg Qt ports" OFF)
++if (MELONDS_USE_EXTERNAL_QT)
++    if (NOT USE_QT6)
++        message(FATAL_ERROR "External current Qt profile requires USE_QT6=ON")
++    endif()
++    set(VCPKG_MANIFEST_NO_DEFAULT_FEATURES ON)
++endif()
++
+ if (NOT USE_QT6)
+     list(APPEND VCPKG_MANIFEST_FEATURES qt5)
+     set(VCPKG_MANIFEST_NO_DEFAULT_FEATURES ON)
+@@ -68,11 +76,11 @@ if (USE_RECOMMENDED_TRIPLETS)
+         endif()
+ 
+         if (CMAKE_OSX_ARCHITECTURES STREQUAL arm64)
+-            set(_WANTED_TRIPLET arm64-osx-11-release)
+-            set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0)
++            set(_WANTED_TRIPLET arm64-osx-13-release)
++            set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0)
+         else()
+-            set(_WANTED_TRIPLET x64-osx-1015-release)
+-            set(CMAKE_OSX_DEPLOYMENT_TARGET 10.15)
++            set(_WANTED_TRIPLET x64-osx-13-release)
++            set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0)
+         endif()
+     elseif(WIN32)
+         set(_CAN_TARGET_AS_HOST ON)
+@@ -133,16 +141,16 @@ if (USE_RECOMMENDED_TRIPLETS)
+         if (_HOST_PROCESSOR MATCHES arm64)
+             if (_WANTED_TRIPLET MATCHES "^arm64-osx-")
+                 set(_CAN_TARGET_AS_HOST ON)
+-            elseif (_WANTED_TRIPLET STREQUAL "x64-osx-1015-release")
++            elseif (_WANTED_TRIPLET STREQUAL "x64-osx-13-release")
+                 # Use the default triplet for when building for arm64
+                 # because we're probably making a universal build
+-                set(VCPKG_HOST_TRIPLET arm64-osx-11-release)
++                set(VCPKG_HOST_TRIPLET arm64-osx-13-release)
+             endif()
+         else()
+             if (_WANTED_TRIPLET MATCHES "^x64-osx-")
+                 set(_CAN_TARGET_AS_HOST ON)
+-            elseif (_WANTED_TRIPLET STREQUAL "arm64-osx-11-release")
+-                set(VCPKG_HOST_TRIPLET x64-osx-1015-release)
++            elseif (_WANTED_TRIPLET STREQUAL "arm64-osx-13-release")
++                set(VCPKG_HOST_TRIPLET x64-osx-13-release)
+             endif()
+         endif()
+     endif()
+diff --git a/cmake/HostFeatures.cmake b/cmake/HostFeatures.cmake
+new file mode 100644
+index 0000000..06fe821
+--- /dev/null
++++ b/cmake/HostFeatures.cmake
+@@ -0,0 +1,42 @@
++# Optional kernels are gated by both compiler support and runtime CPU/OS state.
++include(CheckCXXSourceCompiles)
++option(ENABLE_SIMD "Build optional SIMD pixel kernels with runtime dispatch" ON)
++option(ENABLE_AVX2 "Build optional AVX2 pixel conversion" ON)
++option(ENABLE_AVX512 "Build optional AVX-512F conversion (benchmark before enabling)" OFF)
++
++function(melonds_configure_pixel_kernels target)
++    set(avx2 OFF)
++    set(avx512 OFF)
++    if (ENABLE_SIMD)
++        foreach(isa IN ITEMS AVX2 AVX512)
++            if (ENABLE_${isa})
++                if (isa STREQUAL "AVX2")
++                    set(feature "avx2")
++                    set(operation "_mm256_storeu_si256((__m256i*)p, _mm256_set1_epi32(1))")
++                else()
++                    set(feature "avx512f")
++                    set(operation "_mm512_storeu_si512(p, _mm512_set1_epi32(1))")
++                endif()
++                check_cxx_source_compiles("
++                    #include <immintrin.h>
++                    #if !defined(__x86_64__) && !defined(__i386__)
++                    #error Not an x86 compiler target
++                    #endif
++                    __attribute__((target(\"${feature}\")))
++                    void kernel(int* p) { ${operation}; }
++                    int main() { return __builtin_cpu_supports(\"${feature}\"); }
++                " MELONDS_HAS_${isa}_TARGET)
++                if (MELONDS_HAS_${isa}_TARGET)
++                    if (isa STREQUAL "AVX2")
++                        set(avx2 ON)
++                    else()
++                        set(avx512 ON)
++                    endif()
++                endif()
++            endif()
++        endforeach()
++    endif()
++    target_compile_definitions(${target} PRIVATE
++        MELONDS_PIXEL_AVX2=$<BOOL:${avx2}> MELONDS_PIXEL_AVX512=$<BOOL:${avx512}>)
++    message(STATUS "${target}: AVX2=${avx2}, AVX512F=${avx512}; runtime CPU/OS dispatch")
++endfunction()
+diff --git a/cmake/overlay-ports/faad2/fix-install.patch b/cmake/overlay-ports/faad2/fix-install.patch
+ deleted file mode 100644
+index fc44506..0000000
+--- a/cmake/overlay-ports/faad2/fix-install.patch
++++ /dev/null
+@@ -1,13 +0,0 @@
+-diff --git a/CMakeLists.txt b/CMakeLists.txt
+-index 5c0aeff..9614c19 100644
+---- a/CMakeLists.txt
+-+++ b/CMakeLists.txt
+-@@ -261,7 +261,7 @@ endif()
+- 
+- # Installation
+- 
+--if(NOT FAAD_BUNDLED_MODE AND NOT MSVC)
+-+if(1)
+-   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/faad2.pc"
+-     DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+- 
+diff --git a/cmake/overlay-ports/faad2/portfile.cmake b/cmake/overlay-ports/faad2/portfile.cmake
+ deleted file mode 100644
+index 205b47a..0000000
+--- a/cmake/overlay-ports/faad2/portfile.cmake
++++ /dev/null
+@@ -1,23 +0,0 @@
+-vcpkg_from_github(
+-    OUT_SOURCE_PATH SOURCE_PATH
+-    REPO knik0/faad2
+-    REF "${VERSION}"
+-    SHA512 b8f17680610b2f47344ea52b54412a02810a85eaf9d4c91b97ca09b2c6415c62d4af1b0771bfcacb9dfee400ed34504c0bd3c28369921c0392b3809e7de46ec5
+-    HEAD_REF master
+-    PATCHES
+-        fix-install.patch
+-)
+-
+-vcpkg_cmake_configure(
+-    SOURCE_PATH "${SOURCE_PATH}"
+-)
+-
+-vcpkg_cmake_install()
+-
+-vcpkg_copy_pdbs()
+-vcpkg_fixup_pkgconfig()
+-
+-file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
+-file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")
+-
+-vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/COPYING")
+diff --git a/cmake/overlay-ports/faad2/vcpkg.json b/cmake/overlay-ports/faad2/vcpkg.json
+ deleted file mode 100644
+index 1d2dd48..0000000
+--- a/cmake/overlay-ports/faad2/vcpkg.json
++++ /dev/null
+@@ -1,13 +0,0 @@
+-{
+-  "name": "faad2",
+-  "version": "2.11.1",
+-  "description": "Freeware Advanced Audio (AAC) Decoder",
+-  "homepage": "https://sourceforge.net/projects/faac/",
+-  "license": "GPL-2.0-or-later",
+-  "dependencies": [
+-    {
+-      "name": "vcpkg-cmake",
+-      "host": true
+-    }
+-  ]
+-}
+diff --git a/cmake/overlay-triplets/arm64-osx-13-release.cmake b/cmake/overlay-triplets/arm64-osx-13-release.cmake
+new file mode 100644
+index 0000000..893abdf
+--- /dev/null
++++ b/cmake/overlay-triplets/arm64-osx-13-release.cmake
+@@ -0,0 +1,12 @@
++set(VCPKG_TARGET_ARCHITECTURE arm64)
++set(VCPKG_CRT_LINKAGE dynamic)
++set(VCPKG_LIBRARY_LINKAGE static)
++
++set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
++set(VCPKG_CMAKE_SYSTEM_VERSION 13.0)
++set(VCPKG_OSX_ARCHITECTURES arm64)
++set(VCPKG_BUILD_TYPE release)
++set(VCPKG_OSX_DEPLOYMENT_TARGET 13.0)
++
++set(VCPKG_C_FLAGS -mmacosx-version-min=13.0)
++set(VCPKG_CXX_FLAGS -mmacosx-version-min=13.0)
+diff --git a/cmake/overlay-triplets/x64-osx-13-release.cmake b/cmake/overlay-triplets/x64-osx-13-release.cmake
+new file mode 100644
+index 0000000..8a1631e
+--- /dev/null
++++ b/cmake/overlay-triplets/x64-osx-13-release.cmake
+@@ -0,0 +1,12 @@
++set(VCPKG_TARGET_ARCHITECTURE x64)
++set(VCPKG_CRT_LINKAGE dynamic)
++set(VCPKG_LIBRARY_LINKAGE static)
++
++set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
++set(VCPKG_CMAKE_SYSTEM_VERSION 13.0)
++set(VCPKG_OSX_ARCHITECTURES x86_64)
++set(VCPKG_BUILD_TYPE release)
++set(VCPKG_OSX_DEPLOYMENT_TARGET 13.0)
++
++set(VCPKG_C_FLAGS -mmacosx-version-min=13.0)
++set(VCPKG_CXX_FLAGS -mmacosx-version-min=13.0)
+diff --git a/docs/CIBatch.md b/docs/CIBatch.md
+new file mode 100644
+index 0000000..15c7e81
+--- /dev/null
++++ b/docs/CIBatch.md
+@@ -0,0 +1,10 @@
++# Local verification and CI policy
++
++No GitHub Actions runs are requested for this development continuation.
++Use the CMake/CTest commands in BUILD.md and tests/README.md locally. The existing
++workflow definitions remain available, but preserving them does not mean that
++they were executed or passed. A branch commit is not approval to merge master.
++
++The development branches do not match the existing push filters, and publication
++commits use `[skip ci]`. Do not open a PR targeting master or dispatch workflows
++while the user's no-Actions instruction remains in effect.
+diff --git a/docs/DependencyAudit.md b/docs/DependencyAudit.md
+new file mode 100644
+index 0000000..5181691
+--- /dev/null
++++ b/docs/DependencyAudit.md
+@@ -0,0 +1,26 @@
++# Dependency and toolchain status — checked 2026-09-07
++
++| Component | Current upstream release checked | This tree / verification status |
++| --- | --- | --- |
++| CMake | 4.4.3 | Explicit installer pins updated to 4.4.3; minimum supported version remains 3.30. Local builds used 3.31.6, not 4.4.3. |
++| LLVM / Clang | 23.1.0 | Current-toolchain profile requires this floor. Local compiler was Clang 17. |
++| GCC | 16.2 | Current-toolchain profile requires this floor. Local comparison used GCC 14.2. |
++| C / C++ | C23 / C++26 mode | Core and maintained Teakra build in the configured dialect. This is not a claim of full C++26 implementation support. |
++| vcpkg | 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4 | Registry pin already updated in the cumulative batch; packages were not reinstalled here. |
++| Qt | 6.11.2 | External current-deps profile requests this floor; registry may still supply 6.11.1. Frontend not built here. |
++| libarchive | 3.8.9 | Overlay preparation helper exists, but generation/build was not run. Do not claim this release is installed. |
++| FAAD2 | 2.11.2 | Obsolete 2.11.1 overlay removed in the cumulative batch; new package was not built here. |
++| SDL | SDL2 API retained | SDL3 requires an API migration; it is not a version-number replacement. |
++| Teakra / custom slirp / FatFs / GL loader | Project-maintained copies | Their local modifications must not be overwritten by an arbitrary upstream snapshot. |
++
++Compatibility GCC 14 / Clang 18 jobs intentionally exercise older supported toolchains. They are not the latest-toolchain profile. No workflows were executed for this continuation.
++
++A compiler mode, an installed tool, a minimum supported version, a dependency lock, an ABI version and a guest-hardware constant are different things. License numbers, save-format versions and emulated hardware constants were not changed for cosmetic version increases.
++
++Official release sources:
++- https://cmake.org/download/
++- https://www.kitware.com/cmake-4-4-3-available-for-download/
++- https://llvm.org/
++- https://gcc.gnu.org/releases.html
++- https://www.qt.io/blog/qt-6.11.2-released
++- https://github.com/libarchive/libarchive/releases/tag/v3.8.9

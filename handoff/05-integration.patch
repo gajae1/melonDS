@@ -1,0 +1,456 @@
+diff --git a/tests/PlatformSync.cpp b/tests/PlatformSync.cpp
+new file mode 100644
+index 0000000..9b58909
+--- /dev/null
++++ b/tests/PlatformSync.cpp
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Test-only host synchronization. No SDL/Qt, audio devices or network access.
++#include "Platform.h"
++#include <chrono>
++#include <condition_variable>
++#include <cstdarg>
++#include <cstdio>
++#include <mutex>
++#include <thread>
++namespace melonDS::Platform {
++struct Mutex { std::mutex value; };
++Mutex* Mutex_Create() { return new Mutex; }
++void Mutex_Free(Mutex* m) { delete m; }
++void Mutex_Lock(Mutex* m) { m->value.lock(); }
++void Mutex_Unlock(Mutex* m) { m->value.unlock(); }
++bool Mutex_TryLock(Mutex* m) { return m->value.try_lock(); }
++struct Thread { std::thread value; explicit Thread(std::function<void()> f) : value(std::move(f)) {} };
++Thread* Thread_Create(std::function<void()> f) { return new Thread(std::move(f)); }
++void Thread_Wait(Thread* t) { if (t && t->value.joinable()) t->value.join(); }
++void Thread_Free(Thread* t) { Thread_Wait(t); delete t; }
++struct Semaphore { std::mutex mutex; std::condition_variable ready; int count = 0; };
++Semaphore* Semaphore_Create() { return new Semaphore; }
++void Semaphore_Free(Semaphore* s) { delete s; }
++void Semaphore_Reset(Semaphore* s) { std::lock_guard lock(s->mutex); s->count = 0; }
++void Semaphore_Post(Semaphore* s, int count) {
++    { std::lock_guard lock(s->mutex); s->count += count; }
++    s->ready.notify_all();
++}
++void Semaphore_Wait(Semaphore* s) {
++    std::unique_lock lock(s->mutex);
++    s->ready.wait(lock, [s] { return s->count > 0; }); --s->count;
++}
++bool Semaphore_TryWait(Semaphore* s, int milliseconds) {
++    std::unique_lock lock(s->mutex);
++    if (!s->ready.wait_for(lock, std::chrono::milliseconds(milliseconds), [s] { return s->count > 0; })) return false;
++    --s->count; return true;
++}
++void Log(LogLevel level, const char* fmt, ...) {
++    if (level < LogLevel::Warn) return;
++    va_list args; va_start(args, fmt); vfprintf(stderr, fmt, args); va_end(args);
++}
++}
+diff --git a/tests/README.md b/tests/README.md
+index 13a8c3c..f0b4393 100644
+--- a/tests/README.md
++++ b/tests/README.md
+@@ -23,7 +23,7 @@ ctest --test-dir build-regression-sanitized --output-on-failure
+ 
+ ## Coverage and limits
+ 
+-There are ten CTest entries. No real DS/DSi, ROM, GPU driver or filesystem
++The original ten entries cover the areas below. No real DS/DSi, ROM, GPU driver or filesystem
+ mutation is exercised. The optional microbenchmark measures only bitfield
+ iteration, not emulator FPS; see `../docs/Cpp26.md`.
+ 
+@@ -56,3 +56,24 @@ these tests narrow; use integrated core/game tests for broader changes.
+ Passing this suite is not evidence of complete emulator compatibility or a
+ measured performance improvement. No savestate format version is changed by
+ these fixes. Section validation is not a complete malformed-state audit.
++
++## Expanded modernization and real-core tests
++
++The standalone suite now has 17 entries (the original ten plus seven C23,
++SIMD, software capture, header-completeness and network tests).
++A full-core build enables real Teakra instruction/event/state tests and
++hand-authored ARM frame/save/restore tests:
++
++```sh
++cmake -S . -B build-core-tests -G Ninja -DCMAKE_BUILD_TYPE=Release \
++  -DBUILD_QT_SDL=OFF -DENABLE_OGLRENDERER=OFF -DMELONDS_BUILD_TESTS=ON
++cmake --build build-core-tests --parallel 3
++ctest --test-dir build-core-tests --output-on-failure
++```
++
++This produces 21 entries on a supported JIT-enabled target, or 19 with
++`ENABLE_ASM=OFF`. The headless platform explicitly omits filesystem, network,
++AAC and host input/output; unexpected file use aborts. It does not replace
++real driver/game/physical-hardware regression tests. The full-core tests are
++not automatically sanitized by the standalone sanitizer configuration.
++See `../docs/ModernizationBatch.md` for exact scope and measurement limitations.
+diff --git a/tests/ROMHeaderBounds.cpp b/tests/ROMHeaderBounds.cpp
+new file mode 100644
+index 0000000..f10ae48
+--- /dev/null
++++ b/tests/ROMHeaderBounds.cpp
+@@ -0,0 +1,25 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "NDS_Header.h"
++#include <cstdio>
++#include <initializer_list>
++using namespace melonDS;
++#include "ROMHeaderMethod.inc"
++int main()
++{
++    unsigned cases = 0, failures = 0;
++    for (u32 length : {0x200U, 0x400U, 0x1000U, 0xFFFFFFFFU})
++        for (u32 offset : {0U, 0x1FFU, 0x200U, 0x400U, 0xF0000200U, 0xFFFFFFFFU})
++            for (u32 size : {0U, 1U, 0x100U, 0x10000000U, 0xFFFFFFFFU})
++                for (bool arm9 : {false, true})
++                {
++                    NDSHeader header{};
++                    header.ARM9ROMOffset = header.ARM7ROMOffset = 0x200;
++                    (arm9 ? header.ARM9ROMOffset : header.ARM7ROMOffset) = offset;
++                    (arm9 ? header.ARM9Size : header.ARM7Size) = size;
++                    const bool valid = offset >= 0x200 && static_cast<u64>(offset) + size <= length;
++                    if (ValidateROM(length, header) != valid) ++failures;
++                    ++cases;
++                }
++    std::printf("NDS header bounds: %u cases, %u failures\n", cases, failures);
++    return failures ? 1 : 0;
++}
+diff --git a/tests/SoftwareCapture.cpp b/tests/SoftwareCapture.cpp
+new file mode 100644
+index 0000000..25cbff5
+--- /dev/null
++++ b/tests/SoftwareCapture.cpp
+@@ -0,0 +1,72 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Runs the production DoCapture method with recording VRAM dirty-index access.
++#include <array>
++#include <stdio.h>
++#include "types.h"
++using namespace melonDS;
++static constexpr unsigned VRAMDirtyGranularity = 512;
++struct DirtyBits
++{
++    std::array<bool, 256> Bits{};
++    bool OutOfRange = false;
++    bool Sink = false;
++    bool& operator[](size_t index)
++    {
++        if (index >= Bits.size()) { OutOfRange = true; return Sink; }
++        return Bits[index];
++    }
++};
++struct GPUState
++{
++    u32 CaptureCnt = 0;
++    u32 VRAMMap_LCDC = 15;
++    struct { u32 DispCnt = 0; } GPU2D_A;
++    std::array<std::array<u16, 65536>, 4> Memory{};
++    std::array<u16*, 4> VRAM{Memory[0].data(), Memory[1].data(), Memory[2].data(), Memory[3].data()};
++    std::array<DirtyBits, 4> VRAMDirty{};
++    u16 DispFIFOBuffer[256]{};
++};
++struct SoftRenderer
++{
++    GPUState& GPU;
++    u32 Output3D[256]{};
++    u32 Storage2D[256]{};
++    u32* Output2D[2]{Storage2D, Storage2D};
++    void DoCapture(u32 line);
++};
++#include "SoftwareCaptureMethod.inc"
++int main()
++{
++    GPUState gpu;
++    SoftRenderer renderer{gpu};
++    for (auto& v : renderer.Storage2D) v = 0xFF3F3F3F;
++    unsigned cases = 0, failures = 0;
++    for (unsigned bank = 0; bank < 4; ++bank)
++    for (unsigned start = 0; start < 4; ++start)
++    for (unsigned size = 0; size < 4; ++size)
++    for (unsigned line = 0; line < 192; ++line)
++    {
++        gpu.VRAMDirty = {};
++        gpu.CaptureCnt = (bank << 16) | (start << 18) | (size << 20);
++        renderer.DoCapture(line);
++        const unsigned width = size ? 256 : 128;
++        const unsigned height = size ? size * 64 : 128;
++        const unsigned address = (start * 16384 + line * width) % 65536;
++        const unsigned expected = address * sizeof(u16) / VRAMDirtyGranularity;
++        bool ok = true;
++        for (unsigned b = 0; b < 4; ++b)
++        {
++            ok &= !gpu.VRAMDirty[b].OutOfRange;
++            for (unsigned i = 0; i < 256; ++i)
++                ok &= gpu.VRAMDirty[b].Bits[i] == (b == bank && line < height && i == expected);
++        }
++        if (line < height)
++            for (unsigned i = 0; i < width; ++i)
++                ok &= gpu.Memory[bank][address + i] == 0xFFFF;
++        if (!ok && failures++ < 3)
++            printf("FAIL bank=%u start=%u size=%u line=%u\n", bank, start, size, line);
++        ++cases;
++    }
++    printf("Software capture: %u cases, %u failures\n", cases, failures);
++    return failures != 0;
++}
+diff --git a/tests/StandardBitOps.cpp b/tests/StandardBitOps.cpp
+new file mode 100644
+index 0000000..15e4c63
+--- /dev/null
++++ b/tests/StandardBitOps.cpp
+@@ -0,0 +1,49 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "ARM.h"
++#include "Utils.h"
++#include <cstdio>
++#include <limits>
++#include <type_traits>
++
++using namespace melonDS;
++
++#ifdef REQUIRE_CONSTEXPR
++static_assert(ROR(0x12345678, 4) == 0x81234567);
++static_assert(ROR(0x12345678, 32) == 0x12345678);
++static_assert(GetMSBit(u32{0}) == 0);
++static_assert(GetMSBit(u64{0xFFFFFFFFFFFFFFFFULL}) == 0x8000000000000000ULL);
++#endif
++
++template <typename T>
++static bool CheckFloor(T value)
++{
++    T expected = 0;
++    for (unsigned i = 0; i < std::numeric_limits<T>::digits; ++i)
++        if (value & (T{1} << i)) expected = T{1} << i;
++    return GetMSBit(value) == expected;
++}
++
++int main()
++{
++    for (u32 value = 0; value <= 0xFFFF; ++value)
++    {
++        if (!CheckFloor(static_cast<u16>(value)) || !CheckFloor(static_cast<u8>(value))) return 1;
++    }
++    u64 state = 0xBAD5EED123456789ULL;
++    for (unsigned i = 0; i < 20000; ++i)
++    {
++        state ^= state << 13;
++        state ^= state >> 7;
++        state ^= state << 17;
++        if (!CheckFloor(state) || !CheckFloor(static_cast<u32>(state))) return 2;
++        for (u32 amount : {0U, 1U, 15U, 31U, 32U, 33U, 64U, 255U, 0x80000000U, 0xFFFFFFFFU})
++        {
++            u32 expected = static_cast<u32>(state);
++            for (u32 bit = 0; bit < (amount & 31); ++bit)
++                expected = (expected >> 1) | (expected << 31);
++            if (ROR(static_cast<u32>(state), amount) != expected) return 3;
++        }
++    }
++    if (!CheckFloor(u64{0}) || !CheckFloor(u64{1} << 63)) return 4;
++    puts("Standard rotate and highest-bit helpers: PASS");
++}
+diff --git a/tests/TeakraBit.cpp b/tests/TeakraBit.cpp
+new file mode 100644
+index 0000000..3b6e751
+--- /dev/null
++++ b/tests/TeakraBit.cpp
+@@ -0,0 +1,25 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include <stdint.h>
++#include <stdio.h>
++#include "teakra/src/bit.h"
++template<class T> static unsigned Reference(T x)
++{
++    unsigned result = 0;
++    while (x) { ++result; x >>= 1; }
++    return result;
++}
++int main()
++{
++    static_assert(std20::log2p1(uint64_t{0}) == 0);
++    static_assert(std20::log2p1(uint64_t{1} << 63) == 64);
++    static_assert(std20::log2p1(true) == 1);
++    for (uint32_t i = 0; i <= 65535; ++i)
++        if (std20::log2p1(static_cast<uint16_t>(i)) != Reference(i)) return 1;
++    uint64_t x = 0x1020304050607080ULL;
++    for (unsigned i = 0; i < 100000; ++i)
++    {
++        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
++        if (std20::log2p1(x) != Reference(x)) return 1;
++    }
++    puts("Teakra bit width: constexpr, bool, 65536 u16 and 100000 u64 cases PASS");
++}
+diff --git a/tests/TeakraExecution.cpp b/tests/TeakraExecution.cpp
+new file mode 100644
+index 0000000..7c1897c
+--- /dev/null
++++ b/tests/TeakraExecution.cpp
+@@ -0,0 +1,110 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Executes the real interpreter and memory callbacks. Not a hardware oracle.
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <functional>
++#include <memory>
++#include <vector>
++#include "interpreter.h"
++#include "shared_memory.h"
++
++struct TickRecorder : Teakra::CoreTiming::Callbacks {
++    u64 ticks = 0;
++    std::function<void(u64)> on_tick;
++    void Tick() override { ++ticks; if(on_tick) on_tick(ticks); }
++    u64 GetMaxSkip() const override { return 0; }
++    void Skip(u64 n) override { ticks += n; }
++};
++struct Machine {
++    std::vector<u16> words = std::vector<u16>(0x40000, 0);
++    Teakra::CoreTiming timing;
++    TickRecorder clock;
++    Teakra::SharedMemory shared;
++    Teakra::MemoryInterfaceUnit miu;
++    Teakra::MemoryInterface memory{shared, miu};
++    Teakra::RegisterState regs;
++    Teakra::Interpreter interpreter{timing, regs, memory};
++    u64 reads = 0, writes = 0;
++    Machine() {
++        timing.RegisterCallbacks(&clock);
++        shared.SetExternalMemoryCallback(
++            [this](u32 a) { ++reads; return words.at(a / 2); },
++            [this](u32 a, u16 v) { ++writes; words.at(a / 2) = v; });
++        // Match Processor::Reset: value-initialize shadow registers as well.
++        regs.Reset();
++        interpreter.Reset();
++        regs.sp = 0x100;
++    }
++    std::vector<u8> Save() {
++        melonDS::Savestate state(4096);
++        state.Section("REGS"); regs.DoSavestate(&state);
++        state.Section("EXEC"); interpreter.DoSavestate(&state);
++        state.Finish();
++        if(state.Error) std::abort();
++        const auto* p = static_cast<const u8*>(state.Buffer());
++        return {p, p + state.Length()};
++    }
++    void Load(std::vector<u8>& bytes) {
++        melonDS::Savestate state(bytes.data(), bytes.size(), false);
++        state.Section("REGS"); regs.DoSavestate(&state);
++        state.Section("EXEC"); interpreter.DoSavestate(&state);
++        if(state.Error) std::abort();
++    }
++};
++static u64 Digest(const std::vector<u8>& bytes) {
++    u64 h = 14695981039346656037ULL;
++    for(auto c: bytes) { h ^= c; h *= 1099511628211ULL; }
++    return h;
++}
++int main(int argc, char** argv) {
++    if(argc > 1 && std::strcmp(argv[1], "bench") == 0) {
++        Machine machine;
++        constexpr unsigned cycles = 50000;
++        constexpr int passes = 60;
++        const auto start = std::chrono::steady_clock::now();
++        for(int i=0;i<passes;++i) { machine.regs.pc = 0; machine.interpreter.Run(cycles); }
++        const double ns = std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count()/(cycles*passes);
++        std::printf("ns_per_instruction=%.4f ticks=%llu reads=%llu state=%016llx\n",ns,
++            (unsigned long long)machine.clock.ticks,(unsigned long long)machine.reads,(unsigned long long)Digest(machine.Save()));
++        return 0;
++    }
++    for(int scenario=0;scenario<6;++scenario) {
++        Machine m;
++        if(scenario==0) {
++            m.interpreter.Run(40);
++            if(m.regs.pc!=40 || m.clock.ticks!=40 || m.reads!=40) return 1;
++        } else if(scenario==1) {
++            m.regs.rep=true; m.regs.repc=7;
++            m.interpreter.Run(8);
++            if(m.regs.pc!=1 || m.regs.rep || m.clock.ticks!=8) return 2;
++        } else if(scenario==2) {
++            // Expanded MOV REPC,#value: two program words, one interpreter tick.
++            m.words[0]=0x0001; m.words[1]=0x1234;
++            m.interpreter.Run(1);
++            if(m.regs.repc!=0x1234 || m.regs.pc!=2 || m.reads!=2 || m.clock.ticks!=1) return 3;
++        } else if(scenario==3 || scenario==4) {
++            m.regs.ie=1; m.regs.im[0]=1; m.regs.imv=1;
++            m.clock.on_tick=[&](u64 tick) {
++                if(tick==3) {
++                    if(scenario==3) m.interpreter.SignalInterrupt(0);
++                    else m.interpreter.SignalVectoredInterrupt(0x200,false);
++                }
++            };
++            m.interpreter.Run(3);
++            if(m.regs.pc!=3 || m.regs.ie!=1) return 4;
++            m.interpreter.Run(1);
++            if(m.regs.pc!=(scenario==3?6u:0x200u) || m.regs.ie!=0 || m.regs.sp!=0xfe || m.writes!=2 || m.clock.ticks!=4) return 5;
++        } else {
++            m.interpreter.SignalInterrupt(2);
++            auto saved=m.Save();
++            m.interpreter.Run(11); auto expected=m.Save();
++            m.Load(saved); m.interpreter.Run(11);
++            if(m.Save()!=expected || m.regs.ip[2]!=1) return 6;
++        }
++        std::printf("scenario=%d ticks=%llu reads=%llu writes=%llu state=%016llx\n",scenario,
++            (unsigned long long)m.clock.ticks,(unsigned long long)m.reads,(unsigned long long)m.writes,
++            (unsigned long long)Digest(m.Save()));
++    }
++}
+diff --git a/tests/modernization/CMakeLists.txt b/tests/modernization/CMakeLists.txt
+new file mode 100644
+index 0000000..f770896
+--- /dev/null
++++ b/tests/modernization/CMakeLists.txt
+@@ -0,0 +1,53 @@
++cmake_minimum_required(VERSION 3.30)
++project(melonDSModernizationTests LANGUAGES C CXX)
++enable_testing()
++if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
++    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fwrapv>")
++endif()
++set(CMAKE_CXX_STANDARD 26)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++# No C++ module units are used; do not require a separate dependency scanner.
++set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
++set(CMAKE_C_STANDARD 23)
++set(CMAKE_C_STANDARD_REQUIRED ON)
++get_filename_component(MELONDS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
++include("${MELONDS_ROOT}/cmake/HostFeatures.cmake")
++
++add_executable(PixelConversion ../PixelConvert.cpp "${MELONDS_ROOT}/src/PixelConvert.cpp")
++target_include_directories(PixelConversion PRIVATE "${MELONDS_ROOT}/src")
++melonds_configure_pixel_kernels(PixelConversion)
++add_test(NAME pixel-conversion-exact COMMAND PixelConversion)
++
++add_executable(TeakraBitWidth ../TeakraBit.cpp)
++target_include_directories(TeakraBitWidth PRIVATE "${MELONDS_ROOT}/src")
++add_test(NAME teakra-standard-bit-width COMMAND TeakraBitWidth)
++
++add_executable(CLanguageStandard ../CStandard.c)
++add_test(NAME c23-language-mode COMMAND CLanguageStandard)
++
++find_package(Python3 REQUIRED COMPONENTS Interpreter)
++add_custom_command(
++    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/SoftwareCaptureMethod.inc"
++    COMMAND "${Python3_EXECUTABLE}" "${MELONDS_ROOT}/tests/ExtractFunction.py"
++        "${MELONDS_ROOT}/src/GPU_Soft.cpp" "void SoftRenderer::DoCapture(u32 line)"
++        "${CMAKE_CURRENT_BINARY_DIR}/SoftwareCaptureMethod.inc"
++    DEPENDS "${MELONDS_ROOT}/tests/ExtractFunction.py" "${MELONDS_ROOT}/src/GPU_Soft.cpp"
++    VERBATIM)
++add_executable(SoftwareCapture ../SoftwareCapture.cpp "${CMAKE_CURRENT_BINARY_DIR}/SoftwareCaptureMethod.inc")
++target_include_directories(SoftwareCapture PRIVATE "${MELONDS_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}")
++add_test(NAME software-capture-dirty-wrap COMMAND SoftwareCapture)
++set_tests_properties(pixel-conversion-exact teakra-standard-bit-width c23-language-mode
++    software-capture-dirty-wrap PROPERTIES TIMEOUT 30)
++
++add_executable(HeaderCompleteness ../HeaderCompleteness.cpp)
++target_include_directories(HeaderCompleteness PRIVATE "${MELONDS_ROOT}/src")
++add_test(NAME complete-type-headers COMMAND HeaderCompleteness)
++
++find_package(Threads REQUIRED)
++add_executable(NetworkConcurrency ../NetworkConcurrency.cpp
++    "${MELONDS_ROOT}/src/net/Net.cpp" "${MELONDS_ROOT}/src/net/PacketDispatcher.cpp")
++target_include_directories(NetworkConcurrency PRIVATE "${MELONDS_ROOT}/src")
++target_link_libraries(NetworkConcurrency PRIVATE Threads::Threads)
++add_test(NAME network-queue-boundaries COMMAND NetworkConcurrency queues)
++add_test(NAME network-driver-serialization COMMAND NetworkConcurrency threads)
++set_tests_properties(network-queue-boundaries network-driver-serialization PROPERTIES TIMEOUT 30)

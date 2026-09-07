@@ -1,0 +1,521 @@
+diff --git a/docs/ModernizationBatch.md b/docs/ModernizationBatch.md
+new file mode 100644
+index 0000000..7e0c788
+--- /dev/null
++++ b/docs/ModernizationBatch.md
+@@ -0,0 +1,132 @@
++# Verified modernization batch
++
++Baseline: `5be8f749c42d762caf4d1b500e0c4cc357c169d8` (includes PRs #1/#2).
++The development snapshot contains 793 tracked blobs, each checked against its
++Git object hash before editing. This is now a full source checkout, not the
++partial fixture used for the earlier C23/SIMD proposal.
++
++## Implemented
++
++C23 and C++26 are required for project-owned targets. The maintained Teakra
++copy also uses C++26. Existing C vendored code is compiled, not rewritten in
++another language. No reflection, std::simd or new handwritten assembler is
++required. Module scanning is disabled because this project has no module units.
++
++- Fix C++26 incomplete-type unique_ptr initialization at GPU/DSi SD boundaries
++  by moving completeness-requiring initialization to source definitions.
++- Replace a cross-enum bitwise operation in firmware defaults with
++  `std::to_underlying`, preserving the original bits.
++- Preserve the earlier capture/JIT/savestate/bitfield/UTF-8 fixes, and correct
++  software capture dirty indexing to use the same wrapped VRAM address as data.
++- Provide alias-safe paired-pixel conversion plus optional AVX2 and AVX-512F
++  intrinsics; compile capabilities and runtime CPU/OS state are both checked.
++  SIMD variants do not impose a global ISA requirement on the binary.
++- Serialize shared network-driver operations and replacement/destruction;
++  keep the DriverMutex -> Dispatcher lock order. Validate queue indices and
++  lengths, and read the registration mask under the same lock as its queues.
++  Callers must still stop operations before destroying the Net object.
++- Avoid Teakra's atomic exchange when no interrupt is pending, without weakening
++  sequential consistency. Share immutable opcode decoder metadata across
++  instances; every handler still receives its own interpreter. No DSP timing,
++  instruction handler, repeat rule, callback schedule or state format is changed.
++
++## Host options and toolchains
++
++`ENABLE_ASM` defaults ON; disabling it disables the native ARM JIT, whose linkage
++requires assembler. It does not prohibit compiler-generated machine code or
++assembler in separately built dependencies. `ENABLE_SIMD`/`ENABLE_AVX2` default
++ON, `ENABLE_AVX512` defaults OFF. Non-x86/unsupported compilers use scalar code.
++An explicit unavailable SIMD selector returns the scalar implementation.
++
++`release-clang` chooses Clang for C, C++ and assembler. The optional
++`MELONDS_CURRENT_TOOLCHAIN` profile checks the 2026-09-07 release floors:
++Clang 23.1.0 or GCC 16.2, and CMake 4.4.3. It does not install software. The
++current-build CI helper uses exact LLVM archive hashes and exact version checks;
++GCC 14 remains a compatibility/reference build, not a claim to be GCC 16.
++No global -march=native, AVX requirement or fast-math flag is introduced.
++
++## Executed local verification
++
++All results below are from the complete checkout. Local tools: GCC 14.2,
++Clang 17, CMake 3.31.6, x86-64 EPYC 9V74 VM.
++
++| Configuration | Result |
++| --- | --- |
++| Complete core + maintained Teakra, Clang Release, JIT and AVX-512 allowed | 21/21 CTest entries |
++| Complete core + Teakra, GCC Release, ASM/JIT and SIMD disabled | 19/19 |
++| Standalone boundary tests, Clang ASan/UBSan, SIMD allowed | 17/17 |
++| Bundled libslirp 4.8.0/custom glib, standalone C23 build | Compiled successfully |
++
++Actual headless core tests execute hand-authored ARM code, count to 100 and
++store the result. Interpreter, JIT and fast-memory JIT each run real scheduled
++frames, save, corrupt RAM, restore, and run again. The software display path
++checks every pixel of a 49,152-pixel constant VRAM framebuffer. The expected
++RGB555 31 -> RGB666 62 -> output 251 behavior is retained, not rounded to 255.
++These tests use FreeBIOS and explicit test-only platform stubs; no commercial
++ROM, firmware dump, real network, filesystem mutation or GPU context is used.
++
++Real Teakra interpreter before/after traces match for NOPs, repeated execution,
++an expansion word, a timed normal IRQ, vectored IRQ and save/restore. State
++bytes, program reads, stack writes and component ticks are compared. This is
++not exhaustive DSP instruction coverage or a physical DS/DSi oracle.
++
++Queue tests fail on the original source (unregistered receiver crash and
++concurrent fake-driver calls) and pass after the changes. Sanitizers here cover
++the focused boundary suite, NOT every complete-core instruction path. Thread
++Sanitizer and real multiplayer sessions were not run locally.
++
++## Measured performance
++
++GCC 14.2, same `-std=c++2c -O3 -fwrapv -DNDEBUG -pthread` flags, one pinned
++logical CPU, warmup and nine shuffled paired runs. All 18 Teakra NOP checksums
++agree. Median instruction time: 10.4652 ns -> 8.0077 ns (23.48% reduction).
++This is an interpreter-loop microbenchmark, NOT DSi game FPS or a JIT result.
++
++Earlier same-flags pixel-kernel tests measured AVX2 around 54-56% and AVX-512
++around 59-69% shorter routine time than the original paired-pixel routine;
++the alias-safe scalar fallback was about 1-3% slower. Those earlier measurements
++are not new end-to-end results. Prefer application profiling before expanding
++this optimization to unrelated kernels. No DSP JIT is included.
++
++## Dependencies and portability
++
++vcpkg is pinned to `04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4`.
++Remove the obsolete FAAD2 2.11.1 overlay: upstream 2.11.2 now installs its
++pkg-config file on Windows. The explicit maintenance helper reproduces the
++libarchive 3.8.9 overlay from a Git-blob-verified registry port and a
++SHA256-verified official release archive, then validates the inherited patches.
++An overlay is a build recipe, not evidence that an application build succeeded.
++
++The `release-current-deps` profile uses externally installed Qt >=6.11.2;
++this avoids claiming that the registry's Qt 6.11.1 is latest. Generic builds
++can still use the pinned registry Qt. Resolved versions from actual builds
++are recorded by `tools/ci-current-build.py`. Do not conflate apt packages,
++registry versions, external Qt and vendored modified libraries.
++
++Qt 6.11 requires macOS 13: recommended triplets and the default deployment
++target are updated accordingly. Older explicit triplets remain available but
++are not a compatibility promise for new Qt. SDL2 -> SDL3, bundled custom slirp,
++FatFs, GL loaders and Teakra are not blindly overwritten by upstream copies.
++
++## Remote publication status (2026-09-07)
++
++The full-source export workflow succeeded. A later connector `create_commit`
++request for the consolidated modernization batch was blocked because the tool
++could not determine its security status. No ref update or new PR followed.
++The remote maintenance branch remains at
++`1656729ca2e8edd8a4fc13bfe2b8a5450ec20df0`, containing only the development
++source-export workflow on top of PR #2. The emulator changes in this delivery
++are local changes, NOT a published commit. Neither the current-build helper
++nor the libarchive overlay generator ran. In particular the generated
++libarchive 3.8.9 overlay is not present or verified in this source tree.
++The archive excludes the temporary development-export workflow. Existing
++upstream build workflows have not been replaced or globally disabled.
++
++## Remaining verification boundaries
++
++Check CI on the exact published commit separately. No claim of complete
++Windows/macOS/BSD success is implied by Linux core tests. Real DS/DSi,
++commercial-game playback, complete malformed-state handling, DSP JIT,
++OpenGL/compute output and GPU-readback performance remain separate acceptance
++requirements. Retain baseline behavior unless hardware evidence justifies a
++change. All-code optimality and zero possible regression are not proven.
+diff --git a/src/ARM.h b/src/ARM.h
+index 88f970b..34bb52a 100644
+--- a/src/ARM.h
++++ b/src/ARM.h
+@@ -20,6 +20,7 @@
+ #define ARM_H
+ 
+ #include <algorithm>
++#include <bit>
+ #include <optional>
+ 
+ #include "types.h"
+@@ -32,9 +33,9 @@
+ 
+ namespace melonDS
+ {
+-inline u32 ROR(u32 x, u32 n)
++constexpr u32 ROR(u32 x, u32 n) noexcept
+ {
+-    return (x >> (n&0x1F)) | (x << ((32-n)&0x1F));
++    return std::rotr(x, static_cast<int>(n & 0x1F));
+ }
+ 
+ enum
+diff --git a/src/ARMInterpreter_ALU.cpp b/src/ARMInterpreter_ALU.cpp
+index 7e26e2d..fd5e688 100644
+--- a/src/ARMInterpreter_ALU.cpp
++++ b/src/ARMInterpreter_ALU.cpp
+@@ -17,6 +17,7 @@
+ */
+ 
+ #include <stdio.h>
++#include <bit>
+ #include "ARM.h"
+ #include "NDS.h"
+ 
+@@ -1053,19 +1054,7 @@ void A_CLZ(ARM* cpu)
+ 
+     u32 val = cpu->R[cpu->CurInstr & 0xF];
+ 
+-    u32 res = 0;
+-    while ((val & 0xFF000000) == 0)
+-    {
+-        res += 8;
+-        val <<= 8;
+-        val |= 0xFF;
+-    }
+-    while ((val & 0x80000000) == 0)
+-    {
+-        res++;
+-        val <<= 1;
+-        val |= 0x1;
+-    }
++    const u32 res = std::countl_zero(val);
+ 
+     cpu->R[(cpu->CurInstr >> 12) & 0xF] = res;
+     cpu->AddCycles_C();
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 8b2f0fa..9452499 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -43,6 +43,8 @@ add_library(core STATIC
+     NDS.cpp
+     NDSCart.cpp
+     Platform.h
++    PixelConvert.cpp
++    PixelConvert.h
+     ROMList.h
+     ROMList.cpp
+     FreeBIOS.h
+@@ -86,6 +88,8 @@ add_library(core STATIC
+ # Public headers use modern standard library facilities; consumers need this mode too.
+ target_compile_features(core PUBLIC cxx_std_26)
+ 
++melonds_configure_pixel_kernels(core)
++
+ if (ENABLE_GDBSTUB)
+     message(NOTICE "Enabling GDB stub")
+     target_sources(core PRIVATE
+@@ -180,7 +184,9 @@ target_include_directories(core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
+ set(BUILD_SHARED_LIBS OFF)
+ add_subdirectory(teakra EXCLUDE_FROM_ALL)
+ # Workaround for building teakra with -O0 on Windows either failing or hanging forever
+-target_compile_options(teakra PRIVATE "$<$<CONFIG:DEBUG>:-Og>")
++if (WIN32 AND NOT MSVC)
++    target_compile_options(teakra PRIVATE "$<$<CONFIG:DEBUG>:-Og>")
++endif()
+ target_link_libraries(core PRIVATE teakra)
+ 
+ if (NOT MSVC)
+diff --git a/src/DSi_SD.cpp b/src/DSi_SD.cpp
+index ee8c45c..b57a91a 100644
+--- a/src/DSi_SD.cpp
++++ b/src/DSi_SD.cpp
+@@ -62,7 +62,7 @@ enum
+ };
+ 
+ 
+-DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi, std::optional<DSi_NAND::NANDImage>&& nand, std::optional<FATStorage>&& sdcard) noexcept : DSi(dsi), Num(0)
++DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi, std::optional<DSi_NAND::NANDImage>&& nand, std::optional<FATStorage>&& sdcard) noexcept : DSi(dsi), Num(0), Ports{}
+ {
+     DSi.RegisterEventFuncs(Event_DSi_SDMMCTransfer, this,
+                            {MakeEventThunk(DSi_SDHost, FinishTX),
+@@ -75,7 +75,7 @@ DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi, std::optional<DSi_NAND::NANDImage>&& n
+ }
+ 
+ // Creates an SDIO host
+-DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi) noexcept : DSi(dsi), Num(1)
++DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi) noexcept : DSi(dsi), Num(1), Ports{}
+ {
+     DSi.RegisterEventFuncs(Event_DSi_SDIOTransfer, this,
+                            {MakeEventThunk(DSi_SDHost, FinishTX),
+diff --git a/src/DSi_SD.h b/src/DSi_SD.h
+index 924d490..6b2623e 100644
+--- a/src/DSi_SD.h
++++ b/src/DSi_SD.h
+@@ -146,7 +146,7 @@ private:
+     u32 Param;
+     u16 ResponseBuffer[8];
+ 
+-    std::array<std::unique_ptr<DSi_SDDevice>, 2> Ports {};
++    std::array<std::unique_ptr<DSi_SDDevice>, 2> Ports;
+ 
+     u32 CurFIFO; // FIFO accessible for read/write
+     FIFO<u16, 0x100> DataFIFO[2];
+diff --git a/src/GBACart.cpp b/src/GBACart.cpp
+index 9671b97..3215d64 100644
+--- a/src/GBACart.cpp
++++ b/src/GBACart.cpp
+@@ -844,6 +844,10 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
+ 
+ std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, const u8* sramdata, u32 sramlen, void* userdata)
+ {
++    // Validate the supplied length before padding can hide a truncated header.
++    if (romdata == nullptr || romlen < 0xB0 || romlen > (u32{1} << 31))
++        return nullptr;
++
+     auto [romcopy, romcopylen] = PadToPowerOf2(romdata, romlen);
+ 
+     return ParseROM(std::move(romcopy), romcopylen, CopyToUnique(sramdata, sramlen), sramlen, userdata);
+@@ -862,9 +866,10 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
+         return nullptr;
+     }
+ 
+-    if (romlen == 0)
++    // The game code occupies bytes 0xAC..0xAF; do not read a short header.
++    if (romlen < 0xB0 || romlen > (u32{1} << 31))
+     {
+-        Log(LogLevel::Error, "GBACart: romlen is zero\n");
++        Log(LogLevel::Error, "GBACart: ROM length is outside the supported range\n");
+         return nullptr;
+     }
+ 
+diff --git a/src/GPU.cpp b/src/GPU.cpp
+index b695ee9..32883cd 100644
+--- a/src/GPU.cpp
++++ b/src/GPU.cpp
+@@ -71,6 +71,10 @@ enum
+                 VRAMDirty need to be reset for the respective VRAM bank.
+ */
+ 
++GPU::GPU(melonDS::NDS& nds) noexcept : GPU(nds, nullptr)
++{
++}
++
+ GPU::GPU(melonDS::NDS& nds, std::unique_ptr<Renderer>&& renderer) noexcept :
+     NDS(nds),
+     GPU2D_A(0, *this),
+diff --git a/src/GPU.h b/src/GPU.h
+index b0e1faf..b132adc 100644
+--- a/src/GPU.h
++++ b/src/GPU.h
+@@ -57,7 +57,8 @@ class Renderer;
+ class GPU
+ {
+ public:
+-    explicit GPU(melonDS::NDS& nds, std::unique_ptr<Renderer>&& renderer = nullptr) noexcept;
++    explicit GPU(melonDS::NDS& nds) noexcept;
++    GPU(melonDS::NDS& nds, std::unique_ptr<Renderer>&& renderer) noexcept;
+     ~GPU() noexcept;
+     void Reset() noexcept;
+     void Stop() noexcept;
+@@ -804,7 +805,7 @@ private:
+ 
+     u16 VMatch[2] {};
+ 
+-    std::unique_ptr<Renderer> Rend = nullptr;
++    std::unique_ptr<Renderer> Rend;
+ 
+     u16 VRAMCaptureBlockFlags[16];
+ 
+diff --git a/src/GPU_Soft.cpp b/src/GPU_Soft.cpp
+index 861c1a6..74f46aa 100644
+--- a/src/GPU_Soft.cpp
++++ b/src/GPU_Soft.cpp
+@@ -19,6 +19,7 @@
+ #include "NDS.h"
+ #include "GPU_Soft.h"
+ #include "GPU_ColorOp.h"
++#include "PixelConvert.h"
+ 
+ namespace melonDS
+ {
+@@ -177,8 +178,7 @@ void SoftRenderer::DrawScanlineA(u32 line, u32* dst)
+ 
+     case 1: // regular display
+         {
+-            for (int i = 0; i < 256; i+=2)
+-                *(u64*)&dst[i] = *(u64*)&Output2D[0][i];
++            memcpy(dst, Output2D[0], 256 * sizeof(u32));
+         }
+         break;
+ 
+@@ -240,8 +240,7 @@ void SoftRenderer::DrawScanlineB(u32 line, u32* dst)
+ 
+     case 1: // regular display
+         {
+-            for (int i = 0; i < 256; i+=2)
+-                *(u64*)&dst[i] = *(u64*)&Output2D[1][i];
++            memcpy(dst, Output2D[1], 256 * sizeof(u32));
+         }
+         break;
+     }
+@@ -303,7 +302,7 @@ void SoftRenderer::DoCapture(u32 line)
+     }
+ 
+     static_assert(VRAMDirtyGranularity == 512);
+-    GPU.VRAMDirty[dstvram][(dstaddr * 2) / VRAMDirtyGranularity] = true;
++    GPU.VRAMDirty[dstvram][((dstaddr & 0xFFFF) * 2) / VRAMDirtyGranularity] = true;
+ 
+     switch ((captureCnt >> 29) & 0x3)
+     {
+@@ -427,20 +426,9 @@ void SoftRenderer::ApplyMasterBrightness(u16 regval, u32* dst)
+ 
+ void SoftRenderer::ExpandColor(u32* dst)
+ {
+-    // convert to 32-bit BGRA
+-    // note: 32-bit RGBA would be more straightforward, but
+-    // BGRA seems to be more compatible (Direct2D soft, cairo...)
+-    for (int i = 0; i < 256; i+=2)
+-    {
+-        u64 c = *(u64*)&dst[i];
+-
+-        u64 r = (c << 18) & 0xFC000000FC0000;
+-        u64 g = (c << 2) & 0xFC000000FC00;
+-        u64 b = (c >> 14) & 0xFC000000FC;
+-        c = r | g | b;
+-
+-        *(u64*)&dst[i] = c | ((c & 0x00C0C0C000C0C0C0) >> 6) | 0xFF000000FF000000;
+-    }
++    // Resolve CPU/OS capabilities once, outside the pixel loop.
++    static const auto expand = PixelConvert::Select();
++    expand(dst, 256);
+ }
+ 
+ 
+diff --git a/src/NDSCart.cpp b/src/NDSCart.cpp
+index 35394c9..64ba159 100644
+--- a/src/NDSCart.cpp
++++ b/src/NDSCart.cpp
+@@ -368,11 +368,11 @@ bool ValidateROM(u32 romlen, NDSHeader& header)
+ 
+     if (header.ARM9ROMOffset < 0x200)
+         return false;
+-    if ((header.ARM9ROMOffset + header.ARM9Size) > romlen)
++    if (header.ARM9ROMOffset > romlen || header.ARM9Size > romlen - header.ARM9ROMOffset)
+         return false;
+     if (header.ARM7ROMOffset < 0x200)
+         return false;
+-    if ((header.ARM7ROMOffset + header.ARM7Size) > romlen)
++    if (header.ARM7ROMOffset > romlen || header.ARM7Size > romlen - header.ARM7ROMOffset)
+         return false;
+ 
+     return true;
+diff --git a/src/PixelConvert.cpp b/src/PixelConvert.cpp
+new file mode 100644
+index 0000000..9d89cd9
+--- /dev/null
++++ b/src/PixelConvert.cpp
+@@ -0,0 +1,103 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "PixelConvert.h"
++#include <string.h>
++
++#if MELONDS_PIXEL_AVX2 || MELONDS_PIXEL_AVX512
++#include <immintrin.h>
++#endif
++
++namespace melonDS::PixelConvert
++{
++void ExpandScalar(u32* pixels, size_t count) noexcept
++{
++    size_t i = 0;
++    // Preserve the original two-pixel SWAR path without aliasing u32 storage as u64.
++    for (; count - i >= 2; i += 2)
++    {
++        u64 c;
++        memcpy(&c, pixels + i, sizeof(c));
++        const u64 rgb = ((c << 18) & 0x00FC000000FC0000ULL) |
++                        ((c << 2) & 0x0000FC000000FC00ULL) |
++                        ((c >> 14) & 0x000000FC000000FCULL);
++        c = rgb | ((rgb & 0x00C0C0C000C0C0C0ULL) >> 6) | 0xFF000000FF000000ULL;
++        memcpy(pixels + i, &c, sizeof(c));
++    }
++    for (; i < count; ++i)
++    {
++        const u32 c = pixels[i];
++        const u32 rgb = ((c << 18) & 0x00FC0000) |
++                        ((c << 2) & 0x0000FC00) |
++                        ((c >> 14) & 0x000000FC);
++        pixels[i] = rgb | ((rgb & 0x00C0C0C0) >> 6) | 0xFF000000;
++    }
++}
++
++#if MELONDS_PIXEL_AVX2
++__attribute__((target("avx2")))
++static void ExpandAVX2(u32* pixels, size_t count) noexcept
++{
++    size_t i = 0;
++    for (; count - i >= 8; i += 8)
++    {
++        const __m256i c = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pixels + i));
++        const __m256i r = _mm256_and_si256(_mm256_slli_epi32(c, 18), _mm256_set1_epi32(0x00FC0000));
++        const __m256i g = _mm256_and_si256(_mm256_slli_epi32(c, 2), _mm256_set1_epi32(0x0000FC00));
++        const __m256i b = _mm256_and_si256(_mm256_srli_epi32(c, 14), _mm256_set1_epi32(0x000000FC));
++        const __m256i rgb = _mm256_or_si256(_mm256_or_si256(r, g), b);
++        const __m256i low = _mm256_srli_epi32(_mm256_and_si256(rgb, _mm256_set1_epi32(0x00C0C0C0)), 6);
++        const __m256i result = _mm256_or_si256(_mm256_or_si256(rgb, low), _mm256_set1_epi32(-16777216));
++        _mm256_storeu_si256(reinterpret_cast<__m256i*>(pixels + i), result);
++    }
++    if (i < count) ExpandScalar(pixels + i, count - i);
++}
++#endif
++
++#if MELONDS_PIXEL_AVX512
++__attribute__((target("avx512f")))
++static void ExpandAVX512(u32* pixels, size_t count) noexcept
++{
++    size_t i = 0;
++    for (; count - i >= 16; i += 16)
++    {
++        const __m512i c = _mm512_loadu_si512(pixels + i);
++        const __m512i r = _mm512_and_si512(_mm512_slli_epi32(c, 18), _mm512_set1_epi32(0x00FC0000));
++        const __m512i g = _mm512_and_si512(_mm512_slli_epi32(c, 2), _mm512_set1_epi32(0x0000FC00));
++        const __m512i b = _mm512_and_si512(_mm512_srli_epi32(c, 14), _mm512_set1_epi32(0x000000FC));
++        const __m512i rgb = _mm512_or_si512(_mm512_or_si512(r, g), b);
++        const __m512i low = _mm512_srli_epi32(_mm512_and_si512(rgb, _mm512_set1_epi32(0x00C0C0C0)), 6);
++        const __m512i result = _mm512_or_si512(_mm512_or_si512(rgb, low), _mm512_set1_epi32(-16777216));
++        _mm512_storeu_si512(pixels + i, result);
++    }
++    if (i < count) ExpandScalar(pixels + i, count - i);
++}
++#endif
++
++bool IsSupported(Backend backend) noexcept
++{
++    switch (backend)
++    {
++    case Backend::Auto:
++    case Backend::Scalar: return true;
++#if MELONDS_PIXEL_AVX2
++    case Backend::AVX2: return __builtin_cpu_supports("avx2");
++#endif
++#if MELONDS_PIXEL_AVX512
++    case Backend::AVX512: return __builtin_cpu_supports("avx512f");
++#endif
++    default: return false;
++    }
++}
++
++Function Select(Backend backend) noexcept
++{
++#if MELONDS_PIXEL_AVX512
++    if ((backend == Backend::Auto || backend == Backend::AVX512) && IsSupported(Backend::AVX512))
++        return ExpandAVX512;
++#endif
++#if MELONDS_PIXEL_AVX2
++    if ((backend == Backend::Auto || backend == Backend::AVX2) && IsSupported(Backend::AVX2))
++        return ExpandAVX2;
++#endif
++    return ExpandScalar;
++}
++}
