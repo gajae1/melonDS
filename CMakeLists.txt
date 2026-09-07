@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.30)
 
 cmake_policy(VERSION 3.15)
 if (POLICY CMP0076)
@@ -22,6 +22,10 @@ project(melonDS
     HOMEPAGE_URL "https://melonds.kuribo64.net"
     LANGUAGES C CXX)
 
+if (NOT "cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+    message(FATAL_ERROR "melonDS requires a compiler with C++26 mode (GCC 14+ or Clang 17+). No older-standard fallback is used.")
+endif()
+
 include(CheckSymbolExists)
 include(CheckLibraryExists)
 include(CMakeDependentOption)
@@ -32,7 +36,7 @@ include(Sanitizers)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 

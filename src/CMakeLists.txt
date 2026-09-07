@@ -1,5 +1,3 @@
-set (CMAKE_CXX_STANDARD 17)
-
 include(FixInterfaceIncludes)
 
 add_library(core STATIC
@@ -84,6 +82,9 @@ add_library(core STATIC
     xxhash/xxhash.c
 
     blip-buf/blip_buf.c)
+
+# Public headers use modern standard library facilities; consumers need this mode too.
+target_compile_features(core PUBLIC cxx_std_26)
 
 if (ENABLE_GDBSTUB)
     message(NOTICE "Enabling GDB stub")
