@@ -1933,6 +1933,7 @@ void MainWindow::onUpdateAudioVolume(int vol, int dsisync)
 
 void MainWindow::onUpdateAudioSettings()
 {
+    emuInstance->audioLowPassCutoff = globalCfg.GetInt("Audio.LowPassCutoff");
     if (!emuThread->emuIsActive()) return;
     assert(emuInstance->nds != nullptr);
 

@@ -1178,6 +1178,7 @@ void SPU::SetOutputSampleRate(double rate)
 
 void SPU::SetOutputSkew(double skew)
 {
+    if (OutputSkew == skew) return;
     blip_set_rates(BlipLeft, INTERNAL_SAMPLE_RATE * skew, OutputSampleRate);
     blip_set_rates(BlipRight, INTERNAL_SAMPLE_RATE * skew, OutputSampleRate);
     OutputSkew = skew;

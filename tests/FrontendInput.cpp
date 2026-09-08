@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QTemporaryDir>
 #include <QFileInfo>
+#include <QFile>
 #include <array>
 #include <cstdio>
 #include "EmuInstance.h"
@@ -121,6 +122,24 @@ int main(int argc, char** argv)
     QKeyEvent clear(QEvent::KeyPress, Qt::Key_Backspace, Qt::NoModifier);
     mapKey(mapping, false, clear);
     check(mapping == -1, "Backspace did not clear binding");
+
+    // A hand-edited nested table leaves its parent implicit. Adding ordinary
+    // instance/DSi defaults must still produce a valid, reloadable file.
+    QFile sparse(configDirectory + "/melonDS.toml");
+    if (!sparse.open(QIODevice::WriteOnly | QIODevice::Truncate)) return 2;
+    sparse.write("[Instance0.Keyboard]\nA = 75\n[DSi.DSP]\nHLE = false\n");
+    sparse.close();
+    check(Config::Load(), "Sparse config could not be loaded");
+    Config::GetLocalTable(0).GetInt("JoystickID");
+    Config::GetGlobalTable().SetBool("DSi.ExternalBIOSEnable", true);
+    try { Config::Save(); }
+    catch (const std::exception& error) {
+        std::fprintf(stderr, "Saving sparse config threw: %s\n", error.what());
+        return 1;
+    }
+    check(Config::Load() && Config::GetLocalTable(0).GetInt("Keyboard.A") == 75 &&
+          Config::GetGlobalTable().GetBool("DSi.ExternalBIOSEnable"),
+          "Saving defaults under implicit parent tables lost user settings");
     std::printf("Qt mapping, config persistence, input/release and focus: %d failures\n", failures);
     return failures ? 1 : 0;
 }

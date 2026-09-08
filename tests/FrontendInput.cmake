@@ -33,3 +33,15 @@ target_link_libraries(FrontendInput PRIVATE ${QT_LINK_LIBS} PkgConfig::SDL2 Thre
 add_test(NAME qt-keyboard-mapping-input COMMAND FrontendInput)
 set_tests_properties(qt-keyboard-mapping-input PROPERTIES
     TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+set(audio_callback "${CMAKE_CURRENT_BINARY_DIR}/audioCallback.inc")
+add_custom_command(OUTPUT "${audio_callback}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceAudio.cpp"
+        "void EmuInstance::audioCallback(void* data, Uint8* stream, int len)" "${audio_callback}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
+add_executable(FrontendAudio "${CMAKE_SOURCE_DIR}/tests/FrontendAudio.cpp" "${audio_callback}")
+target_include_directories(FrontendAudio PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(FrontendAudio PRIVATE PkgConfig::SDL2)
+add_test(NAME audio-callback-buffer COMMAND FrontendAudio)
+set_tests_properties(audio-callback-buffer PROPERTIES TIMEOUT 30)

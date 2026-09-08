@@ -23,6 +23,7 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include <QSaveFile>
 #include "UTF8.h"
 #include <regex>
 #include "toml/toml.hpp"
@@ -77,6 +78,7 @@ DefaultList<int> DefaultInts =
     {"MP.AudioMode", 1},
     {"MP.RecvTimeout", 25},
     {"Instance*.Audio.Volume", 256},
+    {"Audio.BufferSize", 512},
     {"Mic.InputType", 1},
     {"Mouse.HideSeconds", 5},
     {"Instance*.DSi.Battery.Level", 0xF},
@@ -94,6 +96,9 @@ RangeList IntRanges =
     {"Screen.VSyncInterval", {1, 20}},
     {"3D.GL.ScaleFactor", {1, 16}},
     {"Audio.Interpolation", {0, 4}},
+    {"Audio.BufferSize", {128, 1024}},
+    {"Audio.LowPassCutoff", {0, 20000}},
+    {"3D.Soft.PixelConversion", {0, 3}},
     {"Instance*.Audio.Volume", {0, 256}},
     {"Mic.InputType", {0, micInputType_MAX-1}},
     {"Instance*.Window*.ScreenRotation", {0, screenRot_MAX-1}},
@@ -792,6 +797,22 @@ bool LoadLegacy()
     return true;
 }
 
+static void MakeTablesExplicit(toml::value& value)
+{
+    if (value.is_table())
+    {
+        if (value.as_table_fmt().fmt == toml::table_format::implicit)
+            value.as_table_fmt().fmt = toml::table_format::multiline;
+        for (auto& [key, child] : value.as_table())
+            MakeTablesExplicit(child);
+    }
+    else if (value.is_array())
+    {
+        for (auto& child : value.as_array())
+            MakeTablesExplicit(child);
+    }
+}
+
 bool Load()
 {
     auto cfgpath = Platform::GetLocalFilePath(kConfigFile);
@@ -807,6 +828,10 @@ bool Load()
     try
     {
         RootTable = toml::parse(melonDS::PathFromUTF8(cfgpath));
+        // Defaults may add scalar keys to parents created implicitly by a
+        // section such as [Instance0.Keyboard]. toml11 cannot save those
+        // parents in implicit format once scalar values have been added.
+        MakeTablesExplicit(RootTable);
     }
     catch (toml::syntax_error& err)
     {
@@ -822,10 +847,24 @@ void Save()
     if (!Platform::CheckFileWritable(cfgpath))
         return;
 
-    std::ofstream file;
-    file.open(melonDS::PathFromUTF8(cfgpath), std::ofstream::out | std::ofstream::trunc);
-    file << RootTable;
-    file.close();
+    std::string contents;
+    try
+    {
+        contents = toml::format(RootTable);
+    }
+    catch (const toml::serialization_error& error)
+    {
+        Platform::Log(Platform::LogLevel::Error, "Config: serialization failed: %s\n", error.what());
+        return;
+    }
+
+    QSaveFile file(QString::fromStdString(cfgpath));
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(contents.data(), static_cast<qint64>(contents.size())) != static_cast<qint64>(contents.size()) ||
+        !file.commit())
+    {
+        Platform::Log(Platform::LogLevel::Error, "Config: save failed: %s\n", file.errorString().toUtf8().constData());
+    }
 }
 
 

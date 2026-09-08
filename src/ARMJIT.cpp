@@ -852,7 +852,10 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         prevBlock = prevBlockIt->second;
         RestoreCandidates.erase(prevBlockIt);
 
-        mayRestore = prevBlock->StartAddr == blockAddr && prevBlock->LiteralHash == literalHash;
+        // Shared RAM can contain identical code for both CPUs, but generated
+        // helpers and state offsets are specific to ARM9 or ARM7.
+        mayRestore = prevBlock->Num == cpu->Num &&
+                     prevBlock->StartAddr == blockAddr && prevBlock->LiteralHash == literalHash;
 
         if (mayRestore && prevBlock->NumAddresses == numAddressRanges)
         {

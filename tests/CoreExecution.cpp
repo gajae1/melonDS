@@ -102,5 +102,47 @@ int main(int argc, char** argv) {
         if (nds->JIT.JitBlocks9.contains(second)) return 11;
     }
 #endif
+    // Exercise the shipped replacement BIOS through its real SWI entry point.
+    // sqrt is unsigned even when bit 31 is set.
+    // Isolate BIOS execution from the preceding cache/savestate scenarios.
+    // Reusing the same guest addresses on ARM9 then ARM7 also checks that a
+    // retired JIT block can never be restored for the other CPU.
+    nds->Reset();
+    nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
+    nds->ARM9.JumpTo(0x02000200);
+    nds->ARM7.JumpTo(0x02000200);
+    nds->Start();
+    constexpr u32 sqrtCode[] = {
+        0xE59F000C, // ldr r0,[pc,#12] -> input at +20
+        0xEF0D0000, // swi 0x0D0000
+        0xE59F1008, // ldr r1,[pc,#8] -> result address at +24
+        0xE5810000, // str r0,[r1]
+        0xEAFFFFFE,
+        0, 0x02000110
+    };
+    constexpr u32 sqrtCases[] = {0, 1, 4, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF};
+    for (bool arm7 : {false, true})
+    {
+        auto& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        cpu.CPSR = 0xDF; // System mode, interrupts disabled; stacks normally set by boot.
+        cpu.R[13] = 0x02002000;
+        cpu.R_SVC[0] = 0x02003000;
+        for (u32 value : sqrtCases)
+        {
+            for (unsigned i = 0; i < std::size(sqrtCode); ++i)
+                nds->ARM9Write32(0x02000600 + i * 4, sqrtCode[i]);
+            nds->ARM9Write32(0x02000614, value);
+            nds->ARM9Write32(0x02000110, 0xDEADBEEF);
+            cpu.JumpTo(0x02000600);
+            nds->RunFrame();
+            const u32 result = nds->ARM9Read32(0x02000110);
+            if (u64(result) * result > value || u64(result + 1) * (result + 1) <= value)
+            {
+                std::fprintf(stderr, "ARM%d FreeBIOS sqrt(%08x) = %u\n", arm7 ? 7 : 9, value, result);
+                return 12;
+            }
+        }
+        cpu.JumpTo(0x02000200); // stop this CPU before checking the other
+    }
     std::printf("core=%s fastmem=%d lines=%u ARM-result=100 save-restore=PASS pixels=49152\n",jit?"JIT":"interpreter",fast,lines);
 }

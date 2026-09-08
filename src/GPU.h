@@ -24,6 +24,7 @@
 #include "GPU2D.h"
 #include "GPU3D.h"
 #include "NonStupidBitfield.h"
+#include "PixelConvert.h"
 
 namespace melonDS
 {
@@ -829,6 +830,8 @@ struct RendererSettings
 
     // "improved polygon splitting" (regular OpenGL renderer)
     bool BetterPolygons;
+    // Software output conversion; runtime dispatch keeps unsupported CPUs safe.
+    PixelConvert::Backend PixelConversion = PixelConvert::Backend::Auto;
 };
 
 class Renderer

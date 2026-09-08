@@ -88,6 +88,7 @@ void SoftRenderer::PostSavestate()
 
 void SoftRenderer::SetRenderSettings(RendererSettings& settings)
 {
+    ExpandPixels = PixelConvert::Select(settings.PixelConversion);
     auto rend3d = dynamic_cast<SoftRenderer3D*>(Rend3D.get());
     rend3d->SetThreaded(settings.Threaded);
 }
@@ -426,9 +427,7 @@ void SoftRenderer::ApplyMasterBrightness(u16 regval, u32* dst)
 
 void SoftRenderer::ExpandColor(u32* dst)
 {
-    // Resolve CPU/OS capabilities once, outside the pixel loop.
-    static const auto expand = PixelConvert::Select();
-    expand(dst, 256);
+    ExpandPixels(dst, 256);
 }
 
 

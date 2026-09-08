@@ -18,6 +18,7 @@
 
 #include <QFileDialog>
 #include <QtGlobal>
+#include <QStandardItemModel>
 
 #include "types.h"
 #include "Platform.h"
@@ -45,9 +46,11 @@ void VideoSettingsDialog::setEnabled()
     bool softwareRenderer = renderer == renderer3D_Software;
     ui->cbGLDisplay->setEnabled(softwareRenderer);
     ui->cbSoftwareThreaded->setEnabled(softwareRenderer);
+    ui->cbPixelConversion->setEnabled(softwareRenderer);
     ui->cbxGLResolution->setEnabled(!softwareRenderer);
     ui->cbBetterPolygons->setEnabled(renderer == renderer3D_OpenGL);
     ui->cbxComputeHiResCoords->setEnabled(renderer == renderer3D_OpenGLCompute);
+    setVsyncControlEnable(UsesGL());
 }
 
 VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(new Ui::VideoSettingsDialog)
@@ -63,6 +66,7 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     oldVSync = cfg.GetBool("Screen.VSync");
     oldVSyncInterval = cfg.GetInt("Screen.VSyncInterval");
     oldSoftThreaded = cfg.GetBool("3D.Soft.Threaded");
+    oldPixelConversion = cfg.GetInt("3D.Soft.PixelConversion");
     oldGLScale = cfg.GetInt("3D.GL.ScaleFactor");
     oldGLBetterPolygons = cfg.GetBool("3D.GL.BetterPolygons");
     oldHiresCoordinates = cfg.GetBool("3D.GL.HiresCoordinates");
@@ -93,16 +97,21 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
 
     ui->cbSoftwareThreaded->setChecked(oldSoftThreaded);
 
+    ui->cbPixelConversion->blockSignals(true);
+    ui->cbPixelConversion->addItems({"Automatic", "Scalar", "AVX2", "AVX-512"});
+    auto pixelModel = static_cast<QStandardItemModel*>(ui->cbPixelConversion->model());
+    for (int i = 0; i < ui->cbPixelConversion->count(); ++i)
+        pixelModel->item(i)->setEnabled(melonDS::PixelConvert::IsSupported(
+            static_cast<melonDS::PixelConvert::Backend>(i)));
+    ui->cbPixelConversion->setCurrentIndex(oldPixelConversion);
+    ui->cbPixelConversion->blockSignals(false);
+
     for (int i = 1; i <= 16; i++)
         ui->cbxGLResolution->addItem(QString("%1x native (%2x%3)").arg(i).arg(256*i).arg(192*i));
     ui->cbxGLResolution->setCurrentIndex(oldGLScale-1);
 
     ui->cbBetterPolygons->setChecked(oldGLBetterPolygons != 0);
     ui->cbxComputeHiResCoords->setChecked(oldHiresCoordinates != 0);
-
-    if (!oldVSync)
-        ui->sbVSyncInterval->setEnabled(false);
-    setVsyncControlEnable(UsesGL());
 
     setEnabled();
 }
@@ -135,6 +144,7 @@ void VideoSettingsDialog::on_VideoSettingsDialog_rejected()
     cfg.SetBool("Screen.VSync", oldVSync);
     cfg.SetInt("Screen.VSyncInterval", oldVSyncInterval);
     cfg.SetBool("3D.Soft.Threaded", oldSoftThreaded);
+    cfg.SetInt("3D.Soft.PixelConversion", oldPixelConversion);
     cfg.SetInt("3D.GL.ScaleFactor", oldGLScale);
     cfg.SetBool("3D.GL.BetterPolygons", oldGLBetterPolygons);
     cfg.SetBool("3D.GL.HiresCoordinates", oldHiresCoordinates);
@@ -147,7 +157,7 @@ void VideoSettingsDialog::on_VideoSettingsDialog_rejected()
 void VideoSettingsDialog::setVsyncControlEnable(bool hasOGL)
 {
     ui->cbVSync->setEnabled(hasOGL);
-    ui->sbVSyncInterval->setEnabled(hasOGL);
+    ui->sbVSyncInterval->setEnabled(hasOGL && ui->cbVSync->isChecked());
 }
 
 void VideoSettingsDialog::onChange3DRenderer(int renderer)
@@ -177,7 +187,7 @@ void VideoSettingsDialog::on_cbGLDisplay_stateChanged(int state)
 void VideoSettingsDialog::on_cbVSync_stateChanged(int state)
 {
     bool vsync = (state != 0);
-    ui->sbVSyncInterval->setEnabled(vsync);
+    setVsyncControlEnable(UsesGL());
 
     auto& cfg = emuInstance->getGlobalConfig();
     cfg.SetBool("Screen.VSync", vsync);
@@ -211,6 +221,14 @@ void VideoSettingsDialog::on_cbxGLResolution_currentIndexChanged(int idx)
 
     setVsyncControlEnable(UsesGL());
 
+    emit updateVideoSettings(false);
+}
+
+void VideoSettingsDialog::on_cbPixelConversion_currentIndexChanged(int idx)
+{
+    if (idx < 0) return;
+    auto& cfg = emuInstance->getGlobalConfig();
+    cfg.SetInt("3D.Soft.PixelConversion", idx);
     emit updateVideoSettings(false);
 }
 

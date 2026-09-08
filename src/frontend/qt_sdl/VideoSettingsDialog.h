@@ -71,6 +71,7 @@ private slots:
     void on_cbxComputeHiResCoords_stateChanged(int state);
 
     void on_cbSoftwareThreaded_stateChanged(int state);
+    void on_cbPixelConversion_currentIndexChanged(int idx);
 private:
     void setVsyncControlEnable(bool hasOGL);
     void setEnabled();
@@ -85,10 +86,10 @@ private:
     int oldVSync;
     int oldVSyncInterval;
     int oldSoftThreaded;
+    int oldPixelConversion;
     int oldGLScale;
     int oldGLBetterPolygons;
     int oldHiresCoordinates;
 };
 
 #endif // VIDEOSETTINGSDIALOG_H
-

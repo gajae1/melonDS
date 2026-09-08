@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <bit>
 #include "Config.h"
 #include "NDS.h"
 #include "SPU.h"
@@ -26,8 +27,6 @@
 
 using namespace melonDS;
 
-#define INTERNAL_FRAME_RATE 59.8260982880808f
-
 // --- AUDIO OUTPUT -----------------------------------------------------------
 
 
@@ -35,6 +34,7 @@ void EmuInstance::audioInit()
 {
     audioVolume = localCfg.GetInt("Audio.Volume");
     audioDSiVolumeSync = localCfg.GetBool("Audio.DSiVolumeSync");
+    audioLowPassCutoff = globalCfg.GetInt("Audio.LowPassCutoff");
 
     audioMutedToggle = false;
     audioMutedByFastForward = false;
@@ -42,13 +42,14 @@ void EmuInstance::audioInit()
     audioSyncCond = SDL_CreateCond();
     audioSyncLock = SDL_CreateMutex();
 
-    audioFreq = 48000; // TODO: make both of these configurable?
-    audioBufSize = 512;
+    audioFreq = 48000;
+    // SDL device buffers use powers of two. Keep hand-edited settings bounded.
+    audioBufSize = std::bit_ceil(static_cast<unsigned>(globalCfg.GetInt("Audio.BufferSize")));
 
     SDL_AudioSpec whatIwant, whatIget;
     memset(&whatIwant, 0, sizeof(SDL_AudioSpec));
     whatIwant.freq = audioFreq;
-    whatIwant.format = AUDIO_S16LSB;
+    whatIwant.format = AUDIO_S16SYS;
     whatIwant.channels = 2;
     whatIwant.samples = audioBufSize;
     whatIwant.callback = audioCallback;
@@ -67,7 +68,7 @@ void EmuInstance::audioInit()
         SDL_PauseAudioDevice(audioDevice, 1);
     }
 
-    audioSampleFrac = 0;
+    audioLowPass.Init(audioFreq);
 
     micStarted = false;
     micDevice = 0;
@@ -149,52 +150,49 @@ void EmuInstance::audioSync()
     }
 }
 
-int EmuInstance::audioGetNumSamplesOut(int outlen)
-{
-    float f_len_in = outlen * (curFPS/targetFPS);
-    f_len_in += audioSampleFrac;
-    int len_in = (int)floor(f_len_in);
-    audioSampleFrac = f_len_in - len_in;
-
-    return len_in;
-}
-
 void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
 {
     EmuInstance* inst = (EmuInstance*)data;
     len /= (sizeof(s16) * 2);
 
-    double skew = std::max(inst->targetFPS / INTERNAL_FRAME_RATE, 0.5);
-    inst->nds->SPU.SetOutputSkew(skew);
-
-    int len_in = inst->audioGetNumSamplesOut(len);
-    if (len_in > inst->audioBufSize) len_in = inst->audioBufSize;
-
+    // The core resampler already converts to the device rate. Always fill the
+    // requested device buffer; changing its length here leaves stale samples.
     SDL_LockMutex(inst->audioSyncLock);
-    int num_in = inst->nds->SPU.ReadOutput((s16*) stream, len_in);
+    int num_in = inst->nds->SPU.ReadOutput((s16*) stream, len);
     SDL_CondSignal(inst->audioSyncCond);
     SDL_UnlockMutex(inst->audioSyncLock);
+
+    const int cutoff = inst->audioLowPassCutoff.load(std::memory_order_relaxed);
+    const double targetHz = cutoff > 0 ? cutoff : inst->audioLowPass.WideOpenCutoff();
+    const double blockSeconds = static_cast<double>(len) / inst->audioFreq;
 
     if ((num_in < 1) || inst->audioMutedByWindowFocus || inst->audioMutedToggle || inst->audioMutedByFastForward)
     {
         memset(stream, 0, len*sizeof(s16)*2);
+        inst->audioLowPass.ProcessMuted(len, targetHz, blockSeconds);
         return;
     }
 
-    if (inst->audioVolume < 256)
+    const int volume = inst->audioVolume.load(std::memory_order_relaxed);
+    if (volume < 256)
     {
         s16* samples = (s16*) stream;
         for (int i = 0; i < num_in * 2; i++)
-            samples[i] = ((s32) samples[i] * inst->audioVolume) >> 8;
+            samples[i] = ((s32) samples[i] * volume) >> 8;
     }
 
-    if (num_in < len_in)
+    if (num_in < len)
     {
-        int last = num_in-1;
-
-        for (int i = num_in; i < len_in; i++)
-            ((u32*)stream)[i] = ((u32*)stream)[last];
+        s16* samples = reinterpret_cast<s16*>(stream);
+        const s16 left = samples[(num_in - 1) * 2];
+        const s16 right = samples[(num_in - 1) * 2 + 1];
+        for (int i = num_in; i < len; i++)
+        {
+            samples[i * 2] = left;
+            samples[i * 2 + 1] = right;
+        }
     }
+    inst->audioLowPass.Process(reinterpret_cast<s16*>(stream), len, targetHz, blockSeconds);
 }
 
 
@@ -496,6 +494,7 @@ void EmuInstance::micCallback(void* data, Uint8* stream, int len)
 
 void EmuInstance::audioUpdateSettings()
 {
+    audioLowPassCutoff = globalCfg.GetInt("Audio.LowPassCutoff");
     if (micStarted) micClose();
 
     if (nds != nullptr)

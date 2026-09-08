@@ -30,6 +30,7 @@
 #include "Config.h"
 #include "SaveManager.h"
 #include "KeyboardInput.h"
+#include "AudioLowPass.h"
 
 const int kMaxWindows = 4;
 
@@ -234,7 +235,6 @@ private:
     void micLoadWav(const std::string& name);
     void setupMicInputData();
 
-    int audioGetNumSamplesOut(int outlen);
     static void audioCallback(void* data, Uint8* stream, int len);
 
     int micGetNumSamplesIn(int inlen);
@@ -315,10 +315,11 @@ private:
     SDL_AudioDeviceID audioDevice;
     int audioFreq;
     int audioBufSize;
-    float audioSampleFrac;
-    bool audioMutedToggle;
-    bool audioMutedByFastForward;
-    bool audioMutedByWindowFocus;
+    AudioLowPass audioLowPass;
+    std::atomic<int> audioLowPassCutoff;
+    std::atomic<bool> audioMutedToggle;
+    std::atomic<bool> audioMutedByFastForward;
+    std::atomic<bool> audioMutedByWindowFocus;
     SDL_cond* audioSyncCond;
     SDL_mutex* audioSyncLock;
 
@@ -345,7 +346,7 @@ private:
     SDL_mutex* micLock;
 
     //int audioInterp;
-    int audioVolume;
+    std::atomic<int> audioVolume;
     bool audioDSiVolumeSync;
     int micInputType;
     std::string micDeviceName;

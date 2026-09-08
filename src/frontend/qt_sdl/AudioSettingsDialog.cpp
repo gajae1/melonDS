@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <bit>
 #include <SDL2/SDL.h>
 #include <QFileDialog>
 
@@ -45,6 +46,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
 
     oldInterp = cfg.GetInt("Audio.Interpolation");
     oldBitDepth = cfg.GetInt("Audio.BitDepth");
+    oldLowPassCutoff = cfg.GetInt("Audio.LowPassCutoff");
     oldVolume = instcfg.GetInt("Audio.Volume");
     oldDSiSync = instcfg.GetBool("Audio.DSiVolumeSync");
 
@@ -62,6 +64,16 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     ui->cbBitDepth->addItem("10-bit");
     ui->cbBitDepth->addItem("16-bit");
     ui->cbBitDepth->setCurrentIndex(oldBitDepth);
+
+    for (int frames : {128, 256, 512, 1024})
+        ui->cbBufferSize->addItem(QString("%1 frames (%2 ms at 48 kHz)")
+            .arg(frames).arg(frames / 48.0, 0, 'f', 1), frames);
+    ui->cbBufferSize->setCurrentIndex(ui->cbBufferSize->findData(
+        static_cast<int>(std::bit_ceil(static_cast<unsigned>(cfg.GetInt("Audio.BufferSize"))))));
+
+    ui->sbLowPassCutoff->blockSignals(true);
+    ui->sbLowPassCutoff->setValue(oldLowPassCutoff);
+    ui->sbLowPassCutoff->blockSignals(false);
 
     bool state = ui->slVolume->blockSignals(true);
     ui->slVolume->setValue(oldVolume);
@@ -162,6 +174,7 @@ void AudioSettingsDialog::on_AudioSettingsDialog_accepted()
     cfg.SetQString("Mic.Device", ui->cbMic->currentText());
     cfg.SetInt("Mic.InputType", grpMicMode->checkedId());
     cfg.SetQString("Mic.WavPath", ui->txtMicWavPath->text());
+    cfg.SetInt("Audio.BufferSize", ui->cbBufferSize->currentData().toInt());
 
     Config::Save();
 
@@ -180,6 +193,7 @@ void AudioSettingsDialog::on_AudioSettingsDialog_rejected()
     auto& instcfg = emuInstance->getLocalConfig();
     cfg.SetInt("Audio.Interpolation", oldInterp);
     cfg.SetInt("Audio.BitDepth", oldBitDepth);
+    cfg.SetInt("Audio.LowPassCutoff", oldLowPassCutoff);
     instcfg.SetInt("Audio.Volume", oldVolume);
     instcfg.SetBool("Audio.DSiVolumeSync", oldDSiSync);
 
@@ -225,6 +239,12 @@ void AudioSettingsDialog::on_slVolume_valueChanged(int val)
     volume = val;
     cfg.SetInt("Audio.Volume", val);
     emit updateAudioVolume(val, dsiSync);
+}
+
+void AudioSettingsDialog::on_sbLowPassCutoff_valueChanged(int value)
+{
+    emuInstance->getGlobalConfig().SetInt("Audio.LowPassCutoff", value);
+    emit updateAudioSettings();
 }
 
 void AudioSettingsDialog::on_chkSyncDSiVolume_clicked(bool checked)

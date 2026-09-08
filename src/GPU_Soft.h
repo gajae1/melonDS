@@ -56,6 +56,7 @@ private:
     friend class SoftRenderer3D;
 
     u32* Framebuffer[2][2];
+    PixelConvert::Function ExpandPixels = PixelConvert::Select();
 
     u32* Output3D;
     alignas(8) u32 Output2D[2][256];

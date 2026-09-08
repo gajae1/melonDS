@@ -300,6 +300,12 @@ void EmuThread::run()
 
 
             // emulate
+            // blip buffers belong to this thread. Adjust their clock for the
+            // requested emulation speed before producing device-rate samples.
+            // Fast-forward retains the existing queue-trimming behavior; its
+            // requested speed may exceed what the host can actually execute.
+            const double audioFPS = std::min(emuInstance->curFPS, emuInstance->targetFPS);
+            emuInstance->nds->SPU.SetOutputSkew(std::max(audioFPS / 59.8260982880808, 0.5));
             u32 nlines;
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
             {
@@ -882,7 +888,8 @@ void EmuThread::updateRenderer()
         .ScaleFactor = cfg.GetInt("3D.GL.ScaleFactor"),
         .Threaded = cfg.GetBool("3D.Soft.Threaded"),
         .HiresCoordinates = cfg.GetBool("3D.GL.HiresCoordinates"),
-        .BetterPolygons = cfg.GetBool("3D.GL.BetterPolygons")
+        .BetterPolygons = cfg.GetBool("3D.GL.BetterPolygons"),
+        .PixelConversion = static_cast<melonDS::PixelConvert::Backend>(cfg.GetInt("3D.Soft.PixelConversion"))
     };
 
     nds->GetRenderer().SetRenderSettings(settings);
