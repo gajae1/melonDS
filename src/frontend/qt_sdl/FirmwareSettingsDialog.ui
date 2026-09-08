@@ -125,7 +125,11 @@
        <widget class="QLineEdit" name="messageEdit"/>
       </item>
       <item row="1" column="1" colspan="2">
-       <widget class="QComboBox" name="languageBox"/>
+       <widget class="QComboBox" name="languageBox">
+        <property name="toolTip">
+         <string>Game language support depends on the ROM. DSi system menu languages depend on the NAND region.</string>
+        </property>
+       </widget>
       </item>
      </layout>
     </widget>

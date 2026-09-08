@@ -11,6 +11,77 @@
 #include <cstring>
 #include <algorithm>
 
+static bool CheckComputeSettings(melonDS::NDS& nds, melonDS::GLRenderer& renderer)
+{
+    using namespace melonDS;
+    Vertex vertices[3]{};
+    constexpr int positions[3][2] = {{64, 48}, {160, 48}, {112, 144}};
+    melonDS::Polygon polygon{};
+    polygon.NumVertices = 3;
+    polygon.Attr = (31 << 16) | (3 << 6);
+    polygon.FacingView = true;
+    polygon.VTop = 0;
+    polygon.VBottom = 2;
+    polygon.YTop = 48;
+    polygon.YBottom = 144;
+    for (int i = 0; i < 3; ++i)
+    {
+        polygon.Vertices[i] = &vertices[i];
+        polygon.FinalZ[i] = 0x1000;
+        polygon.FinalW[i] = 0x1000;
+        vertices[i].FinalColor[0] = 63 << 3;
+        for (int axis = 0; axis < 2; ++axis)
+        {
+            vertices[i].FinalPosition[axis] = positions[i][axis];
+            // The two projection paths can round differently. Deliberately
+            // distinguish them so that a blank/unrendered frame cannot pass.
+            vertices[i].HiresPosition[axis] = ((positions[i][axis] + 1) << 4) + 8;
+        }
+    }
+    auto& gpu = nds.GPU.GPU3D;
+    gpu.RenderNumPolygons = 1;
+    gpu.RenderPolygonRAM[0] = &polygon;
+    gpu.RenderDispCnt = 0;
+    gpu.RenderClearAttr1 = 0;
+    gpu.RenderClearAttr2 = 0x7FFF;
+    bool passed = true;
+    for (int scale : {1, 2})
+    {
+        std::vector<u32> images[2];
+        for (int hires = 0; hires < 2; ++hires)
+        {
+            RendererSettings settings{scale, false, static_cast<bool>(hires), false};
+            gpu.RenderFrameIdentical = scale > 1 && hires != 0;
+            renderer.SetRenderSettings(settings);
+            if (hires && renderer.NeedsShaderCompile())
+            {
+                std::fprintf(stderr, "Coordinate-only change rebuilds compute shaders\n");
+                passed = false;
+            }
+            while (renderer.NeedsShaderCompile()) { int step, total; renderer.ShaderCompileStep(step, total); }
+            renderer.Start3DRendering();
+            GLint texture = 0;
+            glGetIntegeri_v(GL_IMAGE_BINDING_NAME, 0, &texture);
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+            images[hires].resize(256 * 192 * scale * scale);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, images[hires].data());
+            if (std::none_of(images[hires].begin(), images[hires].end(), [](u32 pixel) { return pixel & 0xFF; }))
+            {
+                std::fprintf(stderr, "Compute coordinate fixture did not render its triangle\n");
+                passed = false;
+            }
+        }
+        size_t changed = 0;
+        for (size_t i = 0; i < images[0].size(); ++i) changed += images[0][i] != images[1][i];
+        std::printf("compute_scale=%d coordinate_toggle_changed_pixels=%zu\n", scale, changed);
+        if ((scale == 1 && changed != 0) || (scale == 2 && changed == 0)) passed = false;
+    }
+    gpu.RenderNumPolygons = 0;
+    gpu.RenderPolygonRAM[0] = nullptr;
+    return passed && glGetError() == GL_NO_ERROR;
+}
+
 int main(int argc, char** argv)
 {
     using namespace melonDS;
@@ -81,6 +152,7 @@ int main(int argc, char** argv)
         if (glGetError() != GL_NO_ERROR) return 6;
         std::sort(samples.begin(), samples.end());
         std::printf("frame_pixels=%zu capture_pixels=49152 readback_median_us=%.3f PASS\n", pixels.size(), (samples[14]+samples[15])/2);
+        if (compute && !CheckComputeSettings(*nds, *renderer)) return 7;
     }
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
     return 0;

@@ -80,7 +80,8 @@ public:
         "German",
         "Italian",
         "Spanish",
-        "Chinese"
+        "Chinese",
+        "Korean"
     };
 
     const QStringList months

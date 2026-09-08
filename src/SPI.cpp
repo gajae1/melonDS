@@ -74,9 +74,14 @@ FirmwareMem::~FirmwareMem() = default;
 
 void FirmwareMem::Reset()
 {
+    // Keep a damaged backup invalid when calibrating the touchscreen. Repairing
+    // its checksum could make stale data supersede the effective profile.
+    const auto* effective = &FirmwareData.GetEffectiveUserData();
     // fix touchscreen coords
     for (auto& u : FirmwareData.GetUserData())
     {
+        if (&u != effective && !u.ChecksumValid())
+            continue;
         u.TouchCalibrationADC1[0] = 0;
         u.TouchCalibrationADC1[1] = 0;
         u.TouchCalibrationPixel1[0] = 0;
@@ -85,9 +90,8 @@ void FirmwareMem::Reset()
         u.TouchCalibrationADC2[1] = 191<<4;
         u.TouchCalibrationPixel2[0] = 255;
         u.TouchCalibrationPixel2[1] = 191;
+        u.UpdateChecksum();
     }
-
-    FirmwareData.UpdateChecksums();
 
     // disable autoboot
     //Firmware[userdata+0x64] &= 0xBF;

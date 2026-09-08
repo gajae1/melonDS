@@ -45,3 +45,23 @@ target_include_directories(FrontendAudio PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CM
 target_link_libraries(FrontendAudio PRIVATE PkgConfig::SDL2)
 add_test(NAME audio-callback-buffer COMMAND FrontendAudio)
 set_tests_properties(audio-callback-buffer PROPERTIES TIMEOUT 30)
+
+set(firmware_override "${CMAKE_CURRENT_BINARY_DIR}/customizeFirmware.inc")
+set(firmware_mac "${CMAKE_CURRENT_BINARY_DIR}/parseMacAddress.inc")
+add_custom_command(OUTPUT "${firmware_override}" "${firmware_mac}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp"
+        "void EmuInstance::customizeFirmware(Firmware& firmware, bool overridesettings) noexcept"
+        "${firmware_override}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp"
+        "bool EmuInstance::parseMacAddress(void* data)" "${firmware_mac}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
+add_executable(FirmwareProfile "${CMAKE_SOURCE_DIR}/tests/FirmwareProfile.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp" Config.cpp "${firmware_override}" "${firmware_mac}")
+target_include_directories(FirmwareProfile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_SOURCE_DIR}/src/net" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(FirmwareProfile PRIVATE core ${QT_LINK_LIBS} Threads::Threads)
+add_test(NAME firmware-profile-direct-boot COMMAND FirmwareProfile)
+set_tests_properties(firmware-profile-direct-boot PROPERTIES TIMEOUT 30)

@@ -54,6 +54,7 @@ public:
 
 private:
     GLRenderer& Parent;
+    bool RenderSettingsDirty = true;
 
     GLuint ShaderInterpXSpans[2];
     GLuint ShaderBinCombined;

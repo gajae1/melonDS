@@ -207,7 +207,8 @@ public:
         Italian = 4,
         Spanish = 5,
         Chinese = 6,
-        Reserved = 7,
+        Korean = 7, // Extended settings and DSi NAND; legacy DS field uses English.
+        Reserved = 7, // Reserved in the legacy 3-bit language field.
     };
 
     enum GBAScreen : u8
@@ -550,7 +551,7 @@ public:
 
     /**
      * @return Reference to whichever of the two user data sections
-     * has the highest update counter.
+     * is valid and newest, including the 7-bit update counter wrap.
      */
     [[nodiscard]] union UserData& GetEffectiveUserData();
 

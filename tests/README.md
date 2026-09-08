@@ -77,3 +77,12 @@ AAC and host input/output; unexpected file use aborts. It does not replace
 real driver/game/physical-hardware regression tests. The full-core tests are
 not automatically sanitized by the standalone sanitizer configuration.
 See `../docs/ModernizationBatch.md` for exact scope and measurement limitations.
+
+The Qt build also provides `firmware-profile-direct-boot`. It runs the real
+frontend profile override and MAC parser with temporary configuration, then
+checks the real firmware/core for counter wrap, an invalid backup, direct boot,
+and Chinese/Korean SPI reads. It uses generated firmware, not private dumps.
+The opt-in `gpu-compute-frame-capture` test additionally renders a synthetic
+triangle at 1x/2x on the host GPU, checking coordinate options, reuse of compiled
+shaders, and updates when the guest frame is unchanged. These are regression
+checks, not physical-console or full-game accuracy measurements.

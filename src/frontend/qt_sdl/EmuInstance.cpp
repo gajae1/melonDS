@@ -978,8 +978,8 @@ Firmware EmuInstance::generateFirmware(int type) noexcept
                     Firmware::ExtendedWifiAccessPoint(),
             };
             firmware.UpdateChecksums();
-            CloseFile(f);
         }
+        CloseFile(f);
     }
 
     customizeFirmware(firmware, true);
@@ -1679,18 +1679,18 @@ void EmuInstance::customizeFirmware(Firmware& firmware, bool overridesettings) n
         }
 
         auto language = static_cast<Firmware::Language>(firmcfg.GetInt("Language"));
-        if (language != Firmware::Language::Reserved)
+        if (language <= Firmware::Language::Korean)
         { // If the frontend specifies a language (rather than using the existing value)...
             bool extlang = language >= Firmware::Language::Chinese;
 
             // ..clear the existing language...
-            currentData.Settings &= ~Firmware::Language::Reserved;
+            currentData.Settings &= ~0x7;
 
             // ...and set the new one.
             currentData.Settings |= extlang ? Firmware::Language::English : language;
             currentData.ExtendedSettings.ExtendedLanguage = language;
 
-            if (extlang && !(currentHeader.ConsoleType & 0x40))
+            if (extlang && currentData.ExtendedSettings.Unknown0 != 0x01)
             {
                 // enable the extended settings header if not present
                 if (currentHeader.ConsoleType == 0xFF)
@@ -1700,6 +1700,8 @@ void EmuInstance::customizeFirmware(Firmware& firmware, bool overridesettings) n
                 currentData.ExtendedSettings.Unknown0 = 0x01;
                 currentData.ExtendedSettings.SupportedLanguageMask = 0x7F;
             }
+            if (currentData.ExtendedSettings.Unknown0 == 0x01)
+                currentData.ExtendedSettings.SupportedLanguageMask |= 1 << language;
         }
 
         // setting up color
@@ -1729,6 +1731,10 @@ void EmuInstance::customizeFirmware(Firmware& firmware, bool overridesettings) n
             currentData.MessageLength = messageLength;
             memcpy(currentData.Message, message.data(), messageLength * sizeof(char16_t));
         }
+
+        // Do not repair a stale backup's checksum: it may then supersede the
+        // valid profile that we just customized.
+        currentData.UpdateChecksum();
     }
 
     MacAddress mac;
@@ -1739,9 +1745,8 @@ void EmuInstance::customizeFirmware(Firmware& firmware, bool overridesettings) n
 
     if (overridesettings)
     {
-        MacAddress configuredMac;
-        rep = parseMacAddress(&configuredMac);
-        rep &= (configuredMac != MacAddress());
+        MacAddress configuredMac{};
+        rep = parseMacAddress(&configuredMac) && configuredMac != MacAddress();
 
         if (rep)
         {
@@ -1763,8 +1768,6 @@ void EmuInstance::customizeFirmware(Firmware& firmware, bool overridesettings) n
         header.MacAddr = mac;
         header.UpdateChecksum();
     }
-
-    firmware.UpdateChecksums();
 }
 
 // Loads ROM data without parsing it. Works for GBA and NDS ROMs.

@@ -277,9 +277,7 @@ bool CompileComputeProgram(GLuint& result, const std::string& source, const std:
         {
         }
     }*/
-    Log(LogLevel::Error, "Shader %s from cache was rejected\n", name.c_str());
-
-    GLuint shader;
+    GLuint shader = 0;
     bool linkingSucess = false;
 
     if (!glCreateShader || !glDeleteShader)
@@ -293,7 +291,8 @@ bool CompileComputeProgram(GLuint& result, const std::string& source, const std:
     linkingSucess = LinkProgram(result, &shader, 1);
 
 error:
-    glDeleteShader(shader);
+    if (shader)
+        glDeleteShader(shader);
 
     if (!linkingSucess)
     {

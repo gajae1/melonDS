@@ -358,7 +358,10 @@ const Firmware::UserData& Firmware::GetEffectiveUserData() const {
 
     if (userdata0ChecksumOk && userdata1ChecksumOk)
     {
-        return userdata[0].UpdateCounter >= userdata[1].UpdateCounter ? userdata[0] : userdata[1];
+        // The firmware selects area 1 only when it is exactly one update newer.
+        // Comparing magnitudes selects the stale area after 127 wraps to zero.
+        return userdata[1].UpdateCounter == ((userdata[0].UpdateCounter + 1) & 0x7F)
+            ? userdata[1] : userdata[0];
     }
     else if (userdata0ChecksumOk)
     {
@@ -375,26 +378,7 @@ const Firmware::UserData& Firmware::GetEffectiveUserData() const {
 }
 
 Firmware::UserData& Firmware::GetEffectiveUserData() {
-    std::array<union UserData, 2>& userdata = GetUserData();
-    bool userdata0ChecksumOk = userdata[0].ChecksumValid();
-    bool userdata1ChecksumOk = userdata[1].ChecksumValid();
-
-    if (userdata0ChecksumOk && userdata1ChecksumOk)
-    {
-        return userdata[0].UpdateCounter >= userdata[1].UpdateCounter ? userdata[0] : userdata[1];
-    }
-    else if (userdata0ChecksumOk)
-    {
-        return userdata[0];
-    }
-    else if (userdata1ChecksumOk)
-    {
-        return userdata[1];
-    }
-    else
-    {
-        return userdata[0];
-    }
+    return const_cast<UserData&>(std::as_const(*this).GetEffectiveUserData());
 }
 
 void Firmware::UpdateChecksums()

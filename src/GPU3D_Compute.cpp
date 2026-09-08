@@ -318,10 +318,20 @@ void ComputeRenderer3D::Reset()
 {
     Texcache.Reset();
     ClearBitmapDirty = 0x3;
+    RenderSettingsDirty = true;
 }
 
 void ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordinates)
 {
+    // Native resolution uses the DS's quantized coordinates, matching the
+    // software and classic OpenGL renderers. This switch only affects CPU setup.
+    const bool hires = highResolutionCoordinates && scale > 1;
+    RenderSettingsDirty |= HiresCoordinates != hires;
+    HiresCoordinates = hires;
+    if (ScaleFactor == scale)
+        return;
+
+    RenderSettingsDirty = true;
     u8 TileScale;
 
     if (ScaleFactor != -1)
@@ -353,8 +363,6 @@ void ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
 
     TilesPerLine = ScreenWidth/TileSize;
     TileLines = ScreenHeight/TileSize;
-
-    HiresCoordinates = highResolutionCoordinates;
 
     MaxWorkTiles = TilesPerLine*TileLines*16;
 
@@ -634,10 +642,11 @@ void ComputeRenderer3D::RenderFrame()
 {
     assert(!NeedsShaderCompile());
     u8 clrBitmapDirty;
-    if (!Texcache.Update(clrBitmapDirty) && GPU3D.RenderFrameIdentical)
+    if (!Texcache.Update(clrBitmapDirty) && GPU3D.RenderFrameIdentical && !RenderSettingsDirty)
     {
         return;
     }
+    RenderSettingsDirty = false;
 
     // figure out which chunks of texture memory contain display captures
     int captureinfo[16];
