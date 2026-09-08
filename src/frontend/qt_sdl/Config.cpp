@@ -23,6 +23,7 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include "UTF8.h"
 #include <regex>
 #include "toml/toml.hpp"
 
@@ -796,7 +797,7 @@ bool Load()
 
     try
     {
-        RootTable = toml::parse(std::filesystem::u8path(cfgpath));
+        RootTable = toml::parse(melonDS::PathFromUTF8(cfgpath));
     }
     catch (toml::syntax_error& err)
     {
@@ -813,7 +814,7 @@ void Save()
         return;
 
     std::ofstream file;
-    file.open(std::filesystem::u8path(cfgpath), std::ofstream::out | std::ofstream::trunc);
+    file.open(melonDS::PathFromUTF8(cfgpath), std::ofstream::out | std::ofstream::trunc);
     file << RootTable;
     file.close();
 }

@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <bit>
 #include "ARMJIT_Compiler.h"
 #include "../ARMJIT.h"
 #include "../NDS.h"
@@ -213,8 +214,8 @@ void Compiler::Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flag
 
         assert(rdMapped.GetSimpleReg() >= 0 && rdMapped.GetSimpleReg() < 16);
         patch.PatchFunc = flags & memop_Store
-            ? PatchedStoreFuncs[NDS.ConsoleType][Num][__builtin_ctz(size) - 3][rdMapped.GetSimpleReg()]
-            : PatchedLoadFuncs[NDS.ConsoleType][Num][__builtin_ctz(size) - 3][!!(flags & memop_SignExtend)][rdMapped.GetSimpleReg()];
+            ? PatchedStoreFuncs[NDS.ConsoleType][Num][std::countr_zero(static_cast<unsigned>(size)) - 3][rdMapped.GetSimpleReg()]
+            : PatchedLoadFuncs[NDS.ConsoleType][Num][std::countr_zero(static_cast<unsigned>(size)) - 3][!!(flags & memop_SignExtend)][rdMapped.GetSimpleReg()];
 
         assert(patch.PatchFunc != NULL);
 

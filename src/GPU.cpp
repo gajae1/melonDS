@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <bit>
 #include <string.h>
 #include "NDS.h"
 #include "GPU.h"
@@ -555,14 +556,14 @@ void GPU::Write32(u32 addr, u32 val)
 u8* GPU::GetUniqueBankPtr(u32 mask, u32 offset) noexcept
 {
     if (!mask || (mask & (mask - 1)) != 0) return NULL;
-    int num = __builtin_ctz(mask);
+    int num = std::countr_zero(mask);
     return &VRAM[num][offset & VRAMMask[num]];
 }
 
 const u8* GPU::GetUniqueBankPtr(u32 mask, u32 offset) const noexcept
 {
     if (!mask || (mask & (mask - 1)) != 0) return NULL;
-    int num = __builtin_ctz(mask);
+    int num = std::countr_zero(mask);
     return &VRAM[num][offset & VRAMMask[num]];
 }
 
@@ -571,7 +572,7 @@ u16* GPU::GetUniqueBankCBF(u32 mask, u32 offset)
     //mask &= 0xF;
     if (!mask || (mask & (mask - 1)) != 0) return nullptr;
     if (mask & 0x1F0) return nullptr;
-    int num = __builtin_ctz(mask);
+    int num = std::countr_zero(mask);
     offset = (offset >> 1) & 0x3;
     return &VRAMCaptureBlockFlags[(num << 2) | offset];
 }
@@ -1415,7 +1416,7 @@ NonStupidBitField<Size/VRAMDirtyGranularity> VRAMTrackingSet<Size, MappingGranul
 
             while (mapping != 0)
             {
-                u32 num = __builtin_ctz(mapping);
+                u32 num = std::countr_zero(mapping);
                 mapping &= ~(1 << num);
 
                 // hack for **speed**
@@ -1450,7 +1451,7 @@ NonStupidBitField<Size/VRAMDirtyGranularity> VRAMTrackingSet<Size, MappingGranul
 
     while (banksToBeZeroed != 0)
     {
-        u32 num = __builtin_ctz(banksToBeZeroed);
+        u32 num = std::countr_zero(banksToBeZeroed);
         banksToBeZeroed &= ~(1 << num);
         gpu.VRAMDirty[num].Clear();
     }

@@ -16,6 +16,8 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <bit>
+
 #if defined(__SWITCH__)
 #include <switch.h>
 #elif defined(_WIN32)
@@ -760,7 +762,7 @@ bool ARMJIT_Memory::IsFastMemSupported()
         PageSize = sysconf(_SC_PAGESIZE);
         isSupported = PageSize == RegularPageSize || PageSize == LargePageSize;
 #endif
-        PageShift = __builtin_ctz(PageSize);
+        PageShift = std::countr_zero(PageSize);
         initialised = true;
     }
     return isSupported;

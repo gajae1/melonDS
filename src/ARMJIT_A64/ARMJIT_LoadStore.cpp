@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <bit>
 #include "ARMJIT_Compiler.h"
 
 #include "../ARMJIT.h"
@@ -57,7 +58,7 @@ u8* Compiler::RewriteMemAccess(u8* pc)
 
         return pc + (ptrdiff_t)patch.PatchOffset;
     }
-    Log(LogLevel::Error, "this is a JIT bug! %08x\n", __builtin_bswap32(*(u32*)pc));
+    Log(LogLevel::Error, "this is a JIT bug! %08x\n", std::byteswap(*(u32*)pc));
     abort();
 }
 
@@ -196,8 +197,8 @@ void Compiler::Comp_MemAccess(int rd, int rn, Op2 offset, int size, int flags)
 
         assert((rdMapped >= W8 && rdMapped <= W15) || (rdMapped >= W19 && rdMapped <= W25) || rdMapped == W4);
         patch.PatchFunc = flags & memop_Store
-            ? PatchedStoreFuncs[NDS.ConsoleType][Num][__builtin_ctz(size) - 3][rdMapped]
-            : PatchedLoadFuncs[NDS.ConsoleType][Num][__builtin_ctz(size) - 3][!!(flags & memop_SignExtend)][rdMapped];
+            ? PatchedStoreFuncs[NDS.ConsoleType][Num][std::countr_zero(static_cast<unsigned>(size)) - 3][rdMapped]
+            : PatchedLoadFuncs[NDS.ConsoleType][Num][std::countr_zero(static_cast<unsigned>(size)) - 3][!!(flags & memop_SignExtend)][rdMapped];
 
         // take a chance at fastmem
         if (size > 8)

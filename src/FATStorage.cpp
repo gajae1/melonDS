@@ -482,7 +482,7 @@ void FATStorage::ExportDirectory(const std::string& path, const std::string& out
         if (!info.fname[0]) break;
 
         std::string fullpath = path + info.fname;
-        fs::path outpath = fs::u8path(outbase + "/" + fullpath);
+        fs::path outpath = melonDS::PathFromUTF8(outbase + "/" + fullpath);
 
         if (info.fattrib & AM_DIR)
         {
@@ -564,7 +564,7 @@ bool FATStorage::DeleteHostDirectory(const std::string& path, const std::string&
 {
     if (level >= 32) return false;
 
-    fs::path dirpath = fs::u8path(outbase + "/" + path);
+    fs::path dirpath = melonDS::PathFromUTF8(outbase + "/" + path);
     if (!fs::is_directory(dirpath))
         return true; // already deleted? oh well
 
@@ -598,7 +598,7 @@ bool FATStorage::DeleteHostDirectory(const std::string& path, const std::string&
 
     for (const auto& key : filedeletelist)
     {
-        fs::path fullpath = fs::u8path(outbase + "/" + key);
+        fs::path fullpath = melonDS::PathFromUTF8(outbase + "/" + key);
         std::error_code err;
         fs::permissions(fullpath,
                         fs::perms::owner_read | fs::perms::owner_write,
@@ -617,7 +617,7 @@ bool FATStorage::DeleteHostDirectory(const std::string& path, const std::string&
     }
 
     {
-        fs::path fullpath = fs::u8path(outbase + "/" + path);
+        fs::path fullpath = melonDS::PathFromUTF8(outbase + "/" + path);
 
         std::error_code err;
         fs::permissions(fullpath,
@@ -664,7 +664,7 @@ void FATStorage::ExportChanges(const std::string& outbase)
 
     for (const auto& key : deletelist)
     {
-        fs::path fullpath = fs::u8path(outbase + "/" + key);
+        fs::path fullpath = melonDS::PathFromUTF8(outbase + "/" + key);
 
         std::error_code err;
         fs::permissions(fullpath,
@@ -806,7 +806,7 @@ void FATStorage::CleanupDirectory(const std::string& sourcedir, const std::strin
         {
             if (DirIndex.count(fullpath) < 1)
                 dirdeletelist.push_back(fullpath);
-            else if (!fs::is_directory(fs::u8path(sourcedir+"/"+fullpath)))
+            else if (!fs::is_directory(melonDS::PathFromUTF8(sourcedir+"/"+fullpath)))
             {
                 DirIndex.erase(fullpath);
                 dirdeletelist.push_back(fullpath);
@@ -818,7 +818,7 @@ void FATStorage::CleanupDirectory(const std::string& sourcedir, const std::strin
         {
             if (FileIndex.count(fullpath) < 1)
                 filedeletelist.push_back(fullpath);
-            else if (!fs::is_regular_file(fs::u8path(sourcedir+"/"+fullpath)))
+            else if (!fs::is_regular_file(melonDS::PathFromUTF8(sourcedir+"/"+fullpath)))
             {
                 FileIndex.erase(fullpath);
                 filedeletelist.push_back(fullpath);
@@ -901,7 +901,7 @@ bool FATStorage::ImportDirectory(const std::string& sourcedir)
     // iterate through the host directory:
     // * directories will be added if they aren't in the index
     // * files will be added if they aren't in the index, or if the size or last-modified-date don't match
-    for (auto& entry : fs::recursive_directory_iterator(fs::u8path(sourcedir)))
+    for (auto& entry : fs::recursive_directory_iterator(melonDS::PathFromUTF8(sourcedir)))
     {
         std::string fullpath = UTF8ToString(entry.path().u8string());
         std::string innerpath = fullpath.substr(srclen);
@@ -1009,7 +1009,7 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
     bool hasdir = sourcedir && !sourcedir->empty();
     if (sourcedir)
     {
-        if (!fs::is_directory(fs::u8path(*sourcedir)))
+        if (!fs::is_directory(melonDS::PathFromUTF8(*sourcedir)))
         {
             hasdir = false;
             SourceDir = std::nullopt;
@@ -1074,7 +1074,7 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
         {
             if (hasdir)
             {
-                FileSize = GetDirectorySize(fs::u8path(*sourcedir));
+                FileSize = GetDirectorySize(melonDS::PathFromUTF8(*sourcedir));
                 FileSize += 0x8000000ULL; // 128MB leeway
 
                 // make it a power of two

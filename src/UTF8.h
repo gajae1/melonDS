@@ -4,6 +4,7 @@
 
 #include <string>
 #include <string_view>
+#include <filesystem>
 
 namespace melonDS
 {
@@ -13,6 +14,12 @@ inline std::string UTF8ToString(std::u8string_view text)
     if (text.empty())
         return {};
     return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
+
+inline std::filesystem::path PathFromUTF8(std::string_view text)
+{
+    // Own char8_t storage; do not alias a char buffer as char8_t.
+    return std::filesystem::path(std::u8string(text.begin(), text.end()));
 }
 }
 

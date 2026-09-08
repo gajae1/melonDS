@@ -18,8 +18,7 @@ int main()
         if (bytes.size() != name.size() || memcmp(bytes.data(), name.data(), name.size()) != 0)
             return 1;
         // Construct char8_t storage rather than aliasing a char buffer as char8_t.
-        const std::u8string restored(bytes.begin(), bytes.end());
-        if (std::filesystem::path(restored) != path)
+        if (melonDS::PathFromUTF8(bytes) != path)
             return 1;
     }
     const std::u8string withZero(u8"a\0b", 3);

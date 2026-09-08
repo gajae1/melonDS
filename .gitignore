@@ -1,4 +1,11 @@
 build*/
+# User-provided firmware, games and local saves are never source artifacts.
+/bios*.bin
+/firmware*.bin
+/nand*.bin
+/rom/
+*.sav
+*.ml0
 bin
 obj
 *.depend

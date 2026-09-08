@@ -23,27 +23,20 @@
 #include "Savestate.h"
 #include "FIFO.h"
 #include "tiny-AES-c/aes.hpp"
+#include <bit>
+#include <cstring>
 
 namespace melonDS
 {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wattributes"
-#if defined(__GNUC__) && (__GNUC__ >= 11) && defined(__SIZEOF_INT128__) // gcc 11.*
-// NOTE: Yes, the compiler does *not* recognize this code pattern, so it is indeed an optimization.
-__attribute((always_inline)) static void Bswap128(void* Dst, const void* Src)
+inline void Bswap128(void* Dst, const void* Src)
 {
-    *(__int128*)Dst = __builtin_bswap128(*(__int128*)Src);
+    // Byte buffers need not have integer alignment. Load both halves before
+    // writing so in-place and overlapping calls are well-defined too.
+    u64 halves[2];
+    std::memcpy(halves, Src, sizeof(halves));
+    const u64 reversed[2] = {std::byteswap(halves[1]), std::byteswap(halves[0])};
+    std::memcpy(Dst, reversed, sizeof(reversed));
 }
-#else
-__attribute((always_inline)) static void Bswap128(void* Dst, const void* Src)
-{
-    for (int i = 0; i < 16; ++i)
-    {
-        ((u8*)Dst)[i] = ((u8*)Src)[15 - i];
-    }
-}
-#endif
-#pragma GCC diagnostic pop
 
 class DSi;
 class DSi_AES

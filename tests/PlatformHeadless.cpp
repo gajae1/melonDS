@@ -9,6 +9,7 @@ void SignalStop(StopReason, void*) {}
 FileHandle* OpenFile(const std::string&, FileMode) { return nullptr; }
 FileHandle* OpenLocalFile(const std::string&, FileMode) { return nullptr; }
 bool LocalFileExists(const std::string&) { return false; }
+#ifndef MELONDS_TEST_MEMORY_FILES
 bool CloseFile(FileHandle*) { std::abort(); }
 bool IsEndOfFile(FileHandle*) { std::abort(); }
 bool FileReadLine(char*, int, FileHandle*) { std::abort(); }
@@ -20,6 +21,7 @@ bool FileFlush(FileHandle*) { std::abort(); }
 u64 FileWrite(const void*, u64, u64, FileHandle*) { std::abort(); }
 u64 FileWriteFormatted(FileHandle*, const char*, ...) { std::abort(); }
 u64 FileLength(FileHandle*) { std::abort(); }
+#endif
 void WriteNDSSave(const u8*, u32, u32, u32, void*) {}
 void WriteGBASave(const u8*, u32, u32, u32, void*) {}
 void WriteFirmware(const Firmware&, u32, u32, void*) {}

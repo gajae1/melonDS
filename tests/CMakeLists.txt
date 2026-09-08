@@ -82,6 +82,9 @@ if (TARGET core)
     add_executable(TeakraExecution TeakraExecution.cpp PlatformSync.cpp ../src/Savestate.cpp)
     target_include_directories(TeakraExecution PRIVATE ../src ../src/teakra/src)
     target_link_libraries(TeakraExecution PRIVATE teakra Threads::Threads)
+    add_executable(TeakraVerifier ../src/teakra/src/test_verifier/main.cpp PlatformSync.cpp ../src/Savestate.cpp)
+    target_include_directories(TeakraVerifier PRIVATE ../src ../src/teakra/src)
+    target_link_libraries(TeakraVerifier PRIVATE teakra Threads::Threads)
     add_test(NAME teakra-execution-events-state COMMAND TeakraExecution)
     set_tests_properties(teakra-execution-events-state PROPERTIES TIMEOUT 60)
 endif()
@@ -111,6 +114,41 @@ add_executable(StandardBitOps StandardBitOps.cpp)
 target_include_directories(StandardBitOps PRIVATE ../src)
 target_compile_definitions(StandardBitOps PRIVATE REQUIRE_CONSTEXPR)
 add_test(NAME standard-bit-operations COMMAND StandardBitOps)
+
+add_executable(ByteSwap ByteSwap.cpp)
+target_include_directories(ByteSwap PRIVATE ../src)
+add_test(NAME aes-byteswap-alignment-overlap COMMAND ByteSwap)
+
+add_executable(GlibString GlibString.c ../src/net/libslirp/glib/glib.c)
+target_include_directories(GlibString PRIVATE ../src/net/libslirp/glib)
+set_target_properties(GlibString PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+add_test(NAME glib-string-boundaries COMMAND GlibString)
+
+if (MELONDS_BUILD_MICROBENCHMARKS)
+    add_executable(PixelConvertBenchmark PixelConvertBenchmark.cpp ../src/PixelConvert.cpp)
+    target_include_directories(PixelConvertBenchmark PRIVATE ../src)
+    melonds_configure_pixel_kernels(PixelConvertBenchmark)
+endif()
+
+option(MELONDS_TEST_GPU "Run tests requiring a real OpenGL context" OFF)
+if (MELONDS_TEST_GPU)
+    if (NOT TARGET core OR NOT ENABLE_OGLRENDERER)
+        message(FATAL_ERROR "GPU tests require the full OpenGL core and SDL2 frontend dependencies")
+    endif()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GPU_TEST_SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    add_executable(GLFrameReadback GLFrameReadback.cpp PlatformSync.cpp PlatformHeadless.cpp
+        ../src/frontend/glad/glad.c)
+    target_link_libraries(GLFrameReadback PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)
+    add_executable(ROMSmoke ROMSmoke.cpp PlatformSync.cpp PlatformHeadless.cpp
+        ../src/frontend/glad/glad.c)
+    target_link_libraries(ROMSmoke PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)
+    target_compile_definitions(ROMSmoke PRIVATE MELONDS_TEST_MEMORY_FILES)
+    add_test(NAME gpu-opengl-frame-capture COMMAND GLFrameReadback)
+    add_test(NAME gpu-compute-frame-capture COMMAND GLFrameReadback compute)
+    set_tests_properties(gpu-opengl-frame-capture gpu-compute-frame-capture
+        PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
 
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc"

@@ -7,25 +7,41 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdint.h>
+#if __has_include(<stdckdint.h>)
+#include <stdckdint.h>
+#endif
 
 #include "glib.h"
 
+// Some C23 compilers still ship an older C library (notably Apple toolchains).
+static bool size_add(gsize* out, gsize a, gsize b) {
+#ifdef ckd_add
+    return ckd_add(out, a, b);
+#else
+    if (a > SIZE_MAX - b) return true;
+    *out = a + b;
+    return false;
+#endif
+}
+
+static bool size_double(gsize* out, gsize value) {
+#ifdef ckd_mul
+    return ckd_mul(out, value, 2);
+#else
+    return size_add(out, value, value);
+#endif
+}
+
 GString* g_string_new(gchar* initial) {
     GString* str = g_new0(GString, 1);
-
-    if (initial != NULL) {
-        int len = strlen(initial);
-        gchar* p = malloc(len);
-        memcpy(p, initial, len);
-        str->str = p;
-        str->len = len;
-        str->allocated_len = len;
-    } else {
-        gchar* p = malloc(64);
-        str->str = p;
-        str->len = 0;
-        str->allocated_len = 64;
-    }
+    if (!str) return NULL;
+    str->len = initial ? strlen(initial) : 0;
+    if (size_add(&str->allocated_len, str->len, 1)) { free(str); return NULL; }
+    str->str = malloc(str->allocated_len);
+    if (!str->str) { free(str); return NULL; }
+    if (str->len) memcpy(str->str, initial, str->len);
+    str->str[str->len] = '\0';
     return str;
 }
 
@@ -33,7 +49,7 @@ gchar* g_string_free(GString* str, gboolean free_segment) {
     char* seg = str->str;
     free(str);
     if (free_segment) {
-        free(str->str);
+        free(seg);
         return NULL;
     }
     return seg;
@@ -44,21 +60,27 @@ void g_string_append_printf(GString* str, const gchar* format, ...) {
     va_start(args, format);
     int need_len = vsnprintf(NULL, 0, format, args);
     va_end(args);
-
-    if (str->len + need_len + 1 < str->allocated_len) {
-        gsize new_len = str->len + need_len + 1;
-        gchar* newp = realloc(str->str, new_len);
-        str->str = newp;
-        str->allocated_len = new_len;
-        str->len = new_len - 1;
-    }
-
-    gchar* temp = malloc(need_len + 1);
+    gsize required;
+    if (need_len < 0 || size_add(&required, str->len, (gsize)need_len) ||
+        size_add(&required, required, 1)) return;
+    // Format before realloc: callers may pass the current string as an argument.
+    gchar* temp = malloc((gsize)need_len + 1);
+    if (!temp) return;
     va_start(args, format);
-    vsnprintf(temp, need_len, format, args);
+    int written = vsnprintf(temp, (gsize)need_len + 1, format, args);
     va_end(args);
-
-    strcat(str->str, temp);
+    if (written != need_len) { free(temp); return; }
+    if (required > str->allocated_len) {
+        gsize capacity;
+        if (size_double(&capacity, str->allocated_len) || capacity < required)
+            capacity = required;
+        gchar* newp = realloc(str->str, capacity);
+        if (!newp) { free(temp); return; }
+        str->str = newp;
+        str->allocated_len = capacity;
+    }
+    memcpy(str->str + str->len, temp, (gsize)need_len + 1);
+    str->len = required - 1;
     free(temp);
 }
 

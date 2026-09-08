@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <iomanip>
 #include <memory>
+#include <vector>
 #include <teakra/disassembler.h>
 #include "../core_timing.h"
 #include "../interpreter.h"
@@ -32,6 +33,11 @@ int main(int argc, char** argv) {
 
     Teakra::CoreTiming core_timing;
     Teakra::SharedMemory shared_memory;
+    // melonDS supplies DSP RAM through callbacks rather than owning it in SharedMemory.
+    std::vector<u16> words(0x40000);
+    shared_memory.SetExternalMemoryCallback(
+        [&](u32 address) { return words.at(address / 2); },
+        [&](u32 address, u16 value) { words.at(address / 2) = value; });
     Teakra::MemoryInterfaceUnit miu;
     Teakra::MemoryInterface memory_interface{shared_memory, miu};
     Teakra::RegisterState regs;
@@ -43,10 +49,14 @@ int main(int argc, char** argv) {
     int skipped = 0;
     while (true) {
         TestCase test_case;
-        if (std::fread(&test_case, sizeof(test_case), 1, file.get()) == 0) {
-            break;
+        const size_t read = std::fread(&test_case, 1, sizeof(test_case), file.get());
+        if (!read && !std::ferror(file.get())) break;
+        if (read != sizeof(test_case)) {
+            std::fprintf(stderr, "Truncated or unreadable test case %d\n", i);
+            return 2;
         }
         regs.Reset();
+        interpreter.Reset();
         regs.a = test_case.before.a;
         regs.b = test_case.before.b;
         regs.p = test_case.before.p;
@@ -245,7 +255,7 @@ int main(int argc, char** argv) {
 
     std::printf("%d / %d passed, %d skipped\n", passed, total, skipped);
 
-    if (passed < total) {
+    if (total == 0 || passed < total || skipped != 0) {
         return 1;
     }
 

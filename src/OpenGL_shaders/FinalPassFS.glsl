@@ -78,8 +78,9 @@ void main()
     if (uDispModeB != 0)
         output_sub = MasterBrightness(output_sub, uBrightModeB, uBrightFactorB);
 
-    output_main = (output_main << 2) | (output_main >> 6);
-    output_sub = (output_sub << 2) | (output_sub >> 6);
+    // Replicate the high two bits of RGB666 into the low two RGB888 bits.
+    output_main = (output_main << 2) | (output_main >> 4);
+    output_sub = (output_sub << 2) | (output_sub >> 4);
 
     int line = int(fTexcoord.y * 192);
     bool swapbit = uScreenSwap[line>>2][line&0x3];

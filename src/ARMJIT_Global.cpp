@@ -1,3 +1,4 @@
+#include <bit>
 #include "ARMJIT_Global.h"
 #include "ARMJIT_Memory.h"
 
@@ -49,7 +50,7 @@ void* AllocateCodeMem()
 #if !defined(APPLE_AARCH64) && !defined(__NetBSD__) && !defined(__OpenBSD__)
     if (AvailableCodeMemSlices)
     {
-        int slice = __builtin_ctz(AvailableCodeMemSlices);
+        int slice = std::countr_zero(AvailableCodeMemSlices);
         AvailableCodeMemSlices &= ~(1 << slice);
         //printf("allocating slice %d\n", slice);
         return &GetAlignedCodeMemoryStart()[slice * CodeMemorySliceSize];

@@ -1,6 +1,7 @@
 name: BSD
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -17,6 +18,7 @@ env:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: [freebsd, netbsd, openbsd]
         # The emulated aarch64 VMs are quite slow, so disable aarch64
@@ -32,6 +34,7 @@ jobs:
 
           - os: netbsd
             os_name: NetBSD
+            compiler_args: -DCMAKE_C_COMPILER=/usr/pkg/gcc14/bin/gcc -DCMAKE_CXX_COMPILER=/usr/pkg/gcc14/bin/g++ -DCMAKE_ASM_COMPILER=/usr/pkg/gcc14/bin/gcc
             # The NetBSD VM image does not come with X sets by default,
             # so download and unpack the sets we need manually.
             # See https://github.com/vmactions/netbsd-vm/issues/2
@@ -49,7 +52,7 @@ jobs:
             install_deps: >
               pkgin -y install cmake extra-cmake-modules pkgconf
               ninja-build qt6-qtbase qt6-qtmultimedia qt6-qtsvg SDL2
-              libarchive zstd enet faad2
+              libarchive zstd enet faad2 gcc14
 
           - os: openbsd
             os_name: OpenBSD
@@ -93,6 +96,7 @@ jobs:
       run: >
         cmake -S $GITHUB_WORKSPACE -B /tmp/build -G Ninja
         -DMELONDS_EMBED_BUILD_INFO=ON
+        ${{ matrix.compiler_args }}
 
     - name: Build
       run: |
