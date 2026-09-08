@@ -136,9 +136,27 @@ int main(int argc, char** argv)
         nds->GetRenderer().SetRenderSettings(settings);
         while (nds->GetRenderer().NeedsShaderCompile()) { int step, total; nds->GetRenderer().ShaderCompileStep(step,total); }
         if (!firmwareBoot) nds->SetupDirectBoot(UTF8ToString(PathFromUTF8(argv[1]).filename().u8string()));
+        // Optional frame/mask pairs exercise real game input without driving a desktop.
+        std::vector<std::pair<int, u32>> inputs;
+        if (const char* script = std::getenv("MELONDS_SMOKE_INPUT_SCRIPT")) {
+            std::ifstream file(PathFromUTF8(script));
+            if (!file) return 2;
+            int frame; u32 mask;
+            while (file >> frame >> mask) {
+                if (frame < 0 || frame >= frames || mask > 0xFFF ||
+                    (!inputs.empty() && frame <= inputs.back().first)) return 2;
+                inputs.emplace_back(frame, mask);
+            }
+            if (!file.eof()) return 2;
+        }
+        size_t nextInput = 0;
         nds->Start();
         const auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < frames; ++i) {
+            if (nextInput < inputs.size() && inputs[nextInput].first == i) {
+                nds->SetKeyMask(inputs[nextInput].second);
+                ++nextInput;
+            }
             // Acknowledge the DSi health screen; subsequent menu state is captured as-is.
             if (firmwareBoot && i == 1200) nds->TouchScreen(128, 96);
             if (firmwareBoot && i == 1202) nds->ReleaseScreen();

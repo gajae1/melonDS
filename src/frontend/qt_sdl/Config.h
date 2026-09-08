@@ -126,7 +126,7 @@ private:
     std::string PathPrefix;
 
     toml::value& ResolvePath(const std::string& path);
-    template<typename T> T FindDefault(const std::string& path, T def, DefaultList<T> list);
+    template<typename T> T FindDefault(const std::string& path, T def, const DefaultList<T>& list);
 };
 
 

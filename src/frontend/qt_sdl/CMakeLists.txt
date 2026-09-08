@@ -10,6 +10,7 @@ set(SOURCES_QT_SDL
     EmuInstance.cpp
     EmuInstanceAudio.cpp
     EmuInstanceInput.cpp
+    KeyboardInput.cpp
     EmuThread.cpp
     CheatImportDialog.cpp
     CheatsDialog.cpp
@@ -20,6 +21,7 @@ set(SOURCES_QT_SDL
     PowerManagement/resources/battery.qrc
     InputConfig/InputConfigDialog.cpp
     InputConfig/MapButton.h
+    InputConfig/KeyMapButton.h
     InputConfig/resources/ds.qrc
     VideoSettingsDialog.cpp
     CameraSettingsDialog.cpp
@@ -282,4 +284,8 @@ if (ENABLE_OGLRENDERER)
     target_compile_definitions(melonDS PUBLIC OGLRENDERER_ENABLED)
     target_compile_definitions(melonDS PUBLIC MELONDS_GL_HEADER=${MELONDS_GL_HEADER})
     target_compile_definitions(core PUBLIC MELONDS_GL_HEADER=${MELONDS_GL_HEADER})
+endif()
+
+if (MELONDS_BUILD_TESTS)
+    include("${CMAKE_SOURCE_DIR}/tests/FrontendInput.cmake")
 endif()

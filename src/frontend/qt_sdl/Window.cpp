@@ -1032,7 +1032,10 @@ void MainWindow::onFocusOut()
     // prevent use after free
     focused = false;
     if (emuInstance)
+    {
+        emuInstance->keyReleaseAll();
         emuInstance->updateAudioMuteByWindowFocus();
+    }
 }
 
 void MainWindow::onAppStateChanged(Qt::ApplicationState state)

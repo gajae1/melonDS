@@ -50,6 +50,18 @@ toml::value RootTable;
 DefaultList<int> DefaultInts =
 {
     {"Instance*.Keyboard", -1},
+    {"Instance*.Keyboard.A", Qt::Key_X},
+    {"Instance*.Keyboard.B", Qt::Key_Z},
+    {"Instance*.Keyboard.X", Qt::Key_S},
+    {"Instance*.Keyboard.Y", Qt::Key_A},
+    {"Instance*.Keyboard.L", Qt::Key_Q},
+    {"Instance*.Keyboard.R", Qt::Key_W},
+    {"Instance*.Keyboard.Start", Qt::Key_Return},
+    {"Instance*.Keyboard.Select", Qt::Key_Shift},
+    {"Instance*.Keyboard.Left", Qt::Key_Left},
+    {"Instance*.Keyboard.Right", Qt::Key_Right},
+    {"Instance*.Keyboard.Up", Qt::Key_Up},
+    {"Instance*.Keyboard.Down", Qt::Key_Down},
     {"Instance*.Joystick", -1},
     {"Instance*.Window*.Width", 256},
     {"Instance*.Window*.Height", 384},
@@ -661,22 +673,19 @@ toml::value& Table::ResolvePath(const std::string& path)
     return (*ret)[tmp];
 }
 
-template<typename T> T Table::FindDefault(const std::string& path, T def, DefaultList<T> list)
+template<typename T> T Table::FindDefault(const std::string& path, T def, const DefaultList<T>& list)
 {
     std::string defkey = GetDefaultKey(PathPrefix+path);
 
-    T ret = def;
-    while (list.count(defkey) == 0)
+    for (;;)
     {
-        if (defkey.empty()) break;
+        if (auto it = list.find(defkey); it != list.end())
+            return it->second;
         size_t sep = defkey.rfind('.');
-        if (sep == std::string::npos) break;
-        defkey = defkey.substr(0, sep);
+        if (sep == std::string::npos)
+            return def;
+        defkey.resize(sep);
     }
-    if (list.count(defkey) != 0)
-        ret = list[defkey];
-
-    return ret;
 }
 
 

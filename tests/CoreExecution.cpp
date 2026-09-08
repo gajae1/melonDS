@@ -78,5 +78,29 @@ int main(int argc, char** argv) {
             return 7;
         }
     }
+#ifdef JIT_ENABLED
+    if (jit) {
+        // Two independent loops share a 512-byte index range, but not a
+        // 16-byte code granule. Modifying one must preserve the other.
+        constexpr u32 first = 0x02000400, second = 0x02000480;
+        nds->ARM9Write32(first, 0xEAFFFFFE);
+        nds->ARM9Write32(second, 0xEAFFFFFE);
+        nds->JIT.JitEnableWrite();
+        nds->ARM9.JumpTo(first);
+        nds->JIT.CompileBlock(&nds->ARM9);
+        nds->ARM9.JumpTo(second);
+        nds->JIT.CompileBlock(&nds->ARM9);
+        nds->JIT.JitEnableExecute();
+        if (!nds->JIT.JitBlocks9.contains(first) || !nds->JIT.JitBlocks9.contains(second)) return 9;
+        nds->ARM9Write32(first, 0xE3A0002A); // mov r0,#42
+        if (nds->JIT.JitBlocks9.contains(first) || !nds->JIT.JitBlocks9.contains(second)) {
+            std::fprintf(stderr, "JIT invalidation removed an unrelated code granule\n");
+            return 10;
+        }
+        // The retained block still has to be protected from later writes.
+        nds->ARM9Write32(second, 0xE3A00007);
+        if (nds->JIT.JitBlocks9.contains(second)) return 11;
+    }
+#endif
     std::printf("core=%s fastmem=%d lines=%u ARM-result=100 save-restore=PASS pixels=49152\n",jit?"JIT":"interpreter",fast,lines);
 }

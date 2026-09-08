@@ -20,6 +20,7 @@
 #define EMUINSTANCE_H
 
 #include <SDL2/SDL.h>
+#include <atomic>
 
 #include "Platform.h"
 #include "main.h"
@@ -28,6 +29,7 @@
 #include "Window.h"
 #include "Config.h"
 #include "SaveManager.h"
+#include "KeyboardInput.h"
 
 const int kMaxWindows = 4;
 
@@ -77,9 +79,6 @@ enum
 #endif
     renderer3D_Max,
 };
-
-bool isRightModKey(QKeyEvent* event);
-int getEventKeyVal(QKeyEvent* event);
 
 class EmuInstance
 {
@@ -368,8 +367,9 @@ private:
     static std::shared_ptr<SDL_mutex> joyMutexGlobal;
     std::shared_ptr<SDL_mutex> joyMutex;
 
-    melonDS::u32 keyInputMask, joyInputMask;
-    melonDS::u32 keyHotkeyMask, joyHotkeyMask;
+    // The GUI writes keyboard state while the emulation thread samples it.
+    std::atomic<melonDS::u32> keyInputMask, keyHotkeyMask;
+    melonDS::u32 joyInputMask, joyHotkeyMask;
     melonDS::u32 hotkeyMask, lastHotkeyMask;
     melonDS::u32 hotkeyPress, hotkeyRelease;
 

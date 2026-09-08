@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <cassert>
 #include <cstring>
+#include <algorithm>
 #include "Savestate.h"
 #include "Platform.h"
 
@@ -62,6 +63,13 @@ Savestate::Savestate(void *buffer, u32 size, bool save) :
     buffer_owned(false),
     finished(false)
 {
+    if (!buffer || size < 16)
+    {
+        Log(LogLevel::Error, "savestate: missing or truncated global header\n");
+        Error = true;
+        return;
+    }
+
     if (Saving)
     {
         WriteSavestateHeader();
@@ -200,9 +208,9 @@ void Savestate::VarBool(bool* var)
     }
     else
     {
-        u8 val;
+        u8 val = 0;
         Var8(&val);
-        *var = val != 0;
+        if (!Error) *var = val != 0;
     }
 }
 
@@ -216,25 +224,32 @@ void Savestate::Bool32(bool* var)
     }
     else
     {
-        u32 val;
+        u32 val = 0;
         Var32(&val);
-        *var = val != 0;
+        if (!Error) *var = val != 0;
     }
 }
 
 void Savestate::VarArray(void* data, u32 len)
 {
-    if (Error || finished) return;
+    if (Error || finished || len == 0) return;
 
-    assert(buffer_offset <= buffer_length);
+    if (!data || !buffer || buffer_offset > buffer_length || len > UINT32_MAX - buffer_offset)
+    {
+        Log(LogLevel::Error, "savestate: invalid array buffer or length\n");
+        Error = true;
+        return;
+    }
 
     if (Saving)
     {
-        if (buffer_offset + len > buffer_length)
+        if (len > buffer_length - buffer_offset)
         { // If writing the given data would take us past the buffer's end...
             Log(LogLevel::Warn, "savestate: %u-byte write would exceed %u-byte savestate buffer\n", len, buffer_length);
 
-            if (!(buffer_owned && Resize(buffer_length * 2 + len)))
+            const u32 new_length = static_cast<u32>(std::min<u64>(
+                static_cast<u64>(buffer_length) * 2 + len, UINT32_MAX));
+            if (!(buffer_owned && Resize(new_length)))
             { // If we're not allowed to resize this buffer, or if we are but failed...
                 Log(LogLevel::Error, "savestate: Failed to write %d bytes to savestate\n", len);
                 Error = true;
@@ -248,7 +263,7 @@ void Savestate::VarArray(void* data, u32 len)
     }
     else
     {
-        if (buffer_offset + len > buffer_length)
+        if (len > buffer_length - buffer_offset)
         { // If reading the requested amount of data would take us past the buffer's edge...
             Log(LogLevel::Error, "savestate: %u-byte read would exceed %u-byte savestate buffer\n", len, buffer_length);
             Error = true;

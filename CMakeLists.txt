@@ -144,6 +144,10 @@ if (ENABLE_GDBSTUB)
 endif()
 
 option(BUILD_QT_SDL "Build Qt/SDL frontend" ON)
+option(MELONDS_BUILD_TESTS "Build focused regression and core integration tests" OFF)
+if (MELONDS_BUILD_TESTS)
+    enable_testing()
+endif()
 
 add_subdirectory(src)
 
@@ -151,8 +155,6 @@ if (BUILD_QT_SDL)
     add_subdirectory(src/frontend/qt_sdl)
 endif()
 
-option(MELONDS_BUILD_TESTS "Build focused regression and core integration tests" OFF)
 if (MELONDS_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()

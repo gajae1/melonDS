@@ -33,6 +33,33 @@ static bool Rejects(std::vector<u8>& data, const char* magic)
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
+    if (!strcmp(argv[1], "array-bounds"))
+    {
+        auto truncated = MakeState(12);
+        Savestate shortHeader(truncated.data(), 12, false);
+        if (!shortHeader.Error) {
+            fprintf(stderr, "Accepted global header without reserved bytes\n");
+            return 1;
+        }
+        auto data = MakeState(32);
+        u8 value = 0xA5;
+        Savestate loaded(data.data(), static_cast<u32>(data.size()), false);
+        loaded.VarArray(&value, 0xFFFFFFFFu);
+        if (!loaded.Error || value != 0xA5) return 1;
+        Savestate saved(32);
+        saved.VarArray(&value, 0xFFFFFFFFu);
+        if (!saved.Error) return 1;
+
+        auto empty = MakeState(16);
+        Savestate boolState(empty.data(), 16, false);
+        bool flag = true;
+        boolState.VarBool(&flag);
+        if (!boolState.Error || !flag) return 1;
+        boolState.Bool32(&flag);
+        if (!flag) return 1;
+        Savestate nullState(nullptr, 16, false);
+        return nullState.Error ? 0 : 1;
+    }
     if (!strcmp(argv[1], "roundtrip"))
     {
         Savestate saved(128);

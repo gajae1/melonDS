@@ -13,7 +13,7 @@ add_executable(SavestateSections SavestateSections.cpp ../src/Savestate.cpp)
 target_include_directories(SavestateSections PRIVATE ../src)
 target_compile_features(SavestateSections PRIVATE cxx_std_26)
 
-foreach(case roundtrip invalid-length truncated-header zero-length-skip oversized-skip)
+foreach(case roundtrip invalid-length truncated-header zero-length-skip oversized-skip array-bounds)
     add_test(NAME savestate-${case} COMMAND SavestateSections ${case})
     set_tests_properties(savestate-${case} PROPERTIES TIMEOUT 5)
 endforeach()

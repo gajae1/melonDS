@@ -286,52 +286,13 @@ void EmuInstance::closeJoystick()
 }
 
 
-// distinguish between left and right modifier keys (Ctrl, Alt, Shift)
-// Qt provides no real cross-platform way to do this, so here we go
-// for Windows and Linux we can distinguish via scancodes (but both
-// provide different scancodes)
-bool isRightModKey(QKeyEvent* event)
-{
-#ifdef __WIN32__
-    quint32 scan = event->nativeScanCode();
-    return (scan == 0x11D || scan == 0x138 || scan == 0x36);
-#elif __APPLE__
-    quint32 scan = event->nativeVirtualKey();
-    return (scan == 0x36 || scan == 0x3C || scan == 0x3D || scan == 0x3E);
-#else
-    quint32 scan = event->nativeScanCode();
-    return (scan == 0x69 || scan == 0x6C || scan == 0x3E);
-#endif
-}
-
-int getEventKeyVal(QKeyEvent* event)
-{
-    int key = event->key();
-    int mod = event->modifiers();
-    bool ismod = (key == Qt::Key_Control ||
-                  key == Qt::Key_Alt ||
-                  key == Qt::Key_AltGr ||
-                  key == Qt::Key_Shift ||
-                  key == Qt::Key_Meta);
-
-    if (!ismod)
-        key |= mod;
-    else if (isRightModKey(event))
-        key |= (1<<31);
-
-    return key;
-}
-
-
 void EmuInstance::onKeyPress(QKeyEvent* event)
 {
     int keyHK = getEventKeyVal(event);
-    int keyKP = keyHK;
-    if (event->modifiers() != Qt::KeypadModifier)
-        keyKP &= ~event->modifiers();
+    int keyKP = getEventKeyVal(event, false);
 
     for (int i = 0; i < 12; i++)
-        if (keyKP == keyMapping[i])
+        if (keyKP == (keyMapping[i] & ~KeyboardShortcutModifiers))
             keyInputMask &= ~(1<<i);
 
     for (int i = 0; i < HK_MAX; i++)
@@ -341,17 +302,15 @@ void EmuInstance::onKeyPress(QKeyEvent* event)
 
 void EmuInstance::onKeyRelease(QKeyEvent* event)
 {
-    int keyHK = getEventKeyVal(event);
-    int keyKP = keyHK;
-    if (event->modifiers() != Qt::KeypadModifier)
-        keyKP &= ~event->modifiers();
+    int keyKP = getEventKeyVal(event, false);
 
     for (int i = 0; i < 12; i++)
-        if (keyKP == keyMapping[i])
+        if (keyKP == (keyMapping[i] & ~KeyboardShortcutModifiers))
             keyInputMask |= (1<<i);
 
     for (int i = 0; i < HK_MAX; i++)
-        if (keyHK == hkKeyMapping[i])
+        // The user may release Ctrl/Shift before the main shortcut key.
+        if (keyKP == (hkKeyMapping[i] & ~KeyboardShortcutModifiers))
             keyHotkeyMask &= ~(1<<i);
 }
 
