@@ -20,8 +20,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <codecvt>
-#include <locale>
 #include <memory>
 #include <tuple>
 #include <string>
@@ -55,7 +53,6 @@ using std::pair;
 using std::string;
 using std::tie;
 using std::unique_ptr;
-using std::wstring_convert;
 using namespace melonDS;
 using namespace melonDS::Platform;
 
@@ -1074,7 +1071,6 @@ std::optional<DSi_NAND::NANDImage> EmuInstance::loadNAND(const std::array<u8, DS
             auto firmcfg = localCfg.GetTable("Firmware");
 
             // we store relevant strings as UTF-8, so we need to convert them to UTF-16
-            //auto converter = wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t>{};
 
             // setting up username
             auto username = firmcfg.GetQString("Username");
