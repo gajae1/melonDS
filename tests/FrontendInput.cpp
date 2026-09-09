@@ -28,10 +28,15 @@ struct InputState
 #include "keyReleaseAll.inc"
 #undef EmuInstance
 
+struct PanelState
+{
+    void releaseTouch() {}
+};
 struct WindowState
 {
     InputState* emuInstance;
     bool focused = true;
+    PanelState* panel = nullptr;
     void onFocusOut();
 };
 #define MainWindow WindowState

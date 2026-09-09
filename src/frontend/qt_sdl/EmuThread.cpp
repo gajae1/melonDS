@@ -255,8 +255,9 @@ void EmuThread::run()
             // process input and hotkeys
             emuInstance->nds->SetKeyMask(emuInstance->inputMask);
 
-            if (emuInstance->isTouching)
-                emuInstance->nds->TouchScreen(emuInstance->touchX, emuInstance->touchY);
+            u16 touchX, touchY;
+            if (emuInstance->inputGetTouch(touchX, touchY))
+                emuInstance->nds->TouchScreen(touchX, touchY);
             else
                 emuInstance->nds->ReleaseScreen();
 
@@ -305,7 +306,7 @@ void EmuThread::run()
             // requested emulation speed before producing device-rate samples.
             // Fast-forward retains the existing queue-trimming behavior; its
             // requested speed may exceed what the host can actually execute.
-            const double audioFPS = std::min(emuInstance->curFPS, emuInstance->targetFPS);
+            const double audioFPS = std::min(emuInstance->curFPS.load(std::memory_order_relaxed), emuInstance->targetFPS);
             emuInstance->nds->SPU.SetOutputSkew(std::max(audioFPS / 59.8260982880808, 0.5));
             u32 nlines;
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
@@ -365,10 +366,11 @@ void EmuThread::run()
             slowmo = enableslowmo;
             emuInstance->updateFastForwardMute(fastforward);
 
-            if (slowmo) emuInstance->curFPS = emuInstance->slowmoFPS;
-            else if (fastforward) emuInstance->curFPS = emuInstance->fastForwardFPS;
-            else if (!emuInstance->doLimitFPS && !emuInstance->doAudioSync) emuInstance->curFPS = 1000.0;
-            else emuInstance->curFPS = emuInstance->targetFPS;
+            double currentFPS = emuInstance->targetFPS;
+            if (slowmo) currentFPS = emuInstance->slowmoFPS;
+            else if (fastforward) currentFPS = emuInstance->fastForwardFPS;
+            else if (!emuInstance->doLimitFPS && !emuInstance->doAudioSync) currentFPS = 1000.0;
+            emuInstance->curFPS.store(currentFPS, std::memory_order_relaxed);
 
             if (emuInstance->audioDSiVolumeSync && emuInstance->nds->ConsoleType == 1)
             {
@@ -386,7 +388,7 @@ void EmuThread::run()
             if (emuInstance->doAudioSync && !(fastforward || slowmo))
                 emuInstance->audioSync();
 
-            double frametimeStep = nlines / (emuInstance->curFPS * 263.0);
+            double frametimeStep = nlines / (currentFPS * 263.0);
 
             if (frametimeStep < 0.001) frametimeStep = 0.001;
 

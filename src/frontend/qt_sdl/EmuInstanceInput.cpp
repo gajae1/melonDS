@@ -91,9 +91,7 @@ void EmuInstance::inputInit()
     hotkeyMask = 0;
     lastHotkeyMask = 0;
 
-    isTouching = false;
-    touchX = 0;
-    touchY = 0;
+    touchInput.store(0, std::memory_order_relaxed);
 
     joystick = nullptr;
     controller = nullptr;
@@ -226,25 +224,18 @@ void EmuInstance::setJoystick(int id)
 
 void EmuInstance::openJoystick()
 {
-    if (controller) SDL_GameControllerClose(controller);
-
-    if (joystick) SDL_JoystickClose(joystick);
+    closeJoystick();
 
     int num = SDL_NumJoysticks();
     if (num < 1)
-    {
-        controller = nullptr;
-        joystick = nullptr;
-        hasRumble = false;
-        hasAccelerometer = false;
-        hasGyroscope = false;
         return;
-    }
 
     if (joystickID >= num)
         joystickID = 0;
 
     joystick = SDL_JoystickOpen(joystickID);
+    if (!joystick)
+        return;
 
     if (SDL_IsGameController(joystickID))
     {
@@ -274,15 +265,17 @@ void EmuInstance::closeJoystick()
     {
         SDL_GameControllerClose(controller);
         controller = nullptr;
-        hasRumble = false;
-        hasAccelerometer = false;
-        hasGyroscope = false;
     }
     if (joystick)
     {
         SDL_JoystickClose(joystick);
         joystick = nullptr;
     }
+
+    hasRumble = false;
+    hasAccelerometer = false;
+    hasGyroscope = false;
+    isRumbling = false;
 }
 
 
@@ -385,8 +378,7 @@ void EmuInstance::inputProcess()
     {
         if (!SDL_JoystickGetAttached(joystick))
         {
-            SDL_JoystickClose(joystick);
-            joystick = nullptr;
+            closeJoystick();
         }
     }
     if (!joystick && (SDL_NumJoysticks() > 0))
@@ -421,12 +413,22 @@ void EmuInstance::inputProcess()
 
 void EmuInstance::touchScreen(int x, int y)
 {
-    touchX = x;
-    touchY = y;
-    isTouching = true;
+    touchInput.store(u64(u16(x)) | (u64(u16(y)) << 16) | (u64{1} << 32),
+                     std::memory_order_relaxed);
 }
 
 void EmuInstance::releaseScreen()
 {
-    isTouching = false;
+    touchInput.store(0, std::memory_order_relaxed);
+}
+
+bool EmuInstance::inputGetTouch(u16& x, u16& y)
+{
+    const u64 value = touchInput.load(std::memory_order_relaxed);
+    if (!(value & (u64{1} << 32)))
+        return false;
+
+    x = u16(value);
+    y = u16(value >> 16);
+    return true;
 }

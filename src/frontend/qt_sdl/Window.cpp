@@ -1160,6 +1160,7 @@ void MainWindow::onFocusOut()
     if (emuInstance)
     {
         emuInstance->keyReleaseAll();
+        if (panel) panel->releaseTouch();
         emuInstance->updateAudioMuteByWindowFocus();
     }
 }
@@ -1169,6 +1170,7 @@ void MainWindow::onAppStateChanged(Qt::ApplicationState state)
     if (state == Qt::ApplicationInactive)
     {
         emuInstance->keyReleaseAll();
+        if (panel) panel->releaseTouch();
         if (pauseOnLostFocus && emuThread->emuIsRunning())
             emuThread->emuPause();
     }

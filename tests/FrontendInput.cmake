@@ -34,6 +34,115 @@ add_test(NAME qt-keyboard-mapping-input COMMAND FrontendInput)
 set_tests_properties(qt-keyboard-mapping-input PROPERTIES
     TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+set(touch_methods)
+foreach(pair IN ITEMS "touchEvent|void ScreenPanel::touchEvent(QTouchEvent* event)"
+        "releaseTouch|void ScreenPanel::releaseTouch()"
+        "touchPanelEvent|bool ScreenPanel::event(QEvent* event)"
+        "touchMousePress|void ScreenPanel::mousePressEvent(QMouseEvent* event)"
+        "touchMouseRelease|void ScreenPanel::mouseReleaseEvent(QMouseEvent* event)"
+        "touchMouseMove|void ScreenPanel::mouseMoveEvent(QMouseEvent* event)"
+        "touchTablet|void ScreenPanel::tabletEvent(QTabletEvent* event)"
+        "touchAppState|void MainWindow::onAppStateChanged(Qt::ApplicationState state)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    if (method STREQUAL "touchAppState")
+        set(source Window.cpp)
+    else()
+        set(source Screen.cpp)
+    endif()
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" "${source}" VERBATIM)
+    list(APPEND touch_methods "${output}")
+endforeach()
+add_executable(FrontendTouch "${CMAKE_SOURCE_DIR}/tests/FrontendTouch.cpp"
+    ../ScreenLayout.cpp ${touch_methods} "${focus_method}")
+target_include_directories(FrontendTouch PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_BINARY_DIR}")
+if (USE_QT6)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    target_link_libraries(FrontendTouch PRIVATE Qt6::Widgets Qt6::Test)
+else()
+    find_package(Qt5 REQUIRED COMPONENTS Test)
+    target_link_libraries(FrontendTouch PRIVATE Qt5::Widgets Qt5::Test)
+endif()
+foreach(case IN ITEMS drag cancel end-paused focus app-inactive mouse tablet)
+    add_test(NAME frontend-touch-${case} COMMAND FrontendTouch ${case})
+    set_tests_properties(frontend-touch-${case} PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()
+
+set(touch_publication_methods)
+foreach(pair IN ITEMS "touchPublish|void EmuInstance::touchScreen(int x, int y)"
+        "touchRelease|void EmuInstance::releaseScreen()"
+        "touchRead|bool EmuInstance::inputGetTouch(u16& x, u16& y)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceInput.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceInput.cpp VERBATIM)
+    list(APPEND touch_publication_methods "${output}")
+endforeach()
+add_executable(TouchPublication "${CMAKE_SOURCE_DIR}/tests/TouchPublication.cpp" ${touch_publication_methods})
+target_include_directories(TouchPublication PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(TouchPublication PRIVATE Threads::Threads)
+add_test(NAME frontend-touch-publication COMMAND TouchPublication)
+set_tests_properties(frontend-touch-publication PROPERTIES TIMEOUT 15)
+
+set(joystick_methods)
+foreach(pair IN ITEMS "joystickSet|void EmuInstance::setJoystick(int id)"
+        "joystickOpen|void EmuInstance::openJoystick()"
+        "joystickClose|void EmuInstance::closeJoystick()"
+        "joystickButton|bool EmuInstance::joystickButtonDown(int val)"
+        "joystickProcess|void EmuInstance::inputProcess()"
+        "joystickRumbleStart|void EmuInstance::inputRumbleStart(melonDS::u32 len_ms)"
+        "joystickRumbleStop|void EmuInstance::inputRumbleStop()")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceInput.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceInput.cpp VERBATIM)
+    list(APPEND joystick_methods "${output}")
+endforeach()
+add_executable(FrontendJoystick "${CMAKE_SOURCE_DIR}/tests/FrontendJoystick.cpp" ${joystick_methods})
+target_include_directories(FrontendJoystick PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(FrontendJoystick PRIVATE PkgConfig::SDL2 Threads::Threads)
+foreach(case IN ITEMS controls transition capabilities detach open-failure close)
+    add_test(NAME frontend-joystick-${case} COMMAND FrontendJoystick ${case})
+    set_tests_properties(frontend-joystick-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
+endforeach()
+
+set(mic_methods)
+foreach(pair IN ITEMS "micOpen|void EmuInstance::micOpen()"
+        "micGetNumSamplesIn|int EmuInstance::micGetNumSamplesIn(int inlen)"
+        "micResample|void EmuInstance::micResample(s16* inbuf, int inlen)"
+        "micReadInput|int EmuInstance::micReadInput(s16* data, int maxlength)"
+        "micCallback|void EmuInstance::micCallback(void* data, Uint8* stream, int len)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceAudio.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
+    list(APPEND mic_methods "${output}")
+endforeach()
+add_executable(FrontendMicrophone "${CMAKE_SOURCE_DIR}/tests/FrontendMicrophone.cpp" ${mic_methods})
+target_include_directories(FrontendMicrophone PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(FrontendMicrophone PRIVATE PkgConfig::SDL2 Threads::Threads)
+foreach(case IN ITEMS resample-control resample-window resample-guard resample-tiny producer-consumer reopen-preserve)
+    add_test(NAME frontend-microphone-${case} COMMAND FrontendMicrophone ${case})
+    set_tests_properties(frontend-microphone-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
 set(rom_decompressor "${CMAKE_CURRENT_BINARY_DIR}/decompressROM.inc")
 add_custom_command(OUTPUT "${rom_decompressor}"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"

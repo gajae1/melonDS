@@ -250,10 +250,16 @@ void ScreenPanel::resizeEvent(QResizeEvent* event)
     QWidget::resizeEvent(event);
 }
 
+void ScreenPanel::releaseTouch()
+{
+    touching = false;
+    emuInstance->releaseScreen();
+}
+
 void ScreenPanel::mousePressEvent(QMouseEvent* event)
 {
     event->accept();
-    if (!emuInstance->emuIsActive()) { touching = false; return; }
+    if (!emuInstance->emuIsActive()) { releaseTouch(); return; }
     if (event->button() != Qt::LeftButton) return;
 
     int x = event->pos().x();
@@ -269,14 +275,10 @@ void ScreenPanel::mousePressEvent(QMouseEvent* event)
 void ScreenPanel::mouseReleaseEvent(QMouseEvent* event)
 {
     event->accept();
-    if (!emuInstance->emuIsActive()) { touching = false; return; }
     if (event->button() != Qt::LeftButton) return;
 
     if (touching)
-    {
-        touching = false;
-        emuInstance->releaseScreen();
-    }
+        releaseTouch();
 }
 
 void ScreenPanel::mouseMoveEvent(QMouseEvent* event)
@@ -285,7 +287,7 @@ void ScreenPanel::mouseMoveEvent(QMouseEvent* event)
 
     showCursor();
 
-    if (!emuInstance->emuIsActive()) return;
+    if (!emuInstance->emuIsActive()) { releaseTouch(); return; }
     //if (!(event->buttons() & Qt::LeftButton)) return;
     if (!touching) return;
 
@@ -301,7 +303,8 @@ void ScreenPanel::mouseMoveEvent(QMouseEvent* event)
 void ScreenPanel::tabletEvent(QTabletEvent* event)
 {
     event->accept();
-    if (!emuInstance->emuIsActive()) { touching = false; return; }
+    if (!emuInstance->emuIsActive()) { releaseTouch(); return; }
+    if (event->type() == QEvent::TabletMove && !touching) return;
 
     switch(event->type())
     {
@@ -325,10 +328,7 @@ void ScreenPanel::tabletEvent(QTabletEvent* event)
         break;
     case QEvent::TabletRelease:
         if (touching)
-        {
-            emuInstance->releaseScreen();
-            touching = false;
-        }
+            releaseTouch();
         break;
     default:
         break;
@@ -343,7 +343,10 @@ void ScreenPanel::touchEvent(QTouchEvent* event)
 #endif
 
     event->accept();
-    if (!emuInstance->emuIsActive()) { touching = false; return; }
+    if (!emuInstance->emuIsActive()) { releaseTouch(); return; }
+
+    // A cancelled or unfocused gesture needs a new press before moving again.
+    if (event->type() == QEvent::TouchUpdate && !touching) return;
 
     switch(event->type())
     {
@@ -351,15 +354,17 @@ void ScreenPanel::touchEvent(QTouchEvent* event)
     case QEvent::TouchUpdate:
 #if QT_VERSION_MAJOR == 6
         if (event->points().length() > 0)
-        {
-            QPointF lastPosition = event->points().first().lastPosition();
 #else
         if (event->touchPoints().length() > 0)
-        {
-            QPointF lastPosition = event->touchPoints().first().lastPos();
 #endif
-            int x = (int)lastPosition.x();
-            int y = (int)lastPosition.y();
+        {
+#if QT_VERSION_MAJOR == 6
+            QPointF position = event->points().first().position();
+#else
+            QPointF position = event->touchPoints().first().pos();
+#endif
+            int x = (int)position.x();
+            int y = (int)position.y();
 
             if (layout.GetTouchCoords(x, y, event->type()==QEvent::TouchUpdate))
             {
@@ -369,11 +374,8 @@ void ScreenPanel::touchEvent(QTouchEvent* event)
         }
         break;
     case QEvent::TouchEnd:
-        if (touching)
-        {
-            emuInstance->releaseScreen();
-            touching = false;
-        }
+    case QEvent::TouchCancel:
+        releaseTouch();
         break;
     default:
         break;
@@ -384,6 +386,7 @@ bool ScreenPanel::event(QEvent* event)
 {
     if (event->type() == QEvent::TouchBegin
         || event->type() == QEvent::TouchEnd
+        || event->type() == QEvent::TouchCancel
         || event->type() == QEvent::TouchUpdate)
     {
         touchEvent((QTouchEvent*)event);

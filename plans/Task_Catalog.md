@@ -2,7 +2,7 @@
 
 125개 과제 ID를 유지한다. 이는 확정 버그 수나 독립 구현 수가 아니다. P1은 재현 우선, P2는 호환성·측정 개선, P3은 효용 확인 후 채택이다. 관찰 근거는 1.1.02 분석 당시 분류이며 실행으로 새로 확인한 항목은 처리 상태를 갱신한다.
 
-기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.06.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
+기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.07.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
 
 | ID | 작업·상세 계약 | 관찰 근거 | 우선 | 기본 버전 | 공동 대표 | 처리 상태 |
 |---|---|---|---|---|---|---|
@@ -43,8 +43,8 @@
 | GR-14 | [render·readback·present 비용 분해](workstreams/02-renderers.md#GR-14) | 미측정 가설 | P2 | [1.1.30](Release_Plan.md#v30) | — | 미착수 |
 | GR-15 | [Vulkan 전체 backend 신설](workstreams/02-renderers.md#GR-15) | 기능 부재 관찰·이득 미측정 | P3 | [1.1.32](Release_Plan.md#v32) | — | 미착수 |
 | GR-16 | [frame 종류·수명·반납 계약](workstreams/02-renderers.md#GR-16) | 관찰/확장 | P3 | [1.1.32](Release_Plan.md#v32) | — | 미착수 |
-| AD-01 | [마이크 보간 끝 sample 경계](workstreams/03-audio-dsi.md#AD-01) | 정적 후보 | P1 | [1.1.08](Release_Plan.md#v08) | — | 미착수 |
-| AD-02 | [마이크 공유 count·장치 수명](workstreams/03-audio-dsi.md#AD-02) | 정적 후보 | P1 | [1.1.08](Release_Plan.md#v08) | — | 미착수 |
+| AD-01 | [마이크 보간 끝 sample 경계](workstreams/03-audio-dsi.md#AD-01) | 실행 재현 | P1 | [1.1.08](Release_Plan.md#v08) | — | 1.1.07 마지막 sample·빈 입력 보호와 생성 파형/보호 페이지 회귀; 실제 장치 수락 후속 |
+| AD-02 | [마이크 공유 count·장치 수명](workstreams/03-audio-dsi.md#AD-02) | 실행 재현 | P1 | [1.1.08](Release_Plan.md#v08) | — | 1.1.07 count 잠금·FPS 게시·열린 장치 재호출 보존 회귀; 실제 재연결·다중 인스턴스·TSan 후속 |
 | AD-03 | [최초 SPU bitdepth 정책](workstreams/03-audio-dsi.md#AD-03) | 정적 후보 | P1 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-04 | [underrun·지연·장치 복구](workstreams/03-audio-dsi.md#AD-04) | 미측정 가설 | P2 | [1.1.08](Release_Plan.md#v08) | — | 미착수 |
 | AD-05 | [load/reset 오디오 이력 정책](workstreams/03-audio-dsi.md#AD-05) | 정적 후보 | P2 | [1.1.08](Release_Plan.md#v08) | — | 미착수 |
@@ -77,8 +77,8 @@
 | FS-06 | [종료 시 지속 저장 실패](workstreams/04-frontend-storage.md#FS-06) | 실행 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.05 pending·복구 API·종료 선택 구현·로컬 회귀; 실제 저장장치·장기 수락 후속 |
 | FS-07 | [archive EOF/누락/오류·자원](workstreams/04-frontend-storage.md#FS-07) | 실행 재현 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.06 입력·자원·전체 읽기 구현·로컬 회귀 확인; 전체 형식·대용량 수락 후속 |
 | FS-08 | [Zstd 실제 길이·frame 완료](workstreams/04-frontend-storage.md#FS-08) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.03 구현·회귀; 실제 최대 출력 경계 후속 |
-| FS-09 | [controller 핸들·capability 정리](workstreams/04-frontend-storage.md#FS-09) | 정적 후보 | P1 | [1.1.06](Release_Plan.md#v06) | — | 미착수 |
-| FS-10 | [touch 좌표·cancel·공유 snapshot](workstreams/04-frontend-storage.md#FS-10) | 정적 후보 | P1 | [1.1.06](Release_Plan.md#v06) | — | 미착수 |
+| FS-09 | [controller 핸들·capability 정리](workstreams/04-frontend-storage.md#FS-09) | 실행 재현 | P1 | [1.1.06](Release_Plan.md#v06) | — | 1.1.07 공통 핸들/capability/rumble 정리·가상 SDL 장치 회귀; 실물 hotplug·motion 수락 후속 |
+| FS-10 | [touch 좌표·cancel·공유 snapshot](workstreams/04-frontend-storage.md#FS-10) | 실행 재현 | P1 | [1.1.06](Release_Plan.md#v06) | — | 1.1.07 현재 좌표·취소/포커스 해제·원자적 좌표 게시 회귀; 실물·DPI/회전·다중 창 후속 |
 | FS-11 | [DPI·다중 창·종료 경계](workstreams/04-frontend-storage.md#FS-11) | 관찰/확장 | P2 | [1.1.06](Release_Plan.md#v06) | — | 미착수 |
 | FS-12 | [장치 identity·인스턴스 배정](workstreams/04-frontend-storage.md#FS-12) | 정적 후보 | P2 | [1.1.06](Release_Plan.md#v06) | — | 미착수 |
 | FS-13 | [동일 basename save 충돌](workstreams/04-frontend-storage.md#FS-13) | 정적 후보 | P1 | [1.1.04](Release_Plan.md#v04) | — | 미착수 |

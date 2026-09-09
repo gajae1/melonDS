@@ -62,6 +62,8 @@ public:
 
     void setMouseHide(bool enable, int delay);
 
+    void releaseTouch();
+
     QTimer* setupMouseTimer();
     void updateMouseTimer();
     QTimer* mouseTimer;
@@ -244,4 +246,3 @@ private:
 };
 
 #endif // SCREEN_H
-

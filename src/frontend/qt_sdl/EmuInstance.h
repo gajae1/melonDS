@@ -253,6 +253,7 @@ private:
     bool joystickButtonDown(int val);
 
     void inputProcess();
+    bool inputGetTouch(melonDS::u16& x, melonDS::u16& y);
 
     bool hotkeyDown(int id)     { return hotkeyMask    & (1<<id); }
     bool hotkeyPressed(int id)  { return hotkeyPress   & (1<<id); }
@@ -300,7 +301,7 @@ public:
     std::unique_ptr<SaveManager> firmwareSave;
 
     bool doLimitFPS;
-    double curFPS;
+    std::atomic<double> curFPS;
     double targetFPS;
     double fastForwardFPS;
     double slowmoFPS;
@@ -379,8 +380,9 @@ private:
 
     melonDS::u32 inputMask;
 
-    bool isTouching;
-    melonDS::u16 touchX, touchY;
+    // Publish the pressed flag and both coordinates as one GUI-to-core sample.
+    // Low 16 bits: X; next 16 bits: Y; bit 32: pressed.
+    std::atomic<melonDS::u64> touchInput{0};
 
     friend class EmuThread;
     friend class MainWindow;

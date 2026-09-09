@@ -76,7 +76,29 @@ This produces 21 entries on a supported JIT-enabled target, or 19 with
 AAC and host input/output; unexpected file use aborts. It does not replace
 real driver/game/physical-hardware regression tests. The full-core tests are
 not automatically sanitized by the standalone sanitizer configuration.
-See [the release record](../plans/releases/1.1.06.md) for current scope and measurement limitations.
+See [the release record](../plans/releases/1.1.07.md) for current scope and measurement limitations.
+
+`FrontendTouch` delivers generated Qt touch, mouse, tablet, focus and application
+events to current production handlers with the real screen layout. Its offscreen
+widget checks current drag coordinates, cancellation, inactive releases and the
+need for a new press after focus loss. `TouchPublication` uses the current input
+publication/read functions to check coordinate pairs while another thread moves
+and releases the contact. These checks do not cover physical devices or every
+rotation, DPI and multi-window configuration.
+
+`FrontendJoystick` uses real SDL virtual devices, open/close and input sampling.
+It covers controller/joystick transitions, capabilities, rumble latch, detach,
+reconnect, open failures and ordinary key/hat/axis/hotkey merging. Sensor support
+and open failures are injected at their SDL boundaries; motion samples and
+physical hotplug are not exercised. If physical devices remain visible after
+disabling their drivers for the test process, it skips without opening them.
+
+`FrontendMicrophone` supplies generated sample blocks to the current callback,
+resampler, queue reader and open path. Guard pages check endpoint and tiny input
+reads; hand-calculated waveforms preserve interpolation phase and ring correction.
+A held producer mutex checks the consumer handoff, and reopening an already open
+device checks queued state preservation. No microphone is opened; physical
+reconnection, listening, measured latency and TSan remain separate validation.
 
 The Qt build also provides `firmware-profile-direct-boot`. It runs the real
 frontend profile override and MAC parser with temporary configuration, then
