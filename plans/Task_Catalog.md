@@ -2,7 +2,7 @@
 
 125개 과제 ID를 유지한다. 이는 확정 버그 수나 독립 구현 수가 아니다. P1은 재현 우선, P2는 호환성·측정 개선, P3은 효용 확인 후 채택이다. 관찰 근거는 1.1.02 분석 당시 분류이며 실행으로 새로 확인한 항목은 처리 상태를 갱신한다.
 
-기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.08.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
+기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.09.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
 
 | ID | 작업·상세 계약 | 관찰 근거 | 우선 | 기본 버전 | 공동 대표 | 처리 상태 |
 |---|---|---|---|---|---|---|
@@ -105,12 +105,12 @@
 | NP-13 | [IR 미초기화 응답·복원](workstreams/05-connectivity-peripherals.md#NP-13) | 정적 후보 | P1 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
 | NP-14 | [BT 키보드 최소 protocol](workstreams/05-connectivity-peripherals.md#NP-14) | 관찰/확장 | P2 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
 | NP-15 | [카트리지 슬롯/IRQ/DRQ 타이밍](workstreams/05-connectivity-peripherals.md#NP-15) | 관찰/확장 | P2 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
-| NP-16 | [homebrew argv·DLDI span](workstreams/05-connectivity-peripherals.md#NP-16) | 정적 후보 | P1 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
+| NP-16 | [homebrew argv·DLDI span](workstreams/05-connectivity-peripherals.md#NP-16) | 실행 재현 | P1 | [1.1.24](Release_Plan.md#v24) | — | 1.1.09 argv 용량·주소, DLDI 실제 ARM9/source/target/fixup 범위와 RW/RO·재패치 회귀; 실제 홈브루 FAT/부팅 후속 |
 | NP-17 | [GBA sensor/rumble/RAM 계약](workstreams/05-connectivity-peripherals.md#NP-17) | 관찰/확장 | P2 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
 | NP-18 | [카트리지 save type·GBA 연동](workstreams/05-connectivity-peripherals.md#NP-18) | 관찰/확장 | P2 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
 | NP-19 | [RTC 달력·IRQ·host 시계](workstreams/05-connectivity-peripherals.md#NP-19) | 미측정 가설 | P2 | [1.1.13](Release_Plan.md#v13) | — | 미착수 |
-| NP-20 | [치트 DB 길이·read 오류](workstreams/05-connectivity-peripherals.md#NP-20) | 정적 후보 | P1 | [1.1.13](Release_Plan.md#v13) | — | 미착수 |
-| NP-21 | [치트 literal/loop 실행 계약](workstreams/05-connectivity-peripherals.md#NP-21) | 정적 후보 | P1 | [1.1.13](Release_Plan.md#v13) | — | 미착수 |
+| NP-20 | [치트 DB 길이·read 오류](workstreams/05-connectivity-peripherals.md#NP-20) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.09 header/index/string/code·read/seek 오류 검증, 완전한 entry만 반환·부모 포인터 보존·빈 선택 import 차단; 실제 DB 선택 후속 |
+| NP-21 | [치트 literal/loop 실행 계약](workstreams/05-connectivity-peripherals.md#NP-21) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.09 빈/홀수/E 본문 사전 검증, UI 요청으로 loop/copy 취소·실행본 비활성화·오류 보고; 실제 게임·D1/D2 조건 복원·C5 수명 후속 |
 | BV-01 | [기준 revision·검증 자료 색인](workstreams/06-build-validation.md#BV-01) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.03 부분 반영: 공개 계획·증거 색인 |
 | BV-02 | [다자릿수 표시/숫자 버전](workstreams/06-build-validation.md#BV-02) | 관찰/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 미착수 |
 | BV-03 | [Windows DLL/plugin 의존 폐쇄](workstreams/06-build-validation.md#BV-03) | 관찰/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 부분 반영: import·독립 PATH 확인 |

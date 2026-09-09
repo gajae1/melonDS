@@ -56,6 +56,25 @@ void CartHomebrew::SetupDirectBoot(const std::string& romname, NDS& nds)
 
     if (SD)
     {
+        // Include the prefix and terminator in the command-line capacity. A
+        // truncated name could make the homebrew open a different file.
+        char argv[512] = {0};
+        constexpr char prefix[] = "fat:/";
+        if (romname.size() > sizeof(argv) - sizeof(prefix) ||
+            romname.find('\0') != std::string::npos)
+        {
+            Log(LogLevel::Error, "Homebrew ROM name does not fit argv\n");
+            return;
+        }
+        const u32 argvlen = (sizeof(prefix) - 1) + romname.size();
+        const NDSHeader& header = GetHeader();
+        const u64 argvbase = (u64(header.ARM9RAMAddress) + header.ARM9Size + 0xF) & ~u64(0xF);
+        if (argvbase + ((argvlen + 4) & ~3U) > 0x100000000ULL)
+        {
+            Log(LogLevel::Error, "Homebrew argv address wraps\n");
+            return;
+        }
+
         // add the ROM to the SD volume
 
         if (!SD->InjectFile(romname, ROM.get(), ROMLength))
@@ -63,23 +82,18 @@ void CartHomebrew::SetupDirectBoot(const std::string& romname, NDS& nds)
 
         // setup argv command line
 
-        char argv[512] = {0};
-        int argvlen;
-
-        strncpy(argv, "fat:/", 511);
-        strncat(argv, romname.c_str(), 511);
-        argvlen = strlen(argv);
-
-        const NDSHeader& header = GetHeader();
-
-        u32 argvbase = header.ARM9RAMAddress + header.ARM9Size;
-        argvbase = (argvbase + 0xF) & ~0xF;
+        memcpy(argv, prefix, sizeof(prefix) - 1);
+        memcpy(argv + sizeof(prefix) - 1, romname.data(), romname.size());
 
         for (u32 i = 0; i <= argvlen; i+=4)
-            nds.ARM9Write32(argvbase+i, *(u32*)&argv[i]);
+        {
+            u32 word;
+            memcpy(&word, &argv[i], sizeof(word));
+            nds.ARM9Write32(u32(argvbase)+i, word);
+        }
 
         nds.ARM9Write32(0x02FFFE70, 0x5F617267);
-        nds.ARM9Write32(0x02FFFE74, argvbase);
+        nds.ARM9Write32(0x02FFFE74, u32(argvbase));
         nds.ARM9Write32(0x02FFFE78, argvlen+1);
         // The DSi version of ARM9Write32 will be called if nds is really a DSi
     }

@@ -316,7 +316,15 @@ void EmuThread::run()
             }
             else
             {
+                emuInstance->nds->AREngine.SetStopToken(cheatStopToken());
                 nlines = emuInstance->nds->RunFrame();
+                for (const auto& error : emuInstance->nds->AREngine.TakeErrors())
+                {
+                    const char* reason = error.Reason == melonDS::AREngine::Result::Interrupted ? "interrupted; earlier changes remain" :
+                        error.Reason == melonDS::AREngine::Result::UnsupportedCode ? "unsupported code" : "invalid code";
+                    emuInstance->osdAddMessage(0xFFA0A0, "Cheat disabled for this session (%s): %s",
+                        reason, error.Name.c_str());
+                }
             }
 
             if (emuInstance->ndsSave)
@@ -459,7 +467,19 @@ void EmuThread::sendMessage(Message msg)
 {
     msgMutex.lock();
     msgQueue.enqueue(msg);
+    // Queued UI work must be able to interrupt an unbounded cheat loop before
+    // waitMessage() waits for the emulation thread to handle that work.
+    cheatStopSource.request_stop();
     msgMutex.unlock();
+}
+
+std::stop_token EmuThread::cheatStopToken()
+{
+    QMutexLocker lock(&msgMutex);
+    // Do not lose a request queued before this frame acquires its token.
+    if (msgQueue.empty() && cheatStopSource.stop_requested())
+        cheatStopSource = std::stop_source{};
+    return cheatStopSource.get_token();
 }
 
 void EmuThread::waitMessage(int num)

@@ -38,9 +38,10 @@ public:
     explicit CheatImportDialog(QWidget* parent, melonDS::ARDatabaseDAT* db, melonDS::u32 gamecode, melonDS::u32 checksum);
     ~CheatImportDialog();
 
-    melonDS::ARDatabaseEntry& getImportCheats();
+    melonDS::ARDatabaseEntry* getImportCheats();
     melonDS::ARCodeEnableMap& getImportEnableMap();
     bool getRemoveOldCodes();
+    void accept() override;
 
 private slots:
     void on_chkShowAllMatches_clicked(bool checked);

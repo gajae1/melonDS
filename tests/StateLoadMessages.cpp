@@ -10,6 +10,7 @@
 #include <optional>
 #include <variant>
 #include <utility>
+#include <stop_token>
 #include <QCoreApplication>
 #include <QFile>
 #include <QTemporaryDir>

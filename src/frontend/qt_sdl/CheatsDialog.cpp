@@ -234,6 +234,7 @@ void CheatsDialog::on_btnImportCheats_clicked()
         QMessageBox::critical(this, "melonDS",
                               "Failed to open this cheat database file.");
         delete importDB;
+        importDB = nullptr;
         return;
     }
 
@@ -242,10 +243,24 @@ void CheatsDialog::on_btnImportCheats_clicked()
         QMessageBox::critical(this, "melonDS",
                               "No cheat codes were found in this database for the current game.");
         delete importDB;
+        importDB = nullptr;
         return;
     }
 
     importDlg = new CheatImportDialog(this, importDB, gameCode, gameChecksum);
+    if (!importDlg->getImportCheats())
+    {
+        delete importDlg;
+        importDlg = nullptr;
+        delete importDB;
+        importDB = nullptr;
+        QMessageBox::critical(this, "melonDS",
+                              "Failed to read cheat codes for this game. No cheats were imported.");
+        return;
+    }
+    if (importDB->Error)
+        QMessageBox::warning(this, "melonDS",
+                             "Some game entries could not be read and were omitted. Only complete entries are shown.");
     importDlg->open();
     connect(importDlg, &CheatImportDialog::finished, this, &CheatsDialog::onImportCheatsFinished);
 
@@ -258,13 +273,15 @@ void CheatsDialog::onImportCheatsFinished(int res)
 
     if (res == QDialog::Accepted)
     {
-        auto& cheats = importDlg->getImportCheats();
+        auto* cheats = importDlg->getImportCheats();
         auto& enablemap = importDlg->getImportEnableMap();
         auto removeold = importDlg->getRemoveOldCodes();
 
-        codeFile->Import(cheats, enablemap, removeold);
-
-        populateCheatList();
+        if (cheats)
+        {
+            codeFile->Import(*cheats, enablemap, removeold);
+            populateCheatList();
+        }
     }
 
     delete importDB;

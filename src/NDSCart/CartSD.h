@@ -60,7 +60,7 @@ public:
     }
 
 protected:
-    void ApplyDLDIPatchAt(u8* binary, u32 dldioffset, const u8* patch, u32 patchlen, bool readonly) const;
+    bool ApplyDLDIPatchAt(u8* binary, u32 binarylen, u32 dldioffset, const u8* patch, u32 patchlen, bool readonly) const;
     void ApplyDLDIPatch(const u8* patch, u32 patchlen, bool readonly);
 
     std::optional<FATStorage> SD {};

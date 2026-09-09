@@ -413,3 +413,74 @@ target_include_directories(FirmwareProfile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
 target_link_libraries(FirmwareProfile PRIVATE core ${QT_LINK_LIBS} Threads::Threads)
 add_test(NAME firmware-profile-direct-boot COMMAND FirmwareProfile)
 set_tests_properties(firmware-profile-direct-boot PROPERTIES TIMEOUT 30)
+
+
+add_executable(CheatImportUI "${CMAKE_SOURCE_DIR}/tests/CheatImportUI.cpp"
+    CheatImportDialog.cpp CheatImportDialog.h CheatImportDialog.ui)
+target_include_directories(CheatImportUI PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_SOURCE_DIR}/src")
+if (USE_QT6)
+    target_link_libraries(CheatImportUI PRIVATE Qt6::Widgets)
+else()
+    target_link_libraries(CheatImportUI PRIVATE Qt5::Widgets)
+endif()
+add_test(NAME cheat-import-selection COMMAND CheatImportUI)
+set_tests_properties(cheat-import-selection PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+
+set(cheat_message_methods)
+foreach(pair IN ITEMS "cheatSendMessage|void EmuThread::sendMessage(Message msg)"
+        "cheatWaitMessage|void EmuThread::waitMessage(int num)"
+        "cheatStopToken|std::stop_token EmuThread::cheatStopToken()")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuThread.cpp VERBATIM)
+    list(APPEND cheat_message_methods "${output}")
+endforeach()
+add_executable(CheatCancellation "${CMAKE_SOURCE_DIR}/tests/CheatCancellation.cpp" EmuThread.h
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    ${cheat_message_methods} "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc")
+target_include_directories(CheatCancellation PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(CheatCancellation PRIVATE core Threads::Threads)
+if (USE_QT6)
+    target_link_libraries(CheatCancellation PRIVATE Qt6::Core)
+else()
+    target_link_libraries(CheatCancellation PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS pause stop exit pending)
+    add_test(NAME cheat-message-${case} COMMAND CheatCancellation ${case})
+    set_tests_properties(cheat-message-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+set(ar_file_methods)
+foreach(pair IN ITEMS "CloseFile|bool CloseFile(FileHandle* file)"
+        "IsEndOfFile|bool IsEndOfFile(FileHandle* file)"
+        "FileSeek|bool FileSeek(FileHandle* file, s64 offset, FileSeekOrigin origin)"
+        "FilePosition|u64 FilePosition(FileHandle* file)"
+        "FileRead|u64 FileRead(void* data, u64 size, u64 count, FileHandle* file)"
+        "FileLength|u64 FileLength(FileHandle* file)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/ar${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Platform.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Platform.cpp VERBATIM)
+    list(APPEND ar_file_methods "${output}")
+endforeach()
+add_executable(ARDatabaseInput "${CMAKE_SOURCE_DIR}/tests/ARDatabaseInput.cpp"
+    "${CMAKE_SOURCE_DIR}/src/ARDatabaseDAT.cpp" ${ar_file_methods})
+target_include_directories(ARDatabaseInput PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+if (USE_QT6)
+    target_link_libraries(ARDatabaseInput PRIVATE Qt6::Core)
+else()
+    target_link_libraries(ARDatabaseInput PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS controls header-index strings category codes entry-span partial io-read io-seek no-progress parents)
+    add_test(NAME ar-database-${case} COMMAND ARDatabaseInput ${case})
+    set_tests_properties(ar-database-${case} PROPERTIES TIMEOUT 15)
+endforeach()

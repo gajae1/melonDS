@@ -208,6 +208,14 @@ if (TARGET core)
     target_link_libraries(CartROMBounds PRIVATE core Threads::Threads)
     add_test(NAME gba-rom-input-bounds COMMAND CartROMBounds)
     set_tests_properties(gba-rom-input-bounds PROPERTIES TIMEOUT 10)
+
+    add_executable(ARExecution ARExecution.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(ARExecution PRIVATE core Threads::Threads)
+    foreach(case IN ITEMS controls loop-control empty odd literal-short literal-overflow skipped-overflow
+            cancel-loop cancel-copy cancel-literal pending-cancel unsupported)
+        add_test(NAME ar-execution-${case} COMMAND ARExecution ${case})
+        set_tests_properties(ar-execution-${case} PROPERTIES TIMEOUT 10)
+    endforeach()
 endif()
 
 add_custom_command(
@@ -220,6 +228,31 @@ add_custom_command(
 add_executable(ROMHeaderBounds ROMHeaderBounds.cpp "${CMAKE_CURRENT_BINARY_DIR}/ROMHeaderMethod.inc")
 target_include_directories(ROMHeaderBounds PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME nds-rom-header-bounds COMMAND ROMHeaderBounds)
+
+set(homebrew_methods)
+foreach(pair IN ITEMS
+        "SetupDirectBoot|CartHomebrew.cpp|void CartHomebrew::SetupDirectBoot(const std::string& romname, NDS& nds)"
+        "ApplyDLDIPatch|CartSD.cpp|void CartSD::ApplyDLDIPatch(const u8* patch, u32 patchlen, bool readonly)"
+        "ApplyDLDIPatchAt|CartSD.cpp|bool CartSD::ApplyDLDIPatchAt(u8* binary, u32 binarylen, u32 dldioffset, const u8* patch, u32 patchlen, bool readonly) const")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 source)
+    list(GET parts 2 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/Homebrew${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/NDSCart/${source}" "${signature}" "${output}"
+        DEPENDS ExtractFunction.py "../src/NDSCart/${source}" VERBATIM)
+    list(APPEND homebrew_methods "${output}")
+endforeach()
+add_executable(HomebrewInput HomebrewInput.cpp ${homebrew_methods})
+target_include_directories(HomebrewInput PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
+foreach(case IN ITEMS argv-control argv-oversize argv-nul argv-address dldi-control dldi-repatch
+        dldi-patch-guard dldi-rom-guard dldi-arm9-span dldi-scan-tail dldi-target-header dldi-source-header
+        dldi-target-layout dldi-fix-control dldi-fix-overlap dldi-fix-range dldi-readonly-range dldi-address-overflow)
+    add_test(NAME homebrew-${case} COMMAND HomebrewInput ${case})
+    set_tests_properties(homebrew-${case} PROPERTIES TIMEOUT 15)
+endforeach()
 
 add_executable(GdbProtocol GdbProtocol.cpp ../src/CRC32.cpp)
 target_include_directories(GdbProtocol PRIVATE ../src)

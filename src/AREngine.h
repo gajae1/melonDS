@@ -20,6 +20,8 @@
 #define ARENGINE_H
 
 #include <vector>
+#include <stop_token>
+#include <utility>
 #include "ARCodeFile.h"
 
 namespace melonDS
@@ -30,13 +32,22 @@ class AREngine
 public:
     AREngine(melonDS::NDS& nds);
 
+    enum class Result { Success, InvalidCode, UnsupportedCode, Interrupted };
+    struct Error { std::string Name; Result Reason; };
+
     std::vector<ARCode> Cheats {};
+    // A frontend can cancel synchronous cheat work before waiting for a queued
+    // pause/reset/stop. A default token preserves unrestricted execution.
+    void SetStopToken(std::stop_token token) { StopToken = std::move(token); }
+    std::vector<Error> TakeErrors();
 private:
     friend class ARM;
     void RunCheats();
-    void RunCheat(const ARCode& arcode);
+    Result RunCheat(const ARCode& arcode);
 
     melonDS::NDS& NDS;
+    std::stop_token StopToken;
+    std::vector<Error> Errors;
 };
 
 }

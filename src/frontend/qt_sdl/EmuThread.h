@@ -27,6 +27,7 @@
 #include <QVariant>
 
 #include <atomic>
+#include <stop_token>
 #include <variant>
 #include <optional>
 #include <list>
@@ -163,6 +164,7 @@ signals:
 
 private:
     void handleMessages();
+    std::stop_token cheatStopToken();
 
     void updateRenderer();
     void compileShaders();
@@ -190,6 +192,7 @@ private:
     QMutex msgMutex;
     QSemaphore msgSemaphore;
     QQueue<Message> msgQueue;
+    std::stop_source cheatStopSource;
 
     EmuInstance* emuInstance;
 

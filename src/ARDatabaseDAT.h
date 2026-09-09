@@ -31,10 +31,10 @@ namespace melonDS
 
 struct ARDatabaseEntry
 {
-    u32 GameCode;
-    u32 Checksum;
+    u32 GameCode = 0;
+    u32 Checksum = 0;
     std::string Name;
-    ARCodeCat RootCat;
+    ARCodeCat RootCat {};
 };
 
 typedef std::vector<ARDatabaseEntry> ARDatabaseEntryList;
@@ -46,10 +46,12 @@ public:
     ARDatabaseDAT(const std::string& filename);
     ~ARDatabaseDAT() noexcept = default;
 
+    // Sticky: also set when a lazy game load fails. Other valid entries remain usable.
     bool Error = false;
 
     std::string GetDBName() const { return DBName; }
     bool FindGameCode(u32 gamecode);
+    // Only complete entries are returned; malformed versions are skipped with Error set.
     ARDatabaseEntryList GetEntriesByGameCode(u32 gamecode);
 
 private:
@@ -61,13 +63,14 @@ private:
         u32 GameCode;
         u32 Checksum;
         u32 Offset;
+        u32 EndOffset;
     };
 
     // list of entries per gamecode
     std::unordered_map<u32, std::vector<EntryInfo>> EntryList;
 
     bool LoadEntries();
-    bool LoadCheatCodes(EntryInfo& info, ARDatabaseEntry& entry);
+    bool LoadCheatCodes(const EntryInfo& info, ARDatabaseEntry& entry);
 };
 
 }

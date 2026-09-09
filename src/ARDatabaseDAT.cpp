@@ -17,6 +17,8 @@
 */
 
 #include <cstring>
+#include <algorithm>
+#include <memory>
 #include "ARDatabaseDAT.h"
 #include "Platform.h"
 
@@ -70,10 +72,49 @@ namespace melonDS
 {
 using namespace Platform;
 
-// TODO: more user-friendly error reporting
+namespace
+{
+using DatabaseFile = std::unique_ptr<FileHandle, decltype(&CloseFile)>;
 
-std::string ReadNTString(Platform::FileHandle* f);
-void AlignFilePos(Platform::FileHandle* f);
+bool ReadData(FileHandle* f, void* data, u64 size, u64 end)
+{
+    const u64 pos = FilePosition(f);
+    return pos <= end && size <= end - pos &&
+           (size == 0 || FileRead(data, 1, size, f) == size);
+}
+
+bool ReadNTString(FileHandle* f, u64 end, std::string& text)
+{
+    text.clear();
+    while (true)
+    {
+        const u64 pos = FilePosition(f);
+        if (pos >= end) return false;
+
+        char buffer[256];
+        const u64 count = std::min<u64>(sizeof(buffer), end - pos);
+        if (FileRead(buffer, 1, count, f) != count) return false;
+
+        const char* terminator = static_cast<const char*>(memchr(buffer, 0, count));
+        if (terminator)
+        {
+            const size_t length = terminator - buffer;
+            text.append(buffer, length);
+            return FileSeek(f, pos + length + 1, FileSeekOrigin::Start);
+        }
+        text.append(buffer, count);
+    }
+}
+
+bool AlignFilePos(FileHandle* f, u64 end)
+{
+    const u64 pos = FilePosition(f);
+    if (pos > end) return false;
+    const u64 aligned = (pos + 3) & ~u64{3};
+    return aligned <= end &&
+           (aligned == pos || FileSeek(f, aligned, FileSeekOrigin::Start));
+}
+}
 
 
 ARDatabaseDAT::ARDatabaseDAT(const std::string& filename)
@@ -101,11 +142,18 @@ ARDatabaseEntryList ARDatabaseDAT::GetEntriesByGameCode(u32 gamecode)
     if (it == EntryList.end())
         return ret;
 
-    for (auto& info : (*it).second)
+    // Build in the final slots: Parent pointers must not target a temporary
+    // entry, nor a root moved by vector growth during this lookup.
+    ret.reserve(it->second.size());
+    for (const auto& info : it->second)
     {
-        ARDatabaseEntry entry;
-        LoadCheatCodes(info, entry);
-        ret.push_back(entry);
+        ret.emplace_back();
+        if (!LoadCheatCodes(info, ret.back()))
+        {
+            ret.pop_back();
+            Error = true;
+            Log(LogLevel::Error, "AR: failed to load game entry at offset %08X\n", info.Offset);
+        }
     }
 
     return ret;
@@ -113,86 +161,86 @@ ARDatabaseEntryList ARDatabaseDAT::GetEntriesByGameCode(u32 gamecode)
 
 bool ARDatabaseDAT::LoadEntries()
 {
-    FileHandle* f = OpenFile(Filename, FileMode::Read);
+    DatabaseFile file(OpenFile(Filename, FileMode::Read), CloseFile);
+    FileHandle* f = file.get();
     if (!f) return false;
 
-    u64 filelen = FileLength(f);
-    if (filelen > 0xFFFFFFFFULL)
-    {
-        CloseFile(f);
+    const u64 filelen = FileLength(f);
+    if (filelen < 0x110 || filelen > 0xFFFFFFFFULL)
         return false;
-    }
 
     char header[16];
-    FileRead(header, 16, 1, f);
-    //if (strncmp(header, "R4 CheatCode", 12) != 0)
-    if (memcmp(header, "R4 CheatCode\x00\x01\x00\x00", 16) != 0)
-    {
-        CloseFile(f);
+    if (!ReadData(f, header, sizeof(header), filelen) ||
+        memcmp(header, "R4 CheatCode\x00\x01\x00\x00", 16) != 0)
         return false;
-    }
 
     char name[0x3D] = {0};
-    FileRead(name, 0x3C, 1, f);
-    DBName = name;
+    if (!ReadData(f, name, 0x3C, filelen) || !FileSeek(f, 0x100, FileSeekOrigin::Start))
+        return false;
 
-    FileSeek(f, 0x100, FileSeekOrigin::Start);
-    while (!IsEndOfFile(f))
+    std::vector<EntryInfo> entries;
+    u64 indexEnd = filelen;
+    bool terminated = false;
+    for (u64 pos = 0x100; pos + 16 <= indexEnd; pos += 16)
     {
         u32 entrydata[4];
-        FileRead(entrydata, 16, 1, f);
+        if (!ReadData(f, entrydata, sizeof(entrydata), indexEnd)) return false;
 
-        // a zero entry marks the end of the entry list
-        if (entrydata[0] == 0)
+        if (entrydata[0] == 0 && entrydata[1] == 0 && entrydata[2] == 0 && entrydata[3] == 0)
+        {
+            terminated = true;
             break;
+        }
 
-        if ((entrydata[2] < 0x100) || (entrydata[2] >= filelen))
+        if (!entrydata[0] || entrydata[3] || entrydata[2] < 0x100 || entrydata[2] >= filelen)
         {
             Log(LogLevel::Error, "AR: malformed database file (invalid offset %08X)\n", entrydata[2]);
-            CloseFile(f);
             return false;
         }
 
-        EntryInfo entry;
-        entry.GameCode = entrydata[0];
-        entry.Checksum = entrydata[1];
-        entry.Offset = entrydata[2];
-
-        EntryList[entry.GameCode].push_back(entry);
+        indexEnd = std::min<u64>(indexEnd, entrydata[2]);
+        entries.push_back({entrydata[0], entrydata[1], entrydata[2], 0});
     }
+    if (!terminated) return false;
 
-    CloseFile(f);
+    // Offset order need not match game-code order. Bound each payload by the
+    // next distinct payload offset, without changing the index's display order.
+    std::vector<u32> offsets;
+    offsets.reserve(entries.size());
+    for (const auto& entry : entries) offsets.push_back(entry.Offset);
+    std::sort(offsets.begin(), offsets.end());
+    decltype(EntryList) entryList;
+    for (auto& entry : entries)
+    {
+        const auto next = std::upper_bound(offsets.begin(), offsets.end(), entry.Offset);
+        entry.EndOffset = next == offsets.end() ? static_cast<u32>(filelen) : *next;
+        entryList[entry.GameCode].push_back(entry);
+    }
+    EntryList = std::move(entryList);
+    DBName = name;
     return true;
 }
 
-bool ARDatabaseDAT::LoadCheatCodes(EntryInfo& info, ARDatabaseEntry& entry)
+bool ARDatabaseDAT::LoadCheatCodes(const EntryInfo& info, ARDatabaseEntry& entry)
 {
-    FileHandle* f = OpenFile(Filename, FileMode::Read);
+    DatabaseFile file(OpenFile(Filename, FileMode::Read), CloseFile);
+    FileHandle* f = file.get();
     if (!f) return false;
 
-    u64 filelen = FileLength(f);
-    if (filelen > 0xFFFFFFFFULL)
-    {
-        CloseFile(f);
+    const u64 filelen = FileLength(f);
+    if (filelen > 0xFFFFFFFFULL || info.Offset < 0x100 ||
+        info.Offset >= info.EndOffset || info.EndOffset > filelen)
         return false;
-    }
-
-    if ((info.Offset < 0x100) || (info.Offset >= filelen))
-    {
-        CloseFile(f);
-        return false;
-    }
 
     entry.GameCode = info.GameCode;
     entry.Checksum = info.Checksum;
 
-    FileSeek(f, info.Offset, FileSeekOrigin::Start);
+    if (!FileSeek(f, info.Offset, FileSeekOrigin::Start) ||
+        !ReadNTString(f, info.EndOffset, entry.Name) || !AlignFilePos(f, info.EndOffset))
+        return false;
 
-    entry.Name = ReadNTString(f);
-    AlignFilePos(f);
-
-    u32 flags[9] = {0};
-    FileRead(flags, 4*9, 1, f);
+    u32 flags[9];
+    if (!ReadData(f, flags, sizeof(flags), info.EndOffset)) return false;
 
     entry.RootCat.Parent = nullptr;
     entry.RootCat.OnlyOneCodeEnabled = false;
@@ -201,33 +249,43 @@ bool ARDatabaseDAT::LoadCheatCodes(EntryInfo& info, ARDatabaseEntry& entry)
     ARCodeCat* curcat = &entry.RootCat;
     int catlen = 0;
 
-    u32 numentries = flags[0] & 0xFFFFFF;
+    const u32 numentries = flags[0] & 0x0FFFFFFF;
+    const u64 itemsStart = FilePosition(f);
+    // Even a category needs its flags and two aligned string terminators.
+    if (itemsStart > info.EndOffset || numentries > (info.EndOffset - itemsStart) / 8)
+        return false;
+
     for (u32 i = 0; i < numentries; i++)
     {
-        if (IsEndOfFile((f)))
-            break;
+        u32 itemflags;
+        if (!ReadData(f, &itemflags, sizeof(itemflags), info.EndOffset)) return false;
 
-        u32 itemflags = 0;
-        FileRead(&itemflags, 4, 1, f);
+        const u32 totallen = itemflags & 0xFFFFFF;
+        u64 itemEnd = info.EndOffset;
+        if (!(itemflags & (1 << 28)))
+        {
+            const u64 pos = FilePosition(f);
+            const u64 bytes = u64{totallen} * 4;
+            if (pos > info.EndOffset || bytes > info.EndOffset - pos) return false;
+            itemEnd = pos + bytes;
+        }
 
-        u32 totallen = itemflags & 0xFFFFFF;
-
-        std::string itemname = ReadNTString(f);
-        std::string itemdesc = ReadNTString(f);
-        AlignFilePos(f);
+        std::string itemname, itemdesc;
+        if (!ReadNTString(f, itemEnd, itemname) || !ReadNTString(f, itemEnd, itemdesc) ||
+            !AlignFilePos(f, itemEnd))
+            return false;
 
         if (itemflags & (1<<28))
         {
             // this item is a category
 
-            if ((totallen >= 0x10000) || (totallen == 0))
+            if (catlen != 0 || totallen >= 0x10000 || totallen == 0 || totallen > numentries - i - 1)
             {
                 Log(LogLevel::Error, "AR: unreasonable category length %08X\n",
                     totallen);
                 Log(LogLevel::Error, "game=%s, offset=%08X, cat=%s\n",
                     entry.Name.c_str(), info.Offset, itemname.c_str());
 
-                CloseFile(f);
                 return false;
             }
 
@@ -247,19 +305,17 @@ bool ARDatabaseDAT::LoadCheatCodes(EntryInfo& info, ARDatabaseEntry& entry)
         {
             // this item is a code
 
-            u32 codelen = 0;
-            FileRead(&codelen, 4, 1, f);
+            u32 codelen;
+            if (!ReadData(f, &codelen, sizeof(codelen), itemEnd)) return false;
 
-            u32 chklen = itemname.length() + 1 + itemdesc.length() + 1;
-            chklen = ((chklen + 3) >> 2) + 1 + codelen;
-            if (chklen != totallen)
+            const u64 pos = FilePosition(f);
+            if (pos > itemEnd || u64{codelen} * 4 != itemEnd - pos)
             {
-                Log(LogLevel::Error, "AR: malformed code entry, codelen=%08X, totallen=%08X (expected %08X)\n",
-                    codelen, totallen, chklen);
+                Log(LogLevel::Error, "AR: malformed code entry, codelen=%08X, totallen=%08X\n",
+                    codelen, totallen);
                 Log(LogLevel::Error, "game=%s, offset=%08X, cheat=%s\n",
                     entry.Name.c_str(), info.Offset, itemname.c_str());
 
-                CloseFile(f);
                 return false;
             }
 
@@ -270,7 +326,6 @@ bool ARDatabaseDAT::LoadCheatCodes(EntryInfo& info, ARDatabaseEntry& entry)
                 Log(LogLevel::Error, "game=%s, offset=%08X, cheat=%s\n",
                     entry.Name.c_str(), info.Offset, itemname.c_str());
 
-                CloseFile(f);
                 return false;
             }
 
@@ -279,28 +334,21 @@ bool ARDatabaseDAT::LoadCheatCodes(EntryInfo& info, ARDatabaseEntry& entry)
                 curcat = &entry.RootCat;
             }
 
-            ARCode code;
+            ARCode code {};
+            code.Parent = curcat;
             code.Name = itemname;
             code.Description = itemdesc;
             code.Enabled = !!(itemflags & (1<<24));
 
-            u32* rawcode = new u32[codelen];
-            FileRead(rawcode, codelen*4, 1, f);
+            code.Code.resize(codelen);
+            if (!ReadData(f, code.Code.data(), u64{codelen} * 4, itemEnd)) return false;
+            curcat->Children.emplace_back(std::move(code));
 
-            for (u32 j = 0; j < codelen; j+=2)
-            {
-                code.Code.push_back(rawcode[j]);
-                code.Code.push_back(rawcode[j+1]);
-            }
-
-            delete[] rawcode;
-
-            curcat->Children.emplace_back(code);
-
-            if (catlen >= 0)
+            if (catlen > 0)
                 catlen--;
         }
     }
+    if (catlen != 0) return false;
 
     for (auto& item : entry.RootCat.Children)
     {
@@ -326,49 +374,7 @@ bool ARDatabaseDAT::LoadCheatCodes(EntryInfo& info, ARDatabaseEntry& entry)
         }
     }
 
-    CloseFile(f);
     return true;
-}
-
-
-std::string ReadNTString(Platform::FileHandle* f)
-{
-    char tmp[256];
-    std::string ret;
-    int readlen = 0;
-    u64 startpos = FilePosition(f);
-
-    // TODO might break with UTF8 and shit
-
-    while (!IsEndOfFile(f))
-    {
-        // read 256 bytes of data, see where the string actually ends
-        memset(tmp, 0, 256);
-        u64 nread = FileRead(tmp, 1, 256, f);
-
-        bool done = false;
-        for (int i = 0; i < nread; i++)
-        {
-            readlen++;
-            if (!tmp[i]) { done = true; break; }
-            ret += tmp[i];
-        }
-
-        if (done)
-            break;
-    }
-
-    // correct the file position to point right after the end of this string
-    FileSeek(f, startpos + readlen, FileSeekOrigin::Start);
-
-    return ret;
-}
-
-void AlignFilePos(Platform::FileHandle* f)
-{
-    u64 pos = FilePosition(f);
-    if (pos & 3)
-        FileSeek(f, (pos + 3) & (~3), FileSeekOrigin::Start);
 }
 
 }

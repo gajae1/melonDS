@@ -20,11 +20,11 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QStandardItemModel>
+#include <QStyle>
+#include <QPushButton>
 
 #include "types.h"
 #include "Platform.h"
-#include "Config.h"
-#include "EmuInstance.h"
 #include "ARDatabaseDAT.h"
 
 #include "CheatImportDialog.h"
@@ -43,7 +43,6 @@ CheatImportDialog::CheatImportDialog(QWidget *parent, ARDatabaseDAT* db, u32 gam
     setAttribute(Qt::WA_DeleteOnClose);
 
     dbEntriesByGameCode = database->GetEntriesByGameCode(gameCode);
-    assert(!dbEntriesByGameCode.empty());
 
     hasChecksumMatches = false;
     for (auto& entry : dbEntriesByGameCode)
@@ -95,11 +94,16 @@ CheatImportDialog::~CheatImportDialog()
     delete ui;
 }
 
-ARDatabaseEntry& CheatImportDialog::getImportCheats()
+ARDatabaseEntry* CheatImportDialog::getImportCheats()
 {
+    if (ui->cbEntryList->currentIndex() < 0) return nullptr;
     QVariant data = ui->cbEntryList->currentData();
-    auto entry = data.value<ARDatabaseEntry*>();
-    return *entry;
+    return data.value<ARDatabaseEntry*>();
+}
+
+void CheatImportDialog::accept()
+{
+    if (getImportCheats()) QDialog::accept();
 }
 
 ARCodeEnableMap& CheatImportDialog::getImportEnableMap()
@@ -214,19 +218,18 @@ void CheatImportDialog::populateEntryList()
 
 void CheatImportDialog::populateEntryInfo()
 {
-    int idx = ui->cbEntryList->currentIndex();
-    if ((idx < 0) || (idx >= ui->cbEntryList->count()))
+    auto* entry = getImportCheats();
+    ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(entry != nullptr);
+    if (!entry)
     {
         // nothing selected
 
         ui->gbEntryInfo->hide();
+        populateCheatList();
         return;
     }
 
     ui->gbEntryInfo->show();
-
-    QVariant data = ui->cbEntryList->currentData();
-    auto entry = data.value<ARDatabaseEntry*>();
 
     ui->lblEntryName->setText(QString::fromStdString(entry->Name));
 

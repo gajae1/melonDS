@@ -18,6 +18,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <span>
+#include <utility>
 #include "NDS.h"
 #include "DSi.h"
 #include "AREngine.h"
@@ -39,9 +41,39 @@ AREngine::AREngine(melonDS::NDS& nds) : NDS(nds)
     case ((x)+0x08): case ((x)+0x09): case ((x)+0x0A): case ((x)+0x0B): \
     case ((x)+0x0C): case ((x)+0x0D): case ((x)+0x0E): case ((x)+0x0F)
 
-void AREngine::RunCheat(const ARCode& arcode)
+static AREngine::Result ValidateInstructions(std::span<const u32> words, std::stop_token stop)
 {
-    const u32* code = &arcode.Code[0];
+    if (words.size() & 1) return AREngine::Result::InvalidCode;
+    size_t position = 0;
+    while (position < words.size())
+    {
+        if (stop.stop_requested()) return AREngine::Result::Interrupted;
+        const u32 instruction = words[position];
+        const u32 count = words[position + 1];
+        position += 2;
+        if ((instruction >> 28) == 0xE)
+        {
+            // Literal data is padded to complete eight-byte code lines, even
+            // when its condition will skip it. Widen before rounding the count.
+            const u64 lines = (u64(count) + 7) / 8;
+            if (lines > (words.size() - position) / 2) return AREngine::Result::InvalidCode;
+            position += size_t(lines) * 2;
+        }
+    }
+    return AREngine::Result::Success;
+}
+
+AREngine::Result AREngine::RunCheat(const ARCode& arcode)
+{
+    // Validation is side-effect free; cancellation here needs no error or
+    // session disable because this code has not begun executing.
+    if (StopToken.stop_requested()) return Result::Success;
+    const Result validation = ValidateInstructions(arcode.Code, StopToken);
+    if (validation == Result::Interrupted) return Result::Success;
+    if (validation != Result::Success) return validation;
+    if (arcode.Code.empty()) return Result::Success;
+    const u32* code = arcode.Code.data();
+    const u32* end = code + arcode.Code.size();
 
     u32 offset = 0;
     u32 datareg = 0;
@@ -55,13 +87,16 @@ void AREngine::RunCheat(const ARCode& arcode)
 
     // TODO: does anything reset this??
     u32 c5count = 0;
+    bool started = false;
 
     for (;;)
     {
-        if (code > &arcode.Code[arcode.Code.size() - 1])
+        if (code == end)
             // If the instruction pointer is past the end of the cheat code...
             break;
 
+        if (StopToken.stop_requested()) return started ? Result::Interrupted : Result::Success;
+        started = true;
         u32 a = *code++;
         u32 b = *code++;
 
@@ -73,8 +108,7 @@ void AREngine::RunCheat(const ARCode& arcode)
             {
                 if ((op & 0xF0) == 0xE0)
                 {
-                    for (u32 i = 0; i < b; i += 8)
-                        code += 2;
+                    code += size_t((u64(b) + 7) / 8) * 2;
                 }
 
                 continue;
@@ -223,8 +257,7 @@ void AREngine::RunCheat(const ARCode& arcode)
             // in practice could be used for a self-modifying AR code
             // could be implemented with some hackery, but, does anything even
             // use it??
-            Log(LogLevel::Error, "AR: !! THE FUCKING C4000000 OPCODE. TELL ARISOTURA.\n");
-            return;
+            return Result::UnsupportedCode;
 
         case 0xC5: // count++ / IF (count & b.l) == b.h
             {
@@ -315,8 +348,7 @@ void AREngine::RunCheat(const ARCode& arcode)
                 case 0x08: datareg *= b; break;
 
                 default:
-                    Log(LogLevel::Warn, "!! bad AR D4 opcode %08X %08X\n", a, b);
-                    break;
+                    return Result::UnsupportedCode;
             }
             break;
 
@@ -363,23 +395,25 @@ void AREngine::RunCheat(const ARCode& arcode)
                 u32 bytesleft = b;
                 while (bytesleft >= 8)
                 {
+                    if (StopToken.stop_requested()) return Result::Interrupted;
                     NDS.ARM7Write32(dstaddr, *code++); dstaddr += 4;
                     NDS.ARM7Write32(dstaddr, *code++); dstaddr += 4;
                     bytesleft -= 8;
                 }
                 if (bytesleft > 0)
                 {
-                    u8* leftover = (u8*)code;
-                    code += 2;
+                    u32 leftover = code[0];
                     if (bytesleft >= 4)
                     {
-                        NDS.ARM7Write32(dstaddr, *(u32*)leftover); dstaddr += 4;
-                        leftover += 4;
+                        NDS.ARM7Write32(dstaddr, leftover); dstaddr += 4;
+                        leftover = code[1];
                         bytesleft -= 4;
                     }
+                    code += 2;
                     while (bytesleft > 0)
                     {
-                        NDS.ARM7Write8(dstaddr, *leftover++); dstaddr++;
+                        NDS.ARM7Write8(dstaddr, u8(leftover)); dstaddr++;
+                        leftover >>= 8;
                         bytesleft--;
                     }
                 }
@@ -395,6 +429,7 @@ void AREngine::RunCheat(const ARCode& arcode)
                 u32 bytesleft = b;
                 while (bytesleft >= 4)
                 {
+                    if (StopToken.stop_requested()) return Result::Interrupted;
                     NDS.ARM7Write32(dstaddr, NDS.ARM7Read32(srcaddr));
                     srcaddr += 4;
                     dstaddr += 4;
@@ -411,20 +446,32 @@ void AREngine::RunCheat(const ARCode& arcode)
             break;
 
         default:
-            Log(LogLevel::Warn, "!! bad AR opcode %08X %08X\n", a, b);
-            return;
+            return Result::UnsupportedCode;
         }
     }
+    return Result::Success;
 }
 
 void AREngine::RunCheats()
 {
-    if (Cheats.empty()) return;
-
-    for (const ARCode& code : Cheats)
+    for (ARCode& code : Cheats)
     {
-        if (code.Enabled)
-            RunCheat(code);
+        if (StopToken.stop_requested()) return;
+        if (!code.Enabled) continue;
+        const Result result = RunCheat(code);
+        if (result == Result::Success) continue;
+        // Disable only the runtime copy. Editing/re-enabling cheats installs a
+        // fresh copy; no user's cheat file is modified by an execution failure.
+        code.Enabled = false;
+        Errors.push_back({code.Name, result});
+        Log(LogLevel::Warn, "AR: cheat disabled for this session (%s, reason %d)\n",
+            code.Name.c_str(), int(result));
+        if (result == Result::Interrupted) return;
     }
+}
+
+std::vector<AREngine::Error> AREngine::TakeErrors()
+{
+    return std::exchange(Errors, {});
 }
 }

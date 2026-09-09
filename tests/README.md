@@ -181,3 +181,25 @@ Its `loopback` case uses real local TCP for split requests, checksum recovery,
 NoAck negotiation, reconnect and detach. Only the listener bind is restricted to
 loopback by the fixture. Actual ARM debugger clients, both emulated CPU ports and
 Linux/BSD runtime acceptance remain separate.
+
+`HomebrewInput` extracts the current argv and DLDI methods and replaces only SD
+injection and guest memory. Exact-size guard pages, name/address bounds,
+source/target/fixup spans, RW/RO and repeated patching are covered. It does not
+boot real homebrew or exercise a mounted FAT image.
+
+`ARDatabaseInput` compiles the production parser with current Qt file functions
+and generated databases. Complete/partial game entries, checksum/category rules,
+parent pointers and read/seek faults are checked. `CheatImportUI` runs the actual
+offscreen selection dialog with generated backend results, covering empty and
+cleared selections as well as normal acceptance. Real database selection and
+gameplay remain separate acceptance checks.
+
+`ARExecution` enters through the real ARM7 VBlank IRQ hook and records actual core
+memory accesses. Empty/odd/truncated literal inputs, normal writes/loops/copies,
+cooperative cancellation and unsupported instructions are covered.
+`CheatCancellation` connects production Qt queue publication, stop-token handoff
+and semaphore waiting to that hook. A controlled worker acknowledges messages
+after core execution returns; it does not run the full GUI dispatcher or physical
+devices. Pause/stop/exit requests, requests preceding the frame, later-code
+suppression and fresh execution after queue drain are checked. No automatic
+deadline or complete Action Replay opcode/timing conformance is claimed.
