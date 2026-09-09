@@ -49,6 +49,55 @@ foreach(case IN ITEMS lengths completion framing trailing empty size-limit alloc
     set_tests_properties(rom-zstd-decompression-${case} PROPERTIES TIMEOUT 30)
 endforeach()
 
+add_executable(ArchiveIO "${CMAKE_SOURCE_DIR}/tests/ArchiveIO.cpp")
+target_include_directories(ArchiveIO PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(ArchiveIO PRIVATE PkgConfig::LibArchive)
+if (USE_QT6)
+    target_link_libraries(ArchiveIO PRIVATE Qt6::Core)
+else()
+    target_link_libraries(ArchiveIO PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS formats locale missing empty corrupt-header truncated-data crc member-type
+        chunked-read early-eof read-error limits invalid-name null-name allocation)
+    add_test(NAME archive-io-${case} COMMAND ArchiveIO ${case})
+    set_tests_properties(archive-io-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+set(file_methods)
+foreach(method IN ITEMS LastSep LoadROMData LoadRTC SaveRTC)
+    if (method STREQUAL "LastSep")
+        set(signature "int EmuInstance::lastSep(const std::string& path)")
+    elseif (method STREQUAL "LoadROMData")
+        set(signature "bool EmuInstance::loadROMData(const QStringList& filepath, std::unique_ptr<u8[]>& filedata, u32& filelen, string& basepath, string& romname) noexcept")
+    elseif (method STREQUAL "LoadRTC")
+        set(signature "void EmuInstance::loadRTCData()")
+    else()
+        set(signature "void EmuInstance::saveRTCData()")
+    endif()
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/file${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
+    list(APPEND file_methods "${output}")
+endforeach()
+add_executable(FrontendFileIO "${CMAKE_SOURCE_DIR}/tests/FrontendFileIO.cpp" ArchiveUtil.cpp
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    ${file_methods} "${rom_decompressor}")
+target_include_directories(FrontendFileIO PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(FrontendFileIO PRIVATE core PkgConfig::LibArchive PkgConfig::Zstd Threads::Threads)
+if (USE_QT6)
+    target_link_libraries(FrontendFileIO PRIVATE Qt6::Core)
+else()
+    target_link_libraries(FrontendFileIO PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS rom-normal rom-relative rom-zstd rom-zstd-invalid rom-empty rom-missing
+        rom-short rom-error rom-oversize rom-wrapped rom-allocation rom-archive rom-archive-relative rom-archive-missing
+        rtc-roundtrip rtc-truncated rtc-oversize rtc-short rtc-error rtc-missing rtc-write rtc-commit)
+    add_test(NAME frontend-file-${case} COMMAND FrontendFileIO ${case})
+    set_tests_properties(frontend-file-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
 set(audio_callback "${CMAKE_CURRENT_BINARY_DIR}/audioCallback.inc")
 add_custom_command(OUTPUT "${audio_callback}"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
@@ -69,8 +118,9 @@ if (USE_QT6)
 else()
     target_link_libraries(SaveManagerIO PRIVATE Qt5::Core)
 endif()
-foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush reload-partial buffer-resize
-        unpublished-pending memory-copy-pending flush-latest recovery-copy same-copy-path copy-commit-failure)
+foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush buffer-resize
+        unpublished-pending memory-copy-pending flush-latest recovery-copy same-copy-path copy-commit-failure
+        relocation-pending)
     add_test(NAME save-manager-${case} COMMAND SaveManagerIO ${case})
     set_tests_properties(save-manager-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()
@@ -121,16 +171,21 @@ endif()
 
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stateMessages.inc" "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc"
+        "${CMAKE_CURRENT_BINARY_DIR}/importSaveWrapper.inc"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::handleMessages()"
         "${CMAKE_CURRENT_BINARY_DIR}/stateMessages.inc"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "EmuThread::EmuThread(EmuInstance* inst, QObject* parent) : QThread(parent)"
         "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "int EmuThread::importSavefile(const QString& filename)"
+        "${CMAKE_CURRENT_BINARY_DIR}/importSaveWrapper.inc"
     DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuThread.cpp VERBATIM)
 add_executable(StateLoadMessages "${CMAKE_SOURCE_DIR}/tests/StateLoadMessages.cpp" EmuThread.h
     "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
-    "${CMAKE_CURRENT_BINARY_DIR}/stateMessages.inc" "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc")
+    "${CMAKE_CURRENT_BINARY_DIR}/stateMessages.inc" "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/importSaveWrapper.inc")
 target_include_directories(StateLoadMessages PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(StateLoadMessages PRIVATE core Threads::Threads)
 if (USE_QT6)
@@ -140,6 +195,10 @@ else()
 endif()
 add_test(NAME savestate-message-recovery COMMAND StateLoadMessages)
 set_tests_properties(savestate-message-recovery PROPERTIES TIMEOUT 10)
+foreach(case IN ITEMS normal missing empty short error oversize allocation reset-failure paused-failure no-cart)
+    add_test(NAME save-import-${case} COMMAND StateLoadMessages ${case})
+    set_tests_properties(save-import-${case} PROPERTIES TIMEOUT 10)
+endforeach()
 
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
         "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc" "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc"
@@ -199,6 +258,7 @@ endforeach()
 add_executable(CartReplacement "${CMAKE_SOURCE_DIR}/tests/CartReplacement.cpp" SaveManager.h
     "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp" ${cart_methods})
 target_include_directories(CartReplacement PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_definitions(CartReplacement PRIVATE MELONDS_TEST_CART_SAVE)
 target_link_libraries(CartReplacement PRIVATE core Threads::Threads)
 if (USE_QT6)
     target_link_libraries(CartReplacement PRIVATE Qt6::Core)
@@ -207,7 +267,7 @@ else()
 endif()
 foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existing-writable gba-existing-writable
         ds-console-failure console-retain ds-queued-failure ds-success ds-reset-success gba-success gba-queued
-        ds-pending-failure gba-pending-failure ds-same-save read-short read-error read-oversize read-denied)
+        ds-pending-failure gba-pending-failure ds-same-save read-short read-error read-oversize read-denied ds-import-partial)
     add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
     set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
 endforeach()

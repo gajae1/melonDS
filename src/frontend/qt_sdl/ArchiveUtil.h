@@ -36,10 +36,13 @@ namespace Archive
 {
 
 using namespace melonDS;
+// "OK" followed by sorted regular-member names, or only "Err" on failure.
+// Listing checks headers/skips, not the full contents or checksums of every file.
 QVector<QString> ListArchive(QString path);
+// Positive byte count on success; -2 for a missing member after clean EOF,
+// -1 for invalid input, allocation or archive errors. Both outputs are preserved
+// on failure. ROM input must be nonempty and at most 0x40000000 bytes (1 GiB).
 s32 ExtractFileFromArchive(QString path, QString wantedFile, std::unique_ptr<u8[]>& filedata, u32* filesize);
-//QVector<QString> ExtractFileFromArchive(QString path, QString wantedFile, QByteArray *romBuffer);
-//u32 ExtractFileFromArchive(const char* path, const char* wantedFile, u8 **romdata);
 
 }
 

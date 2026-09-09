@@ -41,7 +41,8 @@ public:
     ~SaveManager();
 
     std::string GetPath();
-    void SetPath(const std::string& path, bool reload);
+    // Relocate the current save and keep its latest bytes pending for the new path.
+    void SetPath(const std::string& path);
 
     void RequestFlush(const melonDS::u8* savedata, melonDS::u32 savelen, melonDS::u32 writeoffset, melonDS::u32 writelen);
     void CheckFlush();

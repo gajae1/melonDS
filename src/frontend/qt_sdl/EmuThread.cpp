@@ -25,6 +25,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <limits>
 
 #include <SDL2/SDL.h>
 
@@ -548,6 +549,34 @@ void EmuThread::handleMessages()
             break;
 
         case msg_EmuReset:
+        case msg_ImportSavefile:
+        {
+            // Prepare the import before resetting; no frame or audio callback
+            // may run between a successful reset and applying these bytes.
+            std::unique_ptr<u8[]> savedata;
+            u32 savelen = 0;
+            if (msg.type == msg_ImportSavefile)
+            {
+                msgResult = 0;
+                // An inserted cart may still be queued until reset starts it.
+                if (!emuInstance->cartInserted()) break;
+                try
+                {
+                    const std::unique_ptr<Platform::FileHandle, decltype(&Platform::CloseFile)> file(
+                        Platform::OpenFile(msg.param.value<QString>().toStdString(), Platform::FileMode::Read),
+                        Platform::CloseFile);
+                    if (!file) break;
+                    const u64 size = Platform::FileLength(file.get());
+                    if (!size || size > std::numeric_limits<u32>::max()) break;
+                    savedata = std::make_unique_for_overwrite<u8[]>(static_cast<u32>(size));
+                    if (Platform::FileRead(savedata.get(), 1, size, file.get()) != size) break;
+                    savelen = static_cast<u32>(size);
+                }
+                catch (const std::bad_alloc&)
+                {
+                    break;
+                }
+            }
             emuInstance->audioDisable();
             msgResult = emuInstance->reset();
             if (!msgResult)
@@ -556,6 +585,7 @@ void EmuThread::handleMessages()
                 emuInstance->osdAddMessage(0xFFA0A0, "Reset failed; current session retained");
                 break;
             }
+            if (savedata) emuInstance->nds->SetNDSSave(savedata.get(), savelen);
             emuInstance->clearBackupState();
             stateRecoveryFailed = false;
 
@@ -567,6 +597,7 @@ void EmuThread::handleMessages()
             emit windowEmuReset();
             emuInstance->osdAddMessage(0, "Reset");
             break;
+        }
 
         case msg_InitGL:
             emuInstance->initOpenGL(msg.param.value<int>());
@@ -674,26 +705,6 @@ void EmuThread::handleMessages()
             }
             break;
         }
-
-        case msg_ImportSavefile:
-            {
-                msgResult = 0;
-                auto f = Platform::OpenFile(msg.param.value<QString>().toStdString(), Platform::FileMode::Read);
-                if (!f) break;
-
-                u32 len = FileLength(f);
-
-                std::unique_ptr<u8[]> data = std::make_unique<u8[]>(len);
-                Platform::FileRewind(f);
-                Platform::FileRead(data.get(), len, 1, f);
-
-                assert(emuInstance->nds != nullptr);
-                emuInstance->nds->SetNDSSave(data.get(), len);
-
-                CloseFile(f);
-                msgResult = 1;
-            }
-            break;
 
         case msg_EnableCheats:
             emuInstance->enableCheats(msg.param.value<bool>());
@@ -889,9 +900,6 @@ StateLoadResult EmuThread::undoStateLoad()
 
 int EmuThread::importSavefile(const QString& filename)
 {
-    sendMessage(msg_EmuReset);
-    waitMessage();
-    if (!msgResult) return 0;
     sendMessage({.type = msg_ImportSavefile, .param = filename});
     waitMessage();
     return msgResult;

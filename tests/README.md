@@ -76,7 +76,7 @@ This produces 21 entries on a supported JIT-enabled target, or 19 with
 AAC and host input/output; unexpected file use aborts. It does not replace
 real driver/game/physical-hardware regression tests. The full-core tests are
 not automatically sanitized by the standalone sanitizer configuration.
-See [the release record](../plans/releases/1.1.05.md) for current scope and measurement limitations.
+See [the release record](../plans/releases/1.1.06.md) for current scope and measurement limitations.
 
 The Qt build also provides `firmware-profile-direct-boot`. It runs the real
 frontend profile override and MAC parser with temporary configuration, then
@@ -95,11 +95,13 @@ code and compare the full serialized state after the recovered frame. Its host
 file boundary uses temporary Qt files; no user data or physical devices are used.
 `StateLoadMessages` exercises the real Qt message dispatcher with scripted core
 results: error propagation, audio callback exclusion, queued resume/frame-step/
-save rejection after failed recovery, and reset/boot recovery. It does not start
-a physical audio device or the full window event loop.
+save rejection after failed recovery, and reset/boot recovery. The current import
+wrapper and dispatcher also check file preparation before reset, input/allocation
+failure, and audio exclusion until save application finishes. It does not start a
+physical audio device or the full window event loop.
 
 `SaveManagerIO` covers atomic writes/retry, the real worker's path-change locking,
-reload with a partial update, and buffer grow/shrink/memory-copy bounds. The path
+unpublished updates during relocation, and buffer grow/shrink/memory-copy bounds. The path
 test holds the worker after a real commit and checks that relocation waits for
 the mutex, then verifies both files. It also checks unpublished pending requests,
 synchronous flush of the latest data, recovery copies that preserve the original
@@ -112,10 +114,23 @@ files check failed preparation without changing the active or queued cart, save
 manager or asset paths, normal replacement, inactive GBA save ownership, pending
 write failure, same-game reopen, and SRAM length/read failures. It does not prove
 real-game progress, successful DSi mode transitions or all allocation failures.
+Its partial-import case routes the real cartridge save callback through the real
+SaveManager and checks that both SRAM and the persisted file retain the tail.
+
+`FrontendFileIO` uses current ROM/RTC definitions with real Qt files, zstd,
+libarchive and core RTC. It checks length narrowing, complete reads, allocation
+failure, relative/Unicode names, rejected output preservation and atomic RTC
+writes. `ArchiveIO` compiles the production archive code against generated
+ZIP/7z/tar inputs and injects selected header/data/allocator failures. Missing
+members, resource release, CRC/end-of-entry errors, valid short chunks and output
+preservation are covered. Tagged UTF-8 ZIP names are checked in the C locale;
+untagged legacy filenames retain libarchive's existing interpretation.
+Maximum-size decompression and every archive format are
+not. The existing shared `rtc.bin` name and state layout remain unchanged.
 
 `FrontendClose` runs the current close handlers with real Qt windows, close
 events, message boxes and file dialogs on the offscreen platform. Temporary files
 and scripted producer/save contracts cover retry, cancel, recovery copies and
 child-instance cancellation before any window is destroyed. Actual worker I/O is
-covered by the two tests above; full frontend/device shutdown acceptance remains
+covered by SaveManagerIO and CartReplacement; full frontend/device shutdown acceptance remains
 separate. Generated method includes explicitly precede moc processing.

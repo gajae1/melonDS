@@ -42,44 +42,9 @@ struct FlushGateScope
     }
 };
 
-// The production frontend's QFile I/O, limited to the modes SaveManager uses.
-// Linking the full Platform.cpp would also require the emulator and SDL GUI.
+// File commits use production QSaveFile; only Platform logging needs a test hook.
 namespace melonDS::Platform
 {
-FileHandle* OpenFile(const std::string& path, FileMode mode)
-{
-    auto file = std::make_unique<QFile>(QString::fromStdString(path));
-    if (!file->open(mode == FileMode::Read ? QIODevice::ReadOnly :
-                       QIODevice::WriteOnly | QIODevice::Truncate))
-        return nullptr;
-    return reinterpret_cast<FileHandle*>(file.release());
-}
-
-bool CloseFile(FileHandle* file)
-{
-    auto qfile = reinterpret_cast<QFile*>(file);
-    qfile->close();
-    delete qfile;
-    return true;
-}
-
-u64 FileRead(void* data, u64 size, u64 count, FileHandle* file)
-{
-    qint64 read = reinterpret_cast<QFile*>(file)->read(static_cast<char*>(data), size * count);
-    return read > 0 ? read / size : read;
-}
-
-u64 FileWrite(const void* data, u64 size, u64 count, FileHandle* file)
-{
-    qint64 written = reinterpret_cast<QFile*>(file)->write(static_cast<const char*>(data), size * count);
-    return written > 0 ? written / size : written;
-}
-
-u64 FileLength(FileHandle* file)
-{
-    return reinterpret_cast<QFile*>(file)->size();
-}
-
 void Log(LogLevel, const char* format, ...)
 {
     va_list args;
@@ -137,7 +102,7 @@ int main(int argc, char** argv)
         const QString path = directory.filePath("missing/save.bin");
         const bool worker = !std::strcmp(argv[1], "retry-worker");
         SaveManager manager(worker ? path.toStdString() : std::string());
-        if (!worker) manager.SetPath(path.toStdString(), false);
+        if (!worker) manager.SetPath(path.toStdString());
         Queue(manager, next);
         check(!manager.Flush(), "Failed open was reported as a successful flush");
         check(manager.NeedsFlush(), "Failed open discarded the pending save");
@@ -167,7 +132,7 @@ int main(int argc, char** argv)
                 return 2;
         }
         SaveManager manager(""); // Drive flushes synchronously without a worker race.
-        manager.SetPath(path.toStdString(), false);
+        manager.SetPath(path.toStdString());
         Queue(manager, next);
         if (!std::strcmp(argv[1], "retry-rename"))
         {
@@ -214,7 +179,7 @@ int main(int argc, char** argv)
         QSemaphore setterFinished;
         auto setter = std::unique_ptr<QThread>(QThread::create([&] {
             setterStarted.release();
-            manager.SetPath(newPath.toStdString(), false);
+            manager.SetPath(newPath.toStdString());
             setterFinished.release();
         }));
         setter->start();
@@ -225,7 +190,7 @@ int main(int argc, char** argv)
         if (!started) return 2;
         check(!changedWhileFlushing, "SetPath changed shared state while the worker held the flush lock");
 
-        // reload=false relocates this same game's data. It does not load another
+        // SetPath relocates this same game's data. It does not load another
         // game's existing file, and the normal CheckFlush publication is retained.
         check(manager.GetPath() == newPath.toStdString(), "Save path did not change after the flush");
         manager.CheckFlush();
@@ -234,27 +199,38 @@ int main(int argc, char** argv)
         check(Read(newPath) == next, "Relocation did not write the current game's data");
         check(!manager.NeedsFlush(), "Completed relocation remained pending");
     }
-    else if (!std::strcmp(argv[1], "reload-partial"))
+    else if (!std::strcmp(argv[1], "relocation-pending"))
     {
-        const QString path = directory.filePath("generated-reload.bin");
-        if (!Write(path, previous)) return 2;
-        // reset currently calls reload=true on a newly created firmware manager.
+        const QString oldPath = directory.filePath("pending-original.bin");
+        const QString newPath = directory.filePath("relocated-save.bin");
+        if (!Write(oldPath, previous) || !Write(newPath, next)) return 2;
         SaveManager manager("");
-        manager.SetPath(path.toStdString(), true);
-        QByteArray patched = previous;
-        patched[5] = '\x3C';
-        manager.RequestFlush(reinterpret_cast<const u8*>(patched.constData()),
-                             static_cast<u32>(patched.size()), 5, 1);
-        manager.CheckFlush();
-        manager.FlushSecondaryBuffer();
-        check(Read(path) == patched, "Partial update did not preserve the reloaded bytes");
-        check(!manager.NeedsFlush(), "Completed reloaded save remained pending");
+        manager.SetPath(oldPath.toStdString());
+        QByteArray published = previous;
+        published[5] = '\x3C';
+        Queue(manager, published);
+        QByteArray latest = published;
+        latest[9] = '\x37';
+        manager.RequestFlush(reinterpret_cast<const u8*>(latest.constData()),
+                             static_cast<u32>(latest.size()), 9, 1);
+
+        // The primary contains a newer partial write than the pending secondary.
+        // Moving this game's path must retain both until the latest data commits.
+        manager.SetPath(newPath.toStdString());
+        check(manager.GetPath() == newPath.toStdString() && manager.NeedsFlush(),
+              "Relocation discarded the unpublished write request");
+        check(Read(oldPath) == previous && Read(newPath) == next,
+              "Relocation changed a file before an explicit flush");
+        check(manager.Flush() && Read(newPath) == latest,
+              "Relocation lost the latest pending bytes or adopted destination data");
+        check(Read(oldPath) == previous, "Relocated flush changed the previous file");
+        check(!manager.NeedsFlush(), "Committed relocation remained pending");
     }
     else if (!std::strcmp(argv[1], "buffer-resize"))
     {
         const QString path = directory.filePath("resized-buffer.bin");
         SaveManager manager("");
-        manager.SetPath(path.toStdString(), false);
+        manager.SetPath(path.toStdString());
         Queue(manager, previous);
         manager.FlushSecondaryBuffer();
 
@@ -297,7 +273,7 @@ int main(int argc, char** argv)
     {
         const QString path = directory.filePath("unavailable/save.bin");
         SaveManager manager("");
-        manager.SetPath(path.toStdString(), false);
+        manager.SetPath(path.toStdString());
         Queue(manager, next);
         manager.FlushSecondaryBuffer(); // Keep the original storage unavailable.
         check(manager.NeedsFlush(), "Failed write discarded the pending file save");
@@ -323,7 +299,7 @@ int main(int argc, char** argv)
         if (!Write(path, previous)) return 2;
         SaveManager manager("");
         check(manager.Flush(), "Unused manager could not finish flushing");
-        manager.SetPath(path.toStdString(), false);
+        manager.SetPath(path.toStdString());
         check(manager.Flush(), "Manager without requested data could not finish flushing");
         check(Read(path) == previous, "Empty flush changed the existing file");
         check(!manager.NeedsFlush(), "Empty flush left a phantom pending request");
@@ -352,7 +328,7 @@ int main(int argc, char** argv)
         const QString failedCopy = directory.filePath("also-offline/copy.bin");
         if (!Write(copyPath, previous)) return 2;
         SaveManager manager("");
-        manager.SetPath(path.toStdString(), false);
+        manager.SetPath(path.toStdString());
         Queue(manager, previous);
         check(!manager.Flush(), "Unavailable original storage was reported as committed");
 
@@ -381,7 +357,7 @@ int main(int argc, char** argv)
         const QString path = directory.filePath("original-save.bin");
         if (!Write(path, previous)) return 2;
         SaveManager manager("");
-        manager.SetPath(path.toStdString(), false);
+        manager.SetPath(path.toStdString());
         manager.RequestFlush(reinterpret_cast<const u8*>(next.constData()),
                              static_cast<u32>(next.size()), 0, static_cast<u32>(next.size()));
         QStringList aliases{path, QDir::current().relativeFilePath(path),
@@ -395,7 +371,7 @@ int main(int argc, char** argv)
               "Rejected recovery altered the original save or its pending state");
 
         const QString newPath = directory.filePath("not-created.bin");
-        manager.SetPath(newPath.toStdString(), false);
+        manager.SetPath(newPath.toStdString());
         check(!manager.SaveCopy(QDir::current().relativeFilePath(newPath).toStdString()),
               "Recovery copy accepted the original path before its first file existed");
         check(!QFile::exists(newPath) && manager.NeedsFlush(), "Rejected copy created or acknowledged the original");
@@ -408,7 +384,7 @@ int main(int argc, char** argv)
         const QString copyPath = directory.filePath("locked-recovery.bin");
         if (!Write(path, previous) || !Write(copyPath, previous)) return 2;
         SaveManager manager("");
-        manager.SetPath(path.toStdString(), false);
+        manager.SetPath(path.toStdString());
         manager.RequestFlush(reinterpret_cast<const u8*>(next.constData()),
                              static_cast<u32>(next.size()), 0, static_cast<u32>(next.size()));
         HANDLE lock = CreateFileW(reinterpret_cast<LPCWSTR>(copyPath.utf16()), GENERIC_READ,

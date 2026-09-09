@@ -168,6 +168,18 @@ struct CartLoader
     bool updateConsole() noexcept;
 };
 
+static bool captureCartSave = false;
+namespace melonDS::Platform
+{
+void WriteNDSSave(const u8* data, u32 length, u32 offset, u32 count, void* userdata)
+{
+    if (!captureCartSave) return;
+    auto* loader = static_cast<CartLoader*>(userdata);
+    if (!loader || !loader->ndsSave) std::abort();
+    loader->ndsSave->RequestFlush(data, length, offset, count);
+}
+}
+
 // Core uses PlatformHeadless; only these frontend definitions use Qt fixture files.
 #define OpenFile OpenCartFile
 #define CloseFile CloseCartFile
@@ -257,6 +269,23 @@ int main(int argc, char** argv)
     if (test == "read-oversize") readFailure = ReadFailure::Oversize;
     if (test == "read-denied") denyRead = true;
     QString error;
+    if (test == "ds-import-partial")
+    {
+        if (!loader.loadROM({"current.nds"}, false, error)) return 2;
+        const u32 length = loader.nds->GetNDSSaveLength();
+        if (length < 64) return 2;
+        QByteArray expected(reinterpret_cast<const char*>(loader.nds->GetNDSSave()), length);
+        const QByteArray prefix(32, '\x3C');
+        std::memcpy(expected.data(), prefix.constData(), prefix.size());
+        captureCartSave = true;
+        loader.nds->SetNDSSave(reinterpret_cast<const u8*>(prefix.constData()), prefix.size());
+        captureCartSave = false;
+        const bool passed = loader.nds->GetNDSSaveLength() == length &&
+            !std::memcmp(loader.nds->GetNDSSave(), expected.constData(), length) &&
+            loader.ndsSave->Flush() && ReadSaveFile(oldPath) == expected;
+        std::printf("partial import preserves complete cart SRAM and save file: %s\n", passed ? "PASS" : "FAIL");
+        return passed ? 0 : 1;
+    }
     const QString name = QString(test.ends_with("invalid") ? "invalid" : sameSave ? "current" : "incoming") + (gba ? ".gba" : ".nds");
     const bool accepted = test == "console-retain" ? loader.updateConsole() :
         gba ? loader.loadGBAROM({name}, error) : loader.loadROM({name},

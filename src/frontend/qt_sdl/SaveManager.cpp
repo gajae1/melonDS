@@ -99,28 +99,11 @@ std::string SaveManager::GetPath()
     return Path;
 }
 
-void SaveManager::SetPath(const std::string& path, bool reload)
+void SaveManager::SetPath(const std::string& path)
 {
     QMutexLocker lock(&StateLock);
     Path = path;
-
-    if (reload)
-    { // If we should load whatever file is at the new path...
-
-        if (FileHandle* f = Platform::OpenFile(Path, FileMode::Read))
-        {
-            if (u32 length = Platform::FileLength(f); length != Length)
-            { // If the new file is a different size, we need to re-allocate the buffer.
-                Length = length;
-                Buffer = std::make_unique<u8[]>(Length);
-            }
-
-            FileRead(Buffer.get(), 1, Length, f);
-            CloseFile(f);
-        }
-    }
-    else
-        FlushRequested = true;
+    FlushRequested = true;
 }
 
 void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen)

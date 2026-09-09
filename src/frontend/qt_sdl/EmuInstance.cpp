@@ -1192,26 +1192,30 @@ void EmuInstance::setBatteryLevels()
 
 void EmuInstance::loadRTCData()
 {
-    auto file = Platform::OpenLocalFile("rtc.bin", Platform::FileMode::Read);
-    if (file)
+    const unique_ptr<FileHandle, decltype(&Platform::CloseFile)> file(
+        Platform::OpenLocalFile("rtc.bin", FileMode::Read), Platform::CloseFile);
+    if (!file) return;
+
+    RTC::StateData state{};
+    if (Platform::FileLength(file.get()) != sizeof(state) ||
+        Platform::FileRead(&state, 1, sizeof(state), file.get()) != sizeof(state))
     {
-        RTC::StateData state;
-        Platform::FileRead(&state, sizeof(state), 1, file);
-        Platform::CloseFile(file);
-        nds->RTC.SetState(state);
+        Log(LogLevel::Error, "Failed to read complete RTC state\n");
+        return;
     }
+    nds->RTC.SetState(state);
 }
 
 void EmuInstance::saveRTCData()
 {
-    auto file = Platform::OpenLocalFile("rtc.bin", Platform::FileMode::Write);
-    if (file)
-    {
-        RTC::StateData state;
-        nds->RTC.GetState(state);
-        Platform::FileWrite(&state, sizeof(state), 1, file);
-        Platform::CloseFile(file);
-    }
+    RTC::StateData state{};
+    nds->RTC.GetState(state);
+    QSaveFile file(QString::fromStdString(Platform::GetLocalFilePath("rtc.bin")));
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(reinterpret_cast<const char*>(&state), sizeof(state)) != sizeof(state) ||
+        !file.commit())
+        Log(LogLevel::Error, "Failed to save RTC state: %s\n", file.errorString().toUtf8().constData());
 }
 
 void EmuInstance::setDateTime()
@@ -1409,7 +1413,7 @@ bool EmuInstance::reset()
         std::string newsave = getAssetPath(false, localCfg.GetString("SaveFilePath"), ".sav");
         newsave += instanceFileSuffix();
         if (oldsave != newsave)
-            ndsSave->SetPath(newsave, false);
+            ndsSave->SetPath(newsave);
     }
 
     if ((gbaCartType != -1) && gbaSave)
@@ -1418,31 +1422,10 @@ bool EmuInstance::reset()
         std::string newsave = getAssetPath(true, localCfg.GetString("SaveFilePath"), ".sav");
         newsave += instanceFileSuffix();
         if (oldsave != newsave)
-            gbaSave->SetPath(newsave, false);
+            gbaSave->SetPath(newsave);
     }
 
     initFirmwareSaveManager();
-    if (firmwareSave)
-    {
-        std::string oldsave = firmwareSave->GetPath();
-        string newsave;
-        if (globalCfg.GetBool(consoleType == 1 ? "DSi.ExternalBIOSEnable" : "Emu.ExternalBIOSEnable"))
-        {
-            if (consoleType == 1)
-                newsave = globalCfg.GetString("DSi.FirmwarePath") + instanceFileSuffix();
-            else
-                newsave = globalCfg.GetString("DS.FirmwarePath") + instanceFileSuffix();
-        }
-        else
-        {
-            newsave = GetLocalFilePath(kWifiSettingsPath + instanceFileSuffix());
-        }
-
-        if (oldsave != newsave)
-        { // If the player toggled the ConsoleType or ExternalBIOSEnable...
-            firmwareSave->SetPath(newsave, true);
-        }
-    }
 
     if (!baseROMName.empty())
     {
@@ -1779,84 +1762,59 @@ void EmuInstance::customizeFirmware(Firmware& firmware, bool overridesettings) n
 // Loads ROM data without parsing it. Works for GBA and NDS ROMs.
 bool EmuInstance::loadROMData(const QStringList& filepath, std::unique_ptr<u8[]>& filedata, u32& filelen, string& basepath, string& romname) noexcept
 {
-    if (filepath.empty()) return false;
-
-    if (int num = filepath.count(); num == 1)
+    try
     {
-        // regular file
+        if (filepath.empty()) return false;
+        string filename = filepath.at(0).toStdString();
+        string membername = filename;
+        unique_ptr<u8[]> data;
+        u32 length = 0;
 
-        std::string filename = filepath.at(0).toStdString();
-        Platform::FileHandle* f = Platform::OpenFile(filename, FileMode::Read);
-        if (!f) return false;
-
-        long len = Platform::FileLength(f);
-        if (len > 0x40000000)
+        if (filepath.count() == 1)
         {
-            Platform::CloseFile(f);
-            return false;
-        }
+            const unique_ptr<FileHandle, decltype(&Platform::CloseFile)> file(
+                Platform::OpenFile(filename, FileMode::Read), Platform::CloseFile);
+            if (!file) return false;
+            const u64 size = Platform::FileLength(file.get());
+            if (!size || size > 0x40000000) return false;
 
-        Platform::FileRewind(f);
-        filedata = make_unique<u8[]>(len);
-        size_t nread = Platform::FileRead(filedata.get(), (size_t)len, 1, f);
-        Platform::CloseFile(f);
-        if (nread != 1)
-        {
-            filedata = nullptr;
-            return false;
-        }
+            data = std::make_unique_for_overwrite<u8[]>(static_cast<u32>(size));
+            if (Platform::FileRead(data.get(), 1, size, file.get()) != size) return false;
+            length = static_cast<u32>(size);
 
-        filelen = (u32)len;
-
-        if (filename.length() > 4 && filename.substr(filename.length() - 4) == ".zst")
-        {
-            filelen = decompressROM(filedata.get(), len, filedata);
-
-            if (filelen > 0)
+            if (filename.length() > 4 && filename.ends_with(".zst"))
             {
-                filename = filename.substr(0, filename.length() - 4);
-            }
-            else
-            {
-                filedata = nullptr;
-                filelen = 0;
-                basepath = "";
-                romname = "";
-                return false;
+                length = decompressROM(data.get(), length, data);
+                if (!length) return false;
+                filename.resize(filename.length() - 4);
+                membername = filename;
             }
         }
-
-        int pos = lastSep(filename);
-        if(pos != -1)
-            basepath = filename.substr(0, pos);
-
-        romname = filename.substr(pos+1);
-        return true;
-    }
 #ifdef ARCHIVE_SUPPORT_ENABLED
-    else if (num == 2)
-    {
-        // file inside archive
-
-        s32 lenread = Archive::ExtractFileFromArchive(filepath.at(0), filepath.at(1), filedata, &filelen);
-        if (lenread < 0) return false;
-        if (!filedata) return false;
-        if (lenread != filelen)
+        else if (filepath.count() == 2)
         {
-            filedata = nullptr;
-            return false;
+            const s32 read = Archive::ExtractFileFromArchive(filepath.at(0), filepath.at(1), data, &length);
+            if (read < 0 || !data || !length || length > 0x40000000 || static_cast<u32>(read) != length)
+                return false;
+            membername = filepath.at(1).toStdString();
         }
+#endif
+        else return false;
 
-        std::string std_archivepath = filepath.at(0).toStdString();
-        basepath = std_archivepath.substr(0, lastSep(std_archivepath));
-
-        std::string std_romname = filepath.at(1).toStdString();
-        romname = std_romname.substr(lastSep(std_romname)+1);
+        const int separator = lastSep(filename);
+        string directory = separator < 0 ? "" : filename.substr(0, separator);
+        string name = membername.substr(lastSep(membername) + 1);
+        // Commit bytes and names together, after every read/decode/allocation.
+        filedata = std::move(data);
+        filelen = length;
+        basepath = std::move(directory);
+        romname = std::move(name);
         return true;
     }
-#endif
-    else
+    catch (const std::bad_alloc&)
+    {
         return false;
+    }
 }
 
 QString EmuInstance::getSavErrorString(std::string& filepath, bool gba)

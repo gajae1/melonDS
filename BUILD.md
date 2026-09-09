@@ -3,7 +3,7 @@
 ## Current local modernization batch
 
 The new C sources require C23; project C++ and the maintained Teakra target use
-C++26. See [release scope and tested configurations](plans/releases/1.1.05.md),
+C++26. See [release scope and tested configurations](plans/releases/1.1.06.md),
 [dependency and toolchain plans](plans/Release_Plan.md#v36), and
 [local validation commands](plans/Validation.md). This fork has not been fully built on all
 platforms. `MELONDS_CURRENT_TOOLCHAIN=ON` checks the audited current compiler
@@ -125,4 +125,4 @@ with a matching MSVC SDK/runtime environment.
 
 The current Qt6 recommended macOS deployment floor is **13.0**; do not expect
 new artifacts to retain the old macOS 10.15/11 minimum. See
-[the release record](plans/releases/1.1.05.md) for verified and unverified configurations.
+[the release record](plans/releases/1.1.06.md) for verified and unverified configurations.

@@ -17,11 +17,13 @@
 */
 
 #include "ArchiveUtil.h"
-#include "Platform.h"
+
+#include <algorithm>
+#include <new>
+#include <utility>
+#include <QByteArray>
 
 using namespace melonDS;
-using Platform::Log;
-using Platform::LogLevel;
 
 namespace Archive
 {
@@ -32,146 +34,120 @@ namespace Archive
 #define melon_archive_open(a, f, b) archive_read_open_filename(a, f.toUtf8().constData(), b)
 #endif // __WIN32__
 
-bool compareCI(const QString& s1, const QString& s2)
+using ArchiveReader = std::unique_ptr<archive, decltype(&archive_read_free)>;
+
+static ArchiveReader OpenArchive(const QString& path)
 {
-    return s1.toLower() < s2.toLower();
+    ArchiveReader reader(archive_read_new(), archive_read_free);
+    if (!reader || path.isEmpty() || path.contains(QChar(u'\0')) ||
+        archive_read_support_filter_all(reader.get()) != ARCHIVE_OK ||
+        archive_read_support_format_all(reader.get()) != ARCHIVE_OK ||
+        melon_archive_open(reader.get(), path, 10240) != ARCHIVE_OK)
+        return {nullptr, archive_read_free};
+    return reader;
+}
+
+static bool ReadMemberName(archive_entry* entry, QString& name)
+{
+    const char* utf8 = archive_entry_pathname_utf8(entry);
+    if (!utf8 || !*utf8) return false;
+    name = QString::fromUtf8(utf8);
+    // QString replaces invalid UTF-8. Do not silently select a different name.
+    return name.toUtf8() == utf8;
 }
 
 QVector<QString> ListArchive(QString path)
 {
-    struct archive *a;
-    struct archive_entry *entry;
-    int r;
-
-    QVector<QString> fileList;
-
-    a = archive_read_new();
-
-    archive_read_support_filter_all(a);
-    archive_read_support_format_all(a);
-
-    //r = archive_read_open_filename(a, path, 10240);
-    r = melon_archive_open(a, path, 10240);
-    if (r != ARCHIVE_OK)
+    try
     {
-        return QVector<QString> {"Err"};
-    }
+        auto reader = OpenArchive(path);
+        if (!reader) return {"Err"};
 
-    while (archive_read_next_header(a, &entry) == ARCHIVE_OK)
-    {
-        if (archive_entry_filetype(entry) != AE_IFREG)
-            continue;
-
-        fileList.push_back(archive_entry_pathname_utf8(entry));
-        archive_read_data_skip(a);
-    }
-
-    archive_read_close(a);
-    archive_read_free(a);
-
-    if (r != ARCHIVE_OK)
-    {
-        return QVector<QString> {"Err"};
-    }
-
-    std::stable_sort(fileList.begin(), fileList.end(), compareCI);
-    fileList.prepend("OK");
-
-    return fileList;
-}
-
-QVector<QString> ExtractFileFromArchive(QString path, QString wantedFile, QByteArray *romBuffer)
-{
-    struct archive *a = archive_read_new();
-    struct archive_entry *entry;
-    int r;
-
-    archive_read_support_format_all(a);
-    archive_read_support_filter_all(a);
-
-    //r = archive_read_open_filename(a, path, 10240);
-    r = melon_archive_open(a, path, 10240);
-    if (r != ARCHIVE_OK)
-    {
-        return QVector<QString> {"Err"};
-    }
-
-    while (archive_read_next_header(a, &entry) == ARCHIVE_OK)
-    {
-        if (strcmp(wantedFile.toUtf8().constData(), archive_entry_pathname_utf8(entry)) == 0)
+        QVector<QString> fileList;
+        archive_entry* entry = nullptr;
+        int status;
+        while ((status = archive_read_next_header(reader.get(), &entry)) == ARCHIVE_OK)
         {
-            break;
+            if (!entry) return {"Err"};
+            if (archive_entry_filetype(entry) == AE_IFREG && !archive_entry_hardlink(entry))
+            {
+                QString name;
+                if (!ReadMemberName(entry, name)) return {"Err"};
+                fileList.push_back(std::move(name));
+            }
+            if (archive_read_data_skip(reader.get()) != ARCHIVE_OK) return {"Err"};
         }
+
+        // Warnings and failed headers must not publish a successful partial list.
+        if (status != ARCHIVE_EOF) return {"Err"};
+        if (archive_read_free(reader.release()) != ARCHIVE_OK) return {"Err"};
+        std::stable_sort(fileList.begin(), fileList.end(), [](const QString& a, const QString& b) {
+            return a.toLower() < b.toLower();
+        });
+        fileList.prepend("OK");
+        return fileList;
     }
-
-    size_t bytesToWrite = archive_entry_size(entry);
-    romBuffer->fill(0, bytesToWrite);
-    ssize_t bytesRead = archive_read_data(a, romBuffer->data(), bytesToWrite);
-
-    if (bytesRead < 0)
+    catch (const std::bad_alloc&)
     {
-        Log(LogLevel::Error, "Error whilst reading archive: %s", archive_error_string(a));
-        return QVector<QString> {"Err", archive_error_string(a)};
+        return {"Err"};
     }
-
-    archive_read_close(a);
-    archive_read_free(a);
-    return QVector<QString> {wantedFile};
-
 }
 
 s32 ExtractFileFromArchive(QString path, QString wantedFile, std::unique_ptr<u8[]>& filedata, u32* filesize)
 {
-    struct archive *a = archive_read_new();
-    struct archive_entry *entry;
-    int r;
+    try
+    {
+        if (wantedFile.isEmpty() || wantedFile.contains(QChar(u'\0'))) return -1;
+        auto reader = OpenArchive(path);
+        if (!reader) return -1;
 
+        archive_entry* entry = nullptr;
+        for (;;)
+        {
+            const int status = archive_read_next_header(reader.get(), &entry);
+            if (status == ARCHIVE_EOF)
+                return archive_read_free(reader.release()) == ARCHIVE_OK ? -2 : -1;
+            if (status != ARCHIVE_OK || !entry) return -1;
 
-    archive_read_support_format_all(a);
-    archive_read_support_filter_all(a);
+            QString name;
+            if (!ReadMemberName(entry, name)) return -1;
+            if (name == wantedFile) break;
+            if (archive_read_data_skip(reader.get()) != ARCHIVE_OK) return -1;
+        }
 
-    //r = archive_read_open_filename(a, path, 10240);
-    r = melon_archive_open(a, path, 10240);
-    if (r != ARCHIVE_OK)
+        if (archive_entry_filetype(entry) != AE_IFREG || archive_entry_hardlink(entry) ||
+            !archive_entry_size_is_set(entry))
+            return -1;
+        const la_int64_t size = archive_entry_size(entry);
+        // Match loadROMData/decompressROM; the cart parsers own format limits.
+        if (size <= 0 || size > 0x40000000) return -1;
+
+        const size_t length = static_cast<size_t>(size);
+        auto data = std::make_unique_for_overwrite<u8[]>(length);
+        size_t total = 0;
+        while (total < length)
+        {
+            const la_ssize_t count = archive_read_data(reader.get(), data.get() + total, length - total);
+            if (count <= 0 || static_cast<size_t>(count) > length - total) return -1;
+            total += static_cast<size_t>(count);
+        }
+
+        // Consume the entry's end marker too: a checksum error may arrive only
+        // after the last payload bytes. Extra bytes also contradict its size.
+        u8 extra;
+        if (archive_read_data(reader.get(), &extra, 1) != 0) return -1;
+        // Free also closes the reader. Check that result before publishing data;
+        // every earlier return/exception is covered by the same RAII deleter.
+        if (archive_read_free(reader.release()) != ARCHIVE_OK) return -1;
+
+        filedata = std::move(data);
+        if (filesize) *filesize = static_cast<u32>(length);
+        return static_cast<s32>(length);
+    }
+    catch (const std::bad_alloc&)
     {
         return -1;
     }
-
-    while (archive_read_next_header(a, &entry) == ARCHIVE_OK)
-    {
-        if (strcmp(wantedFile.toUtf8().constData(), archive_entry_pathname_utf8(entry)) == 0)
-        {
-            break;
-        }
-    }
-
-    size_t bytesToRead = archive_entry_size(entry);
-    if (filesize) *filesize = bytesToRead;
-    filedata = std::make_unique<u8[]>(bytesToRead);
-    ssize_t bytesRead = archive_read_data(a, filedata.get(), bytesToRead);
-
-    archive_read_close(a);
-    archive_read_free(a);
-
-    return (u32)bytesRead;
-
 }
-
-/*u32 ExtractFileFromArchive(const char* path, const char* wantedFile, u8 **romdata)
-{
-    QByteArray romBuffer;
-    QVector<QString> extractResult = ExtractFileFromArchive(path, wantedFile, &romBuffer);
-
-    if(extractResult[0] == "Err")
-    {
-        return 0;
-    }
-
-    u32 len = romBuffer.size();
-    *romdata = new u8[romBuffer.size()];
-    memcpy(*romdata, romBuffer.data(), len);
-
-    return len;
-}*/
 
 }

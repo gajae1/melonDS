@@ -149,7 +149,8 @@ void CartRetail::SetSaveMemory(const u8* savedata, u32 savelen)
 
     u32 len = std::min(savelen, SRAMLength);
     memcpy(SRAM.get(), savedata, len);
-    Platform::WriteNDSSave(savedata, len, 0, len, UserData);
+    // An imported prefix updates part of the existing save, not its capacity.
+    Platform::WriteNDSSave(SRAM.get(), SRAMLength, 0, len, UserData);
 }
 
 void CartRetail::SPISelect()
