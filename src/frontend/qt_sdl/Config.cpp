@@ -23,6 +23,7 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include <utility>
 #include <QSaveFile>
 #include "UTF8.h"
 #include <regex>
@@ -47,6 +48,7 @@ const char* kLegacyConfigFile = "melonDS.ini";
 const char* kLegacyUniqueConfigFile = "melonDS.%d.ini";
 
 toml::value RootTable;
+static bool WriteBlocked = false;
 
 DefaultList<int> DefaultInts =
 {
@@ -819,34 +821,45 @@ static void MakeTablesExplicit(toml::value& value)
 
 bool Load()
 {
+    // Callers can still save on shutdown after a load failure.
+    WriteBlocked = true;
     auto cfgpath = Platform::GetLocalFilePath(kConfigFile);
 
     if (!Platform::CheckFileWritable(cfgpath))
         return false;
 
-    RootTable = toml::value();
-
     if (!Platform::FileExists(cfgpath))
-        return LoadLegacy();
+    {
+        RootTable = toml::value();
+        WriteBlocked = !LoadLegacy();
+        return !WriteBlocked;
+    }
 
     try
     {
-        RootTable = toml::parse(melonDS::PathFromUTF8(cfgpath));
+        auto parsed = toml::parse(melonDS::PathFromUTF8(cfgpath));
         // Defaults may add scalar keys to parents created implicitly by a
         // section such as [Instance0.Keyboard]. toml11 cannot save those
         // parents in implicit format once scalar values have been added.
-        MakeTablesExplicit(RootTable);
+        MakeTablesExplicit(parsed);
+        RootTable = std::move(parsed);
     }
-    catch (toml::syntax_error& err)
+    catch (const toml::syntax_error&)
     {
-        //RootTable = toml::table();
+        Platform::Log(Platform::LogLevel::Error,
+                      "Config: invalid TOML; saving is disabled until a successful reload.\n");
+        return false;
     }
 
+    WriteBlocked = false;
     return true;
 }
 
 void Save()
 {
+    if (WriteBlocked)
+        return;
+
     auto cfgpath = Platform::GetLocalFilePath(kConfigFile);
     if (!Platform::CheckFileWritable(cfgpath))
         return;

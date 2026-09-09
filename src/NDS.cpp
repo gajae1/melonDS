@@ -698,15 +698,45 @@ bool NDS::DoSavestate(Savestate* file)
 
     file->VarArray(DMA9Fill, 4*sizeof(u32));
 
+    // Keep serialized event values separate from the live callbacks and mask
+    // until the complete load has restored and validated their registrations.
+    struct
+    {
+        u64 Timestamp;
+        u32 FuncID;
+        u32 Param;
+    } schedState[Event_MAX];
+    u32 schedMask = SchedListMask;
     for (int i = 0; i < Event_MAX; i++)
     {
-        SchedEvent& evt = SchedList[i];
+        const SchedEvent& evt = SchedList[i];
+        auto& state = schedState[i];
+        state = {evt.Timestamp, evt.FuncID, evt.Param};
 
-        file->Var64(&evt.Timestamp);
-        file->Var32(&evt.FuncID);
-        file->Var32(&evt.Param);
+        file->Var64(&state.Timestamp);
+        file->Var32(&state.FuncID);
+        file->Var32(&state.Param);
     }
-    file->Var32(&SchedListMask);
+    file->Var32(&schedMask);
+    if (!file->Saving)
+    {
+        if (file->Error) return false;
+        if (u64(schedMask) >> Event_MAX)
+        {
+            Log(LogLevel::Error, "savestate: invalid scheduler mask %08X\n", schedMask);
+            return false;
+        }
+        for (int i = 0; i < Event_MAX; i++)
+        {
+            // Inactive slots can contain stale IDs in existing savestates.
+            if ((schedMask & (1u << i)) && schedState[i].FuncID >= MaxEventFunctions)
+            {
+                Log(LogLevel::Error, "savestate: event %d has invalid function ID %u\n",
+                    i, schedState[i].FuncID);
+                return false;
+            }
+        }
+    }
     file->Var64(&ARM9Timestamp);
     file->Var64(&ARM9Target);
     file->Var64(&ARM7Timestamp);
@@ -758,6 +788,26 @@ bool NDS::DoSavestate(Savestate* file)
 
     if (!file->Saving)
     {
+        if (file->Error) return false;
+        // DSP HLE can recreate its callbacks during DoSavestateExtra. Validate
+        // against those registrations, without restoring old callback pointers.
+        for (int i = 0; i < Event_MAX; i++)
+        {
+            if ((schedMask & (1u << i)) && !SchedList[i].Funcs[schedState[i].FuncID])
+            {
+                Log(LogLevel::Error, "savestate: event %d function %u is not registered\n",
+                    i, schedState[i].FuncID);
+                return false;
+            }
+        }
+        for (int i = 0; i < Event_MAX; i++)
+        {
+            SchedList[i].Timestamp = schedState[i].Timestamp;
+            SchedList[i].FuncID = schedState[i].FuncID;
+            SchedList[i].Param = schedState[i].Param;
+        }
+        SchedListMask = schedMask;
+
         GPU.SetPowerCnt(PowerControl9);
 
         SPU.SetPowerCnt(PowerControl7 & 0x0001);

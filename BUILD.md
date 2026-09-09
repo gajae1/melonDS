@@ -3,9 +3,9 @@
 ## Current local modernization batch
 
 The new C sources require C23; project C++ and the maintained Teakra target use
-C++26. See [batch scope and tested configurations](docs/ModernizationBatch.md),
-[dependency candidate status](docs/DependencyAudit.md), and
-[manual CI policy](docs/CIBatch.md). This batch has not been fully built on all
+C++26. See [release scope and tested configurations](plans/releases/1.1.03.md),
+[dependency and toolchain plans](plans/Release_Plan.md#v36), and
+[local validation commands](plans/Validation.md). This fork has not been fully built on all
 platforms. `MELONDS_CURRENT_TOOLCHAIN=ON` checks the audited current compiler
 versions; it does not install or select a compiler for you.
 
@@ -14,7 +14,7 @@ versions; it does not install or select a compiler for you.
 Use **CMake 3.30 or newer** and a compiler supporting **C++26 mode** (GCC 14+
 or Clang 17+). The build does not silently fall back to C++17/20/23. Language
 mode support is not a promise that all C++26 features are available; see
-[the migration notes](docs/Cpp26.md) for scope and verification boundaries.
+[the development plan](plans/README.md) for scope and verification boundaries.
 Vendored libraries keep their own language requirements.
 
 For Ubuntu 24.04, install `g++-14 python3-venv`, install CMake 3.31.6 in a
@@ -125,4 +125,4 @@ with a matching MSVC SDK/runtime environment.
 
 The current Qt6 recommended macOS deployment floor is **13.0**; do not expect
 new artifacts to retain the old macOS 10.15/11 minimum. See
-`docs/ModernizationBatch.md` for verified and unverified configurations.
+[the release record](plans/releases/1.1.03.md) for verified and unverified configurations.

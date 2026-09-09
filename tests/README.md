@@ -25,7 +25,7 @@ ctest --test-dir build-regression-sanitized --output-on-failure
 
 The original ten entries cover the areas below. No real DS/DSi, ROM, GPU driver or filesystem
 mutation is exercised. The optional microbenchmark measures only bitfield
-iteration, not emulator FPS; see `../docs/Cpp26.md`.
+iteration, not emulator FPS; see [measurement boundaries](../plans/Validation.md).
 
 - `LanguageStandard` verifies the requested C++26 mode and standard bit operations.
 - `Bitfield` checks valid ranges, zero-length boundaries, partial-word padding,
@@ -76,7 +76,7 @@ This produces 21 entries on a supported JIT-enabled target, or 19 with
 AAC and host input/output; unexpected file use aborts. It does not replace
 real driver/game/physical-hardware regression tests. The full-core tests are
 not automatically sanitized by the standalone sanitizer configuration.
-See `../docs/ModernizationBatch.md` for exact scope and measurement limitations.
+See [the release record](../plans/releases/1.1.03.md) for current scope and measurement limitations.
 
 The Qt build also provides `firmware-profile-direct-boot`. It runs the real
 frontend profile override and MAC parser with temporary configuration, then

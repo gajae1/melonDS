@@ -366,7 +366,10 @@ int main(int argc, char** argv)
     if (!Config::Load())
         QMessageBox::critical(nullptr,
                               "melonDS",
-                              "Unable to write to config.\nPlease check the write permissions of the folder you placed melonDS in.");
+                              "Unable to load the configuration file.\n"
+                              "Settings will not be saved during this session.\n\n"
+                              "Check that melonDS.toml is valid and the configuration folder is writable. "
+                              "Repair the file or move it aside, then restart melonDS.");
 
     camStarted[0] = false;
     camStarted[1] = false;

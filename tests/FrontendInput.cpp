@@ -65,6 +65,7 @@ int main(int argc, char** argv)
         QApplication::sendEvent(&button, &event);
     };
 
+    check(Config::Load(), "First run without a config failed");
     auto cfg = Config::GetLocalTable(0).GetTable("Keyboard");
     check(cfg.GetInt("A") == Qt::Key_X && cfg.GetInt("Start") == Qt::Key_Return &&
           cfg.GetInt("Left") == Qt::Key_Left, "Fresh config has no usable keyboard defaults");
@@ -140,6 +141,37 @@ int main(int argc, char** argv)
     check(Config::Load() && Config::GetLocalTable(0).GetInt("Keyboard.A") == 75 &&
           Config::GetGlobalTable().GetBool("DSi.ExternalBIOSEnable"),
           "Saving defaults under implicit parent tables lost user settings");
+
+    // A failed load must not let defaults or later settings changes overwrite
+    // the malformed file when the frontend saves during normal shutdown.
+    const QByteArray malformed =
+        "# Preserve this user-authored comment and the incomplete setting.\n"
+        "[Instance0.Keyboard]\nA = 75\nB = [\n";
+    QFile damaged(configDirectory + "/melonDS.toml");
+    if (!damaged.open(QIODevice::WriteOnly | QIODevice::Truncate)) return 2;
+    if (damaged.write(malformed) != malformed.size()) return 2;
+    damaged.close();
+    check(!Config::Load(), "Malformed TOML load was reported as successful");
+    Config::GetLocalTable(0).GetInt("Keyboard.A");
+    Config::GetLocalTable(0).SetInt("Keyboard.A", Qt::Key_L);
+    Config::Save();
+    if (!damaged.open(QIODevice::ReadOnly)) return 2;
+    check(damaged.readAll() == malformed,
+          "Saving after a malformed TOML load overwrote the original file");
+    damaged.close();
+
+    // Once the file is repaired and reloaded, ordinary saves must work again.
+    const QByteArray repaired = "[Instance0.Keyboard]\nA = 74\nB = -1\n";
+    if (!damaged.open(QIODevice::WriteOnly | QIODevice::Truncate)) return 2;
+    if (damaged.write(repaired) != repaired.size()) return 2;
+    damaged.close();
+    check(Config::Load() && Config::GetLocalTable(0).GetInt("Keyboard.A") == Qt::Key_J,
+          "A repaired config could not be reloaded");
+    Config::GetLocalTable(0).SetInt("Keyboard.A", Qt::Key_P);
+    Config::Save();
+    check(Config::Load() && Config::GetLocalTable(0).GetInt("Keyboard.A") == Qt::Key_P &&
+          Config::GetLocalTable(0).GetInt("Keyboard.B") == -1,
+          "Saving a repaired config lost settings or remained blocked");
     std::printf("Qt mapping, config persistence, input/release and focus: %d failures\n", failures);
     return failures ? 1 : 0;
 }

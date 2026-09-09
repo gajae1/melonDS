@@ -34,6 +34,21 @@ add_test(NAME qt-keyboard-mapping-input COMMAND FrontendInput)
 set_tests_properties(qt-keyboard-mapping-input PROPERTIES
     TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+set(rom_decompressor "${CMAKE_CURRENT_BINARY_DIR}/decompressROM.inc")
+add_custom_command(OUTPUT "${rom_decompressor}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp"
+        "u32 EmuInstance::decompressROM(const u8* inContent, const u32 inSize, unique_ptr<u8[]>& outContent)"
+        "${rom_decompressor}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
+add_executable(ROMDecompression "${CMAKE_SOURCE_DIR}/tests/ROMDecompression.cpp" "${rom_decompressor}")
+target_include_directories(ROMDecompression PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(ROMDecompression PRIVATE PkgConfig::Zstd)
+foreach(case IN ITEMS lengths completion framing trailing empty size-limit allocation)
+    add_test(NAME rom-zstd-decompression-${case} COMMAND ROMDecompression ${case})
+    set_tests_properties(rom-zstd-decompression-${case} PROPERTIES TIMEOUT 30)
+endforeach()
+
 set(audio_callback "${CMAKE_CURRENT_BINARY_DIR}/audioCallback.inc")
 add_custom_command(OUTPUT "${audio_callback}"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"

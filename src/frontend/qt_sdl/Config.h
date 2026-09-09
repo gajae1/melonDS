@@ -130,6 +130,7 @@ private:
 };
 
 
+// A failed load blocks saving until a subsequent load succeeds.
 bool Load();
 void Save();
 

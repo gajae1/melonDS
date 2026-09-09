@@ -12,6 +12,114 @@
 #include "jit/CPUDetect.h"
 #endif
 using namespace melonDS;
+
+static int TestSchedulerSavestate(NDSArgs&& args)
+{
+    struct SchedulerFixture : NDS
+    {
+        using NDS::NDS;
+        using NDS::SchedListMask;
+        using NDS::RunSystem;
+        bool LateRegistration = false;
+        unsigned LateCalls = 0;
+
+        void DoSavestateExtra(Savestate* file) override
+        {
+            if (file->Saving || !LateRegistration) return;
+            // Exercise the real load hook used to recreate DSP HLE callbacks.
+            CancelEvent(Event_DSi_DSPHLE);
+            UnregisterEventFuncs(Event_DSi_DSPHLE);
+            RegisterEventFuncs(Event_DSi_DSPHLE, this, {[](void* that, u32) {
+                ++static_cast<SchedulerFixture*>(that)->LateCalls;
+            }});
+        }
+    };
+    auto instance = std::make_unique<SchedulerFixture>(std::move(args));
+    auto& nds = *instance;
+    constexpr u32 divMask = 1u << Event_Div;
+    const struct {
+        const char* name;
+        u32 event;
+        u32 func;
+        u32 mask;
+        bool accept;
+        bool late = false;
+    } cases[] = {
+        {"active-registered", Event_Div, 0, divMask, true},
+        {"active-last-registered", Event_LCD, 2, 1u << Event_LCD, true},
+        {"inactive-stale-id", Event_DSi_DSPHLE, 0xFFFFFFFFu, divMask, true},
+        {"inactive-null-callback", Event_Div, 1, 0, true},
+        {"funcid-3", Event_Div, 3, divMask, false},
+        {"funcid-uint-max", Event_Div, 0xFFFFFFFFu, divMask, false},
+        {"unregistered-callback", Event_Div, 1, divMask, false},
+        {"invalid-mask", Event_Div, 0, divMask | (1u << Event_MAX), false},
+        {"active-late-registered", Event_DSi_DSPHLE, 0, 1u << Event_DSi_DSPHLE, true, true},
+    };
+    unsigned failures = 0;
+    for (const auto& test : cases)
+    {
+        nds.Reset();
+        nds.UnregisterEventFuncs(Event_DSi_DSPHLE);
+        nds.LateRegistration = test.late;
+        nds.LateCalls = 0;
+        nds.SchedListMask = test.mask;
+        auto& event = nds.SchedList[test.event];
+        event.FuncID = test.func;
+        event.Timestamp = 1234;
+        event.Param = 0x12345678;
+
+        // Use the real serializer so only the scheduler metadata is malformed,
+        // with no duplicated NDSG layout or hard-coded byte offsets.
+        Savestate saved;
+        if (!nds.DoSavestate(&saved) || saved.Error)
+        {
+            std::fprintf(stderr, "scheduler fixture save failed: %s\n", test.name);
+            return 2;
+        }
+        nds.Reset();
+        // A rejected load must not replace this runnable event with bad input.
+        nds.SchedListMask = divMask;
+        nds.SchedList[Event_Div].Timestamp = 4321;
+        nds.SchedList[Event_Div].Param = 0x87654321;
+        const auto previous = nds.SchedList[Event_Div];
+        Savestate load(saved.Buffer(), saved.Length(), false);
+        if (load.Error)
+        {
+            std::fprintf(stderr, "scheduler fixture header failed: %s\n", test.name);
+            return 2;
+        }
+        const bool accepted = nds.DoSavestate(&load);
+        bool matches = accepted == test.accept && (!test.accept ||
+            (!load.Error && nds.SchedListMask == test.mask &&
+             event.FuncID == test.func && event.Timestamp == 1234 &&
+             event.Param == 0x12345678));
+        if (matches && !test.accept)
+        {
+            const auto& current = nds.SchedList[Event_Div];
+            matches = nds.SchedListMask == divMask && current.FuncID == previous.FuncID &&
+                current.Timestamp == previous.Timestamp && current.Param == previous.Param &&
+                current.Funcs[0] == previous.Funcs[0] && current.That == previous.That;
+            // Dispatch only after checking that the old valid event survived.
+            if (matches)
+            {
+                nds.RunSystem(previous.Timestamp);
+                matches = nds.SchedListMask == 0;
+            }
+        }
+        if (matches && test.late)
+        {
+            nds.RunSystem(1234);
+            matches = nds.LateCalls == 1 && nds.SchedListMask == 0;
+        }
+        std::printf("scheduler-load %s: %s (accepted=%d expected=%d error=%d)\n",
+                    test.name, matches ? "PASS" : "FAIL", accepted, test.accept, load.Error);
+        if (!matches) ++failures;
+        // Full CPU/RAM/device rollback is separate from scheduler safety.
+    }
+    std::printf("savestate-scheduler: %zu cases, %u failures\n", std::size(cases), failures);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     const bool jit = argc > 1 && std::strcmp(argv[1], "interpreter") != 0;
     const bool fast = argc > 1 && std::strcmp(argv[1], "fastmem") == 0;
@@ -24,6 +132,8 @@ int main(int argc, char** argv) {
     NDSArgs args;
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
+    if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
+        return TestSchedulerSavestate(std::move(args));
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
     RendererSettings settings{1, false, false, false};

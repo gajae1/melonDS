@@ -1460,7 +1460,7 @@ bool EmuInstance::bootToMenu(QString& errorstr)
 
 u32 EmuInstance::decompressROM(const u8* inContent, const u32 inSize, unique_ptr<u8[]>& outContent)
 {
-    u64 realSize = ZSTD_getFrameContentSize(inContent, inSize);
+    const u64 realSize = ZSTD_getFrameContentSize(inContent, inSize);
     const u32 maxSize = 0x40000000;
 
     if (realSize == ZSTD_CONTENTSIZE_ERROR || (realSize > maxSize && realSize != ZSTD_CONTENTSIZE_UNKNOWN))
@@ -1468,79 +1468,80 @@ u32 EmuInstance::decompressROM(const u8* inContent, const u32 inSize, unique_ptr
         return 0;
     }
 
-    if (realSize != ZSTD_CONTENTSIZE_UNKNOWN)
+    // A frame's declared size does not include any following frames.
+    if (realSize != ZSTD_CONTENTSIZE_UNKNOWN &&
+        ZSTD_findFrameCompressedSize(inContent, inSize) == inSize)
     {
-        auto newOutContent = make_unique<u8[]>(realSize);
-        u64 decompressed = ZSTD_decompress(newOutContent.get(), realSize, inContent, inSize);
+        if (realSize == 0) return 0;
 
-        if (ZSTD_isError(decompressed))
+        try
         {
-            outContent = nullptr;
+            auto newOutContent = make_unique<u8[]>(realSize);
+            size_t decompressed = ZSTD_decompress(newOutContent.get(), realSize, inContent, inSize);
+
+            if (ZSTD_isError(decompressed) || decompressed != realSize) return 0;
+
+            outContent = std::move(newOutContent);
+            return static_cast<u32>(decompressed);
+        }
+        catch (const std::bad_alloc&)
+        {
             return 0;
         }
-
-        outContent = std::move(newOutContent);
-        return realSize;
     }
-    else
+
+    unique_ptr<ZSTD_DStream, decltype(&ZSTD_freeDStream)> dStream(ZSTD_createDStream(), ZSTD_freeDStream);
+    if (!dStream || ZSTD_isError(ZSTD_initDStream(dStream.get()))) return 0;
+
+    const u32 startSize = 1024 * 1024 * 16;
+    unique_ptr<void, decltype(&free)> partialOutContent(malloc(startSize), free);
+    if (!partialOutContent) return 0;
+
+    ZSTD_inBuffer inBuf = {inContent, inSize, 0};
+    ZSTD_outBuffer outBuf = {partialOutContent.get(), startSize, 0};
+
+    for (;;)
     {
-        ZSTD_DStream* dStream = ZSTD_createDStream();
-        ZSTD_initDStream(dStream);
-
-        ZSTD_inBuffer inBuf = {
-                .src = inContent,
-                .size = inSize,
-                .pos = 0
-        };
-
-        const u32 startSize = 1024 * 1024 * 16;
-        u8* partialOutContent = (u8*) malloc(startSize);
-
-        ZSTD_outBuffer outBuf = {
-                .dst = partialOutContent,
-                .size = startSize,
-                .pos = 0
-        };
-
-        size_t result;
-
-        do
+        if (outBuf.pos == outBuf.size && outBuf.size < maxSize)
         {
-            result = ZSTD_decompressStream(dStream, &outBuf, &inBuf);
+            const size_t newSize = outBuf.size * 2;
+            void* grown = realloc(partialOutContent.get(), newSize);
+            if (!grown) return 0;
+            partialOutContent.release();
+            partialOutContent.reset(grown);
+            outBuf.dst = grown;
+            outBuf.size = newSize;
+        }
 
-            if (ZSTD_isError(result))
-            {
-                ZSTD_freeDStream(dStream);
-                free(outBuf.dst);
-                return 0;
-            }
+        // At the cap, allow checksums/empty frames to finish, but reject another byte.
+        u8 overflowByte;
+        ZSTD_outBuffer overflow = {&overflowByte, 1, 0};
+        ZSTD_outBuffer* output = outBuf.pos == maxSize ? &overflow : &outBuf;
+        const size_t previousInput = inBuf.pos;
+        const size_t previousOutput = outBuf.pos;
+        size_t result = ZSTD_decompressStream(dStream.get(), output, &inBuf);
 
-            // if result == 0 and not inBuf.pos < inBuf.size, go again to let zstd flush everything.
-            if (result == 0)
-                continue;
+        if (ZSTD_isError(result) || overflow.pos != 0) return 0;
+        if (result == 0 && inBuf.pos == inBuf.size) break;
 
-            if (outBuf.pos == outBuf.size)
-            {
-                outBuf.size *= 2;
+        // Exhausted input with an unfinished frame must not publish partial output.
+        if (inBuf.pos == previousInput && outBuf.pos == previousOutput) return 0;
+    }
 
-                if (outBuf.size > maxSize)
-                {
-                    ZSTD_freeDStream(dStream);
-                    free(outBuf.dst);
-                    return 0;
-                }
+    if (outBuf.pos == 0) return 0;
 
-                outBuf.dst = realloc(outBuf.dst, outBuf.size);
-            }
-        } while (inBuf.pos < inBuf.size);
+    try
+    {
+        auto newOutContent = make_unique<u8[]>(outBuf.pos);
+        memcpy(newOutContent.get(), outBuf.dst, outBuf.pos);
 
-        outContent = make_unique<u8[]>(outBuf.pos);
-        memcpy(outContent.get(), outBuf.dst, outBuf.pos);
-
-        ZSTD_freeDStream(dStream);
-        free(outBuf.dst);
-
-        return outBuf.size;
+        // inContent can belong to outContent, so replace it only after all decoding.
+        outContent = std::move(newOutContent);
+        return static_cast<u32>(outBuf.pos);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return 0;
     }
 }
 
