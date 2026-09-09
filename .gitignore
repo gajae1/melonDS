@@ -25,3 +25,8 @@ CMakeCache.txt
 freebios/FreeBIOS_Data.h
 freebios/bios*
 freebios/build/
+
+# Local planning documents and model handoffs stay off Git.
+/docs/
+/local-docs/
+/Future_Feature.md
