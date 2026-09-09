@@ -144,5 +144,68 @@ int main(int argc, char** argv) {
         }
         cpu.JumpTo(0x02000200); // stop this CPU before checking the other
     }
+    // Branch following includes the self-branch twice. These different traces
+    // have the same low 32 bits of XXH3_64bits (0x846DC331). Replacing code must
+    // not restore the first program's JIT block.
+    nds->Reset();
+    nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
+    nds->ARM7.JumpTo(0x02000200);
+    nds->Start();
+    constexpr u32 collisionCode[][3] = {
+        {0xE3A00EB9, 0xE3A01251, 0xEAFFFFFE}, // mov r0,#0xB90; mov r1,#0x10000005; b .
+        {0xE3A000C1, 0xE3A0169B, 0xEAFFFFFE}  // mov r0,#0xC1; mov r1,#0x9B00000; b .
+    };
+    constexpr u32 collisionResults[][2] = {{0xB90, 0x10000005}, {0xC1, 0x9B00000}};
+    for (unsigned version = 0; version < std::size(collisionCode); ++version)
+    {
+        for (unsigned i = 0; i < std::size(collisionCode[version]); ++i)
+            nds->ARM9Write32(0x02000800 + 4 * i, collisionCode[version][i]);
+        // CompileBlock interprets instructions while compiling. Enter again to
+        // check the generated code rather than only that initial execution.
+        for (unsigned run = 0; run < 2; ++run)
+        {
+            nds->ARM9.R[0] = nds->ARM9.R[1] = 0;
+            nds->ARM9.JumpTo(0x02000800);
+            nds->RunFrame();
+            if (nds->ARM9.R[0] != collisionResults[version][0] ||
+                nds->ARM9.R[1] != collisionResults[version][1])
+            {
+                std::fprintf(stderr, "JIT hash collision: program=%u run=%u r0=%08x r1=%08x\n",
+                    version, run, nds->ARM9.R[0], nds->ARM9.R[1]);
+                return 13;
+            }
+        }
+    }
+    // The same bytes are valid in both instruction sets: ARM sets r2 to 7;
+    // Thumb sets r0 to 7 and branches to a separate Thumb self-loop.
+    nds->Reset();
+    nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
+    nds->ARM9Write32(0x02000804, 0xEAFFFFFE);
+    nds->ARM9Write16(0x02000F46, 0xE7FE);
+    nds->ARM9.JumpTo(0x02000200);
+    nds->ARM7.JumpTo(0x02000200);
+    nds->Start();
+    for (u32 value : {7u, 9u})
+    {
+        // Invalidate both instruction sets, on both CPUs, with the same write.
+        nds->ARM9Write32(0x02000800, 0xE3A02000 | value);
+        for (bool arm7 : {false, true})
+        {
+            auto& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+            for (bool thumb : {false, true, false, true})
+            {
+                cpu.R[0] = cpu.R[2] = 0;
+                cpu.JumpTo(0x02000800 | u32(thumb));
+                nds->RunFrame();
+                if (cpu.R[0] != (thumb ? value : 0u) || cpu.R[2] != (thumb ? 0u : value))
+                {
+                    std::fprintf(stderr, "ARM%d instruction-set cache mismatch: thumb=%d r0=%08x r2=%08x\n",
+                        arm7 ? 7 : 9, thumb, cpu.R[0], cpu.R[2]);
+                    return 14;
+                }
+            }
+            cpu.JumpTo(0x02000200);
+        }
+    }
     std::printf("core=%s fastmem=%d lines=%u ARM-result=100 save-restore=PASS pixels=49152\n",jit?"JIT":"interpreter",fast,lines);
 }

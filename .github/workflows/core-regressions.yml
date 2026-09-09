@@ -74,6 +74,9 @@ jobs:
           cmake -S . -B build-core -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
           -DBUILD_QT_SDL=OFF -DENABLE_OGLRENDERER=OFF
+          -DMELONDS_BUILD_TESTS=ON
           -DENABLE_JIT=${{ matrix.jit }}
       - name: Compile full core
         run: cmake --build build-core --parallel 2
+      - name: Execute CPU and DSP integration checks
+        run: ctest --test-dir build-core -R 'core-.*execution|teakra-execution-events-state' --output-on-failure

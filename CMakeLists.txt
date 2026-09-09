@@ -17,10 +17,18 @@ if (USE_VCPKG)
 endif()
 
 project(melonDS
-    VERSION 1.1
+    VERSION 1.1.1
     DESCRIPTION "DS emulator, sorta"
     HOMEPAGE_URL "https://melonds.kuribo64.net"
     LANGUAGES C CXX)
+
+# Fork releases display a two-digit patch (1.1.01, 1.1.02, ...). Keep the
+# project version numeric for Windows resources and package version ordering.
+set(MELONDS_VERSION_DISPLAY "${melonDS_VERSION}")
+if (melonDS_VERSION_PATCH LESS 10)
+    set(MELONDS_VERSION_DISPLAY "${melonDS_VERSION_MAJOR}.${melonDS_VERSION_MINOR}.0${melonDS_VERSION_PATCH}")
+endif()
+file(WRITE "${CMAKE_BINARY_DIR}/release-version.txt" "${MELONDS_VERSION_DISPLAY}\n")
 
 if (NOT "cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
     message(FATAL_ERROR "melonDS requires a compiler with C++26 mode (GCC 14+ or Clang 17+). No older-standard fallback is used.")

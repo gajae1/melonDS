@@ -62,7 +62,7 @@ public:
         if (CodeMemRegions[region][(localAddr & 0x7FFFFFF) / 512].Code & (1 << ((localAddr & 0x1FF) / 16)))
             InvalidateByAddr(localAddr);
     }
-    JitBlockEntry LookUpBlock(u32 num, u64* entries, u32 offset, u32 addr) noexcept;
+    JitBlockEntry LookUpBlock(u32 num, u64* entries, u32 offset, u32 addr, bool thumb) noexcept;
     bool SetupExecutableRegion(u32 num, u32 blockAddr, u64*& entry, u32& start, u32& size) noexcept;
     u32 LocaliseCodeAddress(u32 num, u32 addr) const noexcept;
 
@@ -95,7 +95,7 @@ public:
     std::unordered_map<u32, JitBlock*> JitBlocks9 {};
     std::unordered_map<u32, JitBlock*> JitBlocks7 {};
 
-    std::unordered_map<u32, JitBlock*> RestoreCandidates {};
+    std::unordered_map<u64, JitBlock*> RestoreCandidates {};
 
 
     AddressRange CodeIndexITCM[ITCMPhysicalSize / 512] {};
@@ -203,4 +203,3 @@ public:
 #endif // JIT_ENABLED
 
 #endif // ARMJIT_H
-

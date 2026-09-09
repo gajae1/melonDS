@@ -529,6 +529,13 @@ void ARMJIT::SetFastMemory(bool enabled) noexcept
     SetJITArgs(JITArgs{static_cast<unsigned>(MaxBlockSize), LiteralOptimizations, BranchOptimizations, enabled});
 }
 
+static u32 MakeLookupTag(u32 addr, u32 num, bool thumb) noexcept
+{
+    // Address bit 1 is already distinguished by the halfword table index.
+    // Reuse it for the CPU, and the unused alignment bit for ARM/Thumb.
+    return (addr & ~3u) | (num << 1) | u32(thumb);
+}
+
 void ARMJIT::CompileBlock(ARM* cpu) noexcept
 {
     bool thumb = cpu->CPSR & 0x20;
@@ -542,7 +549,8 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     }
 
     auto& map = cpu->Num == 0 ? JitBlocks9 : JitBlocks7;
-    auto existingBlockIt = map.find(blockAddr);
+    const u32 blockKey = blockAddr | u32(thumb);
+    auto existingBlockIt = map.find(blockKey);
     if (existingBlockIt != map.end())
     {
         // there's already a block, though it's not inside the fast map
@@ -555,7 +563,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
             JIT_DEBUGPRINT("switching out block %x %x %x\n", localAddr, blockAddr, existingBlockIt->second->StartAddr);
 
             u64* entry = &FastBlockLookupRegions[localAddr >> 27][(localAddr & 0x7FFFFFF) / 2];
-            *entry = ((u64)blockAddr | cpu->Num) << 32;
+            *entry = u64(MakeLookupTag(blockAddr, cpu->Num, thumb)) << 32;
             *entry |= JITCompiler.SubEntryOffset(existingBlockIt->second->EntryPoint);
             return;
         }
@@ -841,8 +849,8 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         }
     }
 
-    u32 literalHash = (u32)XXH3_64bits(literalValues, numLiterals * 4);
-    u32 instrHash = (u32)XXH3_64bits(instrValues, numInstrs * 4);
+    const u64 literalHash = XXH3_64bits(literalValues, numLiterals * 4);
+    const u64 instrHash = XXH3_64bits(instrValues, numInstrs * 4);
 
     auto prevBlockIt = RestoreCandidates.find(instrHash);
     JitBlock* prevBlock = NULL;
@@ -854,7 +862,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
 
         // Shared RAM can contain identical code for both CPUs, but generated
         // helpers and state offsets are specific to ARM9 or ARM7.
-        mayRestore = prevBlock->Num == cpu->Num &&
+        mayRestore = prevBlock->Num == cpu->Num && prevBlock->Thumb == thumb &&
                      prevBlock->StartAddr == blockAddr && prevBlock->LiteralHash == literalHash;
 
         if (mayRestore && prevBlock->NumAddresses == numAddressRanges)
@@ -895,6 +903,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
 
         block->StartAddr = blockAddr;
         block->StartAddrLocal = localAddr;
+        block->Thumb = thumb;
 
         FloodFillSetFlags(instrs, i - 1, 0xF);
 
@@ -928,12 +937,12 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     }
 
     if (cpu->Num == 0)
-        JitBlocks9[blockAddr] = block;
+        JitBlocks9[blockKey] = block;
     else
-        JitBlocks7[blockAddr] = block;
+        JitBlocks7[blockKey] = block;
 
     u64* entry = &FastBlockLookupRegions[(localAddr >> 27)][(localAddr & 0x7FFFFFF) / 2];
-    *entry = ((u64)blockAddr | cpu->Num) << 32;
+    *entry = u64(MakeLookupTag(blockAddr, cpu->Num, thumb)) << 32;
     *entry |= JITCompiler.SubEntryOffset(block->EntryPoint);
 }
 
@@ -1016,9 +1025,9 @@ void ARMJIT::InvalidateByAddr(u32 localAddr) noexcept
 
         FastBlockLookupRegions[block->StartAddrLocal >> 27][(block->StartAddrLocal & 0x7FFFFFF) / 2] = (u64)UINT32_MAX << 32;
         if (block->Num == 0)
-            JitBlocks9.erase(block->StartAddr);
+            JitBlocks9.erase(block->StartAddr | u32(block->Thumb));
         else
-            JitBlocks7.erase(block->StartAddr);
+            JitBlocks7.erase(block->StartAddr | u32(block->Thumb));
 
         if (!literalInvalidation)
         {
@@ -1065,10 +1074,10 @@ void ARMJIT::CheckAndInvalidateWVRAM(int bank) noexcept
     }
 }
 
-JitBlockEntry ARMJIT::LookUpBlock(u32 num, u64* entries, u32 offset, u32 addr) noexcept
+JitBlockEntry ARMJIT::LookUpBlock(u32 num, u64* entries, u32 offset, u32 addr, bool thumb) noexcept
 {
     u64* entry = &entries[offset / 2];
-    if (*entry >> 32 == (addr | num))
+    if (*entry >> 32 == MakeLookupTag(addr, num, thumb))
         return JITCompiler.AddEntryOffset((u32)*entry);
     return NULL;
 }

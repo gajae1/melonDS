@@ -630,7 +630,7 @@ void ARMv5::Execute()
             }
 
             JitBlockEntry block = NDS.JIT.LookUpBlock(0, FastBlockLookup,
-                instrAddr - FastBlockLookupStart, instrAddr);
+                instrAddr - FastBlockLookupStart, instrAddr, CPSR & 0x20);
             if (block)
                 ARM_Dispatch(this, block);
             else
@@ -770,7 +770,7 @@ void ARMv4::Execute()
             }
 
             JitBlockEntry block = NDS.JIT.LookUpBlock(1, FastBlockLookup,
-                instrAddr - FastBlockLookupStart, instrAddr);
+                instrAddr - FastBlockLookupStart, instrAddr, CPSR & 0x20);
             if (block)
                 ARM_Dispatch(this, block);
             else
@@ -1308,4 +1308,3 @@ void ARMv4::BusWrite32(u32 addr, u32 val)
     NDS.ARM7Write32(addr, val);
 }
 }
-
