@@ -100,15 +100,20 @@ jobs:
 
     - name: Build
       run: |
+        set -eu
         cmake --build /tmp/build
+        test -x /tmp/build/melonDS
         cp -RP /tmp/build $GITHUB_WORKSPACE/
 
     - name: Read release version
       id: version
       shell: bash
-      run: echo "version=$(cat build/release-version.txt)" >> "$GITHUB_OUTPUT"
+      run: |
+        version=$(cat build/release-version.txt)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
     - name: Upload binary
       uses: actions/upload-artifact@v7
       with:
         name: ${{ steps.version.outputs.version }}-melonDS-${{ matrix.os }}-${{ matrix.arch }}
         path: build/melonDS
+        if-no-files-found: error

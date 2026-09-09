@@ -26,6 +26,8 @@
 
 #include "FreeBIOS.h"
 
+#include <algorithm>
+
 namespace melonDS
 {
 #include "FreeBIOS_Data.h"
