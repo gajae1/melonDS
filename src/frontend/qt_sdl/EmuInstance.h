@@ -183,9 +183,9 @@ private:
     void initFirmwareSaveManager() noexcept;
     std::string getSavestateName(int slot);
     bool savestateExists(int slot);
-    bool loadState(const std::string& filename);
+    StateLoadResult loadState(const std::string& filename);
     bool saveState(const std::string& filename);
-    void undoStateLoad();
+    StateLoadResult undoStateLoad();
     void unloadCheats();
     void loadCheats();
     std::unique_ptr<melonDS::ARM9BIOSImage> loadARM9BIOS() noexcept;
@@ -307,7 +307,7 @@ public:
 private:
 
     std::unique_ptr<melonDS::Savestate> backupState;
-    bool savestateLoaded;
+    StateLoadResult applyState(melonDS::Savestate& state, bool undo);
 
     std::unique_ptr<melonDS::ARCodeFile> cheatFile;
     bool cheatsOn;

@@ -50,6 +50,11 @@ public:
     void FlushSecondaryBuffer(melonDS::u8* dst = nullptr, melonDS::u32 dstLength = 0);
 
 private:
+    // Requires StateLock; shared by the worker and explicit flushes.
+    void FlushSecondaryBufferLocked(melonDS::u8* dst, melonDS::u32 dstLength);
+
+    // Protects the path, both buffers, and flush/version/debounce state.
+    QMutex StateLock;
     std::string Path;
 
     std::atomic_bool Running;
@@ -58,7 +63,6 @@ private:
     melonDS::u32 Length;
     bool FlushRequested;
 
-    QMutex* SecondaryBufferLock;
     std::unique_ptr<melonDS::u8[]> SecondaryBuffer;
     melonDS::u32 SecondaryBufferLength;
 

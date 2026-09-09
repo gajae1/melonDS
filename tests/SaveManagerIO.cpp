@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cstdarg>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <QCoreApplication>
@@ -7,6 +8,7 @@
 #include <QDir>
 #include <QFile>
 #include <QSaveFile>
+#include <QSemaphore>
 #include <QTemporaryDir>
 #ifdef _WIN32
 #include <windows.h>
@@ -15,6 +17,29 @@
 #include "SaveManager.h"
 
 using namespace melonDS;
+
+struct FlushGate
+{
+    QSemaphore reached;
+    QSemaphore resume;
+    std::atomic_bool armed{true};
+};
+
+static std::atomic<FlushGate*> activeFlushGate{nullptr};
+
+// Declare this after the manager and the gate before it: release a paused worker
+// on every exit, then join the manager before destroying the gate's semaphores.
+struct FlushGateScope
+{
+    FlushGate& gate;
+    explicit FlushGateScope(FlushGate& value) : gate(value) { activeFlushGate = &gate; }
+    ~FlushGateScope() { Release(); }
+    void Release()
+    {
+        activeFlushGate = nullptr;
+        gate.resume.release();
+    }
+};
 
 // The production frontend's QFile I/O, limited to the modes SaveManager uses.
 // Linking the full Platform.cpp would also require the emulator and SDL GUI.
@@ -60,6 +85,15 @@ void Log(LogLevel, const char* format, ...)
     va_start(args, format);
     std::vfprintf(stderr, format, args);
     va_end(args);
+
+    // The real SaveManager emits this after committing the file, while it still
+    // holds its flush lock and before acknowledging the version. Pause only here.
+    FlushGate* gate = activeFlushGate.load();
+    if (gate && !std::strcmp(format, "SaveManager: Wrote %u bytes to %s\n") && gate->armed.exchange(false))
+    {
+        gate->reached.release();
+        gate->resume.acquire();
+    }
 }
 }
 
@@ -67,6 +101,12 @@ static QByteArray Read(const QString& path)
 {
     QFile file(path);
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+static bool Write(const QString& path, const QByteArray& bytes)
+{
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.flush();
 }
 
 static void Queue(SaveManager& manager, const QByteArray& bytes)
@@ -153,6 +193,87 @@ int main(int argc, char** argv)
         manager.FlushSecondaryBuffer();
         check(!manager.NeedsFlush(), "Successful file replacement remained pending");
         check(Read(path) == next, "File replacement lost bytes or retained the previous tail");
+    }
+    else if (!std::strcmp(argv[1], "path-during-flush"))
+    {
+        const QString oldPath = directory.filePath("current-location.bin");
+        const QString newPath = directory.filePath("moved-location.bin");
+        if (!Write(newPath, previous)) return 2;
+        FlushGate gate;
+        SaveManager manager(oldPath.toStdString()); // Exercise the actual worker.
+        FlushGateScope pause(gate);
+        Queue(manager, next);
+        if (!gate.reached.tryAcquire(1, 5000))
+        {
+            std::fprintf(stderr, "Worker did not reach the committed-file flush gate\n");
+            return 2;
+        }
+
+        QSemaphore setterStarted;
+        QSemaphore setterFinished;
+        auto setter = std::unique_ptr<QThread>(QThread::create([&] {
+            setterStarted.release();
+            manager.SetPath(newPath.toStdString(), false);
+            setterFinished.release();
+        }));
+        setter->start();
+        const bool started = setterStarted.tryAcquire(1, 1000);
+        const bool changedWhileFlushing = started && setterFinished.tryAcquire(1, 1000);
+        pause.Release();
+        setter->wait();
+        if (!started) return 2;
+        check(!changedWhileFlushing, "SetPath changed shared state while the worker held the flush lock");
+
+        // reload=false relocates this same game's data. It does not load another
+        // game's existing file, and the normal CheckFlush publication is retained.
+        check(manager.GetPath() == newPath.toStdString(), "Save path did not change after the flush");
+        manager.CheckFlush();
+        manager.FlushSecondaryBuffer();
+        check(Read(oldPath) == next, "In-flight flush lost the current game's original save");
+        check(Read(newPath) == next, "Relocation did not write the current game's data");
+        check(!manager.NeedsFlush(), "Completed relocation remained pending");
+    }
+    else if (!std::strcmp(argv[1], "reload-partial"))
+    {
+        const QString path = directory.filePath("generated-reload.bin");
+        if (!Write(path, previous)) return 2;
+        // reset currently calls reload=true on a newly created firmware manager.
+        SaveManager manager("");
+        manager.SetPath(path.toStdString(), true);
+        QByteArray patched = previous;
+        patched[5] = '\x3C';
+        manager.RequestFlush(reinterpret_cast<const u8*>(patched.constData()),
+                             static_cast<u32>(patched.size()), 5, 1);
+        manager.CheckFlush();
+        manager.FlushSecondaryBuffer();
+        check(Read(path) == patched, "Partial update did not preserve the reloaded bytes");
+        check(!manager.NeedsFlush(), "Completed reloaded save remained pending");
+    }
+    else if (!std::strcmp(argv[1], "buffer-resize"))
+    {
+        const QString path = directory.filePath("resized-buffer.bin");
+        SaveManager manager("");
+        manager.SetPath(path.toStdString(), false);
+        Queue(manager, previous);
+        manager.FlushSecondaryBuffer();
+
+        const QByteArray grown(8193, '\x5C');
+        Queue(manager, grown);
+        QByteArray tooSmall(64, '\x33');
+        manager.FlushSecondaryBuffer(reinterpret_cast<u8*>(tooSmall.data()), 20);
+        check(tooSmall == QByteArray(64, '\x33'), "Rejected memory copy changed its destination");
+        check(manager.NeedsFlush(), "Rejected memory copy discarded the pending file write");
+        manager.FlushSecondaryBuffer();
+        check(Read(path) == grown, "Growing the buffer lost save bytes");
+
+        Queue(manager, next);
+        manager.FlushSecondaryBuffer();
+        check(Read(path) == next, "Shrinking the buffer retained stale bytes");
+        QByteArray copied(next.size() + 8, '\x66');
+        manager.FlushSecondaryBuffer(reinterpret_cast<u8*>(copied.data()), static_cast<u32>(next.size()));
+        check(copied.left(next.size()) == next && copied.right(8) == QByteArray(8, '\x66'),
+              "Memory snapshot copied the wrong bytes or exceeded its declared length");
+        check(!manager.NeedsFlush(), "Completed resized save remained pending");
     }
     else
         return 2;

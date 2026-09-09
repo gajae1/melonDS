@@ -76,7 +76,7 @@ This produces 21 entries on a supported JIT-enabled target, or 19 with
 AAC and host input/output; unexpected file use aborts. It does not replace
 real driver/game/physical-hardware regression tests. The full-core tests are
 not automatically sanitized by the standalone sanitizer configuration.
-See [the release record](../plans/releases/1.1.03.md) for current scope and measurement limitations.
+See [the release record](../plans/releases/1.1.04.md) for current scope and measurement limitations.
 
 The Qt build also provides `firmware-profile-direct-boot`. It runs the real
 frontend profile override and MAC parser with temporary configuration, then
@@ -86,3 +86,20 @@ The opt-in `gpu-compute-frame-capture` test additionally renders a synthetic
 triangle at 1x/2x on the host GPU, checking coordinate options, reuse of compiled
 shaders, and updates when the guest frame is unchanged. These are regression
 checks, not physical-console or full-game accuracy measurements.
+
+`SavestateLoad` uses the current frontend load/undo definitions with the real
+core and generated ARM programs. It checks late device failure, preserved CPU/RAM
+and the next frame after rollback, one-shot undo and retry, fatal recovery,
+file read bounds, and a load allocation exception. The JIT variants run warmed
+code and compare the full serialized state after the recovered frame. Its host
+file boundary uses temporary Qt files; no user data or physical devices are used.
+`StateLoadMessages` exercises the real Qt message dispatcher with scripted core
+results: error propagation, audio callback exclusion, queued resume/frame-step/
+save rejection after failed recovery, and reset/boot recovery. It does not start
+a physical audio device or the full window event loop.
+
+`SaveManagerIO` covers atomic writes/retry, the real worker's path-change locking,
+reload with a partial update, and buffer grow/shrink/memory-copy bounds. The path
+test holds the worker after a real commit and checks that relocation waits for
+the mutex, then verifies both files. This is a bounded locking regression, not a
+race detector or proof of crash/power-loss recovery.

@@ -25,6 +25,8 @@
 #include <string>
 #include <utility>
 #include <fstream>
+#include <limits>
+#include <stdexcept>
 
 #include <QDateTime>
 #include <QSaveFile>
@@ -713,61 +715,92 @@ bool EmuInstance::savestateExists(int slot)
     return Platform::FileExists(ssfile);
 }
 
-bool EmuInstance::loadState(const std::string& filename)
+StateLoadResult EmuInstance::loadState(const std::string& filename)
 {
-    Platform::FileHandle* file = Platform::OpenFile(filename, Platform::FileMode::Read);
-    if (file == nullptr)
-    { // If we couldn't open the state file...
+    const std::unique_ptr<Platform::FileHandle, decltype(&Platform::CloseFile)> file(
+        Platform::OpenFile(filename, Platform::FileMode::Read), Platform::CloseFile);
+    if (!file)
+    {
         Platform::Log(Platform::LogLevel::Error, "Failed to open state file \"%s\"\n", filename.c_str());
-        return false;
+        return StateLoadResult::Failed;
     }
 
-    std::unique_ptr<Savestate> backup = std::make_unique<Savestate>(Savestate::DEFAULT_SIZE);
-    if (backup->Error)
-    { // If we couldn't allocate memory for the backup...
-        Platform::Log(Platform::LogLevel::Error, "Failed to allocate memory for state backup\n");
-        Platform::CloseFile(file);
-        return false;
+    // The format has a 16-byte global header and a 32-bit total length.
+    const u64 size = Platform::FileLength(file.get());
+    if (size < 16 || size > std::numeric_limits<u32>::max())
+    {
+        Platform::Log(Platform::LogLevel::Error, "Invalid state file size\n");
+        return StateLoadResult::Failed;
     }
 
-    if (!nds->DoSavestate(backup.get()) || backup->Error)
-    { // Back up the emulator's state. If that failed...
-        Platform::Log(Platform::LogLevel::Error, "Failed to back up state, aborting load (from \"%s\")\n", filename.c_str());
-        Platform::CloseFile(file);
-        return false;
+    try
+    {
+        std::vector<u8> buffer(static_cast<size_t>(size));
+        if (Platform::FileRead(buffer.data(), 1, size, file.get()) != size)
+        {
+            Platform::Log(Platform::LogLevel::Error, "Failed to read complete state file\n");
+            return StateLoadResult::Failed;
+        }
+        Savestate state(buffer.data(), static_cast<u32>(size), false);
+        return applyState(state, false);
     }
-    // We'll store the backup once we're sure that the state was loaded.
-    // Now that we know the file and backup are both good, let's load the new state.
-
-    // Get the size of the file that we opened
-    size_t size = Platform::FileLength(file);
-
-    // Allocate exactly as much memory as we need for the savestate
-    std::vector<u8> buffer(size);
-    if (Platform::FileRead(buffer.data(), size, 1, file) == 0)
-    { // Read the state file into the buffer. If that failed...
-        Platform::Log(Platform::LogLevel::Error, "Failed to read %u-byte state file \"%s\"\n", size, filename.c_str());
-        Platform::CloseFile(file);
-        return false;
+    catch (const std::bad_alloc&)
+    {
+        Platform::Log(Platform::LogLevel::Error, "Failed to allocate state file buffer\n");
+        return StateLoadResult::Failed;
     }
-    Platform::CloseFile(file); // done with the file now
+}
 
-    // Get ready to load the state from the buffer into the emulator
-    std::unique_ptr<Savestate> state = std::make_unique<Savestate>(buffer.data(), size, false);
+StateLoadResult EmuInstance::applyState(Savestate& state, bool undo)
+{
+    if (state.Error) return StateLoadResult::Failed;
 
-    if (!nds->DoSavestate(state.get()) || state->Error)
-    { // If we couldn't load the savestate from the buffer...
-        Platform::Log(Platform::LogLevel::Error, "Failed to load state file \"%s\" into emulator\n", filename.c_str());
+    // Device state can allocate while loading. An allocation error after RAM
+    // was changed needs the same recovery as a malformed later section.
+    const auto transfer = [this](Savestate& file)
+    {
+        if (file.Error) return false;
+        try
+        {
+            return nds->DoSavestate(&file) && !file.Error;
+        }
+        catch (const std::bad_alloc&) {}
+        catch (const std::length_error&) {}
+        file.Error = true;
         return false;
+    };
+
+    std::unique_ptr<Savestate> backup;
+    try
+    {
+        backup = std::make_unique<Savestate>();
+    }
+    catch (const std::bad_alloc&)
+    {
+        return StateLoadResult::Failed;
+    }
+    if (!transfer(*backup)) return StateLoadResult::Failed;
+
+    if (!transfer(state))
+    {
+        Savestate recovery(backup->Buffer(), backup->Length(), false);
+        if (transfer(recovery))
+        {
+            Platform::Log(Platform::LogLevel::Error, "State load failed; previous state restored\n");
+            return StateLoadResult::Failed;
+        }
+        // Do not run another frame with partially restored CPU/device state.
+        nds->Stop();
+        backupState.reset();
+        Platform::Log(Platform::LogLevel::Error, "State recovery failed; emulation stopped\n");
+        return StateLoadResult::RecoveryFailed;
     }
 
-    // The backup was made and the state was loaded, so we can store the backup now.
-    backupState = std::move(backup); // This will clean up any existing backup
-    assert(backup == nullptr);
-
-    savestateLoaded = true;
-
-    return true;
+    // Publish undo only on success. Keep its serialized length and save mode
+    // intact: Rewind() changes the cursor used by Length().
+    if (undo) backupState.reset();
+    else backupState = std::move(backup);
+    return StateLoadResult::Success;
 }
 
 bool EmuInstance::saveState(const std::string& filename)
@@ -793,17 +826,11 @@ bool EmuInstance::saveState(const std::string& filename)
     return true;
 }
 
-void EmuInstance::undoStateLoad()
+StateLoadResult EmuInstance::undoStateLoad()
 {
-    if (!savestateLoaded || !backupState) return;
-
-    // Rewind the backup state and put it in load mode
-    backupState->Rewind(false);
-
-    // pray that this works
-    // what do we do if it doesn't???
-    // but it should work.
-    nds->DoSavestate(backupState.get());
+    if (!backupState) return StateLoadResult::Failed;
+    Savestate state(backupState->Buffer(), backupState->Length(), false);
+    return applyState(state, true);
 }
 
 

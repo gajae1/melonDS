@@ -69,7 +69,7 @@ if (USE_QT6)
 else()
     target_link_libraries(SaveManagerIO PRIVATE Qt5::Core)
 endif()
-foreach(case IN ITEMS replace retry-open retry-rename retry-worker)
+foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush reload-partial buffer-resize)
     add_test(NAME save-manager-${case} COMMAND SaveManagerIO ${case})
     set_tests_properties(save-manager-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()
@@ -80,6 +80,66 @@ add_custom_command(OUTPUT "${state_writer}"
         "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp"
         "bool EmuInstance::saveState(const std::string& filename)" "${state_writer}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
+foreach(method IN ITEMS loadState undoStateLoad applyState)
+    if (method STREQUAL "loadState")
+        set(state_signature "StateLoadResult EmuInstance::loadState(const std::string& filename)")
+    elseif (method STREQUAL "applyState")
+        set(state_signature "StateLoadResult EmuInstance::applyState(Savestate& state, bool undo)")
+    else()
+        set(state_signature "StateLoadResult EmuInstance::undoStateLoad()")
+    endif()
+    add_custom_command(
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp" "${state_signature}"
+            "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
+endforeach()
+find_package(Threads REQUIRED)
+add_executable(SavestateLoad "${CMAKE_SOURCE_DIR}/tests/SavestateLoad.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/loadState.inc" "${CMAKE_CURRENT_BINARY_DIR}/undoStateLoad.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/applyState.inc")
+target_include_directories(SavestateLoad PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(SavestateLoad PRIVATE core Threads::Threads)
+if (USE_QT6)
+    target_link_libraries(SavestateLoad PRIVATE Qt6::Core)
+else()
+    target_link_libraries(SavestateLoad PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS success late-section load-error load-oom backup-error header short-read read-error oversize undo-error rollback-error)
+    add_test(NAME savestate-load-${case} COMMAND SavestateLoad ${case} interpreter)
+    set_tests_properties(savestate-load-${case} PROPERTIES TIMEOUT 30)
+endforeach()
+if (ENABLE_JIT)
+    foreach(mode IN ITEMS jit fastmem)
+        add_test(NAME savestate-rollback-${mode} COMMAND SavestateLoad late-section ${mode})
+        set_tests_properties(savestate-rollback-${mode} PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+    endforeach()
+endif()
+
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stateMessages.inc" "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::handleMessages()"
+        "${CMAKE_CURRENT_BINARY_DIR}/stateMessages.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "EmuThread::EmuThread(EmuInstance* inst, QObject* parent) : QThread(parent)"
+        "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuThread.cpp VERBATIM)
+add_executable(StateLoadMessages "${CMAKE_SOURCE_DIR}/tests/StateLoadMessages.cpp" EmuThread.h
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/stateMessages.inc" "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc")
+target_include_directories(StateLoadMessages PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(StateLoadMessages PRIVATE core Threads::Threads)
+if (USE_QT6)
+    target_link_libraries(StateLoadMessages PRIVATE Qt6::Core)
+else()
+    target_link_libraries(StateLoadMessages PRIVATE Qt5::Core)
+endif()
+add_test(NAME savestate-message-recovery COMMAND StateLoadMessages)
+set_tests_properties(savestate-message-recovery PROPERTIES TIMEOUT 10)
+
 add_executable(SavestateFileIO "${CMAKE_SOURCE_DIR}/tests/SavestateFileIO.cpp"
     "${CMAKE_SOURCE_DIR}/src/Savestate.cpp" "${state_writer}")
 target_include_directories(SavestateFileIO PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")

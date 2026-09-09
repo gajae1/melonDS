@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <QMutexLocker>
 #include <QSaveFile>
 
 #include "SaveManager.h"
@@ -30,7 +31,6 @@ SaveManager::SaveManager(const std::string& path) : QThread()
 {
     SecondaryBuffer = nullptr;
     SecondaryBufferLength = 0;
-    SecondaryBufferLock = new QMutex();
 
     Running = false;
 
@@ -62,18 +62,18 @@ SaveManager::~SaveManager()
 
     SecondaryBuffer = nullptr;
 
-    delete SecondaryBufferLock;
-
     Buffer = nullptr;
 }
 
 std::string SaveManager::GetPath()
 {
+    QMutexLocker lock(&StateLock);
     return Path;
 }
 
 void SaveManager::SetPath(const std::string& path, bool reload)
 {
+    QMutexLocker lock(&StateLock);
     Path = path;
 
     if (reload)
@@ -97,6 +97,7 @@ void SaveManager::SetPath(const std::string& path, bool reload)
 
 void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen)
 {
+    QMutexLocker lock(&StateLock);
     if (Length != savelen)
     {
         Length = savelen;
@@ -125,9 +126,8 @@ void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset,
 
 void SaveManager::CheckFlush()
 {
+    QMutexLocker lock(&StateLock);
     if (!FlushRequested) return;
-
-    SecondaryBufferLock->lock();
 
     Log(LogLevel::Info, "SaveManager: Flush requested\n");
 
@@ -142,8 +142,6 @@ void SaveManager::CheckFlush()
     FlushRequested = false;
     FlushVersion++;
     TimeAtLastFlushRequest = time(nullptr);
-
-    SecondaryBufferLock->unlock();
 }
 
 void SaveManager::run()
@@ -154,26 +152,32 @@ void SaveManager::run()
 
         if (!Running) return;
 
+        QMutexLocker lock(&StateLock);
         // We debounce for two seconds after last flush request to ensure that writing has finished.
         if (TimeAtLastFlushRequest == 0 || difftime(time(nullptr), TimeAtLastFlushRequest) < 2)
         {
             continue;
         }
 
-        FlushSecondaryBuffer();
+        FlushSecondaryBufferLocked(nullptr, 0);
     }
 }
 
 void SaveManager::FlushSecondaryBuffer(u8* dst, u32 dstLength)
 {
+    QMutexLocker lock(&StateLock);
+    FlushSecondaryBufferLocked(dst, dstLength);
+}
+
+void SaveManager::FlushSecondaryBufferLocked(u8* dst, u32 dstLength)
+{
     if (!SecondaryBuffer) return;
 
     // When flushing to a file, there's no point in re-writing the exact same data.
-    if (!dst && !NeedsFlush()) return;
+    if (!dst && FlushVersion == PreviousFlushVersion) return;
     // When flushing to memory, we don't know if dst already has any data so we only check that we CAN flush.
     if (dst && dstLength < SecondaryBufferLength) return;
 
-    SecondaryBufferLock->lock();
     if (dst)
     {
         memcpy(dst, SecondaryBuffer.get(), SecondaryBufferLength);
@@ -188,17 +192,16 @@ void SaveManager::FlushSecondaryBuffer(u8* dst, u32 dstLength)
             Log(LogLevel::Error, "SaveManager: Failed to write save: %s\n", file.errorString().toUtf8().constData());
             // Keep this version pending and reuse the debounce interval before retrying.
             TimeAtLastFlushRequest = time(nullptr);
-            SecondaryBufferLock->unlock();
             return;
         }
         Log(LogLevel::Info, "SaveManager: Wrote %u bytes to %s\n", SecondaryBufferLength, Path.c_str());
     }
     PreviousFlushVersion = FlushVersion;
     TimeAtLastFlushRequest = 0;
-    SecondaryBufferLock->unlock();
 }
 
 bool SaveManager::NeedsFlush()
 {
+    QMutexLocker lock(&StateLock);
     return FlushVersion != PreviousFlushVersion;
 }

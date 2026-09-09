@@ -1582,12 +1582,18 @@ void MainWindow::onLoadState()
         return;
     }
 
-    if (emuThread->loadState(filename))
+    const auto result = emuThread->loadState(filename);
+    if (result == StateLoadResult::Success)
     {
         if (slot > 0) emuInstance->osdAddMessage(0, "State loaded from slot %d", slot);
         else          emuInstance->osdAddMessage(0, "State loaded from file");
 
         actUndoStateLoad->setEnabled(true);
+    }
+    else if (result == StateLoadResult::RecoveryFailed)
+    {
+        actUndoStateLoad->setEnabled(false);
+        emuInstance->osdAddMessage(0xFFA0A0, "State recovery failed. Reopen the game to continue.");
     }
     else
     {
@@ -1597,9 +1603,21 @@ void MainWindow::onLoadState()
 
 void MainWindow::onUndoStateLoad()
 {
-    emuThread->undoStateLoad();
-
-    emuInstance->osdAddMessage(0, "State load undone");
+    const auto result = emuThread->undoStateLoad();
+    if (result == StateLoadResult::Success)
+    {
+        actUndoStateLoad->setEnabled(false);
+        emuInstance->osdAddMessage(0, "State load undone");
+    }
+    else if (result == StateLoadResult::RecoveryFailed)
+    {
+        actUndoStateLoad->setEnabled(false);
+        emuInstance->osdAddMessage(0xFFA0A0, "State recovery failed. Reopen the game to continue.");
+    }
+    else
+    {
+        emuInstance->osdAddMessage(0xFFA0A0, "State undo failed");
+    }
 }
 
 void MainWindow::onImportSavefile()

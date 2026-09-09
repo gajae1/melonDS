@@ -491,6 +491,7 @@ void EmuThread::handleMessages()
             break;
 
         case msg_EmuRun:
+            if (stateRecoveryFailed) break;
             emuStatus = emuStatus_Running;
             emuPauseStack = emuPauseStackRunning;
             emuActive = true;
@@ -515,6 +516,7 @@ void EmuThread::handleMessages()
             break;
 
         case msg_EmuUnpause:
+            if (stateRecoveryFailed) break;
             if (emuPauseStack < emuPauseStackPauseThreshold) break;
 
             emuPauseStack--;
@@ -541,11 +543,14 @@ void EmuThread::handleMessages()
             break;
 
         case msg_EmuFrameStep:
+            if (stateRecoveryFailed) break;
             emuStatus = emuStatus_FrameStep;
             break;
 
         case msg_EmuReset:
             emuInstance->reset();
+            emuInstance->clearBackupState();
+            stateRecoveryFailed = false;
 
             emuStatus = emuStatus_Running;
             emuPauseStack = emuPauseStackRunning;
@@ -579,6 +584,7 @@ void EmuThread::handleMessages()
 
             assert(emuInstance->nds != nullptr);
             emuInstance->nds->Start();
+            stateRecoveryFailed = false;
             msgResult = 1;
             break;
 
@@ -589,6 +595,7 @@ void EmuThread::handleMessages()
 
             assert(emuInstance->nds != nullptr);
             emuInstance->nds->Start();
+            stateRecoveryFailed = false;
             msgResult = 1;
             break;
 
@@ -623,17 +630,34 @@ void EmuThread::handleMessages()
             break;
 
         case msg_SaveState:
-            msgResult = emuInstance->saveState(msg.param.value<QString>().toStdString());
+            msgResult = !stateRecoveryFailed &&
+                emuInstance->saveState(msg.param.value<QString>().toStdString());
             break;
 
         case msg_LoadState:
-            msgResult = emuInstance->loadState(msg.param.value<QString>().toStdString());
-            break;
-
         case msg_UndoStateLoad:
-            emuInstance->undoStateLoad();
-            msgResult = 1;
+        {
+            // Neither audio nor microphone callbacks may observe a partial load.
+            emuInstance->audioDisable();
+            const auto result = stateRecoveryFailed ? StateLoadResult::RecoveryFailed :
+                (msg.type == msg_LoadState ?
+                    emuInstance->loadState(msg.param.value<QString>().toStdString()) :
+                    emuInstance->undoStateLoad());
+            msgResult = static_cast<int>(result);
+            if (result == StateLoadResult::RecoveryFailed)
+            {
+                stateRecoveryFailed = true;
+                emuStatus = prevEmuStatus = emuStatus_Paused;
+                emuPauseStack = emuPauseStackRunning;
+                emuActive = false;
+                emit windowEmuStop();
+            }
+            else if (emuStatus == emuStatus_Running)
+            {
+                emuInstance->audioEnable();
+            }
             break;
+        }
 
         case msg_ImportSavefile:
             {
@@ -833,18 +857,18 @@ int EmuThread::saveState(const QString& filename)
     return msgResult;
 }
 
-int EmuThread::loadState(const QString& filename)
+StateLoadResult EmuThread::loadState(const QString& filename)
 {
     sendMessage({.type = msg_LoadState, .param = filename});
     waitMessage();
-    return msgResult;
+    return static_cast<StateLoadResult>(msgResult);
 }
 
-int EmuThread::undoStateLoad()
+StateLoadResult EmuThread::undoStateLoad()
 {
     sendMessage(msg_UndoStateLoad);
     waitMessage();
-    return msgResult;
+    return static_cast<StateLoadResult>(msgResult);
 }
 
 int EmuThread::importSavefile(const QString& filename)

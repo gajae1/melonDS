@@ -33,6 +33,7 @@
 
 #include "NDSCart.h"
 #include "GBACart.h"
+#include "StateLoadResult.h"
 
 namespace melonDS
 {
@@ -120,8 +121,8 @@ public:
     int insertGBAAddon(int type, QString& errorstr);
 
     int saveState(const QString& filename);
-    int loadState(const QString& filename);
-    int undoStateLoad();
+    StateLoadResult loadState(const QString& filename);
+    StateLoadResult undoStateLoad();
 
     int importSavefile(const QString& filename);
 
@@ -177,6 +178,7 @@ private:
     EmuStatusKind prevEmuStatus;
     EmuStatusKind emuStatus;
     bool emuActive;
+    bool stateRecoveryFailed = false;
 
     constexpr static int emuPauseStackRunning = 0;
     constexpr static int emuPauseStackPauseThreshold = 1;
