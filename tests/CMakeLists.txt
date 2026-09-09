@@ -220,3 +220,73 @@ add_custom_command(
 add_executable(ROMHeaderBounds ROMHeaderBounds.cpp "${CMAKE_CURRENT_BINARY_DIR}/ROMHeaderMethod.inc")
 target_include_directories(ROMHeaderBounds PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME nds-rom-header-bounds COMMAND ROMHeaderBounds)
+
+add_executable(GdbProtocol GdbProtocol.cpp ../src/CRC32.cpp)
+target_include_directories(GdbProtocol PRIVATE ../src)
+find_package(Threads REQUIRED)
+target_link_libraries(GdbProtocol PRIVATE Threads::Threads)
+if (WIN32)
+    target_link_libraries(GdbProtocol PRIVATE ws2_32)
+endif()
+foreach(case IN ITEMS memory-control binary-tail binary-escape last-address short-hex missing-colon
+        invalid-hex extra-hex wrap short-binary dangling-escape receive-limit checksum checksum-recovery
+        coalesced response-limit response-chunks response-zero response-escape response-format memory-limit
+        disconnect eof ack-eof poll-wait poll-error extra-binary stream-boundaries response-extra loopback q-xfer
+        split-resend listener-error)
+    add_test(NAME gdb-protocol-${case} COMMAND GdbProtocol ${case})
+    set_tests_properties(gdb-protocol-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+
+if (TARGET net-utils)
+    add_executable(LANPacket LANPacket.cpp PlatformSync.cpp)
+    target_include_directories(LANPacket PRIVATE ../src)
+    target_link_libraries(LANPacket PRIVATE Threads::Threads)
+    if (USE_VCPKG)
+        find_package(unofficial-enet CONFIG REQUIRED)
+        target_link_libraries(LANPacket PRIVATE unofficial::enet::enet)
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(LAN_TEST_ENET REQUIRED IMPORTED_TARGET libenet)
+        target_link_libraries(LANPacket PRIVATE PkgConfig::LAN_TEST_ENET)
+    endif()
+    if (WIN32)
+        target_link_libraries(LANPacket PRIVATE ws2_32)
+    endif()
+    add_test(NAME lan-packet-validation COMMAND LANPacket)
+    set_tests_properties(lan-packet-validation PROPERTIES TIMEOUT 15)
+endif()
+
+add_executable(PCapInput PCapInput.cpp)
+target_include_directories(PCapInput PRIVATE ../src ../src/net)
+foreach(case IN ITEMS controls missing-symbols capture link-type io-errors open-lifetime enumeration)
+    add_test(NAME pcap-input-${case} COMMAND PCapInput ${case})
+    set_tests_properties(pcap-input-${case} PROPERTIES TIMEOUT 10)
+endforeach()
+
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/SlirpFinishUDPFrame.inc"
+           "${CMAKE_CURRENT_BINARY_DIR}/SlirpHandleDNSFrame.inc"
+           "${CMAKE_CURRENT_BINARY_DIR}/SlirpSendPacket.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/net/Net_Slirp.cpp" "void FinishUDPFrame(u8* data, int len)"
+        "${CMAKE_CURRENT_BINARY_DIR}/SlirpFinishUDPFrame.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/net/Net_Slirp.cpp" "void Net_Slirp::HandleDNSFrame(u8* data, int len) noexcept"
+        "${CMAKE_CURRENT_BINARY_DIR}/SlirpHandleDNSFrame.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/net/Net_Slirp.cpp" "int Net_Slirp::SendPacket(u8* data, int len) noexcept"
+        "${CMAKE_CURRENT_BINARY_DIR}/SlirpSendPacket.inc"
+    DEPENDS ExtractFunction.py ../src/net/Net_Slirp.cpp
+    VERBATIM)
+add_executable(SlirpDNS SlirpDNS.cpp "${CMAKE_CURRENT_BINARY_DIR}/SlirpFinishUDPFrame.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/SlirpHandleDNSFrame.inc" "${CMAKE_CURRENT_BINARY_DIR}/SlirpSendPacket.inc")
+target_include_directories(SlirpDNS PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
+if (WIN32)
+    target_link_libraries(SlirpDNS PRIVATE ws2_32)
+endif()
+foreach(case IN ITEMS query-control header-guard transport-lengths ipv4-options label-guard
+        query-shape fragments-forwarding name-response-bounds)
+    add_test(NAME slirp-dns-${case} COMMAND SlirpDNS ${case})
+    set_tests_properties(slirp-dns-${case} PROPERTIES TIMEOUT 10)
+endforeach()

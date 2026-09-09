@@ -792,6 +792,45 @@ void LAN::ProcessEvent(ENetEvent& event)
         ProcessClientEvent(event);
 }
 
+bool LAN::ValidateMPPacket(const ENetEvent& event) const
+{
+    if (event.packet->dataLength < sizeof(MPPacketHeader))
+        return false;
+
+    MPPacketHeader header;
+    memcpy(&header, event.packet->data, sizeof(header));
+
+    // Wifi::TXSendFrame can send the whole 0x2000-byte WiFi RAM/TXBuffer.
+    // The existing 2048/1024-byte receive crops are not wire payload limits.
+    if (header.Magic != kPacketMagic || header.Length > 0x2000 ||
+        header.Length != event.packet->dataLength - sizeof(MPPacketHeader))
+        return false;
+
+    const u32 type = header.Type & 0xFFFF;
+    const u32 aid = header.Type >> 16;
+    if (type > 3)
+        return false;
+    if (type == 2)
+    {
+        // A zero-length AID-0 reply is the v1 "no data" notification used by
+        // Wifi::FinishRX so the host need not wait for this client's timeout.
+        if (aid > 15 || (aid == 0 && header.Length != 0))
+            return false;
+    }
+    else if (aid != 0)
+        return false;
+
+    if (header.SenderID >= 16 || header.SenderID == static_cast<u32>(MyPlayer.ID))
+        return false;
+
+    // A DS AID is not a LAN player ID. Bind the sender to the established ENet
+    // peer instead. Do not require ConnectedBitmask/Player_Client here: reliable
+    // control messages can arrive after MP frames on the other ENet channel.
+    return event.peer && RemotePeers[header.SenderID] == event.peer &&
+           event.peer->data == &Players[header.SenderID] &&
+           Players[header.SenderID].ID == static_cast<int>(header.SenderID);
+}
+
 // 0 = per-frame processing of events and eventual misc. frame
 // 1 = checking if a misc. frame has arrived
 // 2 = waiting for a MP frame
@@ -842,23 +881,14 @@ void LAN::ProcessLAN(int type)
     {
         if (event.type == ENET_EVENT_TYPE_RECEIVE && event.channelID == Chan_MP)
         {
-            MPPacketHeader* header = (MPPacketHeader*)&event.packet->data[0];
-
-            bool good = true;
-            if (event.packet->dataLength < sizeof(MPPacketHeader))
-                good = false;
-            else if (header->Magic != 0x4946494E)
-                good = false;
-            else if (header->SenderID == MyPlayer.ID)
-                good = false;
-
-            if (!good)
+            if (!ValidateMPPacket(event))
             {
                 enet_packet_destroy(event.packet);
             }
             else
             {
                 // mark this packet with the time it was received
+                MPPacketHeader* header = (MPPacketHeader*)event.packet->data;
                 header->Magic = (u32)Platform::GetMSCount();
 
                 event.packet->userData = event.peer;

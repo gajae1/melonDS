@@ -210,182 +210,172 @@ void FinishUDPFrame(u8* data, int len)
 
 void Net_Slirp::HandleDNSFrame(u8* data, int len) noexcept
 {
-    u8* ipheader = &data[0xE];
-    u8* udpheader = &data[0x22];
-    u8* dnsbody = &data[0x2A];
+    // SendPacket bounds the unfragmented IPv4/UDP frame and trims len to UDP.
+    const auto read16 = [](const u8* p) -> u16 { return (u16(p[0]) << 8) | p[1]; };
+    const u8* ipheader = &data[14];
+    const int iplen = (ipheader[0] & 0x0F) * 4;
+    const u8* udpheader = ipheader + iplen;
+    const u8* dnsbody = udpheader + 8;
+    if (len < 14 + iplen + 8 + 12) return;
+    const u32 dnslen = len - (14 + iplen + 8);
 
-    u32 srcip = ntohl(*(u32*)&ipheader[12]);
-    u16 srcport = ntohs(*(u16*)&udpheader[0]);
+    const u16 id = read16(dnsbody);
+    const u16 flags = read16(dnsbody + 2);
+    // This override handles one ordinary question, with optional RD only.
+    // Other sections, opcodes, truncated messages and replies are unsupported.
+    if ((flags & ~0x0100) || read16(dnsbody + 4) != 1 ||
+        read16(dnsbody + 6) || read16(dnsbody + 8) || read16(dnsbody + 10))
+        return;
 
-    u16 id = ntohs(*(u16*)&dnsbody[0]);
-    u16 flags = ntohs(*(u16*)&dnsbody[2]);
-    u16 numquestions = ntohs(*(u16*)&dnsbody[4]);
-    u16 numanswers = ntohs(*(u16*)&dnsbody[6]);
-    u16 numauth = ntohs(*(u16*)&dnsbody[8]);
-    u16 numadd = ntohs(*(u16*)&dnsbody[10]);
+    char domainname[256];
+    u32 namelen = 0;
+    u32 cursor = 12;
+    for (;;)
+    {
+        if (cursor >= dnslen || cursor - 12 >= 255) return;
+        const u8 labellen = dnsbody[cursor++];
+        if (!labellen) break;
+        // Compression and reserved label forms are not part of this simple
+        // query override. Include the root byte in the 255-byte wire limit.
+        if (labellen > 63 || labellen > dnslen - cursor || cursor - 12 + labellen >= 255)
+            return;
+        if (namelen) domainname[namelen++] = '.';
+        if (namelen + labellen >= sizeof(domainname)) return;
+        for (u32 i = 0; i < labellen; ++i)
+        {
+            const u8 ch = dnsbody[cursor++];
+            // These labels cannot be represented faithfully as a resolver C string.
+            if (!ch || ch == '.') return;
+            domainname[namelen++] = ch;
+        }
+    }
+    if (!namelen || dnslen - cursor != 4) return;
+    domainname[namelen] = '\0';
+    if (read16(dnsbody + cursor) != 1 || read16(dnsbody + cursor + 2) != 1)
+        return; // Only A/IN has a four-byte answer here.
 
-    Log(LogLevel::Debug, "DNS: ID=%04X, flags=%04X, Q=%d, A=%d, auth=%d, add=%d\n",
-           id, flags, numquestions, numanswers, numauth, numadd);
-
-    // for now we only take 'simple' DNS requests
-    if (flags & 0x8000) return;
-    if (numquestions != 1 || numanswers != 0) return;
-
+    const u32 qlen = cursor + 4 - 12;
     u8 resp[1024];
-    u8* out = &resp[0];
+    // Ethernet + fixed IPv4 + UDP + DNS header + question + A record + pad.
+    if (14 + 20 + 8 + 12 + qlen + 16 + 1 > sizeof(resp)) return;
 
-    // ethernet
+    // Preserve the existing zero-address answer when hostname lookup fails.
+    // All query validation has finished before entering the host resolver.
+    u32 addr_res = 0;
+    struct addrinfo dns_hint {};
+    struct addrinfo* dns_res = nullptr;
+    dns_hint.ai_family = AF_INET;
+    if (getaddrinfo(domainname, "0", &dns_hint, &dns_res) == 0)
+    {
+        for (const struct addrinfo* p = dns_res; p; p = p->ai_next)
+        {
+            if (p->ai_family != AF_INET || !p->ai_addr || p->ai_addrlen < sizeof(struct sockaddr_in))
+                continue;
+            const auto* addr = reinterpret_cast<const struct sockaddr_in*>(p->ai_addr);
+            memcpy(&addr_res, &addr->sin_addr, sizeof(addr_res));
+            break;
+        }
+        if (dns_res) freeaddrinfo(dns_res);
+    }
+
+    u8* out = resp;
+    const auto put16 = [&out](u16 value) {
+        *out++ = value >> 8;
+        *out++ = value;
+    };
+    const auto put32 = [&out](u32 value) {
+        *out++ = value >> 24;
+        *out++ = value >> 16;
+        *out++ = value >> 8;
+        *out++ = value;
+    };
+
     memcpy(out, &data[6], 6); out += 6;
     memcpy(out, kServerMAC, 6); out += 6;
-    *(u16*)out = htons(0x0800); out += 2;
+    put16(0x0800);
 
-    // IP
-    u8* resp_ipheader = out;
     *out++ = 0x45;
-    *out++ = 0x00;
-    *(u16*)out = 0; out += 2; // total length
-    *(u16*)out = htons(IPv4ID); out += 2; IPv4ID++;
-    *out++ = 0x00;
-    *out++ = 0x00;
-    *out++ = 0x80; // TTL
-    *out++ = 0x11; // protocol (UDP)
-    *(u16*)out = 0; out += 2; // checksum
-    *(u32*)out = htonl(kDNSIP); out += 4; // source IP
-    *(u32*)out = htonl(srcip); out += 4; // destination IP
+    *out++ = 0;
+    put16(0); // IPv4 length, filled by FinishUDPFrame.
+    put16(IPv4ID++);
+    put16(0); // No fragmentation or options in the response.
+    *out++ = 0x80;
+    *out++ = 0x11;
+    put16(0); // IPv4 checksum.
+    put32(kDNSIP);
+    memcpy(out, ipheader + 12, 4); out += 4;
 
-    // UDP
-    u8* resp_udpheader = out;
-    *(u16*)out = htons(53); out += 2; // source port
-    *(u16*)out = htons(srcport); out += 2; // destination port
-    *(u16*)out = 0; out += 2; // length
-    *(u16*)out = 0; out += 2; // checksum
+    put16(53);
+    put16(read16(udpheader));
+    put16(0); // UDP length.
+    put16(0); // UDP checksum.
 
-    // DNS
-    u8* resp_body = out;
-    *(u16*)out = htons(id); out += 2; // ID
-    *(u16*)out = htons(0x8000); out += 2; // flags
-    *(u16*)out = htons(numquestions); out += 2; // num questions
-    *(u16*)out = htons(numquestions); out += 2; // num answers
-    *(u16*)out = 0; out += 2; // num authority
-    *(u16*)out = 0; out += 2; // num additional
+    put16(id);
+    put16(0x8000);
+    put16(1); // One question and one answer.
+    put16(1);
+    put16(0);
+    put16(0);
+    memcpy(out, dnsbody + 12, qlen); out += qlen;
+    put16(0xC00C); // The question's name starts at DNS offset 12.
+    put16(1); // A.
+    put16(1); // IN.
+    put32(3600);
+    put16(4);
+    memcpy(out, &addr_res, 4); out += 4;
 
-    u32 curoffset = 12;
-    for (u16 i = 0; i < numquestions; i++)
-    {
-        if (curoffset >= (len-0x2A)) return;
-
-        u8 bitlength = 0;
-        while ((bitlength = dnsbody[curoffset++]) != 0)
-            curoffset += bitlength;
-
-        curoffset += 4;
-    }
-
-    u32 qlen = curoffset-12;
-    if (qlen > 512) return;
-    memcpy(out, &dnsbody[12], qlen); out += qlen;
-
-    curoffset = 12;
-	for (u16 i = 0; i < numquestions; i++)
-	{
-		// assemble the requested domain name
-		u8 bitlength = 0;
-		char domainname[256] = ""; int o = 0;
-		while ((bitlength = dnsbody[curoffset++]) != 0)
-		{
-		    if ((o+bitlength) >= 255)
-            {
-                // welp. atleast try not to explode.
-                domainname[o++] = '\0';
-                break;
-            }
-
-			strncpy(&domainname[o], (const char *)&dnsbody[curoffset], bitlength);
-			o += bitlength;
-
-			curoffset += bitlength;
-			if (dnsbody[curoffset] != 0)
-				domainname[o++] = '.';
-            else
-                domainname[o++] = '\0';
-		}
-
-		u16 type = ntohs(*(u16*)&dnsbody[curoffset]);
-		u16 cls = ntohs(*(u16*)&dnsbody[curoffset+2]);
-
-		printf("- q%d: %04X %04X %s", i, type, cls, domainname);
-
-		// get answer
-		struct addrinfo dns_hint;
-		struct addrinfo* dns_res;
-		u32 addr_res;
-
-		memset(&dns_hint, 0, sizeof(dns_hint));
-		dns_hint.ai_family = AF_INET; // TODO: other address types (INET6, etc)
-		if (getaddrinfo(domainname, "0", &dns_hint, &dns_res) == 0)
-        {
-            struct addrinfo* p = dns_res;
-            while (p)
-            {
-                struct sockaddr_in* addr = (struct sockaddr_in*)p->ai_addr;
-                addr_res = *(u32*)&addr->sin_addr;
-
-                printf(" -> %d.%d.%d.%d",
-                       addr_res & 0xFF, (addr_res >> 8) & 0xFF,
-                       (addr_res >> 16) & 0xFF, addr_res >> 24);
-
-                break;
-                p = p->ai_next;
-            }
-        }
-        else
-        {
-            printf(" shat itself :(");
-            addr_res = 0;
-        }
-
-		printf("\n");
-		curoffset += 4;
-
-		// TODO: betterer support
-		// (under which conditions does the C00C marker work?)
-		*(u16*)out = htons(0xC00C); out += 2;
-		*(u16*)out = htons(type); out += 2;
-		*(u16*)out = htons(cls); out += 2;
-		*(u32*)out = htonl(3600); out += 4; // TTL (hardcoded for now)
-		*(u16*)out = htons(4); out += 2; // address length
-		*(u32*)out = addr_res; out += 4; // address
-    }
-
-    u32 framelen = (u32)(out - &resp[0]);
+    u32 framelen = static_cast<u32>(out - resp);
     if (framelen & 1) { *out++ = 0; framelen++; }
     FinishUDPFrame(resp, framelen);
-
-    if (Callback)
-        Callback(resp, framelen);
+    if (Callback) Callback(resp, framelen);
 }
 
 int Net_Slirp::SendPacket(u8* data, int len) noexcept
 {
-    if (!Ctx) return 0;
-
+    if (!Ctx || !data || len < 14) return 0;
     if (len > 2048)
     {
         Log(LogLevel::Error, "Net_SendPacket: error: packet too long (%d)\n", len);
         return 0;
     }
 
-    u16 ethertype = ntohs(*(u16*)&data[0xC]);
-
-    if (ethertype == 0x800)
+    const auto read16 = [](const u8* p) -> u16 { return (u16(p[0]) << 8) | p[1]; };
+    if (read16(data + 12) == 0x0800)
     {
-        u8 protocol = data[0x17];
-        if (protocol == 0x11) // UDP
+        if (len < 14 + 20) return 0;
+        const u8* ipheader = data + 14;
+        const int iplen = (ipheader[0] & 0x0F) * 4;
+        const int total = read16(ipheader + 2);
+        if ((ipheader[0] >> 4) != 4 || iplen < 20 || iplen > len - 14 ||
+            total < iplen || total > len - 14)
+            return 0;
+
+        const u32 dnsip = htonl(kDNSIP);
+        if (ipheader[9] == 0x11 && memcmp(ipheader + 16, &dnsip, 4) == 0)
         {
-            u16 dstport = ntohs(*(u16*)&data[0x24]);
-            if (dstport == 53 && htonl(*(u32*)&data[0x1E]) == kDNSIP) // DNS
+            // A fragment has no complete UDP/DNS query. Do not bypass this
+            // override via libslirp for fragmented traffic to the virtual DNS IP.
+            // DF is allowed; reserved flags, MF and nonzero offsets are not.
+            if (read16(ipheader + 6) & 0xBFFF) return 0;
+            if (total < iplen + 8) return 0;
+            const u8* udpheader = ipheader + iplen;
+            const int udplen = read16(udpheader + 4);
+            if (udplen < 8 || udplen > total - iplen) return 0;
+            if (read16(udpheader + 2) == 53)
             {
-                HandleDNSFrame(data, len);
+                // Accept NOP/EOL padding options. Routing and other options
+                // require IP-stack semantics outside this local DNS override.
+                for (int i = 20; i < iplen; ++i)
+                {
+                    if (ipheader[i] == 0)
+                    {
+                        for (++i; i < iplen; ++i)
+                            if (ipheader[i] != 0) return 0;
+                        break;
+                    }
+                    if (ipheader[i] != 1) return 0;
+                }
+                HandleDNSFrame(data, 14 + iplen + udplen);
                 return len;
             }
         }

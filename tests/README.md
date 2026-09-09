@@ -156,3 +156,28 @@ and scripted producer/save contracts cover retry, cancel, recovery copies and
 child-instance cancellation before any window is destroyed. Actual worker I/O is
 covered by SaveManagerIO and CartReplacement; full frontend/device shutdown acceptance remains
 separate. Generated method includes explicitly precede moc processing.
+
+
+`LANPacket` injects real ENet packets through event delivery and checks the public
+MP receive paths. It covers v1 sender/peer association, exact payload size,
+empty AID-0 replies, the existing receive crops and readiness across channels.
+Only event delivery/outbound transport is replaced; no socket is opened.
+
+`PCapInput` compiles the production backend with dynamic-library, pcap and adapter
+enumeration boundaries replaced. Guarded capture buffers, missing symbols,
+non-Ethernet link types, I/O errors and open/move/destruction lifetimes are checked.
+It does not load a capture driver or transmit on a physical adapter.
+
+`SlirpDNS` extracts the current production frame-finalization, DNS handler and
+send method at build time. Protected headers/names, IPv4 options and fragments,
+UDP/DNS bounds and normal A responses are checked with generated frames and a
+substitute resolver. Host DNS lookups and live slirp networking are not used.
+
+`GdbProtocol` compiles the real stub, framing and commands in one translation unit.
+Guest memory callbacks record access widths and bytes. Injected socket boundaries
+cover exact/overflow buffers, malformed m/M/X, binary escapes, checksums,
+coalesced/repeated packets, partial/zero/would-block sends and connection reset.
+Its `loopback` case uses real local TCP for split requests, checksum recovery,
+NoAck negotiation, reconnect and detach. Only the listener bind is restricted to
+loopback by the fixture. Actual ARM debugger clients, both emulated CPU ports and
+Linux/BSD runtime acceptance remain separate.

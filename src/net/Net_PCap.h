@@ -51,6 +51,7 @@ typedef void (*pcap_freealldevs_t)(pcap_if_t* alldevs);
 typedef pcap_t* (*pcap_open_live_t)(const char* src, int snaplen, int flags, int readtimeout, char* errbuf);
 typedef void (*pcap_close_t)(pcap_t* dev);
 typedef int (*pcap_setnonblock_t)(pcap_t* dev, int nonblock, char* errbuf);
+typedef int (*pcap_datalink_t)(pcap_t* dev);
 typedef int (*pcap_sendpacket_t)(pcap_t* dev, const u_char* data, int len);
 typedef int (*pcap_dispatch_t)(pcap_t* dev, int num, pcap_handler callback, u_char* data);
 typedef const u_char* (*pcap_next_t)(pcap_t* dev, struct pcap_pkthdr* hdr);
@@ -78,6 +79,7 @@ public:
     pcap_open_live_t open_live = nullptr;
     pcap_close_t close = nullptr;
     pcap_setnonblock_t setnonblock = nullptr;
+    pcap_datalink_t datalink = nullptr;
     pcap_sendpacket_t sendpacket = nullptr;
     pcap_dispatch_t dispatch = nullptr;
     pcap_next_t next = nullptr;
@@ -91,6 +93,7 @@ public:
             open_live != nullptr &&
             close != nullptr &&
             setnonblock != nullptr &&
+            datalink != nullptr &&
             sendpacket != nullptr &&
             dispatch != nullptr &&
             next != nullptr

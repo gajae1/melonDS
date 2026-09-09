@@ -3,6 +3,8 @@
 #define GDBSTUB_H_
 
 #include <stddef.h>
+#include <array>
+#include <cstdint>
 #include <sys/types.h>
 #include <map>
 #include <vector>
@@ -87,6 +89,14 @@ enum class ExecResult
 };
 
 constexpr int GDBPROTO_BUFFER_CAPACITY = 1024+128;
+// Encoded packet data, leaving room for '$', '#xx', and a diagnostic NUL.
+constexpr size_t GDBPROTO_MAX_PAYLOAD = GDBPROTO_BUFFER_CAPACITY - 5;
+#ifdef _WIN32
+using SocketHandle = std::uintptr_t;
+#else
+using SocketHandle = int;
+#endif
+constexpr SocketHandle InvalidSocket = SocketHandle(-1);
 
 class GdbStub;
 
@@ -151,7 +161,7 @@ public:
 	int RespFmt(const char* fmt, ...);
 
 	int RespStr(const char* str);
-	inline bool IsConnected() { return ConnFd > 0; }
+	bool IsConnected() const { return ConnFd != InvalidSocket; }
 
 private:
 	void Disconnect();
@@ -162,7 +172,9 @@ private:
 	Gdb::ReadResult TryParsePacket(size_t start, size_t& packetStart, size_t& packetSize, size_t& packetContentSize);
 	Gdb::ReadResult ParseAndSetupPacket();	
 
-	void SetupCommand(size_t packetStart, size_t packetSize);
+	void ConsumeReceived(size_t count, size_t offset = 0);
+	static int WaitForSocket(SocketHandle socket, bool write, int timeoutMs);
+	int SendAll(const u8* data, size_t length);
 
 	int SendAck();
 	int SendNak();
@@ -176,8 +188,11 @@ private:
 	//struct sockaddr_in server, client;
 	void *ServerSA, *ClientSA;
 	int Port;
-	int SockFd;
-	int ConnFd;
+	SocketHandle SockFd;
+	SocketHandle ConnFd;
+#ifdef _WIN32
+	bool WinsockInitialized = false;
+#endif
 
 	TgtStatus Stat;
 	u32 CurBkpt, CurWatchpt;
@@ -189,7 +204,7 @@ private:
 	std::array<u8, GDBPROTO_BUFFER_CAPACITY> RespBuf;
 
 	std::array<u8, GDBPROTO_BUFFER_CAPACITY> Cmdbuf;
-	ssize_t Cmdlen;
+	ssize_t Cmdlen = 0;
 
 	std::map<u32, BpWp> BpList;
 	std::vector<BpWp> WpList;
@@ -203,4 +218,3 @@ private:
 }
 
 #endif
-

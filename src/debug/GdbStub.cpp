@@ -1,8 +1,7 @@
 
 #ifdef _WIN32
-#include <ws2tcpip.h>
-#include <winsock.h>
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #endif
 
 #include <stdarg.h>
@@ -33,13 +32,13 @@ using namespace melonDS;
 using Platform::Log;
 using Platform::LogLevel;
 
-static int SocketSetBlocking(int fd, bool block)
+static int SocketSetBlocking(Gdb::SocketHandle fd, bool block)
 {
 #if MOCKTEST
 	return 0;
 #endif
 
-	if (fd < 0) return -1;
+	if (fd == Gdb::InvalidSocket) return -1;
 
 #ifdef _WIN32
 	unsigned long mode = block ? 0 : 1;
@@ -57,7 +56,7 @@ namespace Gdb
 
 GdbStub::GdbStub(StubCallbacks* cb)
 	: Cb(cb), Port(0)
-	, SockFd(0), ConnFd(0)
+	, SockFd(InvalidSocket), ConnFd(InvalidSocket)
 	, Stat(TgtStatus::None), CurBkpt(0), CurWatchpt(0), StatFlag(false), NoAck(false)
 	, ServerSA((void*)new struct sockaddr_in())
 	, ClientSA((void*)new struct sockaddr_in())
@@ -65,23 +64,12 @@ GdbStub::GdbStub(StubCallbacks* cb)
 
 bool GdbStub::Init(int port)
 {
-    Port = port;
+	Close();
+	Port = port;
 	Log(LogLevel::Info, "[GDB] initializing GDB stub for core %d on port %d\n",
 		Cb->GetCPU(), Port);
 
-#if MOCKTEST
-	SockFd = 0;
-	return true;
-#endif
-
 #ifndef _WIN32
-	/*void* fn = SIG_IGN;
-	struct sigaction act = { 0 };
-	act.sa_flags = SA_SIGINFO;
-	act.sa_sigaction = (sighandler_t)fn;
-	if (sigaction(SIGPIPE, &act, NULL) == -1) {
-		Log(LogLevel::Warn, "[GDB] couldn't ignore SIGPIPE, stuff may fail on GDB disconnect.\n");
-	}*/
 	signal(SIGPIPE, SIG_IGN);
 #else
 	WSADATA wsa;
@@ -90,18 +78,13 @@ bool GdbStub::Init(int port)
 		Log(LogLevel::Error, "[GDB] winsock could not be initialized (%d).\n", WSAGetLastError());
 		return false;
 	}
+	WinsockInitialized = true;
 #endif
 
 	int r;
 	struct sockaddr_in* server = (struct sockaddr_in*)ServerSA;
-	struct sockaddr_in* client = (struct sockaddr_in*)ClientSA;
-
-	int typ = SOCK_STREAM;
-#ifdef __linux__
-	typ |= SOCK_NONBLOCK;
-#endif
 	SockFd = socket(AF_INET, SOCK_STREAM, 0);
-	if (SockFd < 0)
+	if (SockFd == InvalidSocket)
 	{
 		Log(LogLevel::Error, "[GDB] err: can't create a socket fd\n");
 		goto err;
@@ -115,9 +98,7 @@ bool GdbStub::Init(int port)
 		setsockopt(SockFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
 #endif
 	}
-#ifndef __linux__
-	SocketSetBlocking(SockFd, false);
-#endif
+	if (SocketSetBlocking(SockFd, false) < 0) goto err;
 
 	server->sin_family = AF_INET;
 	server->sin_addr.s_addr = htonl(INADDR_ANY);
@@ -140,26 +121,30 @@ bool GdbStub::Init(int port)
 	return true;
 
 err:
-	if (SockFd != 0)
-	{
-		closesocket(SockFd);
-		SockFd = 0;
-	}
-
+	Close();
 	return false;
 }
 
 void GdbStub::Close()
 {
 	Disconnect();
-	if (SockFd > 0) closesocket(SockFd);
-	SockFd = 0;
+	if (SockFd != InvalidSocket) closesocket(SockFd);
+	SockFd = InvalidSocket;
+#ifdef _WIN32
+	if (WinsockInitialized) WSACleanup();
+	WinsockInitialized = false;
+#endif
 }
 
 void GdbStub::Disconnect()
 {
-	if (ConnFd > 0) closesocket(ConnFd);
-	ConnFd = 0;
+	if (IsConnected()) closesocket(ConnFd);
+	ConnFd = InvalidSocket;
+	NoAck = false;
+	RecvBufferFilled = 0;
+	Cmdlen = 0;
+	Stat = TgtStatus::None;
+	StatFlag = false;
 }
 
 GdbStub::~GdbStub()
@@ -251,6 +236,7 @@ CmdHandler GdbStub::Handlers_top[] = {
 StubState GdbStub::HandlePacket()
 {
 	ExecResult r = CmdExec(Handlers_top);
+	if (!IsConnected()) return StubState::Disconnect;
 
 	if (r == ExecResult::MustBreak)
 	{
@@ -283,204 +269,101 @@ StubState GdbStub::HandlePacket()
 	}
 	else
 	{
-		Stat = TgtStatus::None;
+		Disconnect();
 		return StubState::Disconnect;
 	}
 }
 
 StubState GdbStub::Poll(bool wait)
 {
-	int r;
-
-	if (ConnFd <= 0)
+	if (!IsConnected())
 	{
-		SocketSetBlocking(SockFd, wait);
-
-		// not yet connected, so let's wait for one
-		// nonblocking only done in part of read_packet(), so that it can still
-		// quickly handle partly-received packets
-		struct sockaddr_in* client = (struct sockaddr_in*)ClientSA;
-		socklen_t len = sizeof(*client);
-#if MOCKTEST
-		ConnFd = 0;
-#else
+		if (SockFd == InvalidSocket) return StubState::NoConn;
+		const int ready = WaitForSocket(SockFd, false, wait ? -1 : 0);
+		if (ready < 0) { Close(); return StubState::Disconnect; }
+		if (ready == 0) return StubState::NoConn;
+		auto* client = static_cast<sockaddr_in*>(ClientSA);
+		socklen_t length = sizeof(*client);
 #ifdef __linux__
-		ConnFd = accept4(SockFd, (struct sockaddr*)client, &len, /*SOCK_NONBLOCK|*/SOCK_CLOEXEC);
+		ConnFd = accept4(SockFd, reinterpret_cast<sockaddr*>(client), &length, SOCK_CLOEXEC);
 #else
-		ConnFd = accept(SockFd, (struct sockaddr*)client, &len);
+		ConnFd = accept(SockFd, reinterpret_cast<sockaddr*>(client), &length);
 #endif
-#endif
-
-		if (ConnFd < 0) return StubState::NoConn;
-
-		u8 a;
-		if (WaitAckBlocking(&a, 1000) < 0)
+		if (!IsConnected()) return StubState::NoConn;
+		if (SocketSetBlocking(ConnFd, false) < 0)
 		{
-			Log(LogLevel::Error, "[GDB] inital handshake: didn't receive inital ack!\n");
-			closesocket(ConnFd);
-			ConnFd = 0;
+			Disconnect();
 			return StubState::Disconnect;
 		}
-
-		if (a != '+')
+		u8 ack = 0;
+		if (WaitAckBlocking(&ack, 1000) < 0 || ack != '+' || SendAck() < 0)
 		{
-			Log(LogLevel::Error, "[GDB] inital handshake: unexpected character '%c'!\n", a);
+			Log(LogLevel::Error, "[GDB] initial handshake failed\n");
+			Disconnect();
+			return StubState::Disconnect;
 		}
-		SendAck();
-
-		Stat = TgtStatus::Running; // on connected
+		Stat = TgtStatus::Running;
 		StatFlag = false;
 	}
 
 	if (StatFlag)
 	{
 		StatFlag = false;
-		//Log(LogLevel::Debug, "[GDB] STAT FLAG WAS TRUE\n");
-
-		Handle_Question(this, NULL, 0); // ugly hack but it should work
+		Handle_Question(this, nullptr, 0);
+		if (!IsConnected()) return StubState::Disconnect;
 	}
 
-#if MOCKTEST
-	// nothing...
-#else
-#ifndef _WIN32
-	struct pollfd pfd;
-	pfd.fd = ConnFd;
-	pfd.events = POLLIN;
-	pfd.revents = 0;
-
-	r = poll(&pfd, 1, wait ? -1 : 0);
-
-	if (r == 0) return StubState::None; // nothing is happening
-
-	if (pfd.revents & (POLLHUP|POLLERR|POLLNVAL))
+	// Process a coalesced command even when the socket has no new bytes.
+	ReadResult result = ParseAndSetupPacket();
+	if (result == ReadResult::NoPacket)
 	{
-		// oopsie, something happened
-		Disconnect();
-		return StubState::Disconnect;
+		const int ready = WaitForSocket(ConnFd, false, wait ? -1 : 0);
+		if (ready < 0) { Disconnect(); return StubState::Disconnect; }
+		if (ready == 0) return StubState::None;
+		result = MsgRecv();
 	}
-#else
-	fd_set infd, outfd, errfd;
-	FD_ZERO(&infd); FD_ZERO(&outfd); FD_ZERO(&errfd);
-	FD_SET(ConnFd, &infd);
-
-	struct timeval to;
-	if (wait)
-	{
-		to.tv_sec = ~(time_t)0;
-		to.tv_usec = ~(long)0;
-	}
-	else
-	{
-		to.tv_sec = 0;
-		to.tv_usec = 0;
-	}
-
-	r = select(ConnFd+1, &infd, &outfd, &errfd, &to);
-
-	if (FD_ISSET(ConnFd, &errfd))
-	{
-		Disconnect();
-		return StubState::Disconnect;
-	}
-	else if (!FD_ISSET(ConnFd, &infd))
-	{
-		return StubState::None;
-	}
-#endif
-#endif
-
-	ReadResult res = MsgRecv();
-
-	switch (res)
+	switch (result)
 	{
 	case ReadResult::NoPacket:
 		return StubState::None;
 	case ReadResult::Break:
 		return StubState::Break;
 	case ReadResult::Wut:
-		Log(LogLevel::Info, "[GDB] WUT\n");
-	case_gdbp_eof:
 	case ReadResult::Eof:
-		Log(LogLevel::Info, "[GDB] EOF!\n");
-		closesocket(ConnFd);
-		ConnFd = 0;
+		Disconnect();
 		return StubState::Disconnect;
 	case ReadResult::CksumErr:
-		Log(LogLevel::Info, "[GDB] checksum err!\n");
-		if (SendNak() < 0) {
-			Log(LogLevel::Error, "[GDB] send nak after cksum fail errored!\n");
-			goto case_gdbp_eof;
-		}
+		if (SendNak() < 0) { Disconnect(); return StubState::Disconnect; }
 		return StubState::None;
 	case ReadResult::CmdRecvd:
-		/*if (SendAck() < 0) {
-			Log(LogLevel::Error, "[GDB] send packet ack failed!\n");
-			goto case_gdbp_eof;
-		}*/
-		break;
+		return HandlePacket();
 	}
-
-	return HandlePacket();
+	return StubState::None;
 }
 
 ExecResult GdbStub::SubcmdExec(const u8* cmd, ssize_t len, const SubcmdHandler* handlers)
 {
-	//Log(LogLevel::Debug, "[GDB] subcommand in: '%s'\n", cmd);
-
-	for (size_t i = 0; handlers[i].Handler != NULL; ++i) {
-		// check if prefix matches
-		if (!strncmp((const char*)cmd, handlers[i].SubStr, strlen(handlers[i].SubStr)))
-		{
-			// ack should have already been sent by CmdExec
-			/*if (SendAck() < 0)
-			{
-				Log(LogLevel::Error, "[GDB] send packet ack failed!\n");
-				return ExecResult::NetErr;
-			}*/
-			return handlers[i].Handler(this, &cmd[strlen(handlers[i].SubStr)], len-strlen(handlers[i].SubStr));
-		}
-	}
-
-	Log(LogLevel::Info, "[GDB] unknown subcommand '%s'!\n", cmd);
-	/*if (SendNak() < 0)
+	for (size_t i = 0; handlers[i].Handler != nullptr; ++i)
 	{
-		Log(LogLevel::Error, "[GDB] send nak after cksum fail errored!\n");
-		return ExecResult::NetErr;
-	}*/
-	//Resp("E99");
-	Resp(NULL, 0);
+		const size_t prefix = strlen(handlers[i].SubStr);
+		if (len >= 0 && size_t(len) >= prefix && !memcmp(cmd, handlers[i].SubStr, prefix))
+			return handlers[i].Handler(this, cmd + prefix, len - ssize_t(prefix));
+	}
+	Resp(nullptr, 0);
 	return ExecResult::UnkCmd;
 }
 
 ExecResult GdbStub::CmdExec(const CmdHandler* handlers)
 {
-	Log(LogLevel::Debug, "[GDB] command in: '%s'\n", &Cmdbuf[0]);
-
-	for (size_t i = 0; handlers[i].Handler != NULL; ++i)
+	if (SendAck() < 0) return ExecResult::NetErr;
+	for (size_t i = 0; handlers[i].Handler != nullptr; ++i)
 	{
-		if (handlers[i].Cmd == Cmdbuf[0])
-		{
-			if (SendAck() < 0)
-			{
-				Log(LogLevel::Error, "[GDB] send packet ack failed!\n");
-				return ExecResult::NetErr;
-			}
-			return handlers[i].Handler(this, &Cmdbuf[1], Cmdlen-1);
-		}
+		if (Cmdlen > 0 && handlers[i].Cmd == Cmdbuf[0])
+			return handlers[i].Handler(this, &Cmdbuf[1], Cmdlen - 1);
 	}
-
-	Log(LogLevel::Info, "[GDB] unknown command '%c'!\n", Cmdbuf[0]);
-	/*if (SendNak() < 0)
-	{
-		Log(LogLevel::Error, "[GDB] send nak after cksum fail errored!\n");
-		return ExecResult::NetErr;
-	}*/
-	//RespStr("E99");
-	Resp(NULL, 0);
+	Resp(nullptr, 0);
 	return ExecResult::UnkCmd;
 }
-
 
 void GdbStub::SignalStatus(TgtStatus stat, u32 arg)
 {
@@ -502,9 +385,9 @@ StubState GdbStub::Enter(bool stay, TgtStatus stat, u32 arg, bool wait_for_conn)
 	bool do_next = true;
 	do
 	{
-		bool was_conn = ConnFd > 0;
+		bool was_conn = IsConnected();
 		st = Poll(wait_for_conn);
-		bool has_conn = ConnFd > 0;
+		bool has_conn = IsConnected();
 
 		if (has_conn && !was_conn) stay = true;
 
@@ -670,17 +553,12 @@ int GdbStub::RespFmt(const char* fmt, ...)
 {
 	va_list args;
 	va_start(args, fmt);
-	int r = vsnprintf((char*)&RespBuf[1], sizeof(RespBuf)-5, fmt, args);
+	int r = vsnprintf((char*)&RespBuf[1], GDBPROTO_MAX_PAYLOAD + 1, fmt, args);
 	va_end(args);
 
 	if (r < 0) return r;
 
-	if ((size_t)r >= sizeof(RespBuf)-5)
-	{
-		Log(LogLevel::Error, "[GDB] truncated response in send_fmt()! (lost %zd bytes)\n",
-				(ssize_t)r - (ssize_t)(sizeof(RespBuf)-5));
-		r = sizeof(RespBuf)-5;
-	}
+	if (size_t(r) > GDBPROTO_MAX_PAYLOAD) return -1;
 
 	return Resp(&RespBuf[1], r);
 }

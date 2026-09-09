@@ -108,6 +108,8 @@ public:
     u16 RecvReplies(int inst, u8* data, u64 timestamp, u16 aidmask) override;
 
 private:
+    friend struct LANPacketTest;
+
     bool Inited;
     bool Active;
     bool IsHost;
@@ -145,6 +147,7 @@ private:
     void ProcessHostEvent(ENetEvent& event);
     void ProcessClientEvent(ENetEvent& event);
     void ProcessEvent(ENetEvent& event);
+    bool ValidateMPPacket(const ENetEvent& event) const;
     void ProcessLAN(int type);
 
     int SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp);

@@ -2,6 +2,9 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <charconv>
+#include <span>
+#include <string_view>
 
 #include "../CRC32.h"
 #include "../Platform.h"
@@ -124,6 +127,8 @@ static int DoQResponse(GdbStub* stub, const u8* query, const char* data, const s
 	size_t bleft = len - qaddr;
 	size_t outlen = qlen;
 	if (outlen > bleft) outlen = bleft;
+	// The XML chunk shares packet data space with its continuation marker.
+	if (outlen > GDBPROTO_MAX_PAYLOAD - 1) outlen = GDBPROTO_MAX_PAYLOAD - 1;
 	Log(LogLevel::Debug, "[GDB qresp] qaddr=%zu qlen=%zu left=%zu outlen=%zu\n",
 			qaddr, qlen, bleft, outlen);
 
@@ -168,271 +173,133 @@ ExecResult GdbStub::Handle_G(GdbStub* stub, const u8* cmd, ssize_t len)
 	return ExecResult::Ok;
 }
 
+// Parse the entire range header before touching guest memory. A range ending
+// exactly at 2^32 is valid; a range crossing that boundary is not.
+static bool ParseMemoryRange(const u8* cmd, ssize_t len, bool hasBody,
+                             u32& address, u32& length, size_t& bodyOffset)
+{
+	if (len < 0 || size_t(len) > GDBPROTO_MAX_PAYLOAD) return false;
+	std::string_view input(reinterpret_cast<const char*>(cmd), size_t(len));
+	const size_t comma = input.find(',');
+	const size_t end = hasBody ? input.find(':', comma) : input.size();
+	if (comma == input.npos || end == input.npos) return false;
+	const auto parse = [](std::string_view part, u32& value) {
+		const auto result = std::from_chars(part.data(), part.data() + part.size(), value, 16);
+		return result.ec == std::errc{} && result.ptr == part.data() + part.size();
+	};
+	if (!parse(input.substr(0, comma), address) ||
+		!parse(input.substr(comma + 1, end - comma - 1), length)) return false;
+	if (u64(address) + length > (u64{1} << 32)) return false;
+	bodyOffset = hasBody ? end + 1 : end;
+	return true;
+}
+
+static size_t MemoryAccessBytes(u32 address, size_t remaining)
+{
+	if ((address & 1) || remaining < 2) return 1;
+	if ((address & 2) || remaining < 4) return 2;
+	return 4;
+}
+
+static void WriteMemory(StubCallbacks* cb, u32 address, std::span<const u8> data)
+{
+	while (!data.empty())
+	{
+		const size_t count = MemoryAccessBytes(address, data.size());
+		u32 value = 0;
+		for (size_t i = 0; i < count; ++i) value |= u32(data[i]) << (8 * i);
+		cb->WriteMem(address, int(count * 8), value);
+		address += u32(count);
+		data = data.subspan(count);
+	}
+}
+
 ExecResult GdbStub::Handle_m(GdbStub* stub, const u8* cmd, ssize_t len)
 {
-	u32 addr = 0, llen = 0, end;
-
-	if (sscanf((const char*)cmd, "%08X,%08X", &addr, &llen) != 2)
+	u32 address, length;
+	size_t offset;
+	if (!ParseMemoryRange(cmd, len, false, address, length, offset))
 	{
 		stub->RespStr("E01");
 		return ExecResult::Ok;
 	}
-	else if (llen > (GDBPROTO_BUFFER_CAPACITY/2))
+	if (length > GDBPROTO_MAX_PAYLOAD / 2)
 	{
 		stub->RespStr("E02");
 		return ExecResult::Ok;
 	}
-	end = addr + llen;
-
-	u8* datastr = tempdatabuf;
-	u8* dataptr = datastr;
-
-	// pre-align: byte
-	if ((addr & 1))
+	std::array<u8, GDBPROTO_MAX_PAYLOAD> response;
+	for (size_t done = 0; done < length; )
 	{
-		if ((end-addr) >= 1)
-		{
-			u32 v = stub->Cb->ReadMem(addr, 8);
-			hexfmt8(dataptr, v&0xff);
-			++addr;
-			dataptr += 2;
-		}
-		else goto end;
+		const size_t count = MemoryAccessBytes(address, length - done);
+		const u32 value = stub->Cb->ReadMem(address, int(count * 8));
+		for (size_t i = 0; i < count; ++i) hexfmt8(&response[(done + i) * 2], u8(value >> (i * 8)));
+		address += u32(count);
+		done += count;
 	}
-
-	// pre-align: short
-	if ((addr & 2))
-	{
-		if ((end-addr) >= 2)
-		{
-			u32 v = stub->Cb->ReadMem(addr, 16);
-			hexfmt16(dataptr, v&0xffff);
-			addr += 2;
-			dataptr += 4;
-		}
-		else if ((end-addr) == 1)
-		{ // last byte
-			u32 v = stub->Cb->ReadMem(addr, 8);
-			hexfmt8(dataptr, v&0xff);
-			++addr;
-			dataptr += 2;
-		}
-		else goto end;
-	}
-
-	// main loop: 4-byte chunks
-	while (addr < end)
-	{
-		if (end - addr < 4) break; // post-align stuff
-
-		u32 v = stub->Cb->ReadMem(addr, 32);
-		hexfmt32(dataptr, v);
-		addr += 4;
-		dataptr += 8;
-	}
-
-	// post-align: short
-	if ((end-addr) & 2)
-	{
-		u32 v = stub->Cb->ReadMem(addr, 16);
-		hexfmt16(dataptr, v&0xffff);
-		addr += 2;
-		dataptr += 4;
-	}
-
-	// post-align: byte
-	if ((end-addr) == 1)
-	{
-		u32 v = stub->Cb->ReadMem(addr, 8);
-		hexfmt8(dataptr, v&0xff);
-		++addr;
-		dataptr += 2;
-	}
-
-end:
-	assert(addr == end);
-
-	stub->Resp(datastr, llen*2);
-
+	stub->Resp(response.data(), length * 2);
 	return ExecResult::Ok;
 }
 
 ExecResult GdbStub::Handle_M(GdbStub* stub, const u8* cmd, ssize_t len)
 {
-	u32 addr, llen, end;
-	int inoff;
-
-	if (sscanf((const char*)cmd, "%08X,%08X:%n", &addr, &llen, &inoff) != 2)
+	u32 address, length;
+	size_t offset;
+	if (!ParseMemoryRange(cmd, len, true, address, length, offset) ||
+		u64(length) * 2 != size_t(len) - offset)
 	{
 		stub->RespStr("E01");
 		return ExecResult::Ok;
 	}
-	else if (llen > (GDBPROTO_BUFFER_CAPACITY/2))
+	std::array<u8, GDBPROTO_MAX_PAYLOAD / 2> data;
+	for (size_t i = 0; i < length; ++i)
 	{
-		stub->RespStr("E02");
-		return ExecResult::Ok;
-	}
-	end = addr + llen;
-
-	const u8* dataptr = cmd + inoff;
-
-	// pre-align: byte
-	if ((addr & 1))
-	{
-		if ((end-addr) >= 1)
+		unsigned value;
+		const char* byte = reinterpret_cast<const char*>(cmd + offset + i * 2);
+		const auto result = std::from_chars(byte, byte + 2, value, 16);
+		if (result.ec != std::errc{} || result.ptr != byte + 2)
 		{
-			u8 v = unhex8(dataptr);
-			stub->Cb->WriteMem(addr, 8, v);
-			++addr;
-			dataptr += 2;
+			stub->RespStr("E01");
+			return ExecResult::Ok;
 		}
-		else goto end;
+		data[i] = u8(value);
 	}
-
-	// pre-align: short
-	if ((addr & 2))
-	{
-		if ((end-addr) >= 2)
-		{
-			u16 v = unhex16(dataptr);
-			stub->Cb->WriteMem(addr, 16, v);
-			addr += 2;
-			dataptr += 4;
-		}
-		else if ((end-addr) == 1)
-		{ // last byte
-			u8 v = unhex8(dataptr);
-			stub->Cb->WriteMem(addr, 8, v);
-			++addr;
-			dataptr += 2;
-		}
-		else goto end;
-	}
-
-	// main loop: 4-byte chunks
-	while (addr < end)
-	{
-		if (end - addr < 4) break; // post-align stuff
-
-		u32 v = unhex32(dataptr);
-		stub->Cb->WriteMem(addr, 32, v);
-		addr += 4;
-		dataptr += 8;
-	}
-
-	// post-align: short
-	if ((end-addr) & 2)
-	{
-		u16 v = unhex16(dataptr);
-		stub->Cb->WriteMem(addr, 16, v);
-		addr += 2;
-		dataptr += 4;
-	}
-
-	// post-align: byte
-	if ((end-addr) == 1)
-	{
-		u8 v = unhex8(dataptr);
-		stub->Cb->WriteMem(addr, 8, v);
-		++addr;
-		dataptr += 2;
-	}
-
-end:
-	assert(addr == end);
-
+	WriteMemory(stub->Cb, address, std::span(data.data(), length));
 	stub->RespStr("OK");
-
 	return ExecResult::Ok;
 }
 
 ExecResult GdbStub::Handle_X(GdbStub* stub, const u8* cmd, ssize_t len)
 {
-	u32 addr, llen, end;
-	int inoff;
-
-	if (sscanf((const char*)cmd, "%08X,%08X:%n", &addr, &llen, &inoff) != 2)
+	u32 address, length;
+	size_t offset;
+	if (!ParseMemoryRange(cmd, len, true, address, length, offset) || length > size_t(len) - offset)
 	{
 		stub->RespStr("E01");
 		return ExecResult::Ok;
 	}
-	else if (llen > (GDBPROTO_BUFFER_CAPACITY/2))
+	std::array<u8, GDBPROTO_MAX_PAYLOAD> data;
+	size_t decoded = 0;
+	bool valid = true;
+	while (offset < size_t(len))
 	{
-		stub->RespStr("E02");
+		if (decoded == length) { valid = false; break; }
+		u8 value = cmd[offset++];
+		if (value == '}')
+		{
+			if (offset == size_t(len)) { valid = false; break; }
+			value = cmd[offset++] ^ 0x20;
+		}
+		else if (value == '$' || value == '#') { valid = false; break; }
+		data[decoded++] = value;
+	}
+	if (!valid || decoded != length)
+	{
+		stub->RespStr("E01");
 		return ExecResult::Ok;
 	}
-	end = addr + llen;
-
-	const u8* dataptr = cmd + inoff;
-
-	// pre-align: byte
-	if ((addr & 1))
-	{
-		if ((end-addr) >= 1)
-		{
-			u8 v = *dataptr;
-			stub->Cb->WriteMem(addr, 8, v);
-			++addr;
-			dataptr += 1;
-		}
-		else goto end;
-	}
-
-	// pre-align: short
-	if ((addr & 2))
-	{
-		if ((end-addr) >= 2)
-		{
-			u16 v = dataptr[0] | ((u16)dataptr[1] << 8);
-			stub->Cb->WriteMem(addr, 16, v);
-			addr += 2;
-			dataptr += 2;
-		}
-		else if ((end-addr) == 1)
-		{ // last byte
-			u8 v = *dataptr;
-			stub->Cb->WriteMem(addr, 8, v);
-			++addr;
-			dataptr += 1;
-		}
-		else goto end;
-	}
-
-	// main loop: 4-byte chunks
-	while (addr < end)
-	{
-		if (end - addr < 4) break; // post-align stuff
-
-		u32 v = dataptr[0] | ((u32)dataptr[1] << 8)
-			| ((u32)dataptr[2] << 16) | ((u32)dataptr[3] << 24);
-		stub->Cb->WriteMem(addr, 32, v);
-		addr += 4;
-		dataptr += 4;
-	}
-
-	// post-align: short
-	if ((end-addr) & 2)
-	{
-		u16 v = dataptr[0] | ((u16)dataptr[1] << 8);
-		stub->Cb->WriteMem(addr, 16, v);
-		addr += 2;
-		dataptr += 2;
-	}
-
-	// post-align: byte
-	if ((end-addr) == 1)
-	{
-		u8 v = unhex8(dataptr);
-		stub->Cb->WriteMem(addr, 8, v);
-		++addr;
-		dataptr += 1;
-	}
-
-end:
-	assert(addr == end);
-
+	WriteMemory(stub->Cb, address, std::span(data.data(), length));
 	stub->RespStr("OK");
-
 	return ExecResult::Ok;
 }
 
@@ -738,7 +605,7 @@ ExecResult GdbStub::Handle_q_Supported(GdbStub* stub,
 		const u8* cmd, ssize_t len) {
 	// TODO: support Xfer:memory-map:read::
 	//       but NWRAM is super annoying with that
-	stub->RespFmt("PacketSize=%X;qXfer:features:read+;swbreak-;hwbreak+;QStartNoAckMode+", GDBPROTO_BUFFER_CAPACITY-5);
+	stub->RespFmt("PacketSize=%X;qXfer:features:read+;swbreak-;hwbreak+;QStartNoAckMode+", unsigned(GDBPROTO_MAX_PAYLOAD));
 	return ExecResult::Ok;
 }
 
@@ -926,4 +793,3 @@ ExecResult GdbStub::Handle_Q_StartNoAckMode(GdbStub* stub, const u8* cmd, ssize_
 }
 
 }
-

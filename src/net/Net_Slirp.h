@@ -54,6 +54,7 @@ private:
     static int SlirpCbGetREvents(int idx, void* opaque) noexcept;
     static int SlirpCbAddPoll(int fd, int events, void* opaque) noexcept;
     static ssize_t SlirpCbSendPacket(const void* buf, size_t len, void* opaque) noexcept;
+    // SendPacket validates IPv4/UDP bounds and supplies a frame trimmed to UDP.
     void HandleDNSFrame(u8* data, int len) noexcept;
 
     Platform::SendPacketCallback Callback;

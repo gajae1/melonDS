@@ -17,6 +17,7 @@
 */
 
 #include <string.h>
+#include <string>
 #include <pcap/pcap.h>
 #include "Net.h"
 #include "Net_PCap.h"
@@ -77,10 +78,7 @@ std::optional<LibPCap> LibPCap::New() noexcept
         pcap.PCapLib = std::shared_ptr<Platform::DynamicLibrary>(lib, Platform::DynamicLibrary_Unload);
 
         if (!TryLoadPCap(pcap, lib))
-        {
-            Platform::DynamicLibrary_Unload(lib);
             continue;
-        }
 
         Log(LogLevel::Info, "PCap: lib %s, init successful\n", PCapLibNames[i]);
         return pcap;
@@ -98,6 +96,7 @@ LibPCap::LibPCap(LibPCap&& other) noexcept
     open_live = other.open_live;
     close = other.close;
     setnonblock = other.setnonblock;
+    datalink = other.datalink;
     sendpacket = other.sendpacket;
     dispatch = other.dispatch;
     next = other.next;
@@ -108,6 +107,7 @@ LibPCap::LibPCap(LibPCap&& other) noexcept
     other.open_live = nullptr;
     other.close = nullptr;
     other.setnonblock = nullptr;
+    other.datalink = nullptr;
     other.sendpacket = nullptr;
     other.dispatch = nullptr;
     other.next = nullptr;
@@ -126,6 +126,7 @@ LibPCap& LibPCap::operator=(LibPCap&& other) noexcept
         open_live = other.open_live;
         close = other.close;
         setnonblock = other.setnonblock;
+        datalink = other.datalink;
         sendpacket = other.sendpacket;
         dispatch = other.dispatch;
         next = other.next;
@@ -136,6 +137,7 @@ LibPCap& LibPCap::operator=(LibPCap&& other) noexcept
         other.open_live = nullptr;
         other.close = nullptr;
         other.setnonblock = nullptr;
+        other.datalink = nullptr;
         other.sendpacket = nullptr;
         other.dispatch = nullptr;
         other.next = nullptr;
@@ -160,6 +162,9 @@ bool LibPCap::TryLoadPCap(LibPCap& pcap, Platform::DynamicLibrary *lib) noexcept
 
     pcap.setnonblock = (pcap_setnonblock_t)Platform::DynamicLibrary_LoadFunction(lib, "pcap_setnonblock");
     if (!pcap.setnonblock) return false;
+
+    pcap.datalink = (pcap_datalink_t)Platform::DynamicLibrary_LoadFunction(lib, "pcap_datalink");
+    if (!pcap.datalink) return false;
 
     pcap.sendpacket = (pcap_sendpacket_t)Platform::DynamicLibrary_LoadFunction(lib, "pcap_sendpacket");
     if (!pcap.sendpacket) return false;
@@ -189,6 +194,7 @@ std::vector<AdapterData> LibPCap::GetAdapters() const noexcept
     { // If there was an error...
         errbuf[PCAP_ERRBUF_SIZE - 1] = '\0';
         Log(LogLevel::Error, "PCap: Error %d finding devices: %s\n", ret, errbuf);
+        return {};
     }
 
     if (alldevs == nullptr)
@@ -226,6 +232,7 @@ std::vector<AdapterData> LibPCap::GetAdapters() const noexcept
     if (uret != ERROR_SUCCESS)
     {
         Log(LogLevel::Error, "GetAdaptersAddresses() shat itself: %08X\n", uret);
+        HeapFree(GetProcessHeap(), 0, buf);
         freealldevs(alldevs);
         return {};
     }
@@ -279,6 +286,7 @@ std::vector<AdapterData> LibPCap::GetAdapters() const noexcept
     if (getifaddrs(&addrs) != 0)
     {
         Log(LogLevel::Error, "getifaddrs() shat itself :(\n");
+        freealldevs(alldevs);
         return {};
     }
 
@@ -344,8 +352,15 @@ std::unique_ptr<Net_PCap> LibPCap::Open(const AdapterData& device, const Platfor
 
 std::unique_ptr<Net_PCap> LibPCap::Open(std::string_view devicename, const Platform::SendPacketCallback& handler) const noexcept
 {
-    char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t* adapter = open_live(devicename.data(), 2048, PCAP_OPENFLAG_PROMISCUOUS, 1, errbuf);
+    if (!IsValid())
+    {
+        Log(LogLevel::Error, "PCap: instance not initialized\n");
+        return nullptr;
+    }
+
+    char errbuf[PCAP_ERRBUF_SIZE] = {};
+    std::unique_ptr<pcap_t, pcap_close_t> adapter(
+        open_live(std::string(devicename).c_str(), 2048, PCAP_OPENFLAG_PROMISCUOUS, 1, errbuf), close);
     if (!adapter)
     {
         errbuf[PCAP_ERRBUF_SIZE - 1] = '\0';
@@ -353,21 +368,26 @@ std::unique_ptr<Net_PCap> LibPCap::Open(std::string_view devicename, const Platf
         return nullptr;
     }
 
-    if (int err = setnonblock(adapter, 1, errbuf); err < 0)
+    if (int type = datalink(adapter.get()); type != DLT_EN10MB)
+    {
+        Log(LogLevel::Error, "PCap: adapter does not provide Ethernet frames (link type %d)\n", type);
+        return nullptr;
+    }
+
+    if (int err = setnonblock(adapter.get(), 1, errbuf); err < 0)
     {
         errbuf[PCAP_ERRBUF_SIZE - 1] = '\0';
         Log(LogLevel::Error, "PCap: failed to set nonblocking mode with %d: %s\n", err, errbuf);
-        close(adapter);
         return nullptr;
     }
 
     std::unique_ptr<Net_PCap> pcap = std::make_unique<Net_PCap>();
-    pcap->PCapAdapter = adapter;
     pcap->Callback = handler;
     pcap->PCapLib = PCapLib;
     pcap->close = close;
     pcap->sendpacket = sendpacket;
     pcap->dispatch = dispatch;
+    pcap->PCapAdapter = adapter.release();
 
     return pcap;
 }
@@ -429,24 +449,33 @@ Net_PCap::~Net_PCap() noexcept
 
 void Net_PCap::RXCallback(u_char* userdata, const struct pcap_pkthdr* header, const u_char* data) noexcept
 {
+    // Only caplen bytes are accessible. Passing a shorter capture would give
+    // the guest an incomplete Ethernet frame, so reject it rather than trim it.
+    if (!userdata || !header || !data || header->caplen != header->len ||
+        header->caplen < 14 || header->caplen > 2048)
+        return;
+
     Net_PCap& self = *reinterpret_cast<Net_PCap*>(userdata);
     if (self.Callback)
-        self.Callback(data, header->len);
+        self.Callback(data, static_cast<int>(header->caplen));
 }
 
 int Net_PCap::SendPacket(u8* data, int len) noexcept
 {
-    if (PCapAdapter == nullptr || data == nullptr)
+    if (PCapAdapter == nullptr || sendpacket == nullptr || data == nullptr)
         return 0;
 
-    if (len > 2048)
+    if (len < 14 || len > 2048)
     {
-        Log(LogLevel::Error, "Net_SendPacket: error: packet too long (%d)\n", len);
+        Log(LogLevel::Error, "PCap: invalid Ethernet frame length (%d)\n", len);
         return 0;
     }
 
-    sendpacket(PCapAdapter, data, len);
-    // TODO: check success
+    if (int err = sendpacket(PCapAdapter, data, len); err != 0)
+    {
+        Log(LogLevel::Error, "PCap: failed to send packet (%d)\n", err);
+        return 0;
+    }
     return len;
 }
 
@@ -455,7 +484,9 @@ void Net_PCap::RecvCheck() noexcept
     if (PCapAdapter == nullptr || dispatch == nullptr)
         return;
 
-    dispatch(PCapAdapter, 1, RXCallback, reinterpret_cast<u_char*>(this));
+    int ret = dispatch(PCapAdapter, 1, RXCallback, reinterpret_cast<u_char*>(this));
+    if (ret < 0 && ret != PCAP_ERROR_BREAK)
+        Log(LogLevel::Error, "PCap: failed to receive packets (%d)\n", ret);
 }
 
 }
