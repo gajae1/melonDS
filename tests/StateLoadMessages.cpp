@@ -49,9 +49,9 @@ public:
     void audioEnable() { audio = true; }
     void osdAddMessage(unsigned, const char*) {}
     void clearBackupState() {}
-    void reset() { nds->Start(); }
-    bool loadROM(const QStringList&, bool, QString&) { return bootOK; }
-    bool bootToMenu(QString&) { return bootOK; }
+    bool reset() { callbacksDuringLoad |= audio; if (!bootOK) return false; nds->Start(); return true; }
+    bool loadROM(const QStringList&, bool, QString&) { callbacksDuringLoad |= audio; return bootOK; }
+    bool bootToMenu(QString&) { callbacksDuringLoad |= audio; return bootOK; }
     StateLoadResult loadState(const std::string&)
     {
         ++loads;
@@ -105,6 +105,14 @@ int main(int argc, char** argv)
         check(thread.msgSemaphore.tryAcquire(), "Message failed to acknowledge completion");
     };
     dispatch(EmuThread::msg_EmuRun);
+    instance.bootOK = false;
+    for (auto message : {EmuThread::msg_EmuReset, EmuThread::msg_BootROM, EmuThread::msg_BootFirmware})
+    {
+        dispatch(message);
+        check(thread.msgResult == 0 && instance.audio && thread.emuActive &&
+              thread.emuStatus == EmuThread::emuStatus_Running, "Failed reset/boot changed the running session");
+    }
+    instance.bootOK = true;
     for (auto result : {StateLoadResult::Success, StateLoadResult::Failed})
     {
         instance.result = result;
@@ -139,6 +147,9 @@ int main(int argc, char** argv)
         dispatch(EmuThread::msg_BootROM);
         dispatch(EmuThread::msg_EmuRun);
         check(thread.stateRecoveryFailed && !instance.audio, "Failed boot cleared recovery stop");
+        dispatch(EmuThread::msg_EmuReset);
+        check(thread.stateRecoveryFailed && !instance.audio, "Failed reset cleared recovery stop");
+        instance.bootOK = true;
         if (failureMessage == EmuThread::msg_LoadState)
             dispatch(EmuThread::msg_EmuReset);
         else

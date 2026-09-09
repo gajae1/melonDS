@@ -187,6 +187,10 @@ private slots:
 
 private:
     virtual void closeEvent(QCloseEvent* event) override;
+    bool prepareClose();
+    bool flushSaveManagers(EmuInstance* instance);
+    bool closeInProgress = false;
+    bool closeApproved = false;
 
     QStringList currentROM;
     QStringList currentGBAROM;

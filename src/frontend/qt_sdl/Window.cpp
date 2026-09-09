@@ -26,6 +26,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <utility>
 
 #include <QProcess>
 #include <QApplication>
@@ -33,6 +34,8 @@
 #include <QMenuBar>
 #include <QMimeDatabase>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QPushButton>
 #include <QInputDialog>
 #include <QPaintEvent>
 #include <QPainter>
@@ -778,8 +781,131 @@ void MainWindow::saveEnabled(bool enabled)
     enabledSaved = true;
 }
 
+bool MainWindow::flushSaveManagers(EmuInstance* instance)
+{
+    const std::pair<SaveManager*, QString> saves[] = {
+        {instance->ndsSave.get(), tr("DS save data")},
+        {instance->gbaSave.get(), tr("GBA save data")},
+        {instance->firmwareSave.get(), tr("firmware data")},
+    };
+
+    for (const auto& [save, name] : saves)
+    {
+        if (!save || save->Flush()) continue;
+
+        bool copyFailed = false;
+        for (;;)
+        {
+            const QString originalPath = QString::fromStdString(save->GetPath());
+            QString detail = tr("The %1 could not be saved to its original file:\n%2\n\n"
+                                "Retry saving, cancel closing to keep the data in this session, "
+                                "or save a recovery copy to another location.").arg(name, originalPath);
+            if (copyFailed)
+                detail += tr("\n\nThe recovery copy could not be saved either. Closing has not continued.");
+
+            QMessageBox message(QMessageBox::Warning, tr("Save failed"), detail,
+                                QMessageBox::Retry | QMessageBox::Cancel, this);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+            message.setOption(QMessageBox::Option::DontUseNativeDialog);
+#endif
+            message.setWindowModality(Qt::ApplicationModal);
+            auto* recovery = message.addButton(tr("Save recovery copy..."), QMessageBox::ActionRole);
+            recovery->setObjectName("saveRecoveryCopy");
+            message.setDefaultButton(QMessageBox::Cancel);
+            message.setEscapeButton(QMessageBox::Cancel);
+            message.exec();
+
+            if (message.clickedButton() == message.button(QMessageBox::Retry))
+            {
+                if (save->Flush()) break;
+                copyFailed = false;
+                continue;
+            }
+            if (message.clickedButton() != recovery) return false;
+
+            QFileDialog dialog(this, tr("Save recovery copy"));
+            dialog.setObjectName("saveRecoveryDialog");
+            dialog.setOption(QFileDialog::DontUseNativeDialog);
+            dialog.setWindowModality(Qt::ApplicationModal);
+            dialog.setAcceptMode(QFileDialog::AcceptSave);
+            dialog.setFileMode(QFileDialog::AnyFile);
+            dialog.setDirectory(QFileInfo(originalPath).absolutePath());
+            dialog.selectFile(QFileInfo(originalPath).fileName() + ".recovery");
+            if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty())
+                return false;
+
+            // A recovery copy authorizes closing; it does not commit the
+            // original path or clear the manager's pending original save.
+            if (save->SaveCopy(dialog.selectedFiles().first().toStdString())) break;
+            copyFailed = true;
+        }
+    }
+    return true;
+}
+
+bool MainWindow::prepareClose()
+{
+    // QObject children can include main windows of other emulator instances.
+    auto windows = findChildren<MainWindow*>();
+    windows.prepend(this);
+    for (auto* window : windows)
+        if (window->closeInProgress) return false;
+
+    std::vector<EmuInstance*> instances;
+    for (auto* window : windows)
+    {
+        auto* instance = window->emuInstance;
+        if (!instance || instance->deleting ||
+            std::find(instances.begin(), instances.end(), instance) != instances.end())
+            continue;
+
+        // A secondary view can close without ending its instance.
+        bool closesInstance = true;
+        for (int i = 0; i < kMaxWindows; i++)
+        {
+            auto* other = instance->getWindow(i);
+            if (other && !windows.contains(other))
+            {
+                closesInstance = false;
+                break;
+            }
+        }
+        if (closesInstance) instances.push_back(instance);
+    }
+
+    // Freeze every producer before any flush or nested dialog event loop.
+    // Also reject overlapping close requests until this preflight finishes.
+    for (auto* window : windows) window->closeInProgress = true;
+    for (auto* instance : instances) instance->getEmuThread()->emuPause(false);
+
+    for (auto* instance : instances)
+    {
+        if (!flushSaveManagers(instance))
+        {
+            for (auto* paused : instances) paused->getEmuThread()->emuUnpause(false);
+            for (auto* window : windows) window->closeInProgress = false;
+            return false;
+        }
+    }
+
+    // Keep producers paused through destruction. Approved child close events
+    // cannot prompt again after another window has already been destroyed.
+    for (auto* window : windows)
+    {
+        window->closeApproved = true;
+        window->closeInProgress = false;
+    }
+    return true;
+}
+
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (closeInProgress || (!closeApproved && !prepareClose()))
+    {
+        event->ignore();
+        return;
+    }
+
     if (emuInstance)
     {
         if (windowID == 0)

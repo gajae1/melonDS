@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QSaveFile>
 #include <QSemaphore>
+#include <QStringList>
 #include <QTemporaryDir>
 #ifdef _WIN32
 #include <windows.h>
@@ -138,7 +139,7 @@ int main(int argc, char** argv)
         SaveManager manager(worker ? path.toStdString() : std::string());
         if (!worker) manager.SetPath(path.toStdString(), false);
         Queue(manager, next);
-        manager.FlushSecondaryBuffer(); // The parent directory does not exist.
+        check(!manager.Flush(), "Failed open was reported as a successful flush");
         check(manager.NeedsFlush(), "Failed open discarded the pending save");
         check(!QFile::exists(path), "Failed open unexpectedly created the save");
         if (!QDir(directory.path()).mkdir("missing")) return 2;
@@ -152,7 +153,7 @@ int main(int argc, char** argv)
         }
         else
         {
-            manager.FlushSecondaryBuffer();
+            check(manager.Flush(), "Recovered path did not report a committed flush");
             check(!manager.NeedsFlush(), "Successful retry remained pending");
         }
         check(Read(path) == next, "Recovered path never received the pending save");
@@ -182,7 +183,7 @@ int main(int argc, char** argv)
                 check(probe.write(next) == next.size(), "Rename fixture failed before commit");
                 check(!probe.commit(), "Rename fixture unexpectedly allowed replacement");
             }
-            manager.FlushSecondaryBuffer();
+            check(!manager.Flush(), "Failed replacement was reported as a successful flush");
             check(manager.NeedsFlush(), "Locked save discarded the pending write");
             check(Read(path) == previous, "Failed replacement damaged the previous save");
             CloseHandle(lock);
@@ -190,7 +191,7 @@ int main(int argc, char** argv)
             return 77;
 #endif
         }
-        manager.FlushSecondaryBuffer();
+        check(manager.Flush(), "File replacement did not report a committed flush");
         check(!manager.NeedsFlush(), "Successful file replacement remained pending");
         check(Read(path) == next, "File replacement lost bytes or retained the previous tail");
     }
@@ -274,6 +275,157 @@ int main(int argc, char** argv)
         check(copied.left(next.size()) == next && copied.right(8) == QByteArray(8, '\x66'),
               "Memory snapshot copied the wrong bytes or exceeded its declared length");
         check(!manager.NeedsFlush(), "Completed resized save remained pending");
+    }
+    else if (!std::strcmp(argv[1], "unpublished-pending"))
+    {
+        const QString path = directory.filePath("unpublished-save.bin");
+        if (!Write(path, previous)) return 2;
+        SaveManager manager(path.toStdString());
+        // Closing can inspect pending state before the next frame's CheckFlush.
+        manager.RequestFlush(reinterpret_cast<const u8*>(next.constData()),
+                             static_cast<u32>(next.size()), 0, static_cast<u32>(next.size()));
+        check(manager.NeedsFlush(), "Direct RequestFlush was reported as clean before publication");
+        check(Read(path) == previous, "Unpublished bytes unexpectedly reached the save file");
+
+        // Keep this regression on the original APIs and verify the pending bytes.
+        manager.CheckFlush();
+        manager.FlushSecondaryBuffer();
+        check(Read(path) == next, "Publishing the direct request lost save bytes");
+        check(!manager.NeedsFlush(), "Committed direct request remained pending");
+    }
+    else if (!std::strcmp(argv[1], "memory-copy-pending"))
+    {
+        const QString path = directory.filePath("unavailable/save.bin");
+        SaveManager manager("");
+        manager.SetPath(path.toStdString(), false);
+        Queue(manager, next);
+        manager.FlushSecondaryBuffer(); // Keep the original storage unavailable.
+        check(manager.NeedsFlush(), "Failed write discarded the pending file save");
+
+        QByteArray snapshot(next.size(), '\x66');
+        manager.FlushSecondaryBuffer(reinterpret_cast<u8*>(snapshot.data()),
+                                     static_cast<u32>(snapshot.size()));
+        check(snapshot == next, "Memory snapshot did not contain the pending save");
+        check(manager.NeedsFlush(), "Memory copy acknowledged a file commit that never succeeded");
+        manager.FlushSecondaryBuffer(); // Failure must remain observable until recovery.
+        check(manager.NeedsFlush(), "Still-unavailable storage was reported as saved");
+        check(!QFile::exists(path), "Unavailable storage unexpectedly contained a save");
+
+        if (!QDir(directory.path()).mkdir("unavailable")) return 2;
+        manager.FlushSecondaryBuffer(); // No new write or CheckFlush after the snapshot.
+        check(Read(path) == next, "Memory copy prevented retrying the original file save");
+        check(!manager.NeedsFlush(), "Recovered file commit remained pending");
+    }
+    else if (!std::strcmp(argv[1], "flush-latest"))
+    {
+        const QString path = directory.filePath("latest-save.bin");
+        const QString copyPath = directory.filePath("empty-recovery.bin");
+        if (!Write(path, previous)) return 2;
+        SaveManager manager("");
+        check(manager.Flush(), "Unused manager could not finish flushing");
+        manager.SetPath(path.toStdString(), false);
+        check(manager.Flush(), "Manager without requested data could not finish flushing");
+        check(Read(path) == previous, "Empty flush changed the existing file");
+        check(!manager.NeedsFlush(), "Empty flush left a phantom pending request");
+        check(!manager.SaveCopy(copyPath.toStdString()), "Missing data was reported as a saved recovery copy");
+        check(!QFile::exists(copyPath), "Missing data created an empty recovery copy");
+
+        manager.RequestFlush(reinterpret_cast<const u8*>(next.constData()),
+                             static_cast<u32>(next.size()), 0, static_cast<u32>(next.size()));
+        check(manager.Flush(), "Flush did not commit an unpublished request");
+        check(Read(path) == next && !manager.NeedsFlush(), "Flush did not save and acknowledge the latest bytes");
+        check(manager.Flush(), "Already committed data was reported as a failed flush");
+
+        const QString closingPath = directory.filePath("direct-close.bin");
+        if (!Write(closingPath, previous)) return 2;
+        {
+            SaveManager closing(closingPath.toStdString());
+            closing.RequestFlush(reinterpret_cast<const u8*>(next.constData()),
+                                 static_cast<u32>(next.size()), 0, static_cast<u32>(next.size()));
+        }
+        check(Read(closingPath) == next, "Final flush omitted an unpublished request");
+    }
+    else if (!std::strcmp(argv[1], "recovery-copy"))
+    {
+        const QString path = directory.filePath("offline/save.bin");
+        const QString copyPath = directory.filePath(QStringLiteral("recovery-\uD55C\uAE00.bin"));
+        const QString failedCopy = directory.filePath("also-offline/copy.bin");
+        if (!Write(copyPath, previous)) return 2;
+        SaveManager manager("");
+        manager.SetPath(path.toStdString(), false);
+        Queue(manager, previous);
+        check(!manager.Flush(), "Unavailable original storage was reported as committed");
+
+        // A newer primary buffer must win over the older published secondary copy.
+        manager.RequestFlush(reinterpret_cast<const u8*>(next.constData()),
+                             static_cast<u32>(next.size()), 0, static_cast<u32>(next.size()));
+        check(!manager.SaveCopy(failedCopy.toStdString()), "Missing recovery directory was reported as saved");
+        check(!QFile::exists(failedCopy), "Failed recovery created a file");
+        check(manager.GetPath() == path.toStdString() && manager.NeedsFlush(),
+              "Failed recovery changed the original path or pending state");
+        check(manager.SaveCopy(copyPath.toStdString()), "Recovery copy failed on writable storage");
+        check(Read(copyPath) == next, "Recovery copy was missing, stale, or retained the previous tail");
+        check(manager.GetPath() == path.toStdString() && manager.NeedsFlush(),
+              "Recovery copy acknowledged or redirected the original save");
+        check(!manager.Flush(), "Original failure disappeared after saving a recovery copy");
+        check(!QFile::exists(path), "Recovery copy unexpectedly wrote the unavailable original");
+
+        // Cancel/continue keeps the same manager; retry needs no new RequestFlush.
+        if (!QDir(directory.path()).mkdir("offline")) return 2;
+        check(manager.Flush(), "Original save could not retry after recovery and cancel");
+        check(Read(path) == next && Read(copyPath) == next && !manager.NeedsFlush(),
+              "Retry lost the latest original or recovery bytes");
+    }
+    else if (!std::strcmp(argv[1], "same-copy-path"))
+    {
+        const QString path = directory.filePath("original-save.bin");
+        if (!Write(path, previous)) return 2;
+        SaveManager manager("");
+        manager.SetPath(path.toStdString(), false);
+        manager.RequestFlush(reinterpret_cast<const u8*>(next.constData()),
+                             static_cast<u32>(next.size()), 0, static_cast<u32>(next.size()));
+        QStringList aliases{path, QDir::current().relativeFilePath(path),
+                            directory.filePath("./original-save.bin")};
+#ifdef _WIN32
+        aliases.append(path.toUpper());
+#endif
+        for (const QString& alias : aliases)
+            check(!manager.SaveCopy(alias.toStdString()), "Recovery copy bypassed the original flush path");
+        check(Read(path) == previous && manager.GetPath() == path.toStdString() && manager.NeedsFlush(),
+              "Rejected recovery altered the original save or its pending state");
+
+        const QString newPath = directory.filePath("not-created.bin");
+        manager.SetPath(newPath.toStdString(), false);
+        check(!manager.SaveCopy(QDir::current().relativeFilePath(newPath).toStdString()),
+              "Recovery copy accepted the original path before its first file existed");
+        check(!QFile::exists(newPath) && manager.NeedsFlush(), "Rejected copy created or acknowledged the original");
+        check(!manager.SaveCopy(""), "Empty recovery path was reported as saved");
+    }
+    else if (!std::strcmp(argv[1], "copy-commit-failure"))
+    {
+#ifdef _WIN32
+        const QString path = directory.filePath("pending-original.bin");
+        const QString copyPath = directory.filePath("locked-recovery.bin");
+        if (!Write(path, previous) || !Write(copyPath, previous)) return 2;
+        SaveManager manager("");
+        manager.SetPath(path.toStdString(), false);
+        manager.RequestFlush(reinterpret_cast<const u8*>(next.constData()),
+                             static_cast<u32>(next.size()), 0, static_cast<u32>(next.size()));
+        HANDLE lock = CreateFileW(reinterpret_cast<LPCWSTR>(copyPath.utf16()), GENERIC_READ,
+                                  FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (lock == INVALID_HANDLE_VALUE) return 2;
+        const bool copied = manager.SaveCopy(copyPath.toStdString());
+        CloseHandle(lock);
+        check(!copied && Read(copyPath) == previous, "Failed recovery commit damaged or acknowledged its old file");
+        check(manager.GetPath() == path.toStdString() && manager.NeedsFlush() && Read(path) == previous,
+              "Failed recovery commit changed the pending original save");
+        check(manager.SaveCopy(copyPath.toStdString()) && Read(copyPath) == next,
+              "Unlocked recovery path could not retry the copy");
+        check(manager.NeedsFlush(), "Successful recovery retry acknowledged the original file");
+        check(manager.Flush() && Read(path) == next, "Original save could not commit after recovery retry");
+#else
+        return 77;
+#endif
     }
     else
         return 2;

@@ -29,6 +29,7 @@
 #include <stdexcept>
 
 #include <QDateTime>
+#include <QMutexLocker>
 #include <QSaveFile>
 
 #include <zstd.h>
@@ -448,14 +449,9 @@ int EmuInstance::lastSep(const std::string& path)
     return -1;
 }
 
-string EmuInstance::getAssetPath(bool gba, const string& configpath, const string& ext, const string& file = "")
+static string AssetPath(const string& directory, const string& name, const string& ext)
 {
-    string result;
-
-    if (configpath.empty())
-        result = gba ? baseGBAROMDir : baseROMDir;
-    else
-        result = configpath;
+    string result = directory;
 
     // cut off trailing slashes
     for (;;)
@@ -471,22 +467,31 @@ string EmuInstance::getAssetPath(bool gba, const string& configpath, const strin
     if (!result.empty())
         result += '/';
 
-    if (file.empty())
-    {
-        std::string& baseName = gba ? baseGBAAssetName : baseAssetName;
-        if (baseName.empty())
-            result += "firmware";
-        else
-            result += baseName;
-    }
-    else
-    {
-        result += file;
-    }
-
+    result += name.empty() ? "firmware" : name;
     result += ext;
-
     return result;
+}
+
+string EmuInstance::getAssetPath(bool gba, const string& configpath, const string& ext, const string& file = "")
+{
+    const string& directory = configpath.empty() ? (gba ? baseGBAROMDir : baseROMDir) : configpath;
+    const string& name = file.empty() ? (gba ? baseGBAAssetName : baseAssetName) : file;
+    return AssetPath(directory, name, ext);
+}
+
+static bool FlushSave(SaveManager* save, QString& errorstr)
+{
+    if (!save || save->Flush()) return true;
+    errorstr = QString("Unable to save current data. Retry, or close the window to save a recovery copy.\n\n%1")
+        .arg(QString::fromStdString(save->GetPath()));
+    return false;
+}
+
+bool EmuInstance::flushSaveData(QString& errorstr)
+{
+    for (SaveManager* save : {ndsSave.get(), gbaSave.get(), firmwareSave.get()})
+        if (!FlushSave(save, errorstr)) return false;
+    return true;
 }
 
 
@@ -1229,40 +1234,8 @@ void EmuInstance::syncRTC()
 
 bool EmuInstance::updateConsole() noexcept
 {
-    // update the console type
-    consoleType = globalCfg.GetInt("Emu.ConsoleType");
-
-    // Let's get the cart we want to use;
-    // if we want to keep the cart, we'll eject it from the existing console first.
-    std::unique_ptr<NDSCart::CartCommon> nextndscart;
-    if (!changeCart)
-    { // If we want to keep the existing cart (if any)...
-        nextndscart = nds ? nds->EjectCart() : nullptr;
-    }
-    else
-    {
-        nextndscart = std::move(nextCart);
-        changeCart = false;
-    }
-
-    if (auto* cartsd = dynamic_cast<NDSCart::CartSD*>(nextndscart.get()))
-    {
-        // LoadDLDISDCard will return nullopt if the SD card is disabled;
-        // SetSDCard will accept nullopt, which means no SD card
-        cartsd->SetSDCard(getSDCardArgs("DLDI"));
-    }
-
-    std::unique_ptr<GBACart::CartCommon> nextgbacart;
-    if (!changeGBACart)
-    {
-        nextgbacart = nds ? nds->EjectGBACart() : nullptr;
-    }
-    else
-    {
-        nextgbacart = std::move(nextGBACart);
-        changeGBACart = false;
-    }
-
+    // Prepare resources before moving either the active or queued cartridges.
+    const int requestedType = globalCfg.GetInt("Emu.ConsoleType");
 
     auto arm9bios = loadARM9BIOS();
     if (!arm9bios)
@@ -1272,7 +1245,7 @@ bool EmuInstance::updateConsole() noexcept
     if (!arm7bios)
         return false;
 
-    auto firmware = loadFirmware(consoleType);
+    auto firmware = loadFirmware(requestedType);
     if (!firmware)
         return false;
 
@@ -1315,7 +1288,7 @@ bool EmuInstance::updateConsole() noexcept
     NDSArgs* args = &ndsargs;
 
     std::optional<DSiArgs> dsiargs = std::nullopt;
-    if (consoleType == 1)
+    if (requestedType == 1)
     {
         auto arm7ibios = loadDSiARM7BIOS();
         if (!arm7ibios)
@@ -1341,8 +1314,31 @@ bool EmuInstance::updateConsole() noexcept
         args = &(*dsiargs);
     }
 
-    renderLock.lock();
-    if ((!nds) || (consoleType != nds->ConsoleType))
+    std::unique_ptr<NDS> replacement;
+    if (!nds || requestedType != nds->ConsoleType)
+    {
+        try
+        {
+            if (requestedType == 1)
+                replacement = std::make_unique<DSi>(std::move(dsiargs.value()), this);
+            else
+                replacement = std::make_unique<NDS>(std::move(ndsargs), this);
+        }
+        catch (const std::bad_alloc&)
+        {
+            return false;
+        }
+    }
+
+    QMutexLocker lock(&renderLock);
+    auto nextndscart = changeCart ? std::move(nextCart) : (nds ? nds->EjectCart() : nullptr);
+    auto nextgbacart = changeGBACart ? std::move(nextGBACart) : (nds ? nds->EjectGBACart() : nullptr);
+    changeCart = changeGBACart = false;
+    if (auto* cartsd = dynamic_cast<NDSCart::CartSD*>(nextndscart.get()))
+        cartsd->SetSDCard(getSDCardArgs("DLDI"));
+
+    consoleType = requestedType;
+    if (replacement)
     {
         if (nds)
         {
@@ -1350,10 +1346,7 @@ bool EmuInstance::updateConsole() noexcept
             delete nds;
         }
 
-        if (consoleType == 1)
-            nds = new DSi(std::move(dsiargs.value()), this);
-        else
-            nds = new NDS(std::move(ndsargs), this);
+        nds = replacement.release();
 
         nds->Reset();
         loadRTCData();
@@ -1391,16 +1384,18 @@ bool EmuInstance::updateConsole() noexcept
     else
         nds->SetGBACart(std::move(nextgbacart));
 
-    renderLock.unlock();
-
-    loadCheats();
-
     return true;
 }
 
-void EmuInstance::reset()
+bool EmuInstance::reset()
 {
-    updateConsole();
+    QString errorstr;
+    if (!flushSaveData(errorstr))
+    {
+        osdAddMessage(0xFFA0A0, "%s", errorstr.toUtf8().constData());
+        return false;
+    }
+    if (!updateConsole()) return false;
 
     if (consoleType == 1) ejectGBACart();
 
@@ -1458,11 +1453,14 @@ void EmuInstance::reset()
     }
 
     nds->Start();
+    loadCheats();
+    return true;
 }
 
 
 bool EmuInstance::bootToMenu(QString& errorstr)
 {
+    if (!flushSaveData(errorstr)) return false;
     // Keep whatever cart is in the console, if any.
     if (!updateConsole())
     {
@@ -1482,6 +1480,7 @@ bool EmuInstance::bootToMenu(QString& errorstr)
     nds->Reset();
     setBatteryLevels();
     setDateTime();
+    loadCheats();
     return true;
 }
 
@@ -1871,6 +1870,57 @@ QString EmuInstance::getSavErrorString(std::string& filepath, bool gba)
     return QString::fromStdString(err1);
 }
 
+bool EmuInstance::loadSaveRAM(string path, string original, bool gba, unique_ptr<u8[]>& data, u32& length, QString& errorstr)
+{
+    std::unique_ptr<FileHandle, decltype(&Platform::CloseFile)> file(
+        Platform::OpenFile(path, FileMode::Read), Platform::CloseFile);
+    if (!file && Platform::FileExists(path))
+    {
+        errorstr = "Failed to read the existing save file.";
+        return false;
+    }
+    string writable = file ? path : original;
+    if (!Platform::CheckFileWritable(writable))
+    {
+        errorstr = getSavErrorString(writable, gba);
+        return false;
+    }
+    if (!file) file.reset(Platform::OpenFile(original, FileMode::Read));
+    if (!file)
+    {
+        if (Platform::FileExists(original))
+        {
+            errorstr = "Failed to read the existing save file.";
+            return false;
+        }
+        return true; // A new game has no save yet.
+    }
+
+    const u64 size = Platform::FileLength(file.get());
+    if (size > std::numeric_limits<u32>::max())
+    {
+        errorstr = "The save file is too large.";
+        return false;
+    }
+    try
+    {
+        auto bytes = size ? std::make_unique<u8[]>(static_cast<u32>(size)) : nullptr;
+        if (size && Platform::FileRead(bytes.get(), 1, size, file.get()) != size)
+        {
+            errorstr = "Failed to read the complete save file.";
+            return false;
+        }
+        data = std::move(bytes);
+        length = static_cast<u32>(size);
+        return true;
+    }
+    catch (const std::bad_alloc&)
+    {
+        errorstr = "Not enough memory to load the save file.";
+        return false;
+    }
+}
+
 bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
 {
     unique_ptr<u8[]> filedata = nullptr;
@@ -1884,45 +1934,20 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
         return false;
     }
 
-    ndsSave = nullptr;
-
-    baseROMDir = basepath;
-    baseROMName = romname;
-    baseAssetName = romname.substr(0, romname.rfind('.'));
+    // Commit current bytes before reading a prospective save, including when
+    // reopening the same game/path. Keep the current manager on any failure.
+    if (reset ? !flushSaveData(errorstr) : !FlushSave(ndsSave.get(), errorstr)) return false;
+    string asset = romname.substr(0, romname.rfind('.'));
+    const string saveDir = localCfg.GetString("SaveFilePath");
 
     u32 savelen = 0;
     std::unique_ptr<u8[]> savedata = nullptr;
 
-    std::string savname = getAssetPath(false, localCfg.GetString("SaveFilePath"), ".sav");
+    std::string savname = AssetPath(saveDir.empty() ? basepath : saveDir, asset, ".sav");
     std::string origsav = savname;
     savname += instanceFileSuffix();
 
-    FileHandle* sav = Platform::OpenFile(savname, FileMode::Read);
-    if (!sav)
-    {
-        if (!Platform::CheckFileWritable(origsav))
-        {
-            errorstr = getSavErrorString(origsav, false);
-            return false;
-        }
-
-        sav = Platform::OpenFile(origsav, FileMode::Read);
-    }
-    else if (!Platform::CheckFileWritable(savname))
-    {
-        errorstr = getSavErrorString(savname, false);
-        return false;
-    }
-
-    if (sav)
-    {
-        savelen = (u32)Platform::FileLength(sav);
-
-        FileRewind(sav);
-        savedata = std::make_unique<u8[]>(savelen);
-        FileRead(savedata.get(), savelen, 1, sav);
-        CloseFile(sav);
-    }
+    if (!loadSaveRAM(savname, origsav, false, savedata, savelen, errorstr)) return false;
 
     NDSCart::NDSCartArgs cartargs {
             // Don't load the SD card itself yet, because we don't know if
@@ -1933,7 +1958,18 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
             .SRAMLength = savelen,
     };
 
-    auto cart = NDSCart::ParseROM(std::move(filedata), filelen, this, std::move(cartargs));
+    unique_ptr<NDSCart::CartCommon> cart;
+    unique_ptr<SaveManager> newSave;
+    try
+    {
+        cart = NDSCart::ParseROM(std::move(filedata), filelen, this, std::move(cartargs));
+        if (cart) newSave = std::make_unique<SaveManager>(savname);
+    }
+    catch (const std::bad_alloc&)
+    {
+        errorstr = "Not enough memory to prepare the DS cartridge.";
+        return false;
+    }
     if (!cart)
     {
         // If we couldn't parse the ROM...
@@ -1941,18 +1977,26 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
         return false;
     }
 
+    auto oldSave = std::move(ndsSave);
+    ndsSave = std::move(newSave);
     if (reset)
     {
+        auto queuedCart = std::move(nextCart);
+        const bool queuedChange = changeCart;
         nextCart = std::move(cart);
         changeCart = true;
 
         if (!updateConsole())
         {
+            nextCart = std::move(queuedCart);
+            changeCart = queuedChange;
+            ndsSave = std::move(oldSave);
             errorstr = "Failed to load the DS ROM.";
             return false;
         }
 
         initFirmwareSaveManager();
+        if (consoleType == 1) ejectGBACart();
         nds->Reset();
 
         if (globalCfg.GetBool("Emu.DirectBoot") || nds->NeedsDirectBoot())
@@ -1968,7 +2012,6 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
         if (emuIsActive())
         {
             nds->SetNDSCart(std::move(cart));
-            loadCheats();
         }
         else
         {
@@ -1978,14 +2021,25 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
     }
 
     cartType = 0;
-    ndsSave = std::make_unique<SaveManager>(savname);
+    baseROMDir = std::move(basepath);
+    baseROMName = std::move(romname);
+    baseAssetName = std::move(asset);
+    clearBackupState();
+    if (reset || emuIsActive()) loadCheats();
 
     return true; // success
 }
 
 void EmuInstance::ejectCart()
 {
+    QString errorstr;
+    if (!FlushSave(ndsSave.get(), errorstr))
+    {
+        osdAddMessage(0xFFA0A0, "%s", errorstr.toUtf8().constData());
+        return;
+    }
     ndsSave = nullptr;
+    clearBackupState();
 
     if (emuIsActive())
     {
@@ -2043,61 +2097,41 @@ bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr)
         return false;
     }
 
-    gbaSave = nullptr;
-
-    baseGBAROMDir = basepath;
-    baseGBAROMName = romname;
-    baseGBAAssetName = romname.substr(0, romname.rfind('.'));
+    if (!FlushSave(gbaSave.get(), errorstr)) return false;
+    string asset = romname.substr(0, romname.rfind('.'));
+    const string saveDir = localCfg.GetString("SaveFilePath");
 
     u32 savelen = 0;
     std::unique_ptr<u8[]> savedata = nullptr;
 
-    std::string savname = getAssetPath(true, localCfg.GetString("SaveFilePath"), ".sav");
+    std::string savname = AssetPath(saveDir.empty() ? basepath : saveDir, asset, ".sav");
     std::string origsav = savname;
     savname += instanceFileSuffix();
 
-    FileHandle* sav = Platform::OpenFile(savname, FileMode::Read);
-    if (!sav)
-    {
-        if (!Platform::CheckFileWritable(origsav))
-        {
-            errorstr = getSavErrorString(origsav, true);
-            return false;
-        }
+    if (!loadSaveRAM(savname, origsav, true, savedata, savelen, errorstr)) return false;
 
-        sav = Platform::OpenFile(origsav, FileMode::Read);
-    }
-    else if (!Platform::CheckFileWritable(savname))
+    unique_ptr<GBACart::CartCommon> cart;
+    unique_ptr<SaveManager> newSave;
+    try
     {
-        errorstr = getSavErrorString(savname, true);
+        cart = GBACart::ParseROM(std::move(filedata), filelen, std::move(savedata), savelen, this);
+        if (cart) newSave = std::make_unique<SaveManager>(savname);
+    }
+    catch (const std::bad_alloc&)
+    {
+        errorstr = "Not enough memory to prepare the GBA cartridge.";
         return false;
     }
-
-    if (sav)
-    {
-        savelen = (u32)FileLength(sav);
-
-        if (savelen > 0)
-        {
-            FileRewind(sav);
-            savedata = std::make_unique<u8[]>(savelen);
-            FileRead(savedata.get(), savelen, 1, sav);
-        }
-        CloseFile(sav);
-    }
-
-    auto cart = GBACart::ParseROM(std::move(filedata), filelen, std::move(savedata), savelen, this);
     if (!cart)
     {
         errorstr = "Failed to load the GBA ROM.";
         return false;
     }
 
-    gbaCartType = 0;
+    gbaSave = std::move(newSave);
     if (emuIsActive())
     {
         nds->SetGBACart(std::move(cart));
-        gbaSave = std::make_unique<SaveManager>(savname);
     }
     else
     {
@@ -2105,12 +2139,23 @@ bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr)
         changeGBACart = true;
     }
 
+    gbaCartType = 0;
+    baseGBAROMDir = std::move(basepath);
+    baseGBAROMName = std::move(romname);
+    baseGBAAssetName = std::move(asset);
+    clearBackupState();
     return true;
 }
 
 void EmuInstance::loadGBAAddon(int type, QString& errorstr)
 {
-    if (consoleType == 1) return;
+    if (consoleType == 1)
+    {
+        errorstr = "The DSi doesn't have a GBA slot.";
+        return;
+    }
+
+    if (!FlushSave(gbaSave.get(), errorstr)) return;
 
     auto cart = GBACart::LoadAddon(type, this);
     if (!cart)
@@ -2130,6 +2175,7 @@ void EmuInstance::loadGBAAddon(int type, QString& errorstr)
     }
 
     gbaSave = nullptr;
+    clearBackupState();
     gbaCartType = type;
     baseGBAROMDir = "";
     baseGBAROMName = "";
@@ -2138,7 +2184,14 @@ void EmuInstance::loadGBAAddon(int type, QString& errorstr)
 
 void EmuInstance::ejectGBACart()
 {
+    QString errorstr;
+    if (!FlushSave(gbaSave.get(), errorstr))
+    {
+        osdAddMessage(0xFFA0A0, "%s", errorstr.toUtf8().constData());
+        return;
+    }
     gbaSave = nullptr;
+    clearBackupState();
 
     if (emuIsActive())
     {

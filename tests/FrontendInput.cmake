@@ -69,7 +69,8 @@ if (USE_QT6)
 else()
     target_link_libraries(SaveManagerIO PRIVATE Qt5::Core)
 endif()
-foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush reload-partial buffer-resize)
+foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush reload-partial buffer-resize
+        unpublished-pending memory-copy-pending flush-latest recovery-copy same-copy-path copy-commit-failure)
     add_test(NAME save-manager-${case} COMMAND SaveManagerIO ${case})
     set_tests_properties(save-manager-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()
@@ -139,6 +140,77 @@ else()
 endif()
 add_test(NAME savestate-message-recovery COMMAND StateLoadMessages)
 set_tests_properties(savestate-message-recovery PROPERTIES TIMEOUT 10)
+
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
+        "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc" "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Window.cpp" "void MainWindow::closeEvent(QCloseEvent* event)"
+        "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Window.cpp" "bool MainWindow::prepareClose()"
+        "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Window.cpp" "bool MainWindow::flushSaveManagers(EmuInstance* instance)"
+        "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Window.cpp VERBATIM)
+add_executable(FrontendClose "${CMAKE_SOURCE_DIR}/tests/FrontendClose.cpp" "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc" "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc")
+# moc reads these includes while parsing the fixture's Q_OBJECT class. CMake
+# does not recognize .inc files as C++ sources, so order their generation first.
+set_property(TARGET FrontendClose PROPERTY AUTOGEN_TARGET_DEPENDS
+    "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc")
+target_include_directories(FrontendClose PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(FrontendClose PRIVATE ${QT_LINK_LIBS})
+foreach(case IN ITEMS cancel-ds cancel-gba cancel-firmware child-cancel clean secondary retry recovery recovery-cancel recovery-failure)
+    add_test(NAME frontend-close-${case} COMMAND FrontendClose ${case})
+    set_tests_properties(frontend-close-${case} PROPERTIES TIMEOUT 10 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()
+
+set(cart_methods)
+foreach(method IN ITEMS BuildPath FlushSave FlushAll AssetPath SaveError ReadSave LoadROM LoadGBA UpdateConsole)
+    if (method STREQUAL "AssetPath")
+        set(signature "string EmuInstance::getAssetPath(bool gba, const string& configpath, const string& ext, const string& file = \"\")")
+    elseif (method STREQUAL "BuildPath")
+        set(signature "static string AssetPath(const string& directory, const string& name, const string& ext)")
+    elseif (method STREQUAL "FlushSave")
+        set(signature "static bool FlushSave(SaveManager* save, QString& errorstr)")
+    elseif (method STREQUAL "FlushAll")
+        set(signature "bool EmuInstance::flushSaveData(QString& errorstr)")
+    elseif (method STREQUAL "ReadSave")
+        set(signature "bool EmuInstance::loadSaveRAM(string path, string original, bool gba, unique_ptr<u8[]>& data, u32& length, QString& errorstr)")
+    elseif (method STREQUAL "SaveError")
+        set(signature "QString EmuInstance::getSavErrorString(std::string& filepath, bool gba)")
+    elseif (method STREQUAL "LoadROM")
+        set(signature "bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)")
+    elseif (method STREQUAL "LoadGBA")
+        set(signature "bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr)")
+    else()
+        set(signature "bool EmuInstance::updateConsole() noexcept")
+    endif()
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/cart${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
+    list(APPEND cart_methods "${output}")
+endforeach()
+add_executable(CartReplacement "${CMAKE_SOURCE_DIR}/tests/CartReplacement.cpp" SaveManager.h
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp" ${cart_methods})
+target_include_directories(CartReplacement PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(CartReplacement PRIVATE core Threads::Threads)
+if (USE_QT6)
+    target_link_libraries(CartReplacement PRIVATE Qt6::Core)
+else()
+    target_link_libraries(CartReplacement PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existing-writable gba-existing-writable
+        ds-console-failure console-retain ds-queued-failure ds-success ds-reset-success gba-success gba-queued
+        ds-pending-failure gba-pending-failure ds-same-save read-short read-error read-oversize read-denied)
+    add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
+    set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
+endforeach()
 
 add_executable(SavestateFileIO "${CMAKE_SOURCE_DIR}/tests/SavestateFileIO.cpp"
     "${CMAKE_SOURCE_DIR}/src/Savestate.cpp" "${state_writer}")

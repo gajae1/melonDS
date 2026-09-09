@@ -76,7 +76,7 @@ This produces 21 entries on a supported JIT-enabled target, or 19 with
 AAC and host input/output; unexpected file use aborts. It does not replace
 real driver/game/physical-hardware regression tests. The full-core tests are
 not automatically sanitized by the standalone sanitizer configuration.
-See [the release record](../plans/releases/1.1.04.md) for current scope and measurement limitations.
+See [the release record](../plans/releases/1.1.05.md) for current scope and measurement limitations.
 
 The Qt build also provides `firmware-profile-direct-boot`. It runs the real
 frontend profile override and MAC parser with temporary configuration, then
@@ -101,5 +101,21 @@ a physical audio device or the full window event loop.
 `SaveManagerIO` covers atomic writes/retry, the real worker's path-change locking,
 reload with a partial update, and buffer grow/shrink/memory-copy bounds. The path
 test holds the worker after a real commit and checks that relocation waits for
-the mutex, then verifies both files. This is a bounded locking regression, not a
-race detector or proof of crash/power-loss recovery.
+the mutex, then verifies both files. It also checks unpublished pending requests,
+synchronous flush of the latest data, recovery copies that preserve the original
+pending state, same-path rejection, and failed copy commits. This is a bounded
+locking regression, not a race detector or proof of crash/power-loss recovery.
+
+`CartReplacement` compiles the current frontend load/console definitions with the
+real core, cart parsers and SaveManager. Generated DS/GBA ROMs and temporary save
+files check failed preparation without changing the active or queued cart, save
+manager or asset paths, normal replacement, inactive GBA save ownership, pending
+write failure, same-game reopen, and SRAM length/read failures. It does not prove
+real-game progress, successful DSi mode transitions or all allocation failures.
+
+`FrontendClose` runs the current close handlers with real Qt windows, close
+events, message boxes and file dialogs on the offscreen platform. Temporary files
+and scripted producer/save contracts cover retry, cancel, recovery copies and
+child-instance cancellation before any window is destroyed. Actual worker I/O is
+covered by the two tests above; full frontend/device shutdown acceptance remains
+separate. Generated method includes explicitly precede moc processing.

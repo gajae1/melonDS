@@ -2,7 +2,7 @@
 
 125개 과제 ID를 유지한다. 이는 확정 버그 수나 독립 구현 수가 아니다. P1은 재현 우선, P2는 호환성·측정 개선, P3은 효용 확인 후 채택이다. 관찰 근거는 1.1.02 분석 당시 분류이며 실행으로 새로 확인한 항목은 처리 상태를 갱신한다.
 
-기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.04.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
+기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.05.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
 
 | ID | 작업·상세 계약 | 관찰 근거 | 우선 | 기본 버전 | 공동 대표 | 처리 상태 |
 |---|---|---|---|---|---|---|
@@ -70,11 +70,11 @@
 | AD-25 | [SPU 정수 보간·pan 가속](workstreams/03-audio-dsi.md#AD-25) | 미측정 가설 | P3 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-26 | [DSP opcode/상태 coverage](workstreams/03-audio-dsi.md#AD-26) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
 | FS-01 | [load/undo 실패의 세션 복원](workstreams/04-frontend-storage.md#FS-01) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.04 CJ-10과 공동 구현·회귀; 전체 게임·장치 수락 후속 |
-| FS-02 | [길이·전체 read·적용 전 검증](workstreams/04-frontend-storage.md#FS-02) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.04 상태 파일 읽기만 구현·회귀; 다른 파일·reset 경계 후속 |
-| FS-03 | [ROM 교체와 save 소유권](workstreams/04-frontend-storage.md#FS-03) | 정적 후보 | P1 | [1.1.04](Release_Plan.md#v04) | — | 미착수 |
+| FS-02 | [길이·전체 read·적용 전 검증](workstreams/04-frontend-storage.md#FS-02) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.04 상태 파일·1.1.05 카트 SRAM 읽기 구현; 다른 파일·import reset 경계 후속 |
+| FS-03 | [ROM 교체와 save 소유권](workstreams/04-frontend-storage.md#FS-03) | 실행 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.05 준비 실패 보존·queued 카트·save 연결 구현·로컬 회귀; 실제 게임·DSi 수락 후속 |
 | FS-04 | [손상 TOML 보존·오류 전파](workstreams/04-frontend-storage.md#FS-04) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.03 원본 보존·회귀; 상세 오류 UI 후속 |
 | FS-05 | [save worker/path/buffer 수명](workstreams/04-frontend-storage.md#FS-05) | 잠금 경계 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.04 mutex 통일·worker/파일 회귀; 느린 I/O·장기 경쟁 수락 후속 |
-| FS-06 | [종료 시 지속 저장 실패](workstreams/04-frontend-storage.md#FS-06) | 관찰/확장 | P1 | [1.1.04](Release_Plan.md#v04) | — | 미착수 |
+| FS-06 | [종료 시 지속 저장 실패](workstreams/04-frontend-storage.md#FS-06) | 실행 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.05 pending·복구 API·종료 선택 구현·로컬 회귀; 실제 저장장치·장기 수락 후속 |
 | FS-07 | [archive EOF/누락/오류·자원](workstreams/04-frontend-storage.md#FS-07) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 미착수 |
 | FS-08 | [Zstd 실제 길이·frame 완료](workstreams/04-frontend-storage.md#FS-08) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.03 구현·회귀; 실제 최대 출력 경계 후속 |
 | FS-09 | [controller 핸들·capability 정리](workstreams/04-frontend-storage.md#FS-09) | 정적 후보 | P1 | [1.1.06](Release_Plan.md#v06) | — | 미착수 |

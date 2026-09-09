@@ -533,12 +533,12 @@ void EmuThread::handleMessages()
             break;
 
         case msg_EmuStop:
+            emuInstance->audioDisable();
             if (msg.param.value<bool>())
                 emuInstance->nds->Stop();
             emuStatus = emuStatus_Paused;
             emuActive = false;
 
-            emuInstance->audioDisable();
             emit windowEmuStop();
             break;
 
@@ -548,7 +548,14 @@ void EmuThread::handleMessages()
             break;
 
         case msg_EmuReset:
-            emuInstance->reset();
+            emuInstance->audioDisable();
+            msgResult = emuInstance->reset();
+            if (!msgResult)
+            {
+                if (emuStatus == emuStatus_Running) emuInstance->audioEnable();
+                emuInstance->osdAddMessage(0xFFA0A0, "Reset failed; current session retained");
+                break;
+            }
             emuInstance->clearBackupState();
             stateRecoveryFailed = false;
 
@@ -578,9 +585,13 @@ void EmuThread::handleMessages()
             break;
 
         case msg_BootROM:
+            emuInstance->audioDisable();
             msgResult = 0;
             if (!emuInstance->loadROM(msg.param.value<QStringList>(), true, msgError))
+            {
+                if (emuStatus == emuStatus_Running) emuInstance->audioEnable();
                 break;
+            }
 
             assert(emuInstance->nds != nullptr);
             emuInstance->nds->Start();
@@ -589,9 +600,13 @@ void EmuThread::handleMessages()
             break;
 
         case msg_BootFirmware:
+            emuInstance->audioDisable();
             msgResult = 0;
             if (!emuInstance->bootToMenu(msgError))
+            {
+                if (emuStatus == emuStatus_Running) emuInstance->audioEnable();
                 break;
+            }
 
             assert(emuInstance->nds != nullptr);
             emuInstance->nds->Start();
@@ -621,8 +636,9 @@ void EmuThread::handleMessages()
 
         case msg_InsertGBAAddon:
             msgResult = 0;
+            msgError.clear();
             emuInstance->loadGBAAddon(msg.param.value<int>(), msgError);
-            msgResult = 1;
+            msgResult = msgError.isEmpty();
             break;
 
         case msg_EjectGBACart:
@@ -874,8 +890,10 @@ StateLoadResult EmuThread::undoStateLoad()
 int EmuThread::importSavefile(const QString& filename)
 {
     sendMessage(msg_EmuReset);
+    waitMessage();
+    if (!msgResult) return 0;
     sendMessage({.type = msg_ImportSavefile, .param = filename});
-    waitMessage(2);
+    waitMessage();
     return msgResult;
 }
 

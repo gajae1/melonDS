@@ -46,12 +46,19 @@ public:
     void RequestFlush(const melonDS::u8* savedata, melonDS::u32 savelen, melonDS::u32 writeoffset, melonDS::u32 writelen);
     void CheckFlush();
 
+    // Finish original-file saves, including requests not yet published by CheckFlush.
+    // No data or an already committed version succeeds without another file write.
+    bool Flush();
+    // Commit the latest data elsewhere, preserving the original path and pending state.
+    bool SaveCopy(const std::string& path);
+
     bool NeedsFlush();
     void FlushSecondaryBuffer(melonDS::u8* dst = nullptr, melonDS::u32 dstLength = 0);
 
 private:
-    // Requires StateLock; shared by the worker and explicit flushes.
-    void FlushSecondaryBufferLocked(melonDS::u8* dst, melonDS::u32 dstLength);
+    // Require StateLock; shared by the worker and explicit flushes.
+    void CheckFlushLocked();
+    bool FlushSecondaryBufferLocked(melonDS::u8* dst, melonDS::u32 dstLength);
 
     // Protects the path, both buffers, and flush/version/debounce state.
     QMutex StateLock;

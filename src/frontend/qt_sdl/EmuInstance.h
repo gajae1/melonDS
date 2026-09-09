@@ -198,7 +198,7 @@ private:
     std::optional<melonDS::FATStorageArgs> getSDCardArgs(const std::string& key) noexcept;
     std::optional<melonDS::FATStorage> loadSDCard(const std::string& key) noexcept;
     void setBatteryLevels();
-    void reset();
+    bool reset();
     bool bootToMenu(QString& errorstr);
     melonDS::u32 decompressROM(const melonDS::u8* inContent, const melonDS::u32 inSize, std::unique_ptr<melonDS::u8[]>& outContent);
     void clearBackupState();
@@ -207,6 +207,9 @@ private:
     void customizeFirmware(melonDS::Firmware& firmware, bool overridesettings) noexcept;
 
     bool loadROMData(const QStringList& filepath, std::unique_ptr<melonDS::u8[]>& filedata, melonDS::u32& filelen, std::string& basepath, std::string& romname) noexcept;
+    bool loadSaveRAM(std::string path, std::string original, bool gba,
+                     std::unique_ptr<melonDS::u8[]>& data, melonDS::u32& length, QString& errorstr);
+    bool flushSaveData(QString& errorstr);
     QString getSavErrorString(std::string& filepath, bool gba);
     bool loadROM(QStringList filepath, bool reset, QString& errorstr);
     void ejectCart();
