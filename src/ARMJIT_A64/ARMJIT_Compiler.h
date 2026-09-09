@@ -23,7 +23,7 @@
 
 #include "../ARM.h"
 
-#include "../dolphin/Arm64Emitter.h"
+#include "../jit/Arm64Emitter.h"
 
 #include "../ARMJIT_Internal.h"
 #include "../ARMJIT_RegisterCache.h"

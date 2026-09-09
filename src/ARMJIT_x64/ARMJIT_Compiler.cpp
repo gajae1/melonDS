@@ -26,7 +26,7 @@
 #include <assert.h>
 #include <stdarg.h>
 
-#include "../dolphin/CommonFuncs.h"
+#include "../jit/CommonFuncs.h"
 
 using namespace Gen;
 using namespace Common;

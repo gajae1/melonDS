@@ -123,7 +123,7 @@ if (ENABLE_JIT)
         ARMJIT_Memory.cpp
         ARMJIT_Global.cpp
 
-        dolphin/CommonFuncs.cpp)
+        jit/CommonFuncs.cpp)
     
     if (WIN32)
         # Required for memory mapping-related functions introduced in Windows 8
@@ -137,9 +137,9 @@ if (ENABLE_JIT)
 
     if (ARCHITECTURE STREQUAL x86_64)
         target_sources(core PRIVATE
-            dolphin/x64ABI.cpp
-            dolphin/x64CPUDetect.cpp
-            dolphin/x64Emitter.cpp
+            jit/x64ABI.cpp
+            jit/x64CPUDetect.cpp
+            jit/x64Emitter.cpp
 
             ARMJIT_x64/ARMJIT_Compiler.cpp
             ARMJIT_x64/ARMJIT_ALU.cpp
@@ -150,8 +150,8 @@ if (ENABLE_JIT)
     endif()
     if (ARCHITECTURE STREQUAL ARM64)
         target_sources(core PRIVATE
-            dolphin/Arm64Emitter.cpp
-            dolphin/MathUtil.cpp
+            jit/Arm64Emitter.cpp
+            jit/MathUtil.cpp
 
             ARMJIT_A64/ARMJIT_Compiler.cpp
             ARMJIT_A64/ARMJIT_ALU.cpp

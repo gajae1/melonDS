@@ -27,7 +27,7 @@
 #include <QDateTime>
 
 #include "OpenGLSupport.h"
-#include "duckstation/gl/context.h"
+#include "graphics/gl/context.h"
 
 #include "main.h"
 #include "EmuInstance.h"

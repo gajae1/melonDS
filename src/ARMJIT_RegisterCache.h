@@ -23,7 +23,7 @@
 #include "Platform.h"
 
 // TODO: replace this in the future
-#include "dolphin/BitSet.h"
+#include "jit/BitSet.h"
 
 #include <assert.h>
 

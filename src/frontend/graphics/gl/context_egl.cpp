@@ -1,6 +1,6 @@
 #include "context_egl.h"
 #include "../log.h"
-#include "../duckstation_compat.h"
+#include "../compat.h"
 #include <optional>
 #include <vector>
 #include <cstring>

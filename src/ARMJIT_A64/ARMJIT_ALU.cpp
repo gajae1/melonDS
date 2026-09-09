@@ -261,7 +261,6 @@ void Compiler::Comp_Arithmetic(int op, bool S, ARM64Reg rd, ARM64Reg rn, Op2 op2
     if (S && !CurInstr.SetFlags)
         S = false;
 
-    bool CVInGPR = false;
     switch (op)
     {
     case 0x2: // SUB
@@ -326,27 +325,17 @@ void Compiler::Comp_Arithmetic(int op, bool S, ARM64Reg rd, ARM64Reg rn, Op2 op2
         {
             if (op2.IsImm)
             {
-                CVInGPR = true;
-                ADDS(W1, rn, W2);
-                CSET(W2, CC_CS);
-                CSET(W3, CC_VS);
-                if (op2.IsImm)
-                    ADDSI2R(rd, W1, op2.Imm, W0);
-                else
-                    ADDS(rd, W1, op2.Reg.Rm, op2.ToArithOption());
-                CSINC(W2, W2, WZR, CC_CC);
-                CSINC(W3, W3, WZR, CC_VC);
+                MOVI2R(W0, op2.Imm);
+                op2 = Op2(W0);
             }
-            else
+            else if (op2.Reg.ShiftAmount > 0)
             {
-                if (op2.Reg.ShiftAmount > 0)
-                {
-                    MOV(W0, op2.Reg.Rm, op2.ToArithOption());
-                    op2 = Op2(W0, ST_LSL, 0);
-                }
-                CMP(W2, 1);
-                ADCS(rd, rn, op2.Reg.Rm);
+                MOV(W0, op2.Reg.Rm, op2.ToArithOption());
+                op2 = Op2(W0, ST_LSL, 0);
             }
+            // A single addition must supply V; two intermediate overflows can cancel.
+            CMP(W2, 1);
+            ADCS(rd, rn, op2.Reg.Rm);
         }
         else
         {
@@ -358,63 +347,43 @@ void Compiler::Comp_Arithmetic(int op, bool S, ARM64Reg rd, ARM64Reg rn, Op2 op2
         }
         break;
     case 0x6: // SBC
+    case 0x7: // RSC
         UBFX(W2, RCPSR, 29, 1);
-        if (S && !op2.IsImm)
+        if (S)
         {
-            if (op2.Reg.ShiftAmount > 0)
+            if (op2.IsImm)
+            {
+                MOVI2R(W0, op2.Imm);
+                op2 = Op2(W0);
+            }
+            else if (op2.Reg.ShiftAmount > 0)
             {
                 MOV(W0, op2.Reg.Rm, op2.ToArithOption());
                 op2 = Op2(W0, ST_LSL, 0);
             }
             CMP(W2, 1);
-            SBCS(rd, rn, op2.Reg.Rm);
+            if (op == 0x6)
+                SBCS(rd, rn, op2.Reg.Rm);
+            else
+                SBCS(rd, op2.Reg.Rm, rn);
         }
-        else
+        else if (op == 0x6)
         {
             // W1 = -op2 - 1
             if (op2.IsImm)
                 MOVI2R(W1, ~op2.Imm);
             else
                 ORN(W1, WZR, op2.Reg.Rm, op2.ToArithOption());
-            if (S)
-            {
-                CVInGPR = true;
-                ADDS(W1, W2, W1);
-                CSET(W2, CC_CS);
-                CSET(W3, CC_VS);
-                ADDS(rd, rn, W1);
-                CSINC(W2, W2, WZR, CC_CC);
-                CSINC(W3, W3, WZR, CC_VC);
-            }
-            else
-            {
-                ADD(W1, W2, W1);
-                ADD(rd, rn, W1);
-            }
-        }
-        break;
-    case 0x7: // RSC
-        UBFX(W2, RCPSR, 29, 1);
-        // W1 = -rn - 1
-        MVN(W1, rn);
-        if (S)
-        {
-            CVInGPR = true;
-            ADDS(W1, W2, W1);
-            CSET(W2, CC_CS);
-            CSET(W3, CC_VS);
-            if (op2.IsImm)
-                ADDSI2R(rd, W1, op2.Imm);
-            else
-                ADDS(rd, W1, op2.Reg.Rm, op2.ToArithOption());
-            CSINC(W2, W2, WZR, CC_CC);
-            CSINC(W3, W3, WZR, CC_VC);
+            ADD(W1, W2, W1);
+            ADD(rd, rn, W1);
         }
         else
         {
+            // W1 = -rn - 1
+            MVN(W1, rn);
             ADD(W1, W2, W1);
             if (op2.IsImm)
-                ADDI2R(rd, W1, op2.Imm);
+                ADDI2R(rd, W1, op2.Imm, W0);
             else
                 ADD(rd, W1, op2.Reg.Rm, op2.ToArithOption());
         }
@@ -422,14 +391,7 @@ void Compiler::Comp_Arithmetic(int op, bool S, ARM64Reg rd, ARM64Reg rn, Op2 op2
     }
 
     if (S)
-    {
-        if (CVInGPR)
-        {
-            BFI(RCPSR, W2, 29, 1);
-            BFI(RCPSR, W3, 28, 1);
-        }
-        Comp_RetriveFlags(!CVInGPR);
-    }
+        Comp_RetriveFlags(true);
 }
 
 void Compiler::Comp_Compare(int op, ARM64Reg rn, Op2 op2)

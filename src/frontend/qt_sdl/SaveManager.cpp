@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <QSaveFile>
 
 #include "SaveManager.h"
 #include "Platform.h"
@@ -179,13 +180,18 @@ void SaveManager::FlushSecondaryBuffer(u8* dst, u32 dstLength)
     }
     else
     {
-        FileHandle* f = Platform::OpenFile(Path, FileMode::Write);
-        if (f)
+        QSaveFile file(QString::fromStdString(Path));
+        if (!file.open(QIODevice::WriteOnly) ||
+            file.write(reinterpret_cast<const char*>(SecondaryBuffer.get()), SecondaryBufferLength) != SecondaryBufferLength ||
+            !file.commit())
         {
-            FileWrite(SecondaryBuffer.get(), SecondaryBufferLength, 1, f);
-            Log(LogLevel::Info, "SaveManager: Wrote %u bytes to %s\n", SecondaryBufferLength, Path.c_str());
-            CloseFile(f);
+            Log(LogLevel::Error, "SaveManager: Failed to write save: %s\n", file.errorString().toUtf8().constData());
+            // Keep this version pending and reuse the debounce interval before retrying.
+            TimeAtLastFlushRequest = time(nullptr);
+            SecondaryBufferLock->unlock();
+            return;
         }
+        Log(LogLevel::Info, "SaveManager: Wrote %u bytes to %s\n", SecondaryBufferLength, Path.c_str());
     }
     PreviousFlushVersion = FlushVersion;
     TimeAtLastFlushRequest = 0;

@@ -32,7 +32,7 @@
 
 #include "glad/glad.h"
 #include "ScreenLayout.h"
-#include "duckstation/gl/context.h"
+#include "graphics/gl/context.h"
 
 
 class MainWindow;

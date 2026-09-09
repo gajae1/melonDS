@@ -40,11 +40,13 @@ static void ExpandAVX2(u32* pixels, size_t count) noexcept
     for (; count - i >= 8; i += 8)
     {
         const __m256i c = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pixels + i));
-        const __m256i r = _mm256_and_si256(_mm256_slli_epi32(c, 18), _mm256_set1_epi32(0x00FC0000));
-        const __m256i g = _mm256_and_si256(_mm256_slli_epi32(c, 2), _mm256_set1_epi32(0x0000FC00));
-        const __m256i b = _mm256_and_si256(_mm256_srli_epi32(c, 14), _mm256_set1_epi32(0x000000FC));
-        const __m256i rgb = _mm256_or_si256(_mm256_or_si256(r, g), b);
-        const __m256i low = _mm256_srli_epi32(_mm256_and_si256(rgb, _mm256_set1_epi32(0x00C0C0C0)), 6);
+        const __m256i order = _mm256_broadcastsi128_si256(_mm_setr_epi8(
+            2, 1, 0, -128, 6, 5, 4, -128, 10, 9, 8, -128, 14, 13, 12, -128));
+        const __m256i channels = _mm256_and_si256(_mm256_shuffle_epi8(c, order),
+                                                 _mm256_set1_epi32(0x003F3F3F));
+        const __m256i rgb = _mm256_slli_epi32(channels, 2);
+        const __m256i low = _mm256_and_si256(_mm256_srli_epi32(channels, 4),
+                                            _mm256_set1_epi32(0x00030303));
         const __m256i result = _mm256_or_si256(_mm256_or_si256(rgb, low), _mm256_set1_epi32(-16777216));
         _mm256_storeu_si256(reinterpret_cast<__m256i*>(pixels + i), result);
     }
@@ -72,6 +74,29 @@ static void ExpandAVX512(u32* pixels, size_t count) noexcept
 }
 #endif
 
+#if MELONDS_PIXEL_AVX512BW
+__attribute__((target("avx512f,avx512bw")))
+static void ExpandAVX512BW(u32* pixels, size_t count) noexcept
+{
+    size_t i = 0;
+    for (; count - i >= 16; i += 16)
+    {
+        const __m512i c = _mm512_loadu_si512(pixels + i);
+        const __m512i order = _mm512_broadcast_i32x4(_mm_setr_epi8(
+            2, 1, 0, -128, 6, 5, 4, -128, 10, 9, 8, -128, 14, 13, 12, -128));
+        const __m512i channels = _mm512_and_si512(_mm512_shuffle_epi8(c, order),
+                                                 _mm512_set1_epi32(0x003F3F3F));
+        const __m512i rgb = _mm512_slli_epi32(channels, 2);
+        const __m512i low = _mm512_and_si512(_mm512_srli_epi32(channels, 4),
+                                            _mm512_set1_epi32(0x00030303));
+        const __m512i result = _mm512_or_si512(_mm512_or_si512(rgb, low),
+                                              _mm512_set1_epi32(-16777216));
+        _mm512_storeu_si512(pixels + i, result);
+    }
+    if (i < count) ExpandScalar(pixels + i, count - i);
+}
+#endif
+
 bool IsSupported(Backend backend) noexcept
 {
     switch (backend)
@@ -82,7 +107,8 @@ bool IsSupported(Backend backend) noexcept
     case Backend::AVX2: return __builtin_cpu_supports("avx2");
 #endif
 #if MELONDS_PIXEL_AVX512
-    case Backend::AVX512: return __builtin_cpu_supports("avx512f");
+    case Backend::AVX512:
+    case Backend::AVX512F: return __builtin_cpu_supports("avx512f");
 #endif
     default: return false;
     }
@@ -90,8 +116,14 @@ bool IsSupported(Backend backend) noexcept
 
 Function Select(Backend backend) noexcept
 {
+#if MELONDS_PIXEL_AVX512BW
+    if ((backend == Backend::Auto || backend == Backend::AVX512) &&
+        __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw"))
+        return ExpandAVX512BW;
+#endif
 #if MELONDS_PIXEL_AVX512
-    if ((backend == Backend::Auto || backend == Backend::AVX512) && IsSupported(Backend::AVX512))
+    if ((backend == Backend::Auto || backend == Backend::AVX512 || backend == Backend::AVX512F) &&
+        IsSupported(Backend::AVX512))
         return ExpandAVX512;
 #endif
 #if MELONDS_PIXEL_AVX2

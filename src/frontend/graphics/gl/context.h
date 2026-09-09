@@ -1,5 +1,5 @@
 #pragma once
-#include "../duckstation_compat.h"
+#include "../compat.h"
 #include "../window_info.h"
 #include <array>
 #include <memory>

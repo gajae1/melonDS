@@ -1,5 +1,5 @@
 #include "context_glx.h"
-#include "../duckstation_compat.h"
+#include "../compat.h"
 #include "../log.h"
 #include <dlfcn.h>
 Log_SetChannel(GL::ContextGLX);

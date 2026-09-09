@@ -259,6 +259,7 @@ GLRenderer::~GLRenderer()
 
     glDeleteFramebuffers(2, FPOutputFB);
     glDeleteTextures(1, &AuxInputTex);
+    glDeleteFramebuffers(1, &CaptureVRAMFB);
     glDeleteTextures(1, &CaptureVRAMTex);
     glDeleteTextures(2, FPOutputTex);
 

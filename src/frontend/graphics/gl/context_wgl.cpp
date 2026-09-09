@@ -1,5 +1,5 @@
 #include "context_wgl.h"
-#include "../duckstation_compat.h"
+#include "../compat.h"
 #include "../log.h"
 #include "../scoped_guard.h"
 #include "loader.h"

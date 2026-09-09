@@ -15,7 +15,7 @@ static u32 Reference(u32 c)
 int main()
 {
     unsigned tested = 0;
-    for (Backend backend : {Backend::Scalar, Backend::AVX2, Backend::AVX512, Backend::Auto})
+    for (Backend backend : {Backend::Scalar, Backend::AVX2, Backend::AVX512, Backend::AVX512F, Backend::Auto})
     {
         printf("backend=%d native_supported=%d\n", int(backend), IsSupported(backend));
         const auto fn = Select(backend);

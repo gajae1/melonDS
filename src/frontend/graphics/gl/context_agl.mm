@@ -1,5 +1,5 @@
 #include "context_agl.h"
-#include "../duckstation_compat.h"
+#include "../compat.h"
 #include "../log.h"
 #include "loader.h"
 #include <dlfcn.h>

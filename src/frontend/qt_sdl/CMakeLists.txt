@@ -53,7 +53,7 @@ set(SOURCES_QT_SDL
     ../mic_blow.h
 
     ../glad/glad.c
-    ../duckstation/gl/context.cpp
+    ../graphics/gl/context.cpp
 
     ${CMAKE_SOURCE_DIR}/res/melon.qrc
 
@@ -98,6 +98,7 @@ fix_interface_includes(PkgConfig::SDL2 PkgConfig::LibArchive)
 add_compile_definitions(ARCHIVE_SUPPORT_ENABLED)
 
 add_executable(melonDS ${SOURCES_QT_SDL})
+melonds_configure_audio_kernels(melonDS)
 
 add_subdirectory("../../net"
     ${CMAKE_BINARY_DIR}/net)
@@ -108,7 +109,7 @@ if (WIN32)
     target_link_libraries(melonDS PUBLIC opengl32)
 
     target_sources(melonDS PRIVATE
-        ../duckstation/gl/context_wgl.cpp
+        ../graphics/gl/context_wgl.cpp
 
         ../glad/glad_wgl.c
     )
@@ -131,10 +132,10 @@ elseif (APPLE)
     find_library(OPENGL_LIB OpenGL)
     target_link_libraries(melonDS PRIVATE ${OPENGL_LIB})
     target_sources(melonDS PRIVATE
-        ../duckstation/gl/context_agl.mm
+        ../graphics/gl/context_agl.mm
     )
     set_source_files_properties(
-        ../duckstation/gl/context_agl.mm
+        ../graphics/gl/context_agl.mm
         PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations"
     )
 else()
@@ -154,15 +155,15 @@ else()
         target_compile_definitions(melonDS PRIVATE WAYLAND_ENABLED)
 
         target_sources(melonDS PRIVATE
-            ../duckstation/gl/context_egl_wayland.cpp
+            ../graphics/gl/context_egl_wayland.cpp
         )
     endif()
 
     target_sources(melonDS PRIVATE
-        ../duckstation/gl/context_egl.cpp
-        ../duckstation/gl/context_egl_x11.cpp
-        ../duckstation/gl/context_glx.cpp
-        ../duckstation/gl/x11_window.cpp
+        ../graphics/gl/context_egl.cpp
+        ../graphics/gl/context_egl_x11.cpp
+        ../graphics/gl/context_glx.cpp
+        ../graphics/gl/x11_window.cpp
 
         ../glad/glad_egl.c
         ../glad/glad_glx.c

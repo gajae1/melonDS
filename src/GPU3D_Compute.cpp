@@ -1222,7 +1222,8 @@ void ComputeRenderer3D::RenderFrame()
     
     glUseProgram(ShaderFinalPass[finalPassShader]);
     glDispatchCompute(ScreenWidth/32, ScreenHeight, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    // The 2D compositor and display capture sample this image as a texture.
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 
     glBindSampler(0, 0);
     glBindSampler(1, 0);

@@ -18,6 +18,7 @@
 
 #include "ARMJIT_Compiler.h"
 #include "../ARM.h"
+#include "../jit/CPUDetect.h"
 
 using namespace Gen;
 
@@ -268,15 +269,21 @@ void Compiler::A_Comp_MovOp()
 
 void Compiler::A_Comp_CLZ()
 {
+    Comp_AddCycles_C();
     OpArg rd = MapReg(CurInstr.A_Reg(12));
     OpArg rm = MapReg(CurInstr.A_Reg(0));
 
-    MOV(32, R(RSCRATCH), Imm32(32));
-    TEST(32, rm, rm);
-    FixupBranch skipZero = J_CC(CC_Z);
-    BSR(32, RSCRATCH, rm);
-    XOR(32, R(RSCRATCH), Imm8(0x1F)); // 31 - RSCRATCH
-    SetJumpTarget(skipZero);
+    if (cpu_info.bLZCNT)
+        LZCNT(32, RSCRATCH, rm); // Includes the defined result of 32 for zero.
+    else
+    {
+        MOV(32, R(RSCRATCH), Imm32(32));
+        TEST(32, rm, rm);
+        FixupBranch skipZero = J_CC(CC_Z);
+        BSR(32, RSCRATCH, rm);
+        XOR(32, R(RSCRATCH), Imm8(0x1F)); // 31 - RSCRATCH
+        SetJumpTarget(skipZero);
+    }
     MOV(32, rd, R(RSCRATCH));
 }
 

@@ -93,6 +93,53 @@ int main(int, char**)
                       [](s16 sample) { return sample == 0; }), "Muted audio is not silent");
     check(console.SPU.rateChanges == 0, "Device thread modifies the core resampler");
 
+    // Compare actual output and retained state through cutoff changes, bypass,
+    // mute and unmute. Fusing may change rounding by one output LSB.
+    int maxDifference = 0;
+    for (auto backend : {AudioLowPass::Backend::SSE2, AudioLowPass::Backend::FMA})
+    for (double rate : {44100.0, 48000.0, 96000.0})
+    {
+        AudioLowPass reference, accelerated;
+        reference.Init(rate, AudioLowPass::Backend::Scalar);
+        accelerated.Init(rate, backend);
+        u32 seed = 0x12345678;
+        std::array<s16, 514> expected, actual;
+        for (int block = 0; block < 300; ++block)
+        {
+            const double cutoff = block < 50 ? 20 : block < 100 ? 6000 :
+                                  block < 200 ? reference.WideOpenCutoff() : 1000;
+            expected.fill(poison);
+            for (int i = 0; i < 512; ++i)
+            {
+                seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+                expected[i + 1] = block >= 250 ? 0 : static_cast<s16>(seed);
+            }
+            actual = expected;
+            if (block >= 150 && block < 200)
+            {
+                reference.ProcessMuted(256, cutoff, 256 / rate);
+                accelerated.ProcessMuted(256, cutoff, 256 / rate);
+            }
+            else
+            {
+                reference.Process(expected.data() + 1, 256, cutoff, 256 / rate);
+                accelerated.Process(actual.data() + 1, 256, cutoff, 256 / rate);
+            }
+            for (int i = 1; i < 513; ++i)
+                maxDifference = std::max(maxDifference, std::abs(int(expected[i]) - int(actual[i])));
+            check(actual.front() == poison && actual.back() == poison, "FMA filter writes outside the stereo block");
+            for (int channel = 0; channel < 2; ++channel)
+            {
+                const double a = reference.ProcessSample(0, channel);
+                const double b = accelerated.ProcessSample(0, channel);
+                check(std::isfinite(b) && std::abs(a - b) < 0.01, "FMA filter state drifts or becomes non-finite");
+            }
+        }
+    }
+    check(maxDifference <= 1, "FMA changes output by more than one 16-bit LSB");
+    std::printf("FMA supported=%d; max stereo output difference=%d LSB\n",
+                AudioLowPass::IsSupported(AudioLowPass::Backend::FMA), maxDifference);
+
     // Measure an actual stereo signal, not a duplicate of the filter equations.
     AudioLowPass filter;
     filter.Init(48000);

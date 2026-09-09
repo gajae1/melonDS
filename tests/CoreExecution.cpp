@@ -8,10 +8,16 @@
 #include <cstring>
 #include <memory>
 #include <vector>
+#if defined(JIT_ENABLED) && defined(__x86_64__)
+#include "jit/CPUDetect.h"
+#endif
 using namespace melonDS;
 int main(int argc, char** argv) {
     const bool jit = argc > 1 && std::strcmp(argv[1], "interpreter") != 0;
     const bool fast = argc > 1 && std::strcmp(argv[1], "fastmem") == 0;
+#if defined(JIT_ENABLED) && defined(__x86_64__)
+    if (argc > 2 && std::strcmp(argv[2], "no-lzcnt") == 0) cpu_info.bLZCNT = false;
+#endif
 #ifndef JIT_ENABLED
     if (jit) return 77;
 #endif
@@ -144,6 +150,29 @@ int main(int argc, char** argv) {
         }
         cpu.JumpTo(0x02000200); // stop this CPU before checking the other
     }
+    // Re-enter already compiled CLZ instructions with every leading-zero count,
+    // including zero and aliased source/destination. Guest flags must survive.
+    nds->Reset();
+    nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
+    nds->ARM7.JumpTo(0x02000200);
+    nds->ARM9Write32(0x02000800, 0xE16F2F10); // clz r2,r0
+    nds->ARM9Write32(0x02000804, 0xE16F0F10); // clz r0,r0
+    nds->ARM9Write32(0x02000808, 0xEAFFFFFE);
+    nds->Start();
+    for (unsigned run = 0; run < 2; ++run)
+    for (unsigned zeros = 0; zeros <= 32; ++zeros)
+    {
+        nds->ARM9.R[0] = zeros == 32 ? 0 : 0xFFFFFFFFu >> zeros;
+        nds->ARM9.CPSR = 0xA00000DF;
+        nds->ARM9.JumpTo(0x02000800);
+        nds->RunFrame();
+        if (nds->ARM9.R[0] != zeros || nds->ARM9.R[2] != zeros ||
+            nds->ARM9.CPSR != 0xA00000DF)
+        {
+            std::fprintf(stderr, "CLZ execution/flags mismatch: zeros=%u run=%u\n", zeros, run);
+            return 15;
+        }
+    }
     // Branch following includes the self-branch twice. These different traces
     // have the same low 32 bits of XXH3_64bits (0x846DC331). Replacing code must
     // not restore the first program's JIT block.
@@ -207,5 +236,34 @@ int main(int argc, char** argv) {
             cpu.JumpTo(0x02000200);
         }
     }
-    std::printf("core=%s fastmem=%d lines=%u ARM-result=100 save-restore=PASS pixels=49152\n",jit?"JIT":"interpreter",fast,lines);
+    // CLZ and MOV both consume a code cycle. After warming each loop, they
+    // must advance the same number of iterations within a scheduled frame.
+    u32 iterations[2]{};
+    for (unsigned clz = 0; clz < 2; ++clz)
+    {
+        nds->Reset();
+        constexpr u32 loop[] = {0xE2800001, 0xE1A02001, 0xE2533001, 0x1AFFFFFB, 0xEAFFFFFE};
+        for (unsigned i = 0; i < std::size(loop); ++i)
+            nds->ARM9Write32(0x02000800 + 4 * i, loop[i]);
+        if (clz) nds->ARM9Write32(0x02000804, 0xE16F2F11);
+        nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
+        nds->ARM9.R[0] = 0;
+        nds->ARM9.R[1] = 0x12345678;
+        nds->ARM9.R[3] = 0x01000000;
+        nds->ARM9.JumpTo(0x02000800);
+        nds->ARM7.JumpTo(0x02000200);
+        nds->Start();
+        nds->RunFrame();
+        const u32 before = nds->ARM9.R[0];
+        nds->RunFrame();
+        iterations[clz] = nds->ARM9.R[0] - before;
+    }
+    if (iterations[0] != iterations[1])
+    {
+        std::fprintf(stderr, "CLZ guest timing differs from MOV: %u vs %u iterations/frame\n",
+                     iterations[1], iterations[0]);
+        return 16;
+    }
+    std::printf("core=%s fastmem=%d lines=%u ARM-result=100 save-restore=PASS pixels=49152 CLZ-timing=%u\n",
+                jit?"JIT":"interpreter",fast,lines,iterations[1]);
 }

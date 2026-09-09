@@ -21,7 +21,7 @@
 
 #if defined(JIT_ENABLED) && defined(__x86_64__)
 
-#include "../dolphin/x64Emitter.h"
+#include "../jit/x64Emitter.h"
 
 #include "../ARMJIT_Internal.h"
 #include "../ARMJIT_RegisterCache.h"

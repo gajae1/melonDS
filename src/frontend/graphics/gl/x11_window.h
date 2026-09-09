@@ -1,5 +1,5 @@
 #pragma once
-#include "../duckstation_compat.h"
+#include "../compat.h"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 

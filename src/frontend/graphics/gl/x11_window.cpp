@@ -1,6 +1,6 @@
 #include "x11_window.h"
 #include "../log.h"
-#include "../duckstation_compat.h"
+#include "../compat.h"
 #include <cstdio>
 Log_SetChannel(X11Window);
 

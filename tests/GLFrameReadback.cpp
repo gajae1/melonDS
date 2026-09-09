@@ -11,6 +11,128 @@
 #include <cstring>
 #include <algorithm>
 
+static PFNGLGENFRAMEBUFFERSPROC DriverGenFramebuffers;
+static std::vector<GLuint> RendererFramebuffers;
+
+static void APIENTRY RecordRendererFramebuffers(GLsizei count, GLuint* framebuffers)
+{
+    DriverGenFramebuffers(count, framebuffers);
+    RendererFramebuffers.insert(RendererFramebuffers.end(), framebuffers, framebuffers + count);
+}
+
+static PFNGLDISPATCHCOMPUTEPROC DriverDispatchCompute;
+static PFNGLMEMORYBARRIERPROC DriverMemoryBarrier;
+static GLbitfield BarriersAfterDispatch;
+
+static void APIENTRY RecordComputeDispatch(GLuint x, GLuint y, GLuint z)
+{
+    DriverDispatchCompute(x, y, z);
+    BarriersAfterDispatch = 0;
+}
+
+static void APIENTRY RecordMemoryBarrier(GLbitfield barriers)
+{
+    DriverMemoryBarrier(barriers);
+    BarriersAfterDispatch |= barriers;
+}
+
+static bool CheckComputeSampling(melonDS::NDS& nds, melonDS::GLRenderer& renderer)
+{
+    using namespace melonDS;
+    const char* vertex = R"(#version 140
+void main() {
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+})";
+    const char* fragment = R"(#version 140
+uniform sampler2D InputTex;
+out vec4 oColor;
+void main() {
+    oColor = texture(InputTex, gl_FragCoord.xy / vec2(256.0, 192.0));
+})";
+    GLuint program = 0;
+    if (!OpenGL::CompileVertexFragmentProgram(program, vertex, fragment,
+            "ComputeSamplerValidation", {}, {{"oColor", 0}})) return false;
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "InputTex"), 0);
+
+    GLuint output, framebuffer, vertexArray, sampler;
+    glGenTextures(1, &output);
+    glBindTexture(GL_TEXTURE_2D, output);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 256, 192);
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, output, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    bool passed = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glGenVertexArrays(1, &vertexArray);
+    glGenSamplers(1, &sampler);
+    glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DITHER);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    auto& gpu = nds.GPU.GPU3D;
+    gpu.RenderNumPolygons = 0;
+    gpu.RenderDispCnt = 0;
+    gpu.RenderClearAttr2 = 0x7FFF;
+    gpu.RenderFrameIdentical = false;
+    renderer.Start3DRendering();
+    GLint source = 0;
+    glGetIntegeri_v(GL_IMAGE_BINDING_NAME, 0, &source);
+    passed &= source != 0;
+    DriverDispatchCompute = glad_glDispatchCompute;
+    DriverMemoryBarrier = glad_glMemoryBarrier;
+    constexpr u32 clearColors[] = {0x001F, 0x03E0, 0x7C00, 0x7FFF};
+    constexpr u32 expected[] = {0xFF0000FF, 0xFF00FF00, 0xFFFF0000, 0xFFFFFFFF};
+    constexpr int frames = 32;
+    size_t mismatches = 0;
+    int missingBarriers = 0;
+    std::vector<u32> pixels(256 * 192);
+    for (int frame = 0; frame < frames; ++frame)
+    {
+        gpu.RenderClearAttr1 = (31u << 16) | clearColors[frame % 4];
+        BarriersAfterDispatch = 0;
+        glad_glDispatchCompute = RecordComputeDispatch;
+        glad_glMemoryBarrier = RecordMemoryBarrier;
+        renderer.Start3DRendering();
+        glad_glDispatchCompute = DriverDispatchCompute;
+        glad_glMemoryBarrier = DriverMemoryBarrier;
+        // OpenGL 4.3 section 7.12.2 requires visibility for this consumer even
+        // on drivers where the pixel comparison happens to pass without it.
+        missingBarriers += !(BarriersAfterDispatch & GL_TEXTURE_FETCH_BARRIER_BIT);
+
+        // Sample the production image immediately: no fixture barrier, finish,
+        // or CPU readback between the image store and the sampler draw.
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glViewport(0, 0, 256, 192);
+        glUseProgram(program);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, source);
+        glBindSampler(0, sampler);
+        glBindVertexArray(vertexArray);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        // Read the sampler's separate raster output, not the image-store target.
+        // This also completes each sample before the next image overwrite.
+        glReadPixels(0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        for (u32 pixel : pixels) mismatches += pixel != expected[frame % 4];
+    }
+    glBindSampler(0, 0);
+    glDeleteSamplers(1, &sampler);
+    glDeleteVertexArrays(1, &vertexArray);
+    glDeleteFramebuffers(1, &framebuffer);
+    glDeleteTextures(1, &output);
+    glDeleteProgram(program);
+    std::printf("compute_sampler_frames=%d pixel_mismatches=%zu missing_texture_fetch_barriers=%d\n",
+                frames, mismatches, missingBarriers);
+    return passed && !mismatches && !missingBarriers && glGetError() == GL_NO_ERROR;
+}
+
 static bool CheckComputeSettings(melonDS::NDS& nds, melonDS::GLRenderer& renderer)
 {
     using namespace melonDS;
@@ -100,7 +222,12 @@ int main(int argc, char** argv)
         args.JIT = std::nullopt;
         auto nds = std::make_unique<NDS>(std::move(args));
         nds->Reset();
+        // Record real driver objects created by the renderer, excluding the
+        // fixture's own readback framebuffer. Keep the context alive at teardown.
+        DriverGenFramebuffers = glad_glGenFramebuffers;
+        glad_glGenFramebuffers = RecordRendererFramebuffers;
         nds->SetRenderer(std::make_unique<GLRenderer>(*nds, compute));
+        glad_glGenFramebuffers = DriverGenFramebuffers;
         auto* renderer = dynamic_cast<GLRenderer*>(&nds->GetRenderer());
         if (!renderer) return 1;
         RendererSettings settings{1, false, false, false};
@@ -152,8 +279,18 @@ int main(int argc, char** argv)
         if (glGetError() != GL_NO_ERROR) return 6;
         std::sort(samples.begin(), samples.end());
         std::printf("frame_pixels=%zu capture_pixels=49152 readback_median_us=%.3f PASS\n", pixels.size(), (samples[14]+samples[15])/2);
+        if (compute && !CheckComputeSampling(*nds, *renderer)) return 9;
         if (compute && !CheckComputeSettings(*nds, *renderer)) return 7;
     }
+    size_t liveFramebuffers = 0;
+    for (GLuint framebuffer : RendererFramebuffers)
+    {
+        if (!glIsFramebuffer(framebuffer)) continue;
+        std::fprintf(stderr, "Renderer framebuffer %u survived renderer destruction\n", framebuffer);
+        ++liveFramebuffers;
+    }
+    std::printf("renderer_framebuffers=%zu live_after_teardown=%zu\n", RendererFramebuffers.size(), liveFramebuffers);
+    if (RendererFramebuffers.empty() || liveFramebuffers || glGetError() != GL_NO_ERROR) return 8;
     SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
     return 0;
 }

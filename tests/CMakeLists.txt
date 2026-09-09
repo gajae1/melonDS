@@ -100,6 +100,10 @@ if (TARGET core)
     if (ENABLE_JIT)
         add_test(NAME core-jit-execution COMMAND CoreExecution jit)
         add_test(NAME core-jit-fastmem-execution COMMAND CoreExecution fastmem)
+        if (ARCHITECTURE STREQUAL "x86_64")
+            add_test(NAME core-jit-lzcnt-fallback COMMAND CoreExecution jit no-lzcnt)
+            set_tests_properties(core-jit-lzcnt-fallback PROPERTIES TIMEOUT 30)
+        endif()
     endif()
     set_tests_properties(core-interpreter-execution PROPERTIES TIMEOUT 30)
     if (ENABLE_JIT)
@@ -132,6 +136,13 @@ if (MELONDS_BUILD_MICROBENCHMARKS)
     add_executable(PixelConvertBenchmark PixelConvertBenchmark.cpp ../src/PixelConvert.cpp)
     target_include_directories(PixelConvertBenchmark PRIVATE ../src)
     melonds_configure_pixel_kernels(PixelConvertBenchmark)
+    add_executable(AudioFilterBenchmark AudioFilterBenchmark.cpp)
+    target_include_directories(AudioFilterBenchmark PRIVATE ../src/frontend/qt_sdl)
+    melonds_configure_audio_kernels(AudioFilterBenchmark)
+    if (TARGET core AND ENABLE_JIT AND ARCHITECTURE STREQUAL "x86_64")
+        add_executable(JitCLZBenchmark JitCLZBenchmark.cpp PlatformSync.cpp PlatformHeadless.cpp)
+        target_link_libraries(JitCLZBenchmark PRIVATE core Threads::Threads)
+    endif()
 endif()
 
 option(MELONDS_TEST_GPU "Run tests requiring a real OpenGL context" OFF)
@@ -164,6 +175,31 @@ add_custom_command(
 add_executable(CountLeadingZeros CountLeadingZeros.cpp "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc")
 target_include_directories(CountLeadingZeros PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME arm-clz-semantics COMMAND CountLeadingZeros)
+
+# Run the real A64 emitter on the local host and check the generated integer
+# instruction bytes. This is deliberately separate from native ARM execution.
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitOp2.inc"
+           "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitArithmetic.inc"
+           "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitFlags.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/ARMJIT_A64/ARMJIT_Compiler.h" "struct Op2"
+        "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitOp2.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/ARMJIT_A64/ARMJIT_ALU.cpp"
+        "void Compiler::Comp_Arithmetic(int op, bool S, ARM64Reg rd, ARM64Reg rn, Op2 op2)"
+        "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitArithmetic.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/ARMJIT_A64/ARMJIT_ALU.cpp"
+        "void Compiler::Comp_RetriveFlags(bool retriveCV)"
+        "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitFlags.inc"
+    DEPENDS ExtractFunction.py ../src/ARMJIT_A64/ARMJIT_Compiler.h ../src/ARMJIT_A64/ARMJIT_ALU.cpp
+    VERBATIM)
+add_executable(ARM64JitArithmetic ARM64JitArithmetic.cpp ../src/jit/Arm64Emitter.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitOp2.inc" "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitArithmetic.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitFlags.inc")
+target_include_directories(ARM64JitArithmetic PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME arm64-jit-arithmetic-encoding COMMAND ARM64JitArithmetic)
 
 if (TARGET core)
     add_executable(CartROMBounds CartROMBounds.cpp PlatformSync.cpp PlatformHeadless.cpp)

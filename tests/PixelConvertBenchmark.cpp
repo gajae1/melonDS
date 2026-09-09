@@ -23,9 +23,9 @@ int main()
     std::vector<u32> source(count), output(count);
     std::mt19937 rng(12345);
     for (auto& pixel : source) pixel = rng() & 0x003F3F3F;
-    std::array backends{Backend::Scalar, Backend::AVX2, Backend::AVX512};
+    std::vector<Backend> backends{Backend::Scalar, Backend::AVX2, Backend::AVX512, Backend::AVX512F};
+    std::erase_if(backends, [](Backend backend) { return !IsSupported(backend); });
     for (auto backend : backends) {
-        if (!IsSupported(backend)) { std::fprintf(stderr, "unsupported backend=%d\n", int(backend)); return 77; }
         std::memcpy(output.data(), source.data(), count * sizeof(u32));
         Select(backend)(output.data(), count);
     }

@@ -22,7 +22,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <numbers>
+#if MELONDS_AUDIO_SSE2 || MELONDS_AUDIO_FMA
+#include <immintrin.h>
+#endif
 
 // From Davey Hughes' melonDS PR #2738, revision 7f97562599a74701ce9222e0f614aa32502de10a.
 // Used independently of that PR's time-stretching and audio queue changes.
@@ -33,14 +37,35 @@
 class AudioLowPass
 {
 public:
+    enum class Backend { Auto, Scalar, FMA, SSE2 };
+
+    static bool IsSupported(Backend backend)
+    {
+        if (backend == Backend::Auto || backend == Backend::Scalar) return true;
+#if MELONDS_AUDIO_SSE2
+        if (backend == Backend::SSE2) return true; // Baseline on x64.
+#endif
+#if MELONDS_AUDIO_FMA
+        // FMA is a separate CPUID feature, and requires OS-enabled AVX state.
+        if (backend == Backend::FMA)
+            return __builtin_cpu_supports("avx") && __builtin_cpu_supports("fma");
+#endif
+        return false;
+    }
+
     static constexpr double kSmoothingTau = 0.05;      // cutoff smoother, seconds
     static constexpr double kBypassThreshold = 0.995;  // fraction of wide-open
     // section Q's for a fourth-order Butterworth cascade
     static constexpr double kSectionQ[2] = {0.54119610014619698, 1.3065629648763766};
     static constexpr double kMinCutoff = 20.0;
 
-    void Init(double sampleRate)
+    void Init(double sampleRate, Backend backend = Backend::Auto)
     {
+        Kernel = backend;
+        if (Kernel == Backend::Auto)
+            Kernel = IsSupported(Backend::FMA) ? Backend::FMA :
+                     IsSupported(Backend::SSE2) ? Backend::SSE2 : Backend::Scalar;
+        if (!IsSupported(Kernel)) Kernel = Backend::Scalar;
         SampleRate = sampleRate;
         WideOpen = std::max(0.45 * sampleRate, kMinCutoff);
         for (int s = 0; s < 2; s++)
@@ -67,19 +92,7 @@ public:
         double from[2][5], to[2][5];
         BeginBlock(targetHz, blockSeconds, from, to);
         bool bypass = Bypassed();
-
-        for (int i = 0; i < numFrames; i++)
-        {
-            StepCoefficients(from, to, (double)(i + 1) / numFrames);
-            for (int ch = 0; ch < 2; ch++)
-            {
-                // runs even when bypassed: the state must stay in step with
-                // the signal, or re-engaging would click
-                double y = ProcessSample(samples[(i*2)+ch], ch);
-                if (!bypass) samples[(i*2)+ch] = Saturate(y);
-            }
-        }
-
+        ProcessBlock(samples, numFrames, from, to, bypass);
         EndBlock(to);
     }
 
@@ -93,13 +106,7 @@ public:
         double from[2][5], to[2][5];
         BeginBlock(targetHz, blockSeconds, from, to);
 
-        for (int i = 0; i < numFrames; i++)
-        {
-            StepCoefficients(from, to, (double)(i + 1) / numFrames);
-            for (int ch = 0; ch < 2; ch++)
-                ProcessSample(0.0, ch);
-        }
-
+        ProcessBlock(nullptr, numFrames, from, to, true);
         EndBlock(to);
     }
 
@@ -126,6 +133,91 @@ public:
     }
 
 private:
+    void ProcessBlock(int16_t* samples, int numFrames, const double from[2][5],
+                      const double to[2][5], bool bypass)
+    {
+        const bool changing = !std::equal(from[0], from[0] + 5, to[0]) ||
+                              !std::equal(from[1], from[1] + 5, to[1]);
+#if MELONDS_AUDIO_FMA
+        if (Kernel == Backend::FMA)
+        {
+            ProcessBlockFMA(samples, numFrames, from, to, bypass, changing);
+            return;
+        }
+#endif
+        for (int i = 0; i < numFrames; i++)
+        {
+            if (changing) StepCoefficients(from, to, (double)(i + 1) / numFrames);
+            double stereo[2];
+            for (int ch = 0; ch < 2; ch++)
+            {
+                // Keep the state current during bypass and silence too.
+                stereo[ch] = ProcessSample(samples ? samples[i * 2 + ch] : 0.0, ch);
+            }
+            if (!bypass)
+            {
+#if MELONDS_AUDIO_SSE2
+                if (Kernel == Backend::SSE2)
+                {
+                    StoreStereo(samples + i * 2, _mm_loadu_pd(stereo));
+                    continue;
+                }
+#endif
+                samples[i * 2] = Saturate(stereo[0]);
+                samples[i * 2 + 1] = Saturate(stereo[1]);
+            }
+        }
+    }
+
+#if MELONDS_AUDIO_SSE2 || MELONDS_AUDIO_FMA
+    static void StoreStereo(int16_t* samples, __m128d y)
+    {
+        // Clamp before integer conversion, then round halfway away from zero.
+        y = _mm_min_pd(_mm_max_pd(y, _mm_set1_pd(-32768.0)), _mm_set1_pd(32767.0));
+        const __m128d half = _mm_or_pd(_mm_and_pd(y, _mm_set1_pd(-0.0)), _mm_set1_pd(0.5));
+        const __m128i rounded = _mm_cvttpd_epi32(_mm_add_pd(y, half));
+        const int packed = _mm_cvtsi128_si32(_mm_packs_epi32(rounded, rounded));
+        std::memcpy(samples, &packed, sizeof(packed));
+    }
+#endif
+
+#if MELONDS_AUDIO_FMA
+    __attribute__((target("avx,fma")))
+    void ProcessBlockFMA(int16_t* samples, int numFrames, const double from[2][5],
+                         const double to[2][5], bool bypass, bool changing)
+    {
+        __m128d z1[2], z2[2];
+        for (int s = 0; s < 2; ++s)
+        {
+            z1[s] = _mm_loadu_pd(Stages[s].z1);
+            z2[s] = _mm_loadu_pd(Stages[s].z2);
+        }
+        for (int i = 0; i < numFrames; i++)
+        {
+            if (changing) StepCoefficients(from, to, (double)(i + 1) / numFrames);
+            __m128d y = samples ? _mm_setr_pd(samples[i * 2], samples[i * 2 + 1]) : _mm_setzero_pd();
+            for (int s = 0; s < 2; ++s)
+            {
+                const auto& stage = Stages[s];
+                const __m128d x = y;
+                y = _mm_fmadd_pd(_mm_set1_pd(stage.b0), x, z1[s]);
+                z1[s] = _mm_add_pd(
+                    _mm_fnmadd_pd(_mm_set1_pd(stage.a1), y, _mm_mul_pd(_mm_set1_pd(stage.b1), x)),
+                    z2[s]);
+                z2[s] = _mm_fnmadd_pd(_mm_set1_pd(stage.a2), y,
+                                     _mm_mul_pd(_mm_set1_pd(stage.b2), x));
+            }
+            if (!bypass)
+                StoreStereo(samples + i * 2, y);
+        }
+        for (int s = 0; s < 2; ++s)
+        {
+            _mm_storeu_pd(Stages[s].z1, z1[s]);
+            _mm_storeu_pd(Stages[s].z2, z2[s]);
+        }
+    }
+#endif
+
     static int16_t Saturate(double y)
     {
         long v = std::lround(y);
@@ -207,6 +299,7 @@ private:
     double WideOpen = 21600.0;
     double CurCutoff = 21600.0;
     Biquad Stages[2];
+    Backend Kernel = Backend::Scalar;
 };
 
 #endif // AUDIOLOWPASS_H

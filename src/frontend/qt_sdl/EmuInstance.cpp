@@ -27,6 +27,7 @@
 #include <fstream>
 
 #include <QDateTime>
+#include <QSaveFile>
 
 #include <zstd.h>
 #ifdef ARCHIVE_SUPPORT_ENABLED
@@ -771,41 +772,23 @@ bool EmuInstance::loadState(const std::string& filename)
 
 bool EmuInstance::saveState(const std::string& filename)
 {
-    Platform::FileHandle* file = Platform::OpenFile(filename, Platform::FileMode::Write);
-
-    if (file == nullptr)
-    { // If the file couldn't be opened...
-        return false;
-    }
-
     Savestate state;
-    if (state.Error)
-    { // If there was an error creating the state (and allocating its memory)...
-        Platform::CloseFile(file);
-        return false;
-    }
+    if (state.Error) return false;
 
-    // Write the savestate to the in-memory buffer
-    nds->DoSavestate(&state);
+    // Finish serialization before touching the existing file.
+    if (!nds->DoSavestate(&state) || state.Error) return false;
 
-    if (state.Error)
+    QSaveFile file(QString::fromStdString(filename));
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(static_cast<const char*>(state.Buffer()), state.Length()) != state.Length() ||
+        !file.commit())
     {
-        Platform::CloseFile(file);
-        return false;
-    }
-
-    if (Platform::FileWrite(state.Buffer(), state.Length(), 1, file) == 0)
-    { // Write the Savestate buffer to the file. If that fails...
         Platform::Log(Platform::Error,
-                      "Failed to write %d-byte savestate to %s\n",
-                      state.Length(),
-                      filename.c_str()
+                      "Failed to save state to %s: %s\n",
+                      filename.c_str(), file.errorString().toUtf8().constData()
         );
-        Platform::CloseFile(file);
         return false;
     }
-
-    Platform::CloseFile(file);
 
     return true;
 }

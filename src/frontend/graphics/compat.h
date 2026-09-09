@@ -1,7 +1,7 @@
-#ifndef DUCKSTATION_COMPAT_H
-#define DUCKSTATION_COMPAT_H
+#ifndef GRAPHICS_COMPAT_H
+#define GRAPHICS_COMPAT_H
 
-#include "../types.h"
+#include "../../types.h"
 
 #include <assert.h>
 
