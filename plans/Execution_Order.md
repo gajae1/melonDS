@@ -29,6 +29,8 @@
 
 [1.1.12 증분](releases/1.1.12.md)은 FS-15 편집 사본·직렬화 사전 검사·Qt 파일 commit과 실패 복구·실행 목록 갱신을 연결한다. 다음은 NP-21의 D1/D2 조건 복원과 C5 수명을 생산 실행기·정상 코드·명세와 대조한다. 결함을 가정해 게스트 의미를 먼저 바꾸지 않는다. LAN/LocalMP 수명·GBA EEPROM·BT와 앞선 실제 게임·장치 수락은 남은 독립 과제로 유지한다.
 
+[1.1.13 증분](releases/1.1.13.md)은 NP-21의 D1/D2 매 반복 조건 복원·D0 기본 상태를 재현·수정하고 C5 원저자 자료를 대조한다. NitroHax의 영속 카운터가 Datel의 수명 증거는 아니므로 Datel 원 핸들러·실기 판정은 남긴다. 다음은 CJ-03 warmed ALU·shift·부분 flags와 CJ-06 빈 LDM/STM 목록의 CPU별 정의·실행 대조다. 현재 환경에서 독립 검증 가능한 core/JIT 경계를 진행하며 LAN·GBA EEPROM·BT와 장치 수락을 완료 처리하지 않는다.
+
 ## 작업 소유권
 
 EmuInstance.cpp를 건드리는 상태 로드·ROM 교체·Zstd 변경은 한 작성자가 순차 통합한다. 코어 NDS.cpp와 Config.cpp의 좁은 수정은 독립적으로 진행할 수 있다.

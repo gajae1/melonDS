@@ -219,7 +219,8 @@ if (TARGET core)
     add_executable(ARExecution ARExecution.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(ARExecution PRIVATE core Threads::Threads)
     foreach(case IN ITEMS controls loop-control empty odd literal-short literal-overflow skipped-overflow
-            cancel-loop cancel-copy cancel-literal pending-cancel unsupported)
+            cancel-loop cancel-copy cancel-literal pending-cancel unsupported
+            next-d1 next-d2 next-mixed condition-end loop-replace counter-mask)
         add_test(NAME ar-execution-${case} COMMAND ARExecution ${case})
         set_tests_properties(ar-execution-${case} PROPERTIES TIMEOUT 10)
     endforeach()

@@ -91,6 +91,83 @@ int main(int argc, char** argv)
         core->Execute({});
         check(core->writes.empty(), "An empty code changed guest memory");
     }
+    else if (mode == "next-d1" || mode == "next-d2")
+    {
+        const bool flush = mode == "next-d2";
+        for (u32 count : {0u, 2u})
+        {
+            // There is deliberately no ENDIF in the loop: NEXT restores the
+            // C0 condition state before each iteration. Data/offset survive
+            // those iterations, and only a completed D2 flushes them.
+            core->Execute({0x52000200, 0, 0xD5000000, 0x20, 0xC0000000, count,
+                           0xD4000000, 1, 0xD6000000, 0x02000100,
+                           0x52000200, 1, flush ? 0xD2000000u : 0xD1000000u, 0,
+                           0xC6000000, 0x02000300, 0xD6000000, 0x02000400});
+            check(core->writes.size() == count + 3, "NEXT skipped later iterations after a false condition");
+            for (u32 i = 0; i <= count; ++i)
+                check(core->ARM7Read32(0x02000100 + 4 * i) == 0x21 + i,
+                      "NEXT reset data/offset early or failed to execute the loop body");
+            const u32 offset = flush ? 0 : 4 * (count + 1);
+            check(core->ARM7Read32(0x02000300) == offset &&
+                  core->ARM7Read32(0x02000400 + offset) == (flush ? 0 : 0x21 + count),
+                  "Completed D1/D2 lost its distinct register preservation/flush behavior");
+            check(core->AREngine.Cheats[0].Enabled && core->AREngine.TakeErrors().empty(),
+                  "Valid conditional loop was rejected");
+        }
+    }
+    else if (mode == "next-mixed")
+    {
+        core->ARM7Write32(0x02000108, 1);
+        for (u32 next : {0xD1000000u, 0xD2000000u})
+        {
+            core->ARM7Write32(0x02000200, 0);
+            // Three indexed conditions are false/true/false. Only the middle
+            // element writes, so an unconditional loop body is also wrong.
+            core->Execute({0xD3000000, 0x02000100, 0xC0000000, 2,
+                           0xDC000000, 4, 0x50000000, 1,
+                           0xC6000000, 0x02000200, next, 0,
+                           0xD2000000, 0});
+            check(core->writes.size() == 1 && core->ARM7Read32(0x02000200) == 0x02000108,
+                  "Loop did not reevaluate indexed false/true/false conditions");
+        }
+    }
+    else if (mode == "condition-end")
+    {
+        core->Execute({0xD0000000, 0, 0x02000100, 0x11,
+                       0x52000200, 1, 0x02000104, 0x22,
+                       0xD0000000, 0, 0xD0000000, 0, 0x02000108, 0x33,
+                       0xD2000000, 0, 0xD0000000, 0, 0x0200010C, 0x44});
+        check(core->writes.size() == 3 && core->ARM7Read32(0x02000100) == 0x11 &&
+              core->ARM7Read32(0x02000104) == 0 && core->ARM7Read32(0x02000108) == 0x33 &&
+              core->ARM7Read32(0x0200010C) == 0x44,
+              "ENDIF without a prior condition incorrectly disabled following writes");
+    }
+    else if (mode == "counter-mask")
+    {
+        // These comparisons have the same result for every counter value.
+        // They verify C5 operands/condition exit, not its unresolved lifetime
+        // across handlers, definitions, frames, reset, or savestates.
+        core->Execute({0xC5000000, 0x00000000, 0x02000100, 0x11, 0xD0000000, 0,
+                       0xC5000000, 0x00010000, 0x02000104, 0x22, 0xD0000000, 0,
+                       0xC5000000, 0x00020001, 0x02000108, 0x33, 0xD0000000, 0,
+                       0x0200010C, 0x44});
+        check(core->writes.size() == 2 && core->ARM7Read32(0x02000100) == 0x11 &&
+              core->ARM7Read32(0x02000104) == 0 && core->ARM7Read32(0x02000108) == 0 &&
+              core->ARM7Read32(0x0200010C) == 0x44,
+              "C5 mask/compare operands or condition termination changed");
+    }
+    else if (mode == "loop-replace")
+    {
+        // A second C0 replaces the one loop register set; it does not create
+        // nested loops. A trailing NEXT cannot resurrect the old repeat count.
+        core->Execute({0xD5000000, 0x10, 0xC0000000, 7, 0xC0000000, 1,
+                       0xD4000000, 1, 0xD6000000, 0x02000100, 0xD1000000, 0,
+                       0xD1000000, 0, 0xD4000000, 1, 0xD6000000, 0x02000100,
+                       0xD2000000, 0});
+        check(core->writes.size() == 3 && core->ARM7Read32(0x02000100) == 0x11 &&
+              core->ARM7Read32(0x02000104) == 0x12 && core->ARM7Read32(0x02000108) == 0x13,
+              "Replacing C0 or completed D1 revived a previous loop");
+    }
     else if (mode == "odd" || mode == "literal-short" || mode == "literal-overflow" || mode == "skipped-overflow")
     {
         if (mode == "odd") core->Execute({0x02000100, 0x11111111, 0x02000104});

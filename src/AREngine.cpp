@@ -248,8 +248,8 @@ AREngine::Result AREngine::RunCheat(const ARCode& arcode)
         case 0xC0: // FOR 0..b
             loopstart = code; // points to the first opcode after the FOR
             loopcount = b;
-            loopcond = cond;           // checkme
-            loopcondstack = condstack; // (GBAtek is not very clear there)
+            loopcond = cond;
+            loopcondstack = condstack;
             break;
 
         case 0xC4: // offset = pointer to C4000000 opcode
@@ -282,35 +282,31 @@ AREngine::Result AREngine::RunCheat(const ARCode& arcode)
             break;
 
         case 0xD0: // ENDIF
-            cond = condstack & 0x1;
+            // With no previous condition, an ENDIF keeps executing codes.
+            cond = condstack ? (condstack & 0x1) : 1;
             condstack >>= 1;
             break;
 
         case 0xD1: // NEXT
-            if (loopcount > 0)
-            {
-                loopcount--;
-                code = loopstart;
-            }
-            else
-            {
-                cond = loopcond;
-                condstack = loopcondstack;
-            }
-            break;
-
         case 0xD2: // NEXT+FLUSH
+            // NEXT restores the C0 condition state for every iteration;
+            // a false IF in the body must not suppress later iterations.
+            cond = loopcond;
+            condstack = loopcondstack;
             if (loopcount > 0)
             {
                 loopcount--;
                 code = loopstart;
             }
-            else
+            else if (op == 0xD2)
             {
                 offset = 0;
                 datareg = 0;
                 condstack = 0;
                 cond = 1;
+                loopstart = code;
+                loopcondstack = 0;
+                loopcond = 1;
             }
             break;
 
