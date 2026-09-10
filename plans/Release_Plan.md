@@ -310,6 +310,8 @@ FS-15 편집 사본·직렬화·원자적 저장과 실패 복구는 [1.1.12 증
 
 [1.1.18 증분](releases/1.1.18.md)은 CJ-04의 권한 취소 후 cached 정적 분기가 금지 코드를 실행하는 반례를 수정한다. 같은 페이지 변경·전체 data abort·Thumb·실기/native A64를 남기고 CJ-08의 실제 장치 이벤트는 다음 증분으로 이어간다.
 
+[1.1.19 증분](releases/1.1.19.md)은 CJ-08의 실제 Timer0→HALT→ARM9 IRQ에서 F mask 보존을 수정한다. IME/IE/CPSR 차단 조건·warmed guest를 대조했으며 ARM7/Thumb·DMA/sleep·절대 실기 타이밍은 후속이다.
+
 <a id="v16"></a>
 
 ## 1.1.16 — OpenGL context·캡처·자원 수명
@@ -329,6 +331,8 @@ FS-15 편집 사본·직렬화·원자적 저장과 실패 복구는 [1.1.12 증
 <a id="v17"></a>
 
 ## 1.1.17 — Compute renderer 정확성·동기화
+
+이 책임 범위 중 GR-02의 캡처 sampler와 GR-03의 capability 판정·shader 실패·프런트엔드 복구는 [실제 1.1.19 증분](releases/1.1.19.md)에 반영했다. 설정창 지원 상태·실제 3.2-only 장치·비활성 binary cache·전체 Qt event loop는 별도 수락이며 아래 전체 계획의 완료가 아니다.
 
 기본 과제: GR-02, GR-03, GR-07. 공동·후속: GR-01, GR-06, GR-08.
 

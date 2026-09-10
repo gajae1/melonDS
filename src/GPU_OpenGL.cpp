@@ -928,7 +928,7 @@ bool GLRenderer::NeedsShaderCompile()
     return Rend3D->NeedsShaderCompile();
 }
 
-void GLRenderer::ShaderCompileStep(int& current, int& count)
+bool GLRenderer::ShaderCompileStep(int& current, int& count)
 {
     return Rend3D->ShaderCompileStep(current, count);
 }

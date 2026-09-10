@@ -316,3 +316,26 @@ physical latency or listening quality. Device results are opt-in, outside
 CTest, require authorized local game/BIOS inputs, and must not use dummy-driver
 timing as evidence about a physical backend. Keep enough frames to reach a
 known scene; a uniform transition frame fails the existing smoke acceptance.
+
+`CoreExecution device-execution` runs a generated ARM9 guest through real Timer0
+MMIO, HALT and IRQ entry. Five cold/warmed phases check F preservation, IME/IE
+masking and CPSR.I-masked wake without handler entry, including guest MRS, banked
+LR/SPSR and no handler before the first timer overflow. The three interpreter,
+JIT and fastmem CTest entries do not establish ARM7/Thumb, DMA/sleep coincidences
+or physical interrupt latency.
+
+`GLFrameReadback compute` checks real source-B capture sampler variants for both
+128/256 sizes and S/T clamp/repeat/mirror, ordinary-texture and capture-return
+transitions. A dispatch observer reads sampler bindings without repairing them;
+the real driver renders five polygons per case and 125 interior pixels are checked.
+
+`GLFrameReadback compute-failure <case>` supports control, capability, compile,
+link, recompile and frontend. Compile/link faults use real driver failure status;
+capability overrides the version query of a real 4.3 context. Invalid dispatch
+attempts are counted and suppressed, not sent to the GPU. Normal rendering pixels
+are checked separately above. The frontend case extracts current updateRenderer
+and compileShaders and uses the real core/GPU with isolated config reads and OSD
+delivery. It checks software frames, one error notice, successful reselection,
+recompile failure and repeated updates after capability fallback. It does not run
+the Qt event loop or a 3.2-only device. Binary shader caching is currently disabled;
+scale recompilation is not a cache-hit test. See [1.1.19](../plans/releases/1.1.19.md).

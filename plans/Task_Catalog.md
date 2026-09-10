@@ -13,7 +13,7 @@
 | CJ-05 | [DTCM remap 구간](workstreams/01-core-jit.md#CJ-05) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.17 DTCM 자체 view·이전 RAM 구간·작은 bank offset 수정과 Windows 실제 view/guest 회귀; 다른 OS·native A64·resize/save-load·MPU 후속 |
 | CJ-06 | [빈 LDM/STM reg list](workstreams/01-core-jit.md#CJ-06) | 실행 재현 | P2 | [1.1.14](Release_Plan.md#v14) | — | 1.1.16 ARM/Thumb LDM/STM의 CPU별 전송·WB·CPSR와 JIT fallback 구현·로컬 회귀; 빈 PUSH/POP·ARM9 실측·절대 타이밍·native A64 후속 |
 | CJ-07 | [callback 중 event 취소](workstreams/01-core-jit.md#CJ-07) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.17 취소된 due event 실행 수정, 정상·재예약·교체·periodic·snapshot 6개 case 통과; IRQ/DMA/sleep 장치 경계는 CJ-08 후속 |
-| CJ-08 | [IRQ·DMA·sleep 경계](workstreams/01-core-jit.md#CJ-08) | 관찰/확장 | P2 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
+| CJ-08 | [IRQ·DMA·sleep 경계](workstreams/01-core-jit.md#CJ-08) | 실행 재현 | P2 | [1.1.15](Release_Plan.md#v15) | — | 1.1.19 Timer0/HALT/ARM9 IRQ의 F 보존 수정·IME/IE/CPSR 대조와 warmed guest 검증; ARM7/Thumb·DMA/sleep·실기 latency 후속 |
 | CJ-09 | [savestate event 값 검증](workstreams/01-core-jit.md#CJ-09) | 정적 후보 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.03 구현·로컬 회귀; DSi HLE 실사용 후속 |
 | CJ-10 | [부분 load 실패 복원](workstreams/01-core-jit.md#CJ-10) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | FS-01 | 1.1.04 load·undo 복원·정지 구현, 합성 core/JIT 회귀; 카트·DSi·게임 수락 후속 |
 | CJ-11 | [GDB SPSR bank 접근](workstreams/01-core-jit.md#CJ-11) | 정적 후보 | P1 | [1.1.10](Release_Plan.md#v10) | — | 미착수 |
@@ -28,8 +28,8 @@
 | CJ-20 | [입력·RTC·다중 인스턴스 시간 정책](workstreams/01-core-jit.md#CJ-20) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
 | CJ-21 | [DSi 동일 조건 upstream 부팅 비교](workstreams/01-core-jit.md#CJ-21) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | AD-17 | 미착수 |
 | GR-01 | [배율 변경의 pending capture 보존](workstreams/02-renderers.md#GR-01) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
-| GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 정적 후보 | P1 | [1.1.17](Release_Plan.md#v17) | — | 미착수 |
-| GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 정적 후보 | P1 | [1.1.17](Release_Plan.md#v17) | — | 미착수 |
+| GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capture 종류별 sampler unit 수정; 실제 128/256·S/T wrap·일반 texture 왕복의 binding/픽셀 검증; 다른 driver·비표준 capture·실기 후속 |
+| GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capability 판정·shader 실패·software 복구·재선택 검증; 실제 3.2-only 장치·설정창 표시·전체 Qt event loop·비활성 binary cache 후속 |
 | GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
 | GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
 | GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 관찰/확장 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |

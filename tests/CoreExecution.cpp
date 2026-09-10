@@ -18,6 +18,7 @@ int TestThumbShiftTiming(NDSArgs&& args, bool jit);
 int TestBlockTransferExecution(NDSArgs&& args, bool jit);
 int TestDTCMExecution(NDSArgs&& args, bool jit);
 int TestMPUExecution(NDSArgs&& args, bool jit);
+int TestDeviceExecution(NDSArgs&& args, bool jit);
 int TestSchedulerExecution(NDSArgs&& args);
 
 static int TestSchedulerSavestate(NDSArgs&& args)
@@ -149,6 +150,8 @@ int main(int argc, char** argv) {
         return TestDTCMExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-execution") == 0)
         return TestMPUExecution(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "device-execution") == 0)
+        return TestDeviceExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
         return TestSchedulerSavestate(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "scheduler-execution") == 0)

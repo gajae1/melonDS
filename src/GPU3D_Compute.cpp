@@ -68,118 +68,91 @@ bool ComputeRenderer3D::CompileShader(GLuint& shader, const std::string& source,
     shaderSource += ComputeRendererShaders::Common;
     shaderSource += source;
 
-    return OpenGL::CompileComputeProgram(shader, shaderSource.c_str(), shaderName.c_str());
+    if (!OpenGL::CompileComputeProgram(shader, shaderSource.c_str(), shaderName.c_str()))
+    {
+        ShaderCompileFailed = true;
+        return false;
+    }
+    return true;
 }
 
-void ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
+bool ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
 {
     current = ShaderStepIdx;
-    ShaderStepIdx++;
     count = 33;
+    if (ShaderCompileFailed) return false;
+    if (ShaderStepIdx == count) return true;
+    ShaderStepIdx++;
     switch (current)
     {
     case 0:
-        CompileShader(ShaderInterpXSpans[0], ComputeRendererShaders::InterpSpans, {"InterpSpans", "ZBuffer"});
-        return;
+        return CompileShader(ShaderInterpXSpans[0], ComputeRendererShaders::InterpSpans, {"InterpSpans", "ZBuffer"});
     case 1:
-        CompileShader(ShaderInterpXSpans[1], ComputeRendererShaders::InterpSpans, {"InterpSpans", "WBuffer"});
-        return;
+        return CompileShader(ShaderInterpXSpans[1], ComputeRendererShaders::InterpSpans, {"InterpSpans", "WBuffer"});
     case 2:
-        CompileShader(ShaderBinCombined, ComputeRendererShaders::BinCombined, {"BinCombined"});
-        return;
+        return CompileShader(ShaderBinCombined, ComputeRendererShaders::BinCombined, {"BinCombined"});
     case 3:
-        CompileShader(ShaderDepthBlend[0], ComputeRendererShaders::DepthBlend, {"DepthBlend", "ZBuffer"});
-        return;
+        return CompileShader(ShaderDepthBlend[0], ComputeRendererShaders::DepthBlend, {"DepthBlend", "ZBuffer"});
     case 4:
-        CompileShader(ShaderDepthBlend[1], ComputeRendererShaders::DepthBlend, {"DepthBlend", "WBuffer"});
-        return;
+        return CompileShader(ShaderDepthBlend[1], ComputeRendererShaders::DepthBlend, {"DepthBlend", "WBuffer"});
     case 5:
-        CompileShader(ShaderRasteriseNoTexture[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture"});
-        return;
+        return CompileShader(ShaderRasteriseNoTexture[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture"});
     case 6:
-        CompileShader(ShaderRasteriseNoTexture[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture"});
-        return;
+        return CompileShader(ShaderRasteriseNoTexture[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture"});
     case 7:
-        CompileShader(ShaderRasteriseNoTextureToon[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture", "Toon"});
-        return;
+        return CompileShader(ShaderRasteriseNoTextureToon[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture", "Toon"});
     case 8:
-        CompileShader(ShaderRasteriseNoTextureToon[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture", "Toon"});
-        return;
+        return CompileShader(ShaderRasteriseNoTextureToon[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture", "Toon"});
     case 9:
-        CompileShader(ShaderRasteriseNoTextureHighlight[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture", "Highlight"});
-        return;
+        return CompileShader(ShaderRasteriseNoTextureHighlight[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture", "Highlight"});
     case 10:
-        CompileShader(ShaderRasteriseNoTextureHighlight[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture", "Highlight"});
-        return;
+        return CompileShader(ShaderRasteriseNoTextureHighlight[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture", "Highlight"});
     case 11:
-        CompileShader(ShaderRasteriseUseTextureDecal[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Decal"});
-        return;
+        return CompileShader(ShaderRasteriseUseTextureDecal[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Decal"});
     case 12:
-        CompileShader(ShaderRasteriseUseTextureDecal[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Decal"});
-        return;
+        return CompileShader(ShaderRasteriseUseTextureDecal[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Decal"});
     case 13:
-        CompileShader(ShaderRasteriseUseTextureModulate[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Modulate"});
-        return;
+        return CompileShader(ShaderRasteriseUseTextureModulate[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Modulate"});
     case 14:
-        CompileShader(ShaderRasteriseUseTextureModulate[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Modulate"});
-        return;
+        return CompileShader(ShaderRasteriseUseTextureModulate[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Modulate"});
     case 15:
-        CompileShader(ShaderRasteriseUseTextureToon[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Toon"});
-        return;
+        return CompileShader(ShaderRasteriseUseTextureToon[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Toon"});
     case 16:
-        CompileShader(ShaderRasteriseUseTextureToon[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Toon"});
-        return;
+        return CompileShader(ShaderRasteriseUseTextureToon[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Toon"});
     case 17:
-        CompileShader(ShaderRasteriseUseTextureHighlight[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Highlight"});
-        return;
+        return CompileShader(ShaderRasteriseUseTextureHighlight[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Highlight"});
     case 18:
-        CompileShader(ShaderRasteriseUseTextureHighlight[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Highlight"});
-        return;
+        return CompileShader(ShaderRasteriseUseTextureHighlight[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Highlight"});
     case 19:
-        CompileShader(ShaderRasteriseShadowMask[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "ShadowMask"});
-        return;
+        return CompileShader(ShaderRasteriseShadowMask[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "ShadowMask"});
     case 20:
-        CompileShader(ShaderRasteriseShadowMask[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "ShadowMask"});
-        return;
+        return CompileShader(ShaderRasteriseShadowMask[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "ShadowMask"});
     case 21:
-        CompileShader(ShaderClearCoarseBinMask, ComputeRendererShaders::ClearCoarseBinMask, {"ClearCoarseBinMask"});
-        return;
+        return CompileShader(ShaderClearCoarseBinMask, ComputeRendererShaders::ClearCoarseBinMask, {"ClearCoarseBinMask"});
     case 22:
-        CompileShader(ShaderClearIndirectWorkCount, ComputeRendererShaders::ClearIndirectWorkCount, {"ClearIndirectWorkCount"});
-        return;
+        return CompileShader(ShaderClearIndirectWorkCount, ComputeRendererShaders::ClearIndirectWorkCount, {"ClearIndirectWorkCount"});
     case 23:
-        CompileShader(ShaderCalculateWorkListOffset, ComputeRendererShaders::CalcOffsets, {"CalculateWorkOffsets"});
-        return;
+        return CompileShader(ShaderCalculateWorkListOffset, ComputeRendererShaders::CalcOffsets, {"CalculateWorkOffsets"});
     case 24:
-        CompileShader(ShaderSortWork, ComputeRendererShaders::SortWork, {"SortWork"});
-        return;
+        return CompileShader(ShaderSortWork, ComputeRendererShaders::SortWork, {"SortWork"});
     case 25:
-        CompileShader(ShaderFinalPass[0], ComputeRendererShaders::FinalPass, {"FinalPass"});
-        return;
+        return CompileShader(ShaderFinalPass[0], ComputeRendererShaders::FinalPass, {"FinalPass"});
     case 26:
-        CompileShader(ShaderFinalPass[1], ComputeRendererShaders::FinalPass, {"FinalPass", "EdgeMarking"});
-        return;
+        return CompileShader(ShaderFinalPass[1], ComputeRendererShaders::FinalPass, {"FinalPass", "EdgeMarking"});
     case 27:
-        CompileShader(ShaderFinalPass[2], ComputeRendererShaders::FinalPass, {"FinalPass", "Fog"});
-        return;
+        return CompileShader(ShaderFinalPass[2], ComputeRendererShaders::FinalPass, {"FinalPass", "Fog"});
     case 28:
-        CompileShader(ShaderFinalPass[3], ComputeRendererShaders::FinalPass, {"FinalPass", "EdgeMarking", "Fog"});
-        return;
+        return CompileShader(ShaderFinalPass[3], ComputeRendererShaders::FinalPass, {"FinalPass", "EdgeMarking", "Fog"});
     case 29:
-        CompileShader(ShaderFinalPass[4], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing"});
-        return;
+        return CompileShader(ShaderFinalPass[4], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing"});
     case 30:
-        CompileShader(ShaderFinalPass[5], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "EdgeMarking"});
-        return;
+        return CompileShader(ShaderFinalPass[5], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "EdgeMarking"});
     case 31:
-        CompileShader(ShaderFinalPass[6], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "Fog"});
-        return;
+        return CompileShader(ShaderFinalPass[6], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "Fog"});
     case 32:
-        CompileShader(ShaderFinalPass[7], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "EdgeMarking", "Fog"});
-        return;
+        return CompileShader(ShaderFinalPass[7], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "EdgeMarking", "Fog"});
     default:
-        __builtin_unreachable();
-        return;
+        return false;
     }
 }
 
@@ -190,6 +163,17 @@ void blah(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length
 
 bool ComputeRenderer3D::Init()
 {
+    GLint major = 0, minor = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    if (major < 4 || (major == 4 && minor < 3) ||
+        !glDispatchCompute || !glDispatchComputeIndirect ||
+        !glBindImageTexture || !glMemoryBarrier || !glTexStorage2D)
+    {
+        Platform::Log(Platform::LogLevel::Error, "Compute renderer requires OpenGL 4.3 and loaded compute functions\n");
+        return false;
+    }
+
     //glDebugMessageCallback(blah, NULL);
     //glEnable(GL_DEBUG_OUTPUT);
     glGenBuffers(1, &YSpanSetupMemory);
@@ -246,11 +230,15 @@ bool ComputeRenderer3D::Init()
     ClearBitmap[0] = new u32[256*256];
     ClearBitmap[1] = new u32[256*256];
 
+    Initialized = true;
     return true;
 }
 
 ComputeRenderer3D::~ComputeRenderer3D()
 {
+    // Init can reject the context before creating any compute resources.
+    if (!Initialized) return;
+    DeleteShaders();
     Texcache.Reset();
 
     glDeleteBuffers(1, &YSpanSetupMemory);
@@ -274,44 +262,47 @@ ComputeRenderer3D::~ComputeRenderer3D()
 
 void ComputeRenderer3D::DeleteShaders()
 {
-    std::initializer_list<GLuint> allPrograms =
+    std::initializer_list<GLuint*> allPrograms =
     {
-        ShaderInterpXSpans[0],
-        ShaderInterpXSpans[1],
-        ShaderBinCombined,
-        ShaderDepthBlend[0],
-        ShaderDepthBlend[1],
-        ShaderRasteriseNoTexture[0],
-        ShaderRasteriseNoTexture[1],
-        ShaderRasteriseNoTextureToon[0],
-        ShaderRasteriseNoTextureToon[1],
-        ShaderRasteriseNoTextureHighlight[0],
-        ShaderRasteriseNoTextureHighlight[1],
-        ShaderRasteriseUseTextureDecal[0],
-        ShaderRasteriseUseTextureDecal[1],
-        ShaderRasteriseUseTextureModulate[0],
-        ShaderRasteriseUseTextureModulate[1],
-        ShaderRasteriseUseTextureToon[0],
-        ShaderRasteriseUseTextureToon[1],
-        ShaderRasteriseUseTextureHighlight[0],
-        ShaderRasteriseUseTextureHighlight[1],
-        ShaderRasteriseShadowMask[0],
-        ShaderRasteriseShadowMask[1],
-        ShaderClearCoarseBinMask,
-        ShaderClearIndirectWorkCount,
-        ShaderCalculateWorkListOffset,
-        ShaderSortWork,
-        ShaderFinalPass[0],
-        ShaderFinalPass[1],
-        ShaderFinalPass[2],
-        ShaderFinalPass[3],
-        ShaderFinalPass[4],
-        ShaderFinalPass[5],
-        ShaderFinalPass[6],
-        ShaderFinalPass[7],
+        &ShaderInterpXSpans[0],
+        &ShaderInterpXSpans[1],
+        &ShaderBinCombined,
+        &ShaderDepthBlend[0],
+        &ShaderDepthBlend[1],
+        &ShaderRasteriseNoTexture[0],
+        &ShaderRasteriseNoTexture[1],
+        &ShaderRasteriseNoTextureToon[0],
+        &ShaderRasteriseNoTextureToon[1],
+        &ShaderRasteriseNoTextureHighlight[0],
+        &ShaderRasteriseNoTextureHighlight[1],
+        &ShaderRasteriseUseTextureDecal[0],
+        &ShaderRasteriseUseTextureDecal[1],
+        &ShaderRasteriseUseTextureModulate[0],
+        &ShaderRasteriseUseTextureModulate[1],
+        &ShaderRasteriseUseTextureToon[0],
+        &ShaderRasteriseUseTextureToon[1],
+        &ShaderRasteriseUseTextureHighlight[0],
+        &ShaderRasteriseUseTextureHighlight[1],
+        &ShaderRasteriseShadowMask[0],
+        &ShaderRasteriseShadowMask[1],
+        &ShaderClearCoarseBinMask,
+        &ShaderClearIndirectWorkCount,
+        &ShaderCalculateWorkListOffset,
+        &ShaderSortWork,
+        &ShaderFinalPass[0],
+        &ShaderFinalPass[1],
+        &ShaderFinalPass[2],
+        &ShaderFinalPass[3],
+        &ShaderFinalPass[4],
+        &ShaderFinalPass[5],
+        &ShaderFinalPass[6],
+        &ShaderFinalPass[7],
     };
-    for (GLuint program : allPrograms)
-        glDeleteProgram(program);
+    for (GLuint* program : allPrograms)
+    {
+        if (*program) glDeleteProgram(*program);
+        *program = 0;
+    }
 }
 
 void ComputeRenderer3D::Reset()
@@ -340,6 +331,7 @@ void ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
     }
 
     ShaderStepIdx = 0;
+    ShaderCompileFailed = false;
 
     ScaleFactor = scale;
     ScreenWidth = 256 * ScaleFactor;
@@ -640,6 +632,7 @@ struct Variant
 
 void ComputeRenderer3D::RenderFrame()
 {
+    if (ShaderCompileFailed) return;
     assert(!NeedsShaderCompile());
     u8 clrBitmapDirty;
     if (!Texcache.Update(clrBitmapDirty) && GPU3D.RenderFrameIdentical && !RenderSettingsDirty)
@@ -1146,22 +1139,15 @@ void ComputeRenderer3D::RenderFrame()
                 {
                     shader = shadersUseTexture[variants[i].BlendMode];
 
-                    GLuint texunit = 0;
+                    // Sampler-only variants still use the capture texture's
+                    // unit, even when the texture binding itself is unchanged.
+                    const GLuint texunit = variants[i].Texture == (GLuint)-1 ? 1 :
+                        variants[i].Texture == (GLuint)-2 ? 2 : 0;
                     bool unitchange = false;
                     if (variants[i].Texture != prevTexture)
                     {
-                        bool iscap = (variants[i].Texture == (GLuint)-1 || variants[i].Texture == (GLuint)-2);
                         bool previscap = (prevTexture == (GLuint)-1 || prevTexture == (GLuint)-2);
-                        if (iscap)
-                        {
-                            unitchange = true;
-                            if (variants[i].Texture == (GLuint)-1)
-                                texunit = 1;
-                            else
-                                texunit = 2;
-                        }
-                        else if (previscap)
-                            unitchange = true;
+                        unitchange = texunit != 0 || previscap;
 
                         if (texunit == 0)
                             glBindTexture(GL_TEXTURE_2D_ARRAY, variants[i].Texture);

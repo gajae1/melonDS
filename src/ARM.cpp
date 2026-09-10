@@ -530,8 +530,9 @@ void ARM::TriggerIRQ()
         return;
 
     u32 oldcpsr = CPSR;
-    CPSR &= ~0xFF;
-    CPSR |= 0xD2;
+    // IRQ masks IRQ, but preserves the existing FIQ mask (ARM ARM A2.6.8).
+    CPSR &= ~0xBF;
+    CPSR |= 0x92;
     UpdateMode(oldcpsr, CPSR);
 
     R_IRQ[2] = oldcpsr;

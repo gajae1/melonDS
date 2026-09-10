@@ -213,6 +213,7 @@ bool CompilerShader(GLuint& id, const std::string& source, const std::string& na
         delete[] log;
 
         glDeleteShader(id);
+        id = 0;
 
         return false;
     }
@@ -297,6 +298,7 @@ error:
     if (!linkingSucess)
     {
         glDeleteProgram(result);
+        result = 0;
     }
     /*else
     {

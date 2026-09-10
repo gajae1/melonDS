@@ -90,7 +90,7 @@ if (TARGET core)
 endif()
 
 if (TARGET core)
-    add_executable(CoreExecution CoreExecution.cpp CoreALUExecution.cpp CoreBlockTransferExecution.cpp CoreDTCMExecution.cpp CoreMPUExecution.cpp CoreSchedulerExecution.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    add_executable(CoreExecution CoreExecution.cpp CoreALUExecution.cpp CoreBlockTransferExecution.cpp CoreDTCMExecution.cpp CoreMPUExecution.cpp CoreDeviceExecution.cpp CoreSchedulerExecution.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(CoreExecution PRIVATE core Threads::Threads)
     add_executable(AudioResampling AudioResampling.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(AudioResampling PRIVATE core Threads::Threads)
@@ -105,7 +105,7 @@ if (TARGET core)
         if (NOT ENABLE_JIT AND NOT backend STREQUAL "interpreter")
             continue()
         endif()
-        foreach(group IN ITEMS alu-shift thumb-shift-timing block-transfer dtcm-remap mpu-execution)
+        foreach(group IN ITEMS alu-shift thumb-shift-timing block-transfer dtcm-remap mpu-execution device-execution)
             add_test(NAME core-${backend}-${group} COMMAND CoreExecution ${backend} ${group})
             set_tests_properties(core-${backend}-${group} PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
         endforeach()
@@ -165,9 +165,23 @@ if (MELONDS_TEST_GPU)
     endif()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GPU_TEST_SDL2 REQUIRED IMPORTED_TARGET sdl2)
-    add_executable(GLFrameReadback GLFrameReadback.cpp PlatformSync.cpp PlatformHeadless.cpp
+    add_executable(GLFrameReadback GLFrameReadback.cpp ComputeFailure.cpp PlatformSync.cpp PlatformHeadless.cpp
         ../src/frontend/glad/glad.c)
     target_link_libraries(GLFrameReadback PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)
+    foreach(method IN ITEMS UpdateRenderer CompileShaders)
+        if (method STREQUAL "UpdateRenderer")
+            set(signature "void EmuThread::updateRenderer()")
+        else()
+            set(signature "void EmuThread::compileShaders()")
+        endif()
+        set(extracted "${CMAKE_CURRENT_BINARY_DIR}/compute${method}.inc")
+        add_custom_command(OUTPUT "${extracted}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../src/frontend/qt_sdl/EmuThread.cpp" "${signature}" "${extracted}"
+            DEPENDS ExtractFunction.py ../src/frontend/qt_sdl/EmuThread.cpp VERBATIM)
+        target_sources(GLFrameReadback PRIVATE "${extracted}")
+    endforeach()
+    target_include_directories(GLFrameReadback PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(ROMSmoke ROMSmoke.cpp PlatformSync.cpp PlatformHeadless.cpp
         ../src/frontend/glad/glad.c)
     foreach(method IN ITEMS Callback Sync)
@@ -192,6 +206,11 @@ if (MELONDS_TEST_GPU)
     add_test(NAME gpu-compute-frame-capture COMMAND GLFrameReadback compute)
     set_tests_properties(gpu-opengl-frame-capture gpu-compute-frame-capture
         PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    foreach(failure IN ITEMS control capability compile link recompile frontend)
+        add_test(NAME gpu-compute-failure-${failure} COMMAND GLFrameReadback compute-failure ${failure})
+        set_tests_properties(gpu-compute-failure-${failure}
+            PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endforeach()
 endif()
 
 add_custom_command(

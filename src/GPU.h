@@ -867,7 +867,8 @@ public:
     virtual void SwapBuffers() { BackBuffer ^= 1; }
 
     virtual bool NeedsShaderCompile() { return false; }
-    virtual void ShaderCompileStep(int& current, int& count) {}
+    // False is a terminal shader failure; caller must replace this renderer.
+    virtual bool ShaderCompileStep(int& current, int& count) { return true; }
 
 protected:
     melonDS::GPU& GPU;

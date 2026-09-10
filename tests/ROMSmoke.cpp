@@ -136,7 +136,11 @@ int main(int argc, char** argv)
         }
         RendererSettings settings{1,false,false,false};
         nds->GetRenderer().SetRenderSettings(settings);
-        while (nds->GetRenderer().NeedsShaderCompile()) { int step, total; nds->GetRenderer().ShaderCompileStep(step,total); }
+        while (nds->GetRenderer().NeedsShaderCompile())
+        {
+            int step, total;
+            if (!nds->GetRenderer().ShaderCompileStep(step, total)) return 5;
+        }
         if (!firmwareBoot) nds->SetupDirectBoot(UTF8ToString(PathFromUTF8(argv[1]).filename().u8string()));
         // Optional frame/mask pairs exercise real game input without driving a desktop.
         std::vector<std::pair<int, u32>> inputs;

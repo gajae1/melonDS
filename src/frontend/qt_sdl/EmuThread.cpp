@@ -1012,6 +1012,12 @@ void EmuThread::updateRenderer()
             default: __builtin_unreachable();
         }
     }
+    if (videoRenderer != renderer3D_Software &&
+        dynamic_cast<SoftRenderer*>(&nds->GetRenderer()))
+    {
+        videoRenderer = renderer3D_Software;
+        emuInstance->osdAddMessage(0xFFA0A0, "OpenGL renderer initialization failed; using software rendering");
+    }
     lastVideoRenderer = videoRenderer;
 
     auto& cfg = emuInstance->getGlobalConfig();
@@ -1031,11 +1037,18 @@ void EmuThread::compileShaders()
     auto& renderer = emuInstance->nds->GPU.GetRenderer();
     int currentShader, shadersCount;
     u64 startTime = SDL_GetPerformanceCounter();
+    const double perfCountsSec = 1.0 / SDL_GetPerformanceFrequency();
     // kind of hacky to look at the wallclock, though it is easier than
     // than disabling vsync
     do
     {
-        renderer.ShaderCompileStep(currentShader, shadersCount);
+        if (!renderer.ShaderCompileStep(currentShader, shadersCount))
+        {
+            videoRenderer = renderer3D_Software;
+            updateRenderer();
+            emuInstance->osdAddMessage(0xFFA0A0, "Compute shader compilation failed; using software rendering");
+            return;
+        }
     }
     while (renderer.NeedsShaderCompile() &&
              (SDL_GetPerformanceCounter() - startTime) * perfCountsSec < 1.0 / 6.0);

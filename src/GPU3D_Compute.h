@@ -49,29 +49,31 @@ public:
     void RestartFrame() override;
     u32* GetLine(int line) override;
 
-    bool NeedsShaderCompile() override { return ShaderStepIdx != 33; }
-    void ShaderCompileStep(int& current, int& count) override;
+    bool NeedsShaderCompile() override { return !ShaderCompileFailed && ShaderStepIdx != 33; }
+    bool ShaderCompileStep(int& current, int& count) override;
 
 private:
     GLRenderer& Parent;
     bool RenderSettingsDirty = true;
+    bool Initialized = false;
+    bool ShaderCompileFailed = false;
 
-    GLuint ShaderInterpXSpans[2];
-    GLuint ShaderBinCombined;
-    GLuint ShaderDepthBlend[2];
-    GLuint ShaderRasteriseNoTexture[2];
-    GLuint ShaderRasteriseNoTextureToon[2];
-    GLuint ShaderRasteriseNoTextureHighlight[2];
-    GLuint ShaderRasteriseUseTextureDecal[2];
-    GLuint ShaderRasteriseUseTextureModulate[2];
-    GLuint ShaderRasteriseUseTextureToon[2];
-    GLuint ShaderRasteriseUseTextureHighlight[2];
-    GLuint ShaderRasteriseShadowMask[2];
-    GLuint ShaderClearCoarseBinMask;
-    GLuint ShaderClearIndirectWorkCount;
-    GLuint ShaderCalculateWorkListOffset;
-    GLuint ShaderSortWork;
-    GLuint ShaderFinalPass[8];
+    GLuint ShaderInterpXSpans[2]{};
+    GLuint ShaderBinCombined{};
+    GLuint ShaderDepthBlend[2]{};
+    GLuint ShaderRasteriseNoTexture[2]{};
+    GLuint ShaderRasteriseNoTextureToon[2]{};
+    GLuint ShaderRasteriseNoTextureHighlight[2]{};
+    GLuint ShaderRasteriseUseTextureDecal[2]{};
+    GLuint ShaderRasteriseUseTextureModulate[2]{};
+    GLuint ShaderRasteriseUseTextureToon[2]{};
+    GLuint ShaderRasteriseUseTextureHighlight[2]{};
+    GLuint ShaderRasteriseShadowMask[2]{};
+    GLuint ShaderClearCoarseBinMask{};
+    GLuint ShaderClearIndirectWorkCount{};
+    GLuint ShaderCalculateWorkListOffset{};
+    GLuint ShaderSortWork{};
+    GLuint ShaderFinalPass[8]{};
 
     GLuint YSpanIndicesTextureMemory;
     GLuint YSpanIndicesTexture;

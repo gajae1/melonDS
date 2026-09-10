@@ -53,7 +53,7 @@ public:
     bool GetFramebuffers(void** top, void** bottom) override;
 
     bool NeedsShaderCompile() override;
-    void ShaderCompileStep(int& current, int& count) override;
+    bool ShaderCompileStep(int& current, int& count) override;
 
 private:
     friend class GLRenderer2D;

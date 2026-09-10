@@ -180,7 +180,11 @@ static bool CheckComputeSettings(melonDS::NDS& nds, melonDS::GLRenderer& rendere
                 std::fprintf(stderr, "Coordinate-only change rebuilds compute shaders\n");
                 passed = false;
             }
-            while (renderer.NeedsShaderCompile()) { int step, total; renderer.ShaderCompileStep(step, total); }
+            while (renderer.NeedsShaderCompile())
+            {
+                int step, total;
+                if (!renderer.ShaderCompileStep(step, total)) return false;
+            }
             renderer.Start3DRendering();
             GLint texture = 0;
             glGetIntegeri_v(GL_IMAGE_BINDING_NAME, 0, &texture);
@@ -204,10 +208,156 @@ static bool CheckComputeSettings(melonDS::NDS& nds, melonDS::GLRenderer& rendere
     return passed && glGetError() == GL_NO_ERROR;
 }
 
+struct SamplerObservation { int Unit, S, T; };
+static std::vector<SamplerObservation> CaptureSamplers;
+static PFNGLDISPATCHCOMPUTEINDIRECTPROC DriverDispatchIndirect;
+
+static void APIENTRY ObserveRasterSampler(GLintptr indirect)
+{
+    GLint program = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    const GLint location = glGetUniformLocation(program, "TexIsCapture");
+    if (location >= 0)
+    {
+        GLint unit = 0, sampler = 0, s = 0, t = 0;
+        glGetUniformiv(program, location, &unit);
+        glGetIntegeri_v(GL_SAMPLER_BINDING, unit, &sampler);
+        if (sampler)
+        {
+            glGetSamplerParameteriv(sampler, GL_TEXTURE_WRAP_S, &s);
+            glGetSamplerParameteriv(sampler, GL_TEXTURE_WRAP_T, &t);
+        }
+        CaptureSamplers.push_back({unit, s, t});
+    }
+    DriverDispatchIndirect(indirect);
+}
+
+static bool CheckCaptureSamplers(melonDS::NDS& nds, melonDS::GLRenderer& renderer)
+{
+    using namespace melonDS;
+    // Production source-B capture -> bank mapping -> five real polygons.
+    // No fixture texture replaces the capture, and no sampler bind is repaired.
+    // S=13/8 chooses clamp=white, repeat=blue, mirror=green. T=-3/8
+    // chooses clamp=red, repeat=blue, mirror=green. These points avoid the
+    // uncaptured lower 64 rows of the 256x192 capture and all wrap boundaries.
+    constexpr u16 colors[] = {0x801F, 0x83E0, 0xFC00, 0xFFFF};
+    constexpr int wraps[] = {GL_CLAMP_TO_EDGE, GL_REPEAT, GL_MIRRORED_REPEAT,
+                             GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE};
+    auto& gpu = nds.GPU.GPU3D;
+    bool passed = true;
+    for (int width : {128, 256})
+    for (int axis : {0, 1})
+    {
+        gpu.RenderNumPolygons = 0;
+        nds.ARM9Write8(0x04000241, 0x80); // capture destination B -> LCDC
+        nds.ARM9Write8(0x04000242, 0x80); // ordinary texture input C -> LCDC
+        for (int y = 0; y < 192; ++y)
+            for (int x = 0; x < 256; ++x)
+                nds.ARM9Write16(0x06800000 + 2 * (y * 256 + x),
+                    colors[std::min(3, (axis ? y : x) / (width / 4))]);
+        for (int i = 0; i < 64; ++i) nds.ARM9Write16(0x06840000 + i * 2, 0xFC1F);
+        nds.ARM9Write32(0x04000064, width == 128 ? 0xA0010000 : 0xA0310000);
+        nds.RunFrame();
+        nds.ARM9Write8(0x04000241, 0x83); // captured B -> texture slot 0
+        nds.ARM9Write8(0x04000242, 0x8B); // ordinary C -> texture slot 1
+        int captureInfo[16];
+        nds.GPU.GetCaptureInfo_Texture(captureInfo);
+        if (captureInfo[0] != 4) { std::fprintf(stderr, "Capture fixture did not publish bank B\n"); return false; }
+
+        Vertex vertices[5][3]{};
+        melonDS::Polygon polygons[5]{};
+        for (int i = 0; i < 5; ++i)
+        {
+            auto& polygon = polygons[i];
+            polygon.NumVertices = 3;
+            polygon.Attr = (31 << 16) | (3 << 6) | (i << 24);
+            // A new decal variant after the ordinary texture must return to
+            // the capture unit even though its sampler matches the prior one.
+            if (i == 4) polygon.Attr |= 1 << 4;
+            polygon.FacingView = true;
+            polygon.VTop = 0;
+            polygon.VBottom = 2;
+            polygon.YTop = 48;
+            polygon.YBottom = 144;
+            const int size = width == 128 ? 4 : 5;
+            polygon.TexParam = i == 3 ? (7u << 26) | 0x4000 :
+                (7u << 26) | (size << 20) | (size << 23);
+            if (i == 1 || i == 2) polygon.TexParam |= 1u << (16 + axis);
+            if (i == 2) polygon.TexParam |= 1u << (18 + axis);
+            const int x = 8 + i * 48;
+            const int positions[3][2] = {{x, 48}, {x + 38, 48}, {x + 19, 144}};
+            for (int v = 0; v < 3; ++v)
+            {
+                auto& vertex = vertices[i][v];
+                polygon.Vertices[v] = &vertex;
+                polygon.FinalZ[v] = polygon.FinalW[v] = 0x1000;
+                for (int c = 0; c < 3; ++c) vertex.FinalColor[c] = 63 << 3;
+                for (int c = 0; c < 2; ++c)
+                {
+                    vertex.FinalPosition[c] = positions[v][c];
+                    vertex.HiresPosition[c] = positions[v][c] << 4;
+                }
+                vertex.TexCoords[0] = (axis ? width / 8 : width * 13 / 8) * 16;
+                vertex.TexCoords[1] = (axis ? -width * 3 / 8 : width / 8) * 16;
+            }
+            gpu.RenderPolygonRAM[i] = &polygon;
+        }
+        gpu.RenderNumPolygons = 5;
+        gpu.RenderDispCnt = 1;
+        gpu.RenderClearAttr1 = 0;
+        gpu.RenderClearAttr2 = 0x7FFF;
+        gpu.RenderFrameIdentical = false;
+        CaptureSamplers.clear();
+        DriverDispatchIndirect = glad_glDispatchComputeIndirect;
+        glad_glDispatchComputeIndirect = ObserveRasterSampler;
+        renderer.Start3DRendering();
+        glad_glDispatchComputeIndirect = DriverDispatchIndirect;
+        int bindingErrors = CaptureSamplers.size() != 5;
+        for (size_t i = 0; i < CaptureSamplers.size() && i < 5; ++i)
+        {
+            const auto& state = CaptureSamplers[i];
+            bindingErrors += state.Unit != (i == 3 ? 0 : width == 128 ? 1 : 2) ||
+                state.S != (axis ? GL_CLAMP_TO_EDGE : wraps[i]) ||
+                state.T != (axis ? wraps[i] : GL_CLAMP_TO_EDGE);
+        }
+        GLint output = 0;
+        glGetIntegeri_v(GL_IMAGE_BINDING_NAME, 0, &output);
+        glBindTexture(GL_TEXTURE_2D, output);
+        glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+        std::vector<u32> pixels(256 * 192);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        const int edge = axis ? 1 : 7; // RGB channel-presence mask
+        const int expected[] = {edge, 4, 2, 5, edge};
+        int pixelErrors = 0;
+        for (int i = 0; i < 5; ++i)
+        for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -2; dx <= 2; ++dx)
+        {
+            const u32 pixel = pixels[(80 + dy) * 256 + 27 + i * 48 + dx];
+            bool ok = (pixel >> 24) > 200;
+            for (int c = 0; c < 3; ++c)
+                ok &= (expected[i] & (1 << c)) ? ((pixel >> (8 * c)) & 255) > 200 :
+                    ((pixel >> (8 * c)) & 255) == 0;
+            pixelErrors += !ok;
+        }
+        std::printf("capture_sampler width=%d axis=%c variants=%zu binding_errors=%d pixel_errors=%d/125\n",
+            width, axis ? 'T' : 'S', CaptureSamplers.size(), bindingErrors, pixelErrors);
+        passed &= !bindingErrors && !pixelErrors && glGetError() == GL_NO_ERROR;
+        gpu.RenderNumPolygons = 0;
+        std::fill_n(gpu.RenderPolygonRAM.begin(), 5, nullptr);
+    }
+    nds.ARM9Write8(0x04000241, 0x80);
+    nds.ARM9Write8(0x04000242, 0);
+    return passed;
+}
+
+int CheckComputeFailure(const char* name);
+
 int main(int argc, char** argv)
 {
     using namespace melonDS;
-    const bool compute = argc > 1 && std::strcmp(argv[1], "compute") == 0;
+    const bool failureCase = argc == 3 && std::strcmp(argv[1], "compute-failure") == 0;
+    const bool compute = failureCase || (argc > 1 && std::strcmp(argv[1], "compute") == 0);
     if (SDL_Init(SDL_INIT_VIDEO)) return 77;
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, compute ? 4 : 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, compute ? 3 : 2);
@@ -217,6 +367,14 @@ int main(int argc, char** argv)
     auto context = SDL_GL_CreateContext(window);
     if (!context || !gladLoadGLLoader(SDL_GL_GetProcAddress)) return 77;
     std::printf("GPU=%s GL=%s compute=%d\n", glGetString(GL_RENDERER), glGetString(GL_VERSION), compute);
+    if (failureCase)
+    {
+        const int result = CheckComputeFailure(argv[2]);
+        SDL_GL_DeleteContext(context);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return result;
+    }
     {
         NDSArgs args;
         args.JIT = std::nullopt;
@@ -232,7 +390,11 @@ int main(int argc, char** argv)
         if (!renderer) return 1;
         RendererSettings settings{1, false, false, false};
         renderer->SetRenderSettings(settings);
-        while (renderer->NeedsShaderCompile()) { int step, total; renderer->ShaderCompileStep(step, total); }
+        while (renderer->NeedsShaderCompile())
+        {
+            int step, total;
+            if (!renderer->ShaderCompileStep(step, total)) return 1;
+        }
         nds->ARM9Write32(0x02000000, 0xEAFFFFFE);
         nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
         nds->ARM9.JumpTo(0x02000000);
@@ -280,6 +442,7 @@ int main(int argc, char** argv)
         std::sort(samples.begin(), samples.end());
         std::printf("frame_pixels=%zu capture_pixels=49152 readback_median_us=%.3f PASS\n", pixels.size(), (samples[14]+samples[15])/2);
         if (compute && !CheckComputeSampling(*nds, *renderer)) return 9;
+        if (compute && !CheckCaptureSamplers(*nds, *renderer)) return 10;
         if (compute && !CheckComputeSettings(*nds, *renderer)) return 7;
     }
     size_t liveFramebuffers = 0;

@@ -46,6 +46,10 @@ DTCM은 `CoreExecution`의 `core-.*-dtcm-remap`에서 CP15 이동·해제와 실
 
 ## 진단 구성
 
+`core-.*-device-execution`은 실제 Timer0 MMIO·HALT·IRQ의 F 보존과 IME/IE/CPSR 마스크 다섯 조건을 생성 ARM9 guest로 검사한다. handler 시각은 최초 overflow 이전이 아님을 확인하며 절대 실기 latency를 추정하지 않는다.
+
+`gpu-compute-frame-capture`는 source B 캡처를 실제 texture로 사용하는 S/T sampler variant의 binding·픽셀까지 검사한다. `gpu-compute-failure-`는 실제 driver compile/link 실패, 주입한 capability 판정, 배율 재컴파일과 현재 프런트엔드 메서드의 software 복구·재선택을 검사한다. dispatch 시도 계수와 실제 픽셀 렌더링은 별도 case다. 설정 읽기·OSD를 격리한 메서드 실행을 Qt 전체 event loop로, GL4.3 조회 주입을 3.2-only 장치로, source 재컴파일을 비활성 binary cache-hit으로 확대하지 않는다.
+
 MPU 실행 권한은 `CoreExecution`의 `core-.*-mpu-execution`에서 실제 guest MCR·정적/동적 분기·warmed block을 사용한다. 정상/금지/재허용, exception 상태와 register/RAM 부작용을 대조한다. 모든 data abort와 실제 silicon timing의 수락으로 확대하지 않는다.
 
 오디오 공급은 `FrontendAudio`의 `audio-callback-buffer`와 `AudioResampling`의 `audio-core-clock`으로 생성 PCM 부족/복귀와 코어 FIFO 덮어쓰기를 확인한다. 실제 장치 측정은 [ROMSmoke의 선택 환경변수](../tests/README.md)를 사용해 같은 구간의 보간·버퍼를 대조한다. 출력 제출은 무음이며 GUI presentation·장기 청취·물리 지연 검사를 대신하지 않는다. 일반 실행의 `MELONDS_AUDIO_DIAGNOSTICS=1`은 pause/종료 로그를 켜고 기본 비활성 상태에서는 callback 시간을 측정하지 않는다.
