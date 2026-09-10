@@ -120,7 +120,7 @@ public:
     void emuStop(melonDS::Platform::StopReason reason);
 
     bool usesOpenGL();
-    void initOpenGL(int win);
+    bool initOpenGL(int win);
     void deinitOpenGL(int win);
     void setVSyncGL(bool vsync);
     void makeCurrentGL();

@@ -147,6 +147,7 @@ struct MPInterface
 
 // A real Qt object and signals, but no event-loop or device thread is started.
 void EmuThread::run() {}
+bool EmuThread::initializeGL(int) { std::abort(); }
 #include "stateThreadConstructor.inc"
 #define OpenFile OpenImportFile
 #define CloseFile CloseImportFile

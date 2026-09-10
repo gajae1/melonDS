@@ -919,18 +919,20 @@ void ScreenPanelGL::setSwapInterval(int intv)
     glContext->SetSwapInterval(intv);
 }
 
-void ScreenPanelGL::initOpenGL()
+bool ScreenPanelGL::initOpenGL()
 {
-    if (!glContext) return;
-    if (glInited) return;
+    if (glInited) return true;
+    if (!glContext || !glContext->MakeCurrent()) return false;
 
-    glContext->MakeCurrent();
-
-    OpenGL::CompileVertexFragmentProgram(screenShaderProgram,
+    if (!OpenGL::CompileVertexFragmentProgram(screenShaderProgram,
                                          kScreenVS, kScreenFS,
                                          "ScreenShader",
                                          {{"vPosition", 0}, {"vTexcoord", 1}},
-                                         {{"oColor", 0}});
+                                         {{"oColor", 0}}))
+    {
+        deinitOpenGL();
+        return false;
+    }
 
     glUseProgram(screenShaderProgram);
     glUniform1i(glGetUniformLocation(screenShaderProgram, "TopScreenTex"), 0);
@@ -977,11 +979,15 @@ void ScreenPanelGL::initOpenGL()
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, 256, 192, 2, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
 
 
-    OpenGL::CompileVertexFragmentProgram(osdShader,
+    if (!OpenGL::CompileVertexFragmentProgram(osdShader,
                                          kScreenVS_OSD, kScreenFS_OSD,
                                          "OSDShader",
                                          {{"vPosition", 0}},
-                                         {{"oColor", 0}});
+                                         {{"oColor", 0}}))
+    {
+        deinitOpenGL();
+        return false;
+    }
 
     glUseProgram(osdShader);
     glUniform1i(glGetUniformLocation(osdShader, "OSDTex"), 0);
@@ -1025,14 +1031,13 @@ void ScreenPanelGL::initOpenGL()
 
     transferLayout();
     glInited = true;
+    return true;
 }
 
 void ScreenPanelGL::deinitOpenGL()
 {
-    if (!glContext) return;
-    if (!glInited) return;
-
-    glContext->MakeCurrent();
+    // Failed initialization can own only a prefix of these objects.
+    if (!glContext || !glContext->MakeCurrent()) return;
 
     glDeleteTextures(1, &screenTexture);
 
@@ -1055,6 +1060,14 @@ void ScreenPanelGL::deinitOpenGL()
 
     glDeleteProgram(osdShader);
 
+    screenTexture = screenVertexArray = screenVertexBuffer = screenShaderProgram = 0;
+    osdVertexArray = osdVertexBuffer = logoTexture = osdShader = 0;
+
+    // Bitmaps survive a GL restart, but their uploaded textures do not.
+    osdMutex.lock();
+    for (auto& item : osdItems) item.rendered = false;
+    for (auto& item : splashText) item.rendered = false;
+    osdMutex.unlock();
 
     glContext->DoneCurrent();
 
@@ -1243,10 +1256,8 @@ void ScreenPanelGL::drawScreen()
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
-        for (auto it = osdItems.begin(); it != osdItems.end(); )
+        for (const OSDItem& item : osdItems)
         {
-            OSDItem& item = *it;
-
             if (!osdTextures.count(item.id))
                 continue;
 
@@ -1256,7 +1267,6 @@ void ScreenPanelGL::drawScreen()
             glDrawArrays(GL_TRIANGLES, 0, 2*3);
 
             y += item.bitmap.height();
-            it++;
         }
 
         glDisable(GL_BLEND);

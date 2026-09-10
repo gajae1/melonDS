@@ -385,3 +385,13 @@ must hold ownership until return. Baseline early failure is recorded before a
 second return cleans up the worker, so no probabilistic sleep or expected timeout
 is needed. These cases do not validate native context release, window lifetime,
 nested borrows or global GLAD reload safety. See [1.1.21](../plans/releases/1.1.21.md).
+
+`GLPresentation fail-screen|fail-osd|fail-current|osd-reinit` executes the current
+presentation init/deinit/draw and OSD update methods on real Windows GL. Invalid
+shader source reaches the real compiler; first-current failure is injected by
+the context adapter. The cases check readiness, absence of GL work without a
+current context, live partial objects, retry, repeated teardown and regenerated
+OSD textures. Glyph generation and QWidget layout are isolated. These checks do
+not cover current/swap failure after successful initialization or physical
+surface loss. See [1.1.23](../plans/releases/1.1.23.md) for the separate full Qt
+two-window initialization-recovery execution and remaining acceptance gates.

@@ -99,13 +99,23 @@ GR-11/12에서 확인한 실제 호출 경계를 진행한다. 창 교체/해제
 
 [1.1.22 구현 기록](releases/1.1.22.md)은 해제 후 paused draw, root 코어 renderer/capture 정리와 GUI 창 변경 중 worker 접근을 다룬다. 새 context loader 경계와 borrow 중 worker broadcast도 함께 검증했다. 표시 shader/current/swap 실패의 복구는 독립 경계로 계속 진행하며 이번 성공으로 닫지 않는다.
 
-## 다음 실제 증분 1.1.23 — 표시 초기화 오류와 재시도
+## 실제 증분 1.1.23 — 표시 초기화 오류와 재시도
 
 1. **재현:** 실제 ScreenShader/OSDShader compile 실패·MakeCurrent 실패·부분 생성 상태를 정상 초기화와 대조한다. OSD의 rendered 상태와 texture 소유 수명을 재초기화 전후로 확인한다.
 2. **수정:** 표시 초기화의 성공 여부와 부분 해제를 연결한다. 실패한 current 상태에서 GL 호출을 계속하지 않고 성공한 초기화만 ready로 공개한다.
 3. **통합:** worker→GUI 오류 통지와 기존 native 표시·설정·재선택을 연결한다. core renderer가 context보다 오래 살아남지 않도록 하며 borrowed worker의 응답을 기다리는 교착을 피한다.
 4. **검증:** 정상·실패·재시도·반복 해제와 OSD가 있는 재초기화를 실제 Windows GL에서 검사한다. 가능한 전체 Qt 경로와 paused 게임 이미지·입력 유지도 별도로 확인한다.
 5. **배포:** 입증한 복구만 공개 기록과 다음 실행 파일에 반영한다. 실제 surface/장치 상실·이종 GPU·다른 OS와 앞선 미완료 과제는 유지한다.
+
+[1.1.23 구현 기록](releases/1.1.23.md)은 표시 shader·첫 MakeCurrent 실패, 부분 해제·OSD 재생성과 전체 Qt 두 창의 native 전환·명시적 재선택을 검증한다. 이미 실행 중인 core/표시 context의 실패는 다음 증분에 남긴다.
+
+## 다음 실제 증분 1.1.24 — 실행 중 current/swap 실패와 해제 거부
+
+1. **재현:** 정상 GL 게임과 paused 표시에서 root/보조 창의 MakeCurrent·SwapBuffers 실패를 주입한다. core renderer가 남은 상태의 deinit·창 교체·종료도 대조한다.
+2. **수정:** 확보하지 못한 context로 frame·shader·capture·삭제를 진행하지 않는다. 성공한 해제만 GUI의 context 파괴와 교체를 허용한다.
+3. **통합:** worker→GUI 오류와 명시적 재시도를 연결한다. context 재확보 후 capture/core 객체를 정리해 native로 전환하며, 지속 실패 중 게임 상태와 기존 자원을 보존한다.
+4. **검증:** 실제 GL과 전체 Qt에서 일시/지속 실패·재시도·창 닫기·보조 창을 확인한다. paused 게임 이미지·입력 유지도 검증하며 물리 surface 상실과 주입을 구분한다.
+5. **배포:** 입증한 실패 복구만 반영한다. 이종 GPU/DPI·다른 OS·실기·장기 수락과 공개 전체 계획의 미완료 범위는 유지한다.
 
 ## 작업 소유권
 

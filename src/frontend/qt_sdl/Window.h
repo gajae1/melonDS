@@ -63,7 +63,7 @@ public:
 
     bool hasOpenGL() { return hasOGL; }
     GL::Context* getOGLContext();
-    void initOpenGL();
+    bool initOpenGL();
     void deinitOpenGL();
     void setGLSwapInterval(int intv);
     void makeCurrentGL();
@@ -181,6 +181,7 @@ private slots:
     void onEmuReset();
 
     void onUpdateVideoSettings(bool glchange);
+    void onOpenGLInitFailed(int win);
 
     void onFullscreenToggled();
     void onScreenEmphasisToggled();

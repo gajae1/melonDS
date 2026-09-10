@@ -395,12 +395,12 @@ bool EmuInstance::usesOpenGL()
            (globalCfg.GetInt("3D.Renderer") != renderer3D_Software);
 }
 
-void EmuInstance::initOpenGL(int win)
+bool EmuInstance::initOpenGL(int win)
 {
-    if (windowList[win])
-        windowList[win]->initOpenGL();
+    if (!windowList[win] || !windowList[win]->initOpenGL()) return false;
 
     setVSyncGL(true);
+    return true;
 }
 
 void EmuInstance::deinitOpenGL(int win)

@@ -991,9 +991,9 @@ GL::Context* MainWindow::getOGLContext()
     return glpanel->getContext();
 }
 
-void MainWindow::initOpenGL()
+bool MainWindow::initOpenGL()
 {
-    if (!hasOGL) return;
+    if (!hasOGL) return false;
 
     ScreenPanelGL* glpanel = static_cast<ScreenPanelGL*>(panel);
     return glpanel->initOpenGL();
@@ -2403,6 +2403,20 @@ void MainWindow::onEmuReset()
     if (!hasMenu) return;
 
     actUndoStateLoad->setEnabled(false);
+}
+
+void MainWindow::onOpenGLInitFailed(int win)
+{
+    if (win != windowID || !emuInstance || !hasOGL) return;
+
+    // This queued GUI slot runs after initialization's worker acknowledgement.
+    // Reuse the normal paused replacement path, outside any GL worker loan.
+    globalCfg.SetBool("Screen.UseGL", false);
+    globalCfg.SetInt("3D.Renderer", renderer3D_Software);
+    onUpdateVideoSettings(true);
+    QMessageBox::warning(this, "OpenGL initialization failed",
+        "OpenGL display initialization failed. Software display is now in use.\n\n"
+        "You can retry OpenGL in Config > Video settings.");
 }
 
 void MainWindow::onUpdateVideoSettings(bool glchange)

@@ -11,6 +11,7 @@
 #include <QThread>
 #include <QSemaphore>
 #include <QMutexLocker>
+#include <QDateTime>
 #include <array>
 #include <map>
 #include <memory>
@@ -35,6 +36,7 @@ struct NativeContext
     SDL_Window* window;
     SDL_GLContext context;
     int currentCalls = 0, swaps = 0;
+    bool failCurrent = false;
 #ifdef _WIN32
     std::unique_ptr<GL::Context> native;
     bool Replace()
@@ -54,6 +56,7 @@ struct NativeContext
     bool MakeCurrent()
     {
         ++currentCalls;
+        if (failCurrent) return false;
 #ifdef _WIN32
         if (native) return native->MakeCurrent();
 #endif
@@ -90,15 +93,41 @@ struct EmuInstance
     EmuThread* getEmuThread() { return &thread; }
     NDS* getNDS() { return nullptr; } // The test presents the paused splash.
 };
-struct OSDItem { unsigned id = 0; QImage bitmap; };
+struct OSDItem
+{
+    unsigned id = 0;
+    QImage bitmap;
+    bool rendered = false;
+    qint64 timestamp = QDateTime::currentMSecsSinceEpoch();
+    int rainbowstart = 0, rainbowend = 0;
+};
 class ScreenPanelGL
 {
 public:
-    void initOpenGL();
+    bool initOpenGL();
     void deinitOpenGL();
     void drawScreen();
     void transferLayout() {} // GUI-produced layout snapshot below.
-    void osdUpdate() {}
+    void osdUpdate();
+    void calcSplashLayout() {}
+    void osdRenderItem(OSDItem* item)
+    {
+        item->bitmap = QImage(8, 8, QImage::Format_RGBA8888);
+        item->bitmap.fill(Qt::white);
+        GLuint tex;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, item->bitmap.bits());
+        osdTextures[item->id] = tex;
+    }
+    void osdDeleteItem(OSDItem* item)
+    {
+        if (auto it = osdTextures.find(item->id); it != osdTextures.end())
+        {
+            glDeleteTextures(1, &it->second);
+            osdTextures.erase(it);
+        }
+    }
     std::unique_ptr<NativeContext> glContext;
     bool glInited = false;
     GLuint screenVertexBuffer = 0, screenVertexArray = 0, screenTexture = 0, screenShaderProgram = 0;
@@ -124,6 +153,111 @@ public:
 #include "presentationInit.inc"
 #include "presentationDeinit.inc"
 #include "presentationDraw.inc"
+#include "presentationOSD.inc"
+
+namespace InitFailure
+{
+PFNGLSHADERSOURCEPROC driverShaderSource;
+PFNGLCREATEPROGRAMPROC driverCreateProgram;
+PFNGLGENBUFFERSPROC driverGenBuffers;
+PFNGLGENTEXTURESPROC driverGenTextures;
+PFNGLGENVERTEXARRAYSPROC driverGenVertexArrays;
+std::vector<GLuint> programs, buffers, textures, arrays;
+int shaderSources = 0, failSource = 0;
+GLuint APIENTRY CreateProgram()
+{
+    const GLuint id = driverCreateProgram(); programs.push_back(id); return id;
+}
+void APIENTRY GenBuffers(GLsizei count, GLuint* ids)
+{
+    driverGenBuffers(count, ids); buffers.insert(buffers.end(), ids, ids + count);
+}
+void APIENTRY GenTextures(GLsizei count, GLuint* ids)
+{
+    driverGenTextures(count, ids); textures.insert(textures.end(), ids, ids + count);
+}
+void APIENTRY GenVertexArrays(GLsizei count, GLuint* ids)
+{
+    driverGenVertexArrays(count, ids); arrays.insert(arrays.end(), ids, ids + count);
+}
+void APIENTRY ShaderSource(GLuint shader, GLsizei count, const GLchar* const* strings, const GLint* lengths)
+{
+    if (++shaderSources == failSource)
+    {
+        const char* invalid = "#version 150\ninvalid shader input\n";
+        driverShaderSource(shader, 1, &invalid, nullptr);
+        return;
+    }
+    driverShaderSource(shader, count, strings, lengths);
+}
+bool Check(ScreenPanelGL& panel, const char* mode)
+{
+    failSource = !std::strcmp(mode, "fail-screen") ? 1 : !std::strcmp(mode, "fail-osd") ? 3 : 0;
+    panel.glContext->failCurrent = !std::strcmp(mode, "fail-current");
+    driverShaderSource = glad_glShaderSource;
+    glad_glShaderSource = ShaderSource;
+    driverCreateProgram = glad_glCreateProgram; glad_glCreateProgram = CreateProgram;
+    driverGenBuffers = glad_glGenBuffers; glad_glGenBuffers = GenBuffers;
+    driverGenTextures = glad_glGenTextures; glad_glGenTextures = GenTextures;
+    driverGenVertexArrays = glad_glGenVertexArrays; glad_glGenVertexArrays = GenVertexArrays;
+    panel.initOpenGL();
+    const bool rejected = !panel.glInited;
+    const bool noInvalidCalls = !panel.glContext->failCurrent || shaderSources == 0;
+    const bool released = !panel.screenShaderProgram && !panel.screenVertexBuffer &&
+        !panel.screenVertexArray && !panel.screenTexture && !panel.osdShader &&
+        !panel.osdVertexBuffer && !panel.osdVertexArray && !panel.logoTexture;
+    const bool detached = !panel.glContext->IsCurrent();
+    std::printf("%s: rejected=%d no-invalid-calls=%d partial-cleanup=%d detached=%d\n",
+        mode, rejected, noInvalidCalls, released, detached);
+    glad_glShaderSource = driverShaderSource;
+    glad_glCreateProgram = driverCreateProgram;
+    glad_glGenBuffers = driverGenBuffers;
+    glad_glGenTextures = driverGenTextures;
+    glad_glGenVertexArrays = driverGenVertexArrays;
+    panel.glContext->failCurrent = false;
+    panel.glContext->MakeCurrent();
+    glUseProgram(0); // Complete the driver's deferred deletion of a bound program.
+    bool noLiveObjects = true;
+    for (GLuint id : programs) noLiveObjects &= !glIsProgram(id);
+    for (GLuint id : buffers) noLiveObjects &= !glIsBuffer(id);
+    for (GLuint id : textures) noLiveObjects &= !glIsTexture(id);
+    for (GLuint id : arrays) noLiveObjects &= !glIsVertexArray(id);
+    std::printf("partial-live-objects-zero=%d\n", noLiveObjects);
+    // Clean up the baseline only after observing its failure.
+    panel.deinitOpenGL();
+    panel.glContext->MakeCurrent();
+    while (glGetError() != GL_NO_ERROR) {}
+    panel.glContext->DoneCurrent();
+    panel.initOpenGL();
+    panel.drawScreen();
+    const bool retried = panel.glInited && glIsProgram(panel.screenShaderProgram) &&
+        glIsProgram(panel.osdShader) && glGetError() == GL_NO_ERROR;
+    panel.deinitOpenGL();
+    panel.deinitOpenGL();
+    std::printf("retry=%d\n", retried);
+    return rejected && noInvalidCalls && released && detached && noLiveObjects && retried;
+}
+bool OSD(ScreenPanelGL& panel)
+{
+    panel.osdEnabled = true;
+    panel.osdItems.push_back(OSDItem{.id = 4});
+    panel.initOpenGL();
+    panel.drawScreen();
+    const bool initial = panel.osdTextures.size() == 4 && panel.osdItems[0].rendered;
+    panel.deinitOpenGL();
+    bool reset = !panel.osdItems[0].rendered && panel.osdTextures.empty();
+    for (const auto& item : panel.splashText) reset &= !item.rendered;
+    std::printf("osd-reinit: initial=%d rendered-reset=%d\n", initial, reset);
+    if (!reset) return false; // Fail before entering the baseline's non-advancing OSD loop.
+    panel.initOpenGL();
+    panel.drawScreen();
+    bool retried = panel.osdTextures.size() == 4 && glGetError() == GL_NO_ERROR;
+    for (const auto& [id, tex] : panel.osdTextures) retried &= glIsTexture(tex);
+    panel.deinitOpenGL();
+    std::printf("osd-retry=%d\n", retried);
+    return initial && retried;
+}
+}
 
 namespace CoreLifetime
 {
@@ -242,13 +376,18 @@ int main(int argc, char** argv)
     panel.windowInfo.surface_scale = 1;
     panel.splashLogo = QPixmap(64, 64);
     panel.splashLogo.fill(Qt::red);
+    for (int i = 0; i < 3; ++i) panel.splashText[i].id = i + 1;
     panel.glContext->DoneCurrent();
 
     if (argc > 1 && !native)
     {
         bool passed = false;
         const int renderer = !std::strcmp(argv[1], "compute") ? CoreLifetime::renderer3D_OpenGLCompute : CoreLifetime::renderer3D_OpenGL;
-        auto worker = std::unique_ptr<QThread>(QThread::create([&] { passed = CoreLifetime::Check(panel, renderer); }));
+        auto worker = std::unique_ptr<QThread>(QThread::create([&] {
+            if (!std::strncmp(argv[1], "fail-", 5)) passed = InitFailure::Check(panel, argv[1]);
+            else if (!std::strcmp(argv[1], "osd-reinit")) passed = InitFailure::OSD(panel);
+            else passed = CoreLifetime::Check(panel, renderer);
+        }));
         worker->start();
         if (!worker->wait(15000)) std::_Exit(2);
         SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();

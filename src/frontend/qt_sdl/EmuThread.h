@@ -162,6 +162,7 @@ signals:
     void windowEmuStop();
     void windowEmuPause(bool pause);
     void windowEmuReset();
+    void windowOpenGLInitFailed(int win);
 
     void windowLimitFPSChange();
 
@@ -176,6 +177,7 @@ signals:
 
 private:
     void handleMessages();
+    bool initializeGL(int win);
     std::stop_token cheatStopToken();
     bool prepareAssets(const QStringList& source, bool gba, bool allowExisting,
                        AssetIdentity::Selection& selection, QString& error);

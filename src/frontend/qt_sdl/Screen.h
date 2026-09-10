@@ -197,7 +197,7 @@ public:
 
     void setSwapInterval(int intv);
 
-    void initOpenGL();
+    bool initOpenGL();
     void deinitOpenGL();
     void makeCurrentGL();
     void releaseGL();
@@ -221,9 +221,9 @@ private:
     std::unique_ptr<GL::Context> glContext;
     bool glInited;
 
-    GLuint screenVertexBuffer, screenVertexArray;
-    GLuint screenTexture;
-    GLuint screenShaderProgram;
+    GLuint screenVertexBuffer = 0, screenVertexArray = 0;
+    GLuint screenTexture = 0;
+    GLuint screenShaderProgram = 0;
     GLint screenShaderTransformULoc, screenShaderScreenSizeULoc;
 
     QMutex screenSettingsLock;
@@ -231,15 +231,15 @@ private:
 
     int lastScreenWidth = -1, lastScreenHeight = -1;
 
-    GLuint osdShader;
+    GLuint osdShader = 0;
     GLint osdScreenSizeULoc, osdPosULoc, osdSizeULoc;
     GLint osdScaleFactorULoc;
     GLint osdTexScaleULoc;
-    GLuint osdVertexArray;
-    GLuint osdVertexBuffer;
+    GLuint osdVertexArray = 0;
+    GLuint osdVertexBuffer = 0;
     std::map<unsigned int, GLuint> osdTextures;
 
-    GLuint logoTexture;
+    GLuint logoTexture = 0;
 
     void osdRenderItem(OSDItem* item) override;
     void osdDeleteItem(OSDItem* item) override;

@@ -693,16 +693,29 @@ if (MELONDS_TEST_GPU)
         string(REPLACE "|" ";" parts "${pair}")
         list(GET parts 0 name)
         list(GET parts 1 method)
+        if (method STREQUAL "initOpenGL")
+            set(return_type bool)
+        else()
+            set(return_type void)
+        endif()
         set(output "${CMAKE_CURRENT_BINARY_DIR}/presentation${name}.inc")
         add_custom_command(OUTPUT "${output}"
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
-                "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "void ScreenPanelGL::${method}()" "${output}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "${return_type} ScreenPanelGL::${method}()" "${output}"
             DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
         list(APPEND presentation_methods "${output}")
     endforeach()
     add_executable(GLPresentation "${CMAKE_SOURCE_DIR}/tests/GLPresentation.cpp"
         "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
         ../glad/glad.c ${presentation_methods})
+    set(presentation_osd "${CMAKE_CURRENT_BINARY_DIR}/presentationOSD.inc")
+    add_custom_command(OUTPUT "${presentation_osd}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "void ScreenPanel::osdUpdate()" "${presentation_osd}.raw"
+        COMMAND "${Python3_EXECUTABLE}" -c
+            "from pathlib import Path; p=Path(r'${presentation_osd}'); p.write_text(Path(str(p)+'.raw').read_text().replace('ScreenPanel::osdUpdate', 'ScreenPanelGL::osdUpdate'))"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
+    target_sources(GLPresentation PRIVATE "${presentation_osd}")
     set(presentation_handler_script "${CMAKE_CURRENT_BINARY_DIR}/presentationHandler.py")
     file(GENERATE OUTPUT "${presentation_handler_script}" CONTENT [=[
 from pathlib import Path
@@ -736,6 +749,11 @@ Path(sys.argv[2]).write_text(body, encoding="utf-8")
     add_test(NAME gl-presentation-deinit COMMAND GLPresentation)
     set_tests_properties(gl-presentation-deinit PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
         RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    foreach(mode IN ITEMS fail-screen fail-osd fail-current osd-reinit)
+        add_test(NAME gl-presentation-${mode} COMMAND GLPresentation ${mode})
+        set_tests_properties(gl-presentation-${mode} PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
+            RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endforeach()
     foreach(renderer IN ITEMS opengl compute)
         add_test(NAME gl-presentation-retire-${renderer} COMMAND GLPresentation ${renderer})
         set_tests_properties(gl-presentation-retire-${renderer} PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77

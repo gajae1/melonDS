@@ -78,6 +78,8 @@ void EmuThread::attachWindow(MainWindow* window)
     connect(this, SIGNAL(windowEmuStop()), window, SLOT(onEmuStop()));
     connect(this, SIGNAL(windowEmuPause(bool)), window, SLOT(onEmuPause(bool)));
     connect(this, SIGNAL(windowEmuReset()), window, SLOT(onEmuReset()));
+    connect(this, SIGNAL(windowOpenGLInitFailed(int)), window, SLOT(onOpenGLInitFailed(int)),
+            Qt::QueuedConnection);
     connect(this, SIGNAL(autoScreenSizingChange(int)), window->panel, SLOT(onAutoScreenSizingChanged(int)));
     connect(this, SIGNAL(windowFullscreenToggle()), window, SLOT(onFullscreenToggled()));
     connect(this, SIGNAL(screenEmphasisToggle()), window, SLOT(onScreenEmphasisToggled()));
@@ -96,6 +98,7 @@ void EmuThread::detachWindow(MainWindow* window)
     disconnect(this, SIGNAL(windowEmuStop()), window, SLOT(onEmuStop()));
     disconnect(this, SIGNAL(windowEmuPause(bool)), window, SLOT(onEmuPause(bool)));
     disconnect(this, SIGNAL(windowEmuReset()), window, SLOT(onEmuReset()));
+    disconnect(this, SIGNAL(windowOpenGLInitFailed(int)), window, SLOT(onOpenGLInitFailed(int)));
     disconnect(this, SIGNAL(autoScreenSizingChange(int)), window->panel, SLOT(onAutoScreenSizingChanged(int)));
     disconnect(this, SIGNAL(windowFullscreenToggle()), window, SLOT(onFullscreenToggled()));
     disconnect(this, SIGNAL(screenEmphasisToggle()), window, SLOT(onScreenEmphasisToggled()));
@@ -124,10 +127,8 @@ void EmuThread::run()
 
     if (emuInstance->usesOpenGL())
     {
-        emuInstance->initOpenGL(0);
-
-        useOpenGL = true;
-        videoRenderer = globalCfg.GetInt("3D.Renderer");
+        useOpenGL = initializeGL(0);
+        videoRenderer = useOpenGL ? globalCfg.GetInt("3D.Renderer") : renderer3D_Software;
     }
     else
     {
@@ -628,8 +629,7 @@ void EmuThread::handleMessages()
         }
 
         case msg_InitGL:
-            emuInstance->initOpenGL(msg.param.value<int>());
-            useOpenGL = true;
+            initializeGL(msg.param.value<int>());
             break;
 
         case msg_DeInitGL:
@@ -770,6 +770,14 @@ void EmuThread::handleMessages()
 void EmuThread::changeWindowTitle(char* title)
 {
     emit windowTitleChange(QString(title));
+}
+
+bool EmuThread::initializeGL(int win)
+{
+    const bool initialized = emuInstance->initOpenGL(win);
+    if (win == 0) useOpenGL = initialized;
+    if (!initialized) emit windowOpenGLInitFailed(win);
+    return initialized;
 }
 
 void EmuThread::initContext(int win)
