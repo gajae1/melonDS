@@ -46,11 +46,11 @@
 | AD-01 | [마이크 보간 끝 sample 경계](workstreams/03-audio-dsi.md#AD-01) | 실행 재현 | P1 | [1.1.08](Release_Plan.md#v08) | — | 1.1.07 마지막 sample·빈 입력 보호와 생성 파형/보호 페이지 회귀; 실제 장치 수락 후속 |
 | AD-02 | [마이크 공유 count·장치 수명](workstreams/03-audio-dsi.md#AD-02) | 실행 재현 | P1 | [1.1.08](Release_Plan.md#v08) | — | 1.1.07 count 잠금·FPS 게시·열린 장치 재호출 보존 회귀; 실제 재연결·다중 인스턴스·TSan 후속 |
 | AD-03 | [최초 SPU bitdepth 정책](workstreams/03-audio-dsi.md#AD-03) | 정적 후보 | P1 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
-| AD-04 | [underrun·지연·장치 복구](workstreams/03-audio-dsi.md#AD-04) | 미측정 가설 | P2 | [1.1.08](Release_Plan.md#v08) | — | 미착수 |
+| AD-04 | [underrun·지연·장치 복구](workstreams/03-audio-dsi.md#AD-04) | 사용자 보고·원인 미확정 | P2 | [1.1.08](Release_Plan.md#v08) | — | 다음 실제 증분 1.1.18에 보간 켬·낮은 출력 버퍼의 간헐적 틱 노이즈 계측/재현을 병행; 장치 재연결·실측 지연은 후속 |
 | AD-05 | [load/reset 오디오 이력 정책](workstreams/03-audio-dsi.md#AD-05) | 정적 후보 | P2 | [1.1.08](Release_Plan.md#v08) | — | 미착수 |
 | AD-06 | [SPU capture 소스·가산](workstreams/03-audio-dsi.md#AD-06) | 관찰/확장 | P2 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-07 | [one-shot hold 동작](workstreams/03-audio-dsi.md#AD-07) | 관찰/확장 | P2 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
-| AD-08 | [ADPCM loop·보간 oracle](workstreams/03-audio-dsi.md#AD-08) | 미측정 가설 | P2 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
+| AD-08 | [ADPCM loop·보간 oracle](workstreams/03-audio-dsi.md#AD-08) | 미측정 가설 | P2 | [1.1.09](Release_Plan.md#v09) | — | 다음 실제 증분 1.1.18에서 채널별 sinc 보간의 음질·비용·지연 비교 착수; 채택 미확정, ADPCM/실기 oracle 후속 |
 | AD-09 | [modcrypt dev key 초기화](workstreams/03-audio-dsi.md#AD-09) | 정적 후보 | P1 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
 | AD-10 | [modcrypt subarea offset](workstreams/03-audio-dsi.md#AD-10) | 정적 후보 | P2 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
 | AD-11 | [SD producer/FIFO/sector 길이](workstreams/03-audio-dsi.md#AD-11) | 정적 후보 | P1 | [1.1.19](Release_Plan.md#v19) | — | 미착수 |
