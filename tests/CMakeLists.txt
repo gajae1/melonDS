@@ -204,6 +204,13 @@ target_include_directories(ARM64JitArithmetic PRIVATE ../src "${CMAKE_CURRENT_BI
 add_test(NAME arm64-jit-arithmetic-encoding COMMAND ARM64JitArithmetic)
 
 if (TARGET core)
+    add_executable(CartSPI CartSPI.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(CartSPI PRIVATE core Threads::Threads)
+    foreach(case IN ITEMS control arm9-low arm7-low busy-low mode-control ownership state-resume)
+        add_test(NAME cart-spi-${case} COMMAND CartSPI ${case})
+        set_tests_properties(cart-spi-${case} PROPERTIES TIMEOUT 15)
+    endforeach()
+
     add_executable(CartROMBounds CartROMBounds.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(CartROMBounds PRIVATE core Threads::Threads)
     add_test(NAME gba-rom-input-bounds COMMAND CartROMBounds)
@@ -262,6 +269,15 @@ foreach(case IN ITEMS id-control save-control unknown-command reset-command rest
         restore-save restore-write legacy-boundary truncated-section position-wrap)
     add_test(NAME ir-cart-${case} COMMAND IRCartState ${case})
     set_tests_properties(ir-cart-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+add_executable(RetailEEPROM RetailEEPROM.cpp
+    ../src/NDSCart/CartRetail.cpp ../src/NDSCart/CartCommon.cpp
+    ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
+target_include_directories(RetailEEPROM PRIVATE ../src)
+foreach(case IN ITEMS control page-ends page-overflow restore-write regular-control)
+    add_test(NAME retail-eeprom-${case} COMMAND RetailEEPROM ${case})
+    set_tests_properties(retail-eeprom-${case} PROPERTIES TIMEOUT 15)
 endforeach()
 
 add_executable(GBARumble GBARumble.cpp ../src/GBACart.cpp ../src/GBACartMotionPak.cpp

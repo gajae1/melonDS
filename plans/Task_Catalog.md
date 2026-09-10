@@ -2,7 +2,7 @@
 
 125개 과제 ID를 유지한다. 이는 확정 버그 수나 독립 구현 수가 아니다. P1은 재현 우선, P2는 호환성·측정 개선, P3은 효용 확인 후 채택이다. 관찰 근거는 1.1.02 분석 당시 분류이며 실행으로 새로 확인한 항목은 처리 상태를 갱신한다.
 
-기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.10.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
+기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.11.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
 
 | ID | 작업·상세 계약 | 관찰 근거 | 우선 | 기본 버전 | 공동 대표 | 처리 상태 |
 |---|---|---|---|---|---|---|
@@ -104,10 +104,10 @@
 | NP-12 | [GDB 재접속·EOF·부분 송신](workstreams/05-connectivity-peripherals.md#NP-12) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 SOCKET 폭·EOF·부분/0-byte 전송·NoAck 초기화, 실제 Windows loopback 분할/재접속/해제 확인; Linux·양 CPU debugger 후속 |
 | NP-13 | [IR 미초기화 응답·복원](workstreams/05-connectivity-peripherals.md#NP-13) | 실행 재현 | P1 | [1.1.24](Release_Plan.md#v24) | — | 1.1.10 FF 호환성 fallback·IRPos/reset/14.1 상태·14.0 새 명령 경계·section 검증; 실제 IR 통신/응답값 후속 |
 | NP-14 | [BT 키보드 최소 protocol](workstreams/05-connectivity-peripherals.md#NP-14) | 관찰/확장 | P2 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
-| NP-15 | [카트리지 슬롯/IRQ/DRQ 타이밍](workstreams/05-connectivity-peripherals.md#NP-15) | 관찰/확장 | P2 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
+| NP-15 | [카트리지 슬롯/IRQ/DRQ 타이밍](workstreams/05-connectivity-peripherals.md#NP-15) | 부분 실행 재현 | P2 | [1.1.24](Release_Plan.md#v24) | — | 1.1.11 AUXSPI mask 뒤 실제 mode 전이 비교, ARM9/ARM7 MMIO·busy·CS·소유권·상태 복원 회귀; 속도/전원/DRQ 타이밍 후속 |
 | NP-16 | [homebrew argv·DLDI span](workstreams/05-connectivity-peripherals.md#NP-16) | 실행 재현 | P1 | [1.1.24](Release_Plan.md#v24) | — | 1.1.09 argv 용량·주소, DLDI 실제 ARM9/source/target/fixup 범위와 RW/RO·재패치 회귀; 실제 홈브루 FAT/부팅 후속 |
 | NP-17 | [GBA sensor/rumble/RAM 계약](workstreams/05-connectivity-peripherals.md#NP-17) | 부분 실행 재현 | P2 | [1.1.24](Release_Plan.md#v24) | — | 1.1.10 진동 AD1 마스크·이전 상태·callback 회귀; 실제 pad 수명과 sensor/RAM 계약 후속 |
-| NP-18 | [카트리지 save type·GBA 연동](workstreams/05-connectivity-peripherals.md#NP-18) | 관찰/확장 | P2 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |
+| NP-18 | [카트리지 save type·GBA 연동](workstreams/05-connectivity-peripherals.md#NP-18) | 부분 실행 재현 | P2 | [1.1.24](Release_Plan.md#v24) | — | 1.1.11 512B EEPROM 16B page wrap·저장 통지와 14.1 중간 복원 회귀; chip 판별·GBA ROM bus/DMA·WIP/WP·실기 후속 |
 | NP-19 | [RTC 달력·IRQ·host 시계](workstreams/05-connectivity-peripherals.md#NP-19) | 부분 실행 재현 | P2 | [1.1.13](Release_Plan.md#v13) | — | 1.1.10 직렬 edge·분 carry·통신 Reset 수정, 달력/시간모드/BCD/IRQ·배터리 State 보존 회귀; host/DST·실기 초기값·게임 후속 |
 | NP-20 | [치트 DB 길이·read 오류](workstreams/05-connectivity-peripherals.md#NP-20) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.09 header/index/string/code·read/seek 오류 검증, 완전한 entry만 반환·부모 포인터 보존·빈 선택 import 차단; 실제 DB 선택 후속 |
 | NP-21 | [치트 literal/loop 실행 계약](workstreams/05-connectivity-peripherals.md#NP-21) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.09 빈/홀수/E 본문 사전 검증, UI 요청으로 loop/copy 취소·실행본 비활성화·오류 보고; 실제 게임·D1/D2 조건 복원·C5 수명 후속 |

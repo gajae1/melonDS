@@ -230,3 +230,17 @@ host-clock synchronization and physical DS/DSi behavior are separate gates.
 Platform callbacks. Normal AD1 transitions, changes to unrelated bits and old
 state values are checked. Physical SDL haptics and pause/eject/device lifetime
 are not exercised here.
+
+`CartSPI` calls the actual ARM9/ARM7 MMIO methods, slot and scheduler with a
+generated retail cartridge. SPI select/release observers delegate to the real
+methods. Held write data, lower-byte controls, read-only busy, real mode/enable
+transitions, non-owner/ejected access and complete core savestate restoration
+are checked. This enters after CPU instruction decoding and does not measure
+physical bus clock changes.
+
+`RetailEEPROM` links the production retail/common cartridge and state parser.
+Generated SPI sequences check 512-byte EEPROM 16-byte page ends, repeated wrap,
+WREN/WRDI/read controls, 14.1 mid-write restoration and an unchanged 8KiB device.
+An independent expected SRAM image is compared with the cartridge and a memory
+image updated only through reported dirty ranges. It does not commit disk files
+or model previously unimplemented write-protection/write-cycle timing.

@@ -1056,6 +1056,7 @@ void NDSCartSlot::Interface::WriteROMData(u32 val, u32 mask)
 void NDSCartSlot::Interface::WriteSPICnt(u16 val, u16 mask)
 {
     val &= mask;
+    const u16 newCnt = (SPICnt & (~mask | 0x0080)) | (val & 0xE043);
 
     if (SPISelected && Parent.CartActive && Parent.CPUSelect == Num)
     {
@@ -1067,13 +1068,15 @@ void NDSCartSlot::Interface::WriteSPICnt(u16 val, u16 mask)
         // it's unlikely anything uses this.
         // Toggling bit 15 doesn't affect the chipselect lines.
 
-        if (SPICnt & ~val & (1<<13))
+        // A lower-byte write leaves the mode bit untouched. Compare the
+        // effective register value so it cannot end a held SPI transaction.
+        if (SPICnt & ~newCnt & (1<<13))
             Parent.Cart->SPIRelease();
-        else if (~SPICnt & val & (1<<13))
+        else if (~SPICnt & newCnt & (1<<13))
             Parent.Cart->SPISelect();
     }
 
-    SPICnt = (SPICnt & (~mask | 0x0080)) | (val & 0xE043);
+    SPICnt = newCnt;
 
     // AUXSPICNT can be changed during a transfer
     // in this case, the transfer continues until the end, even if bit13 or bit15 are cleared

@@ -23,9 +23,11 @@
 
 [1.1.09 증분](releases/1.1.09.md)은 NP-16/20/21의 argv/DLDI와 치트 DB·literal 입력을 검증하고, 긴 치트 실행에 UI 메시지의 취소 요청을 연결한다. 정상 코드에 대한 임의의 작은 반복 상한은 추가하지 않는다. 다음은 FS-13 저장 파일명 충돌과 NP-13~15/17~19의 주변장치·파일 형식 후보를 소스·생성 입력으로 좁힌다. NP-21의 D1/D2 조건 복원과 C5 수명은 독립 의미 검증으로 유지하며 실기 수락을 추측으로 채우지 않는다.
 
-## 작업 소유권
-
 [1.1.10 증분](releases/1.1.10.md)은 FS-13의 명시적 파일 선택과 활성 경로, NP-13 IR 위치·미지원 응답, NP-19 RTC edge·분 carry·Reset, NP-17 진동 AD1을 구현했다. 다음은 NP-18 EEPROM page wrap/dirty 통지와 AUXSPI CS 해제의 정상/실패 대조다. NP-14 BT 프로토콜과 NP-15 형식 판별은 근거를 확보한 부분만 좁혀 진행한다. 센서·RAM·실제 무선 통신과 모든 앞선 장치 수락은 그대로 남긴다.
+
+[1.1.11 증분](releases/1.1.11.md)은 NP-15의 AUXSPI 부분 쓰기로 인한 CS 불일치와 NP-18의 작은 EEPROM page wrap/저장 통지를 재현·수정했다. 다음은 FS-15 치트 편집의 원자적 저장·오류 전달이다. 코어의 직렬화와 Qt 파일 commit을 분리하고 정상 roundtrip·쓰기 실패·편집 유지부터 검증한다. GBA EEPROM은 실제 DS ROM bus/DMA 소비자를 통한 read/write부터, BT는 command/IRQ/reply transport부터 독립 구현한다. 현재 부분 성공으로 이 기능들을 완료 처리하지 않는다.
+
+## 작업 소유권
 
 EmuInstance.cpp를 건드리는 상태 로드·ROM 교체·Zstd 변경은 한 작성자가 순차 통합한다. 코어 NDS.cpp와 Config.cpp의 좁은 수정은 독립적으로 진행할 수 있다.
 마이크와 입력 장치, LAN과 PCap/Slirp와 GDB는 독립 반례·소유 파일로 나눈다. 같은 파일의 동시 변경이나 같은 결과를 중복 구현하지 않는다.

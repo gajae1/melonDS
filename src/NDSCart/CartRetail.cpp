@@ -162,9 +162,10 @@ void CartRetail::SPIRelease()
 {
     if ((SRAMStatus & (1<<1)) && (SRAMSaveLen > 0))
     {
+        // Tiny EEPROM writes wrap inside a page, not across the whole save.
         Platform::WriteNDSSave(SRAM.get(), SRAMLength,
-                               SRAMSaveAddr & (SRAMLength-1),
-                               SRAMSaveLen & (SRAMLength-1),
+                               SRAMType == 1 ? SRAMSaveAddr & 0x1F0 : SRAMSaveAddr & (SRAMLength-1),
+                               SRAMType == 1 ? 16 : SRAMSaveLen & (SRAMLength-1),
                                UserData);
 
         SRAMStatus &= ~(1<<1);
@@ -236,10 +237,10 @@ u8 CartRetail::SRAMWrite_EEPROMTiny(u8 val)
         else
         {
             // TODO: implement WP bits!
-            // TODO: restrict writing to 16-byte page
             if (SRAMStatus & (1<<1))
             {
-                SRAM[(SRAMAddr + ((SRAMCmd==0x0A)?0x100:0)) & 0x1FF] = val;
+                // The starting address latches the page; only its low bits advance.
+                SRAM[(SRAMSaveAddr & 0x1F0) | (SRAMAddr & 0xF)] = val;
                 SRAMSaveLen++;
             }
             SRAMAddr++;

@@ -26,6 +26,8 @@ ROM 교체·종료 증분은 `CartReplacement`, `FrontendClose`, `SaveManagerIO`
 
 저장 정체성·주변장치 증분은 `AssetIdentityTest`, `AssetIdentityUI`, `CartReplacement`, `IRCartState`, `RTCCalendar`, `GBARumble`과 `asset-identity-|asset-ui-|cart-replacement-.*asset|ir-cart-|rtc-|gba-rumble-`를 사용한다. registry와 게임 파일은 서로 다른 임시 폴더이며 Windows alias case는 임시 경로 안의 junction만 생성한다. IR/진동은 실제 카트 코드, RTC는 전체 생산 RTC와 현재 scheduler 정의를 실행한다. 합성 IRQ·진동 callback과 offscreen 메시지 경계를 물리 장치나 전체 GUI 수락으로 확대하지 않는다.
 
+카트 SPI·EEPROM 증분은 `CartSPI`, `RetailEEPROM`과 `cart-spi-|retail-eeprom-`를 사용한다. CartSPI는 실제 NDS core의 ARM9/ARM7 MMIO·scheduler·retail cart·전체 savestate를 사용하며 SPI callback 관찰 뒤 생산 메서드에 그대로 위임한다. CPU 명령 실행/JIT 검사는 별도다. RetailEEPROM은 실제 SPI 입력·SRAM·상태에 생성 저장 image를 연결해 통지 범위만 재생한다. 메모리 image 일치를 실제 디스크 commit이나 실물 chip timing의 증거로 확대하지 않는다.
+
 ```sh
 ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 ```
