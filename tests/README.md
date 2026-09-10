@@ -244,3 +244,11 @@ WREN/WRDI/read controls, 14.1 mid-write restoration and an unchanged 8KiB device
 An independent expected SRAM image is compared with the cartridge and a memory
 image updated only through reported dirty ranges. It does not commit disk files
 or model previously unimplemented write-protection/write-cycle timing.
+
+`InputConfigUI` runs the production input dialog and mapping widgets, real Qt
+focus/key routing, and configuration files in a temporary directory. The input
+mapping tables and handlers are extracted from the current source. A virtual SDL
+controller reproduces the hidden keyboard page. Explicit tab selection, capture,
+OK/Cancel, modifiers, unbinding, live mapping replacement and a fresh-process
+reload are checked. Emulation and physical joystick state are supplied by a small
+host boundary; physical keyboard/IME delivery and game latency are separate gates.

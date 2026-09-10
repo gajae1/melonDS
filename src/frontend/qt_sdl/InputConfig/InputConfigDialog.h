@@ -131,8 +131,6 @@ private slots:
     void on_InputConfigDialog_accepted();
     void on_InputConfigDialog_rejected();
 
-    void on_btnKeyMapSwitch_clicked();
-    void on_btnJoyMapSwitch_clicked();
     void on_cbxJoystick_currentIndexChanged(int id);
 
 private:

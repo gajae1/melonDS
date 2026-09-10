@@ -35,6 +35,43 @@ add_test(NAME qt-keyboard-mapping-input COMMAND FrontendInput)
 set_tests_properties(qt-keyboard-mapping-input PROPERTIES
     TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+set(input_dialog_methods)
+foreach(pair IN ITEMS "inputLoadConfig|void EmuInstance::inputLoadConfig()"
+        "inputButtonNames|const char* EmuInstance::buttonNames[12] ="
+        "inputHotkeyNames|const char* EmuInstance::hotkeyNames[HK_MAX] =")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceInput.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceInput.cpp VERBATIM)
+    list(APPEND input_dialog_methods "${output}")
+endforeach()
+add_executable(InputConfigUI "${CMAKE_SOURCE_DIR}/tests/InputConfigUI.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    Config.cpp KeyboardInput.cpp InputConfig/InputConfigDialog.h InputConfig/InputConfigDialog.ui
+    InputConfig/MapButton.h InputConfig/KeyMapButton.h InputConfig/resources/ds.qrc
+    ${input_dialog_methods} ${input_methods})
+target_include_directories(InputConfigUI PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/src/net"
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    "${CMAKE_CURRENT_SOURCE_DIR}/InputConfig" "${CMAKE_CURRENT_BINARY_DIR}")
+set_target_properties(InputConfigUI PROPERTIES AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/InputConfig")
+target_compile_definitions(InputConfigUI PRIVATE MELONDS_TEST_FILE_EXISTS)
+target_link_libraries(InputConfigUI PRIVATE ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)
+if (USE_QT6)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    target_link_libraries(InputConfigUI PRIVATE Qt6::Test)
+else()
+    find_package(Qt5 REQUIRED COMPONENTS Test)
+    target_link_libraries(InputConfigUI PRIVATE Qt5::Test)
+endif()
+foreach(case IN ITEMS letter controller space return tab hotkey escape unbind cancel)
+    add_test(NAME input-dialog-${case} COMMAND InputConfigUI ${case})
+    set_tests_properties(input-dialog-${case} PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()
+
 set(touch_methods)
 foreach(pair IN ITEMS "touchEvent|void ScreenPanel::touchEvent(QTouchEvent* event)"
         "releaseTouch|void ScreenPanel::releaseTouch()"

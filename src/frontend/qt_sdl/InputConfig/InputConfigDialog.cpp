@@ -124,10 +124,6 @@ void InputConfigDialog::setupKeypadPage()
         delete pushButtonKey;
         delete pushButtonJoy;
 
-        if (ui->cbxJoystick->isEnabled())
-        {
-            ui->stackMapping->setCurrentIndex(1);
-        }
     }
 }
 
@@ -227,16 +223,6 @@ void InputConfigDialog::on_InputConfigDialog_rejected()
     emuInstance->setJoystick(instcfg.GetInt("JoystickID"));
 
     closeDlg();
-}
-
-void InputConfigDialog::on_btnKeyMapSwitch_clicked()
-{
-    ui->stackMapping->setCurrentIndex(0);
-}
-
-void InputConfigDialog::on_btnJoyMapSwitch_clicked()
-{
-    ui->stackMapping->setCurrentIndex(1);
 }
 
 void InputConfigDialog::on_cbxJoystick_currentIndexChanged(int id)

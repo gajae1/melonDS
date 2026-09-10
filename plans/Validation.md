@@ -36,6 +36,8 @@ ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 
 치트 실행은 `ARExecution`과 `ar-execution-`에서 생산 ARM7 VBlank IRQ hook을 사용한다. C0 교체·D1/D2 조건 복원·D0 기본 상태·data/offset 유지·literal/loop/copy 취소를 생성 guest 메모리로 대조한다. C5 mask 검사는 수명과 무관한 참/거짓 입력만 사용하며 지역 counter의 현재 결과를 Datel 수명의 정답으로 등록하지 않는다.
 
+입력 설정은 `InputConfigUI`와 `input-dialog-`에서 실제 Qt dialog·매핑 버튼·Config 파일 연산을 사용한다. 가상 SDL 컨트롤러 연결 여부, 명시적 탭 전환, 키 지정·취소·해제, OK 적용·이전 키 비활성화·새 프로세스 재로드를 검사한다. `FrontendInput`은 modifier·focus와 손상 설정 보존 검사를 유지한다. Qt 내부에 전달한 이벤트와 물리 장치·OS IME·게임 입력 지연은 별도 수락이다.
+
 ## 진단 구성
 
 루트 [Sanitizers.cmake](../cmake/Sanitizers.cmake)의 `SANITIZE` 설정은 도구와 runtime이 지원하는 조합에서 사용한다. 작은 parser·buffer 경계는 기존 독립 테스트를 우선한다.

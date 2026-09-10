@@ -41,48 +41,27 @@
       </attribute>
       <layout class="QGridLayout" name="gridLayout">
        <item row="0" column="0">
-        <widget class="QStackedWidget" name="stackMapping">
+        <widget class="QTabWidget" name="tabsMapping">
          <property name="currentIndex">
           <number>0</number>
          </property>
          <widget class="QWidget" name="keyPage">
+          <attribute name="title">
+           <string>Keyboard</string>
+          </attribute>
           <layout class="QGridLayout" name="gridLayout_2">
            <item row="4" column="1" colspan="3">
-            <layout class="QHBoxLayout" name="horizontalLayout_3">
-             <item>
-              <spacer name="horizontalSpacer">
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>40</width>
-                 <height>20</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-             <item>
-              <widget class="QPushButton" name="btnJoyMapSwitch">
-               <property name="text">
-                <string>Switch to Joystick mappings</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <spacer name="horizontalSpacer_2">
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>40</width>
-                 <height>20</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-            </layout>
+            <widget class="QLabel" name="lblKeyboardHelp">
+             <property name="text">
+              <string>Click a mapping, then press a key. Escape cancels; Backspace clears.</string>
+             </property>
+             <property name="alignment">
+              <set>Qt::AlignCenter</set>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
            </item>
            <item row="1" column="3">
             <widget class="QWidget" name="widget_4" native="true">
@@ -1155,43 +1134,22 @@
           </layout>
          </widget>
          <widget class="QWidget" name="joyPage">
+          <attribute name="title">
+           <string>Joystick</string>
+          </attribute>
           <layout class="QGridLayout" name="gridLayout_3">
            <item row="4" column="1" colspan="3">
-            <layout class="QHBoxLayout" name="horizontalLayout_12">
-             <item>
-              <spacer name="horizontalSpacer_3">
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>40</width>
-                 <height>20</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-             <item>
-              <widget class="QPushButton" name="btnKeyMapSwitch">
-               <property name="text">
-                <string>Switch to Keyboard mappings</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <spacer name="horizontalSpacer_4">
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>40</width>
-                 <height>20</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-            </layout>
+            <widget class="QLabel" name="lblJoystickHelp">
+             <property name="text">
+              <string>Click a mapping, then press a controller button or move an axis. Escape cancels; Backspace clears.</string>
+             </property>
+             <property name="alignment">
+              <set>Qt::AlignCenter</set>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
            </item>
            <item row="1" column="1">
             <widget class="QWidget" name="widget" native="true">
@@ -2332,7 +2290,7 @@
  </widget>
  <tabstops>
   <tabstop>tabWidget</tabstop>
-  <tabstop>btnJoyMapSwitch</tabstop>
+  <tabstop>tabsMapping</tabstop>
   <tabstop>btnKeyL</tabstop>
   <tabstop>btnKeyR</tabstop>
   <tabstop>btnKeyX</tabstop>
@@ -2345,7 +2303,6 @@
   <tabstop>btnKeyLeft</tabstop>
   <tabstop>btnKeyRight</tabstop>
   <tabstop>btnKeyDown</tabstop>
-  <tabstop>btnKeyMapSwitch</tabstop>
   <tabstop>btnJoyL</tabstop>
   <tabstop>btnJoyR</tabstop>
   <tabstop>btnJoyUp</tabstop>
