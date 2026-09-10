@@ -339,3 +339,27 @@ delivery. It checks software frames, one error notice, successful reselection,
 recompile failure and repeated updates after capability fallback. It does not run
 the Qt event loop or a 3.2-only device. Binary shader caching is currently disabled;
 scale recompilation is not a cache-hit test. See [1.1.19](../plans/releases/1.1.19.md).
+
+`GLFrameReadback capture-readback <software|opengl|compute>` runs 30 conditions
+per backend: five source A 3D/B/mixed inputs, 1x/2x, unchanged/pending resize/
+CPU-synced resize. Generated ARM9 LDRH instructions read through the production
+bus into guest RAM. Two inputs reuse the capture as a direct-color 3D texture,
+capture that output into another bank and read it with the guest again. Full
+primary colors and integer channel sums isolate storage preservation from the
+existing intermediate-intensity rounding difference. No fixture GL barrier,
+finish or readback precedes the production consumer. These cases cover selected
+sizes and destination bank wrap, not DMA, warmed JIT, mid-capture timing or all
+2D source-A layers. Software is a control, not a universal hardware oracle.
+
+`GLFrameReadback gl-resource <normal|common-fail|3d-fail>` records real driver
+program/buffer/texture generation and deletion. Normal teardown repeats twice
+in one current context. Fault cases compile a deliberately invalid first shader;
+reused raw object storage exposes owned handles omitted by constructors. A real
+unrelated program/buffer/texture must survive each teardown. The fixture checks
+both deletion records and actual live objects before context destruction, after
+releasing references to programs whose deletion may be deferred. The common
+initialization fault also checks real software fallback. The isolated 3D child
+fault is not a full frontend fallback test. Current-context lifetime checks do
+not establish context-loss or complete Qt shutdown recovery. Uninitialized reads
+have undefined behavior, so the original fault need not reproduce identically
+on other compilers. See [1.1.20](../plans/releases/1.1.20.md).

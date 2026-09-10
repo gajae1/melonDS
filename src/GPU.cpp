@@ -1656,14 +1656,13 @@ void GPU::SyncAllVRAMCaptures()
         u16 flags = VRAMCaptureBlockFlags[b];
         if (!(flags & CBFlag_IsCapture))
             continue;
-        if (flags & CBFlag_Synced)
-            continue;
-
         u32 bank = b >> 2;
         u32 start = flags & 0x3;
         u32 len = (flags >> 6) & 0x3;
 
-        Rend->SyncVRAMCapture(bank, start, len, (flags & CBFlag_Complete));
+        if (!(flags & CBFlag_Synced))
+            Rend->SyncVRAMCapture(bank, start, len, (flags & CBFlag_Complete));
+        // CPU-synced captures also refer to the renderer's old storage.
         VRAMCBFlagsClear(bank, start);
     }
 }

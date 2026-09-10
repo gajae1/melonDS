@@ -113,8 +113,8 @@ GLRenderer3D::GLRenderer3D(melonDS::GPU3D& gpu3D, GLRenderer& parent) noexcept :
     BetterPolygons = false;
 
     // GLRenderer3D::Init() will be used to actually initialize the renderer;
-    // The various glDelete* functions silently ignore invalid IDs,
-    // so we can just let the destructor clean up a half-initialized renderer.
+    // Owned GL handles start at zero, so the destructor can also clean up
+    // a renderer whose initialization failed before all objects were created.
 }
 
 bool GLRenderer3D::Init()
@@ -301,6 +301,7 @@ GLRenderer3D::~GLRenderer3D()
 
     glDeleteVertexArrays(1, &VertexArrayID);
     glDeleteBuffers(1, &VertexBufferID);
+    glDeleteBuffers(1, &IndexBufferID);
     glDeleteVertexArrays(1, &ClearVertexArrayID);
     glDeleteBuffers(1, &ClearVertexBufferID);
     glDeleteTextures(2, ClearBitmapTex);
@@ -308,6 +309,11 @@ GLRenderer3D::~GLRenderer3D()
     delete[] ClearBitmap[1];
 
     glDeleteBuffers(1, &ShaderConfigUBO);
+
+    glDeleteProgram(ClearShaderPlain);
+    glDeleteProgram(ClearShaderBitmap);
+    glDeleteProgram(FinalPassEdgeShader);
+    glDeleteProgram(FinalPassFogShader);
 
     for (int i = 0; i < 2; i++)
     {

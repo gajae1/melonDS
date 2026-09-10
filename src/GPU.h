@@ -67,6 +67,8 @@ public:
     void DoSavestate(Savestate* file) noexcept;
 
     void SetRenderer(std::unique_ptr<Renderer>&& renderer) noexcept;
+    // Preserve capture pixels in VRAM and retire their GPU storage references.
+    void SyncAllVRAMCaptures();
     const Renderer& GetRenderer() const noexcept { return *Rend; }
     Renderer& GetRenderer() noexcept { return *Rend; }
 
@@ -791,7 +793,6 @@ private:
     void CheckCaptureStart();
     void CheckCaptureEnd();
     void SyncVRAMCaptureBlock(u32 block, bool write);
-    void SyncAllVRAMCaptures();
     void GetCaptureInfo(int* info, u16** cbf, int len);
 
     void SetDispStatIRQ(int cpu, int num);

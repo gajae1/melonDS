@@ -352,12 +352,17 @@ static bool CheckCaptureSamplers(melonDS::NDS& nds, melonDS::GLRenderer& rendere
 }
 
 int CheckComputeFailure(const char* name);
+int CheckCaptureReadback(const char* backend);
+int CheckGLResourceLifetime(const char* name);
 
 int main(int argc, char** argv)
 {
     using namespace melonDS;
     const bool failureCase = argc == 3 && std::strcmp(argv[1], "compute-failure") == 0;
-    const bool compute = failureCase || (argc > 1 && std::strcmp(argv[1], "compute") == 0);
+    const bool captureCase = argc == 3 && std::strcmp(argv[1], "capture-readback") == 0;
+    const bool resourceCase = argc == 3 && std::strcmp(argv[1], "gl-resource") == 0;
+    const bool compute = failureCase || (captureCase && std::strcmp(argv[2], "compute") == 0) ||
+                         (argc > 1 && std::strcmp(argv[1], "compute") == 0);
     if (SDL_Init(SDL_INIT_VIDEO)) return 77;
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, compute ? 4 : 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, compute ? 3 : 2);
@@ -367,9 +372,10 @@ int main(int argc, char** argv)
     auto context = SDL_GL_CreateContext(window);
     if (!context || !gladLoadGLLoader(SDL_GL_GetProcAddress)) return 77;
     std::printf("GPU=%s GL=%s compute=%d\n", glGetString(GL_RENDERER), glGetString(GL_VERSION), compute);
-    if (failureCase)
+    if (failureCase || captureCase || resourceCase)
     {
-        const int result = CheckComputeFailure(argv[2]);
+        const int result = failureCase ? CheckComputeFailure(argv[2]) :
+            captureCase ? CheckCaptureReadback(argv[2]) : CheckGLResourceLifetime(argv[2]);
         SDL_GL_DeleteContext(context);
         SDL_DestroyWindow(window);
         SDL_Quit();

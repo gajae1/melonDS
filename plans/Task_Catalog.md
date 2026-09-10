@@ -24,15 +24,15 @@
 | CJ-16 | [A64 native fastmem·W^X·I-cache](workstreams/01-core-jit.md#CJ-16) | 관찰/확장 | P1 | [1.1.39](Release_Plan.md#v39) | — | 미착수 |
 | CJ-17 | [BMI BIC·shift 실효성](workstreams/01-core-jit.md#CJ-17) | 미측정 가설 | P3 | [1.1.25](Release_Plan.md#v25) | — | 미착수 |
 | CJ-18 | [짧은 block hash·cache 비용](workstreams/01-core-jit.md#CJ-18) | 미측정 가설 | P3 | [1.1.25](Release_Plan.md#v25) | — | 미착수 |
-| CJ-19 | [3D capture의 CPU/DMA 가시성](workstreams/01-core-jit.md#CJ-19) | 관찰/확장 | P2 | [1.1.16](Release_Plan.md#v16) | GR-06 | 미착수 |
+| CJ-19 | [3D capture의 CPU/DMA 가시성](workstreams/01-core-jit.md#CJ-19) | 관찰/확장 | P2 | [1.1.16](Release_Plan.md#v16) | GR-06 | 1.1.20 완료된 source A/B·혼합 캡처의 실제 ARM9 LDRH 소비 검증; DMA·warmed JIT·캡처 중 시각 후속 |
 | CJ-20 | [입력·RTC·다중 인스턴스 시간 정책](workstreams/01-core-jit.md#CJ-20) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
 | CJ-21 | [DSi 동일 조건 upstream 부팅 비교](workstreams/01-core-jit.md#CJ-21) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | AD-17 | 미착수 |
-| GR-01 | [배율 변경의 pending capture 보존](workstreams/02-renderers.md#GR-01) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
+| GR-01 | [배율 변경의 pending capture 보존](workstreams/02-renderers.md#GR-01) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 이전 크기에서 pending 캡처 보존·CPU-synced 참조 폐기; 두 GL의 1x/2x·CPU 읽기·후속 texture 재사용 검증; 진행 중 캡처·다른 driver 후속 |
 | GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capture 종류별 sampler unit 수정; 실제 128/256·S/T wrap·일반 texture 왕복의 binding/픽셀 검증; 다른 driver·비표준 capture·실기 후속 |
 | GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capability 판정·shader 실패·software 복구·재선택 검증; 실제 3.2-only 장치·설정창 표시·전체 Qt event loop·비활성 binary cache 후속 |
-| GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
+| GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 program 4개·buffer 1개 해제와 소유 handle 초기화; 정상 반복·실제 shader 실패에서 생존 객체/오삭제 0; context 상실·다른 driver 후속 |
 | GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
-| GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 관찰/확장 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
+| GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 관찰/확장 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 software/OpenGL/Compute 각 30조건의 실제 A/B·혼합·bank wrap→guest LDRH 및 128/256 재사용; DMA·모든 2D source A·실기 후속 |
 | GR-07 | [고배율 한도·할당 복구](workstreams/02-renderers.md#GR-07) | 정적 후보 | P2 | [1.1.17](Release_Plan.md#v17) | — | 미착수 |
 | GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 정적 후보 | P1 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-09 | [2D/3D 정수 SIMD·구간 묶음](workstreams/02-renderers.md#GR-09) | 미측정 가설 | P2 | [1.1.27](Release_Plan.md#v27) | — | 미착수 |

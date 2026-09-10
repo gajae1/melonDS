@@ -316,6 +316,8 @@ FS-15 편집 사본·직렬화·원자적 저장과 실패 복구는 [1.1.12 증
 
 ## 1.1.16 — OpenGL context·캡처·자원 수명
 
+[실제 1.1.20 증분](releases/1.1.20.md)은 GR-01의 pending 보존·synced 참조 폐기, GR-04의 해제·실패 초기화, GR-06/CJ-19의 실제 source A/B·혼합 캡처→ARM9 읽기·후속 texture 재사용을 검증한다. DMA·캡처 진행 중 시각·전체 색 정밀도·surface/context 상실·다른 driver 수락은 아래 책임 범위에 남긴다.
+
 기본 과제: CJ-19, GR-01, GR-04, GR-05, GR-06, GR-11, GR-12. 공동·후속: GR-03, GR-08, GR-13.
 
 소스 시작점: [GPU_OpenGL.cpp](../src/GPU_OpenGL.cpp), [GPU2D_OpenGL.cpp](../src/GPU2D_OpenGL.cpp), [GPU3D_OpenGL.cpp](../src/GPU3D_OpenGL.cpp), [context.cpp](../src/frontend/graphics/gl/context.cpp), [GLFrameReadback.cpp](../tests/GLFrameReadback.cpp).

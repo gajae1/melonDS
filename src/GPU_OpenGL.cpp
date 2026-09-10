@@ -348,6 +348,10 @@ void GLRenderer::SetScaleFactor(int scale)
     if (scale == ScaleFactor)
         return;
 
+    // Read with the old texture dimensions before reallocating capture storage.
+    if (ScaleFactor != 0)
+        GPU.SyncAllVRAMCaptures();
+
     ScaleFactor = scale;
     ScreenW = 256 * scale;
     ScreenH = 192 * scale;

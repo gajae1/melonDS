@@ -65,8 +65,8 @@ private:
     int ScaleFactor;
     int ScreenW, ScreenH;
 
-    GLuint RectVtxBuffer;
-    GLuint RectVtxArray;
+    GLuint RectVtxBuffer {};
+    GLuint RectVtxArray {};
 
     GLuint OutputTex3D;
     GLuint OutputTex2D[2];
@@ -86,20 +86,20 @@ private:
         u32 __pad0[3];
     } FinalPassConfig;
 
-    GLuint FPShader;
-    GLuint FPConfigUBO;
+    GLuint FPShader {};
+    GLuint FPConfigUBO {};
 
-    GLuint FPVertexBufferID;
-    GLuint FPVertexArrayID;
+    GLuint FPVertexBufferID {};
+    GLuint FPVertexArrayID {};
 
-    GLuint AuxInputTex;                 // aux input (VRAM and mainmem FIFO)
+    GLuint AuxInputTex {};                 // aux input (VRAM and mainmem FIFO)
 
     // texture/fb for display capture VRAM input
-    GLuint CaptureVRAMTex;
-    GLuint CaptureVRAMFB;
+    GLuint CaptureVRAMTex {};
+    GLuint CaptureVRAMFB {};
 
-    GLuint FPOutputTex[2];               // final output
-    GLuint FPOutputFB[2];
+    GLuint FPOutputTex[2] {};               // final output
+    GLuint FPOutputFB[2] {};
 
     struct sCaptureConfig
     {
@@ -114,22 +114,22 @@ private:
         u32 __pad0[3];
     } CaptureConfig;
 
-    GLuint CaptureShader;
-    GLuint CaptureConfigUBO;
+    GLuint CaptureShader {};
+    GLuint CaptureConfigUBO {};
 
-    GLuint CaptureVtxBuffer;
-    GLuint CaptureVtxArray;
+    GLuint CaptureVtxBuffer {};
+    GLuint CaptureVtxArray {};
 
-    GLuint CaptureOutput256FB[4];
-    GLuint CaptureOutput256Tex;
-    GLuint CaptureOutput128FB[16];
-    GLuint CaptureOutput128Tex;
+    GLuint CaptureOutput256FB[4] {};
+    GLuint CaptureOutput256Tex {};
+    GLuint CaptureOutput128FB[16] {};
+    GLuint CaptureOutput128Tex {};
 
-    GLuint CapDownShader;
+    GLuint CapDownShader {};
     GLint CapDownInputLayerULoc;
 
-    GLuint CaptureSyncFB;
-    GLuint CaptureSyncTex;
+    GLuint CaptureSyncFB {};
+    GLuint CaptureSyncTex {};
 
     u16* AuxInputBuffer[2];
     u8 AuxUsageMask;

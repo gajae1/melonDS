@@ -127,7 +127,7 @@ private:
     GLint ClearUniformLoc[4] {};
 
     GLint ClearBitmapULoc[2] {};
-    GLuint ClearBitmapTex[2];
+    GLuint ClearBitmapTex[2] {};
     u32* ClearBitmap[2];
     u8 ClearBitmapDirty;
 

@@ -55,25 +55,25 @@ private:
     int ScaleFactor;
     int ScreenW, ScreenH;
 
-    GLuint LayerPreShader;
+    GLuint LayerPreShader {};
     GLint LayerPreCurBGULoc;
 
-    GLuint ScanlineConfigUBO;
-    GLuint SpriteScanlineConfigUBO;
+    GLuint ScanlineConfigUBO {};
+    GLuint SpriteScanlineConfigUBO {};
 
-    GLuint SpritePreShader;
-    GLuint SpritePreVtxBuffer;
-    GLuint SpritePreVtxArray;
+    GLuint SpritePreShader {};
+    GLuint SpritePreVtxBuffer {};
+    GLuint SpritePreVtxArray {};
     u16* SpritePreVtxData;
 
-    GLuint SpriteShader;
+    GLuint SpriteShader {};
     GLint SpriteRenderTransULoc;
-    GLuint SpriteVtxBuffer;
-    GLuint SpriteVtxArray;
+    GLuint SpriteVtxBuffer {};
+    GLuint SpriteVtxArray {};
     u16* SpriteVtxData;
 
-    GLuint CompositorShader;
-    GLuint CompositorConfigUBO;
+    GLuint CompositorShader {};
+    GLuint CompositorConfigUBO {};
     GLint CompositorScaleULoc;
 
     // base index for a BG layer within the BG texture arrays
@@ -85,31 +85,31 @@ private:
         {18, 19, 12, 16},   // large bitmap
     };
 
-    GLuint LayerConfigUBO;
-    GLuint SpriteConfigUBO;
+    GLuint LayerConfigUBO {};
+    GLuint SpriteConfigUBO {};
 
-    GLuint VRAMTex_BG;
-    GLuint VRAMTex_OBJ;
-    GLuint PalTex_BG;
-    GLuint PalTex_OBJ;
+    GLuint VRAMTex_BG {};
+    GLuint VRAMTex_OBJ {};
+    GLuint PalTex_BG {};
+    GLuint PalTex_OBJ {};
 
-    GLuint MosaicTex;
+    GLuint MosaicTex {};
 
-    GLuint AllBGLayerFB[22];
-    GLuint AllBGLayerTex[22];
+    GLuint AllBGLayerFB[22] {};
+    GLuint AllBGLayerTex[22] {};
 
     GLuint BGLayerFB[4];
     GLuint BGLayerTex[4];
 
-    GLuint SpriteFB;
-    GLuint SpriteTex;
+    GLuint SpriteFB {};
+    GLuint SpriteTex {};
 
-    GLuint OBJLayerFB;
-    GLuint OBJLayerTex;
-    GLuint OBJDepthTex;
+    GLuint OBJLayerFB {};
+    GLuint OBJLayerTex {};
+    GLuint OBJDepthTex {};
 
-    GLuint OutputFB;
-    GLuint OutputTex;
+    GLuint OutputFB {};
+    GLuint OutputTex {};
 
     // std140 compliant config struct for the layer shader
     struct sLayerConfig

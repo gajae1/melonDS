@@ -354,7 +354,10 @@ error:
     glDeleteShader(shaders[0]);
 
     if (!linkingSucess)
+    {
         glDeleteProgram(result);
+        result = 0;
+    }
 
     return linkingSucess;
 }

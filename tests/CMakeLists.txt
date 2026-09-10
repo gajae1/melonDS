@@ -165,7 +165,7 @@ if (MELONDS_TEST_GPU)
     endif()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GPU_TEST_SDL2 REQUIRED IMPORTED_TARGET sdl2)
-    add_executable(GLFrameReadback GLFrameReadback.cpp ComputeFailure.cpp PlatformSync.cpp PlatformHeadless.cpp
+    add_executable(GLFrameReadback GLFrameReadback.cpp ComputeFailure.cpp GLCaptureReadback.cpp GLResourceLifetime.cpp PlatformSync.cpp PlatformHeadless.cpp
         ../src/frontend/glad/glad.c)
     target_link_libraries(GLFrameReadback PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)
     foreach(method IN ITEMS UpdateRenderer CompileShaders)
@@ -209,6 +209,16 @@ if (MELONDS_TEST_GPU)
     foreach(failure IN ITEMS control capability compile link recompile frontend)
         add_test(NAME gpu-compute-failure-${failure} COMMAND GLFrameReadback compute-failure ${failure})
         set_tests_properties(gpu-compute-failure-${failure}
+            PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endforeach()
+    foreach(backend IN ITEMS software opengl compute)
+        add_test(NAME gpu-${backend}-capture-readback COMMAND GLFrameReadback capture-readback ${backend})
+        set_tests_properties(gpu-${backend}-capture-readback
+            PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endforeach()
+    foreach(resource IN ITEMS normal common-fail 3d-fail)
+        add_test(NAME gpu-gl-resource-${resource} COMMAND GLFrameReadback gl-resource ${resource})
+        set_tests_properties(gpu-gl-resource-${resource}
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endforeach()
 endif()
