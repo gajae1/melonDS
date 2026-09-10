@@ -314,6 +314,15 @@ int main(int argc, char** argv)
         else if (kind == 'X') Gdb::GdbStub::Handle_X(&stub, reinterpret_cast<const u8*>(body.data()), visible);
         else Gdb::GdbStub::Handle_m(&stub, reinterpret_cast<const u8*>(body.data()), visible);
     };
+    const auto qcrc = [&](const std::string& body, size_t visible = SIZE_MAX) {
+        if (visible == SIZE_MAX) visible = body.size();
+        sent.clear();
+        memory.reads = 0;
+        std::string request = body;
+        request += '\0';
+        request.append(64, 'B'); // Extra allocated bytes do not belong to the request.
+        Gdb::GdbStub::Handle_q_CRC(&stub, reinterpret_cast<const u8*>(request.data()), visible);
+    };
 
     if (mode == "memory-control")
     {
@@ -558,6 +567,84 @@ int main(int argc, char** argv)
         selectError = true;
         check(stub.Poll(false) == Gdb::StubState::Disconnect && !stub.IsConnected(),
               "Socket readiness error did not disconnect");
+    }
+    else if (mode == "crc-control")
+    {
+        // Official libiberty xcrc32 vectors verified by the parent: MSB-first
+        // CRC (poly 0x04C11DB7, seed 0xFFFFFFFF, no reflect, no final XOR).
+        // Untouched stub memory reads as zero bytes.
+        const struct { const char* body; unsigned reads; const char* value; } zeros[] = {
+            {"1000,0", 0, "Cffffffff"}, {"1000,1", 1, "C4e08bfb4"},
+            {"1000,7f", 127, "Ca6ad09f1"}, {"1000,80", 128, "C46a0eabc"},
+            {"1000,81", 129, "C8eea81c5"},
+        };
+        for (const auto& vector : zeros)
+        {
+            qcrc(vector.body);
+            check(Response(vector.value) && memory.reads == vector.reads,
+                  "qCRC zero-data vector or byte read count differs");
+        }
+        for (u32 i = 0; i < 129; ++i) memory.bytes[0x2000 + i] = u8(i * 37 + 11);
+        const struct { const char* body; unsigned reads; const char* value; } mixed[] = {
+            {"2000,1", 1, "C654374d5"}, {"2000,7f", 127, "Ce86523b0"},
+            {"2000,80", 128, "C30a1f0e4"}, {"2000,81", 129, "C3785a21f"},
+        };
+        for (const auto& vector : mixed)
+        {
+            qcrc(vector.body);
+            check(Response(vector.value) && memory.reads == vector.reads,
+                  "qCRC known-byte vector or byte read count differs");
+        }
+        for (u32 i = 0; i < 9; ++i) memory.bytes[0x3000 + i] = "123456789"[i];
+        qcrc("3000,9");
+        check(Response("C376e6e7") && memory.reads == 9,
+              "qCRC published check string '123456789' differs");
+    }
+    else if (mode == "crc-chunks")
+    {
+        // 128-byte chunk boundaries must not disturb the running checksum and
+        // long requests must not gain a silent cap.
+        const struct { const char* body; unsigned reads; const char* value; } zeros[] = {
+            {"1000,1000", 4096, "C77ffc71c"},
+        };
+        for (const auto& vector : zeros)
+        {
+            qcrc(vector.body);
+            check(Response(vector.value) && memory.reads == vector.reads,
+                  "qCRC chunk-boundary vector or byte read count differs");
+        }
+        for (u32 i = 0; i < 4096; ++i) memory.bytes[0x2000 + i] = u8(i * 37 + 11);
+        qcrc("2000,1000");
+        check(Response("C692a24da") && memory.reads == 4096,
+              "qCRC 32-chunk request lost data or gained a silent cap");
+    }
+    else if (mode == "crc-wrap")
+    {
+        qcrc("ffffff00,100");
+        check(Response("Ce55e964f") && memory.reads == 256,
+              "Range ending exactly at 2^32 was rejected or miscounted");
+        qcrc("ffffff00,101");
+        check(Response("E01") && memory.reads == 0,
+              "Range crossing the 2^32 boundary was accepted");
+        qcrc("ffffffff,1");
+        check(Response("C4e08bfb4") && memory.reads == 1,
+              "Final byte of the address space was mishandled");
+    }
+    else if (mode == "crc-malformed")
+    {
+        for (const char* body : {"100", "100,", ",4", "100,10ZZ", "100, 4",
+                                 "100000000,4", "100,100000000", "0x100,4"})
+        {
+            qcrc(body);
+            check(Response("E01") && memory.reads == 0,
+                  "Malformed qCRC range was accepted or read guest bytes");
+        }
+        qcrc("100,10", 3);
+        check(Response("E01") && memory.reads == 0,
+              "Bytes beyond the declared request length were parsed");
+        qcrc("100,000010");
+        check(Response("C552d22c8") && memory.reads == 16,
+              "Valid zero-padded hex length was mishandled");
     }
     else return 2;
     std::printf("GDB %s: %d failures\n", argv[1], failures);

@@ -19,7 +19,7 @@ add_executable(SavestateSections SavestateSections.cpp ../src/Savestate.cpp)
 target_include_directories(SavestateSections PRIVATE ../src)
 target_compile_features(SavestateSections PRIVATE cxx_std_26)
 
-foreach(case roundtrip invalid-length truncated-header zero-length-skip oversized-skip array-bounds)
+foreach(case roundtrip invalid-length truncated-header zero-length-skip oversized-skip array-bounds section-bounds read-only-finish)
     add_test(NAME savestate-${case} COMMAND SavestateSections ${case})
     set_tests_properties(savestate-${case} PROPERTIES TIMEOUT 5)
 endforeach()
@@ -412,7 +412,7 @@ foreach(case IN ITEMS memory-control binary-tail binary-escape last-address shor
         invalid-hex extra-hex wrap short-binary dangling-escape receive-limit checksum checksum-recovery
         coalesced response-limit response-chunks response-zero response-escape response-format memory-limit
         disconnect eof ack-eof poll-wait poll-error extra-binary stream-boundaries response-extra loopback q-xfer
-        split-resend listener-error)
+        split-resend listener-error crc-control crc-chunks crc-wrap crc-malformed)
     add_test(NAME gdb-protocol-${case} COMMAND GdbProtocol ${case})
     set_tests_properties(gdb-protocol-${case} PROPERTIES TIMEOUT 15)
 endforeach()

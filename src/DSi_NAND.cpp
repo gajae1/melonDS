@@ -711,31 +711,24 @@ bool NANDMount::ExportFile(const char* path, const char* out)
     if (res != FR_OK)
         return false;
 
-    u32 len = f_size(&file);
-
-    Platform::FileHandle* fout = OpenLocalFile(out, FileMode::Write);
-    if (!fout)
+    bool sourceOpen = true;
+    const bool result = WriteFileAtomically(out, [&](const FileWriteCallback& write)
     {
-        f_close(&file);
-        return false;
-    }
-
-    u8 buf[0x1000];
-    for (u32 i = 0; i < len; i += 0x1000)
-    {
-        u32 blocklen;
-        if ((i + 0x1000) > len)
-            blocklen = len - i;
-        else
-            blocklen = 0x1000;
-
-        u32 nread;
-        f_read(&file, buf, blocklen, &nread);
-        FileWrite(buf, blocklen, 1, fout);
-    }
-
-    CloseFile(fout);
-    f_close(&file);
+        u8 buf[0x1000];
+        u32 remaining = f_size(&file);
+        bool copied = true;
+        while (remaining && copied)
+        {
+            const u32 count = std::min<u32>(remaining, sizeof(buf));
+            u32 got = 0;
+            copied = f_read(&file, buf, count, &got) == FR_OK && got == count && write(buf, count);
+            remaining -= count;
+        }
+        sourceOpen = false;
+        return f_close(&file) == FR_OK && copied;
+    }, true);
+    if (sourceOpen) f_close(&file);
+    if (!result) return false;
 
     Log(LogLevel::Debug, "Exported file from %s to %s\n", path, out);
 

@@ -54,11 +54,11 @@ public:
     void End(int inst);
 
     int SendPacket(int inst, u8* data, int len, u64 timestamp);
-    int RecvPacket(int inst, u8* data, u64* timestamp);
+    int RecvPacket(int inst, u8* data, u64* timestamp, u32 capacity = 2048) override;
     int SendCmd(int inst, u8* data, int len, u64 timestamp);
     int SendReply(int inst, u8* data, int len, u64 timestamp, u16 aid);
     int SendAck(int inst, u8* data, int len, u64 timestamp);
-    int RecvHostPacket(int inst, u8* data, u64* timestamp);
+    int RecvHostPacket(int inst, u8* data, u64* timestamp, u32 capacity = 2048) override;
     u16 RecvReplies(int inst, u8* data, u64 timestamp, u16 aidmask);
 
 private:
@@ -69,7 +69,7 @@ private:
     void FIFORead(int inst, int fifo, void* buf, int len) noexcept;
     void FIFOWrite(int inst, int fifo, void* buf, int len) noexcept;
     int SendPacketGeneric(int inst, u32 type, u8* packet, int len, u64 timestamp) noexcept;
-    int RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp) noexcept;
+    int RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp, u32 capacity) noexcept;
 
     Platform::Mutex* MPQueueLock;
     MPStatusData MPStatus {};

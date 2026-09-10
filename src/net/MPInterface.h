@@ -66,11 +66,14 @@ public:
     virtual void End(int inst) = 0;
 
     virtual int SendPacket(int inst, u8* data, int len, u64 timestamp) = 0;
-    virtual int RecvPacket(int inst, u8* data, u64* timestamp) = 0;
+    // Like datagram receive, copy at most capacity bytes and consume the entire
+    // record. The default is Wifi::RXBuffer; larger consumers pass their size.
+    virtual int RecvPacket(int inst, u8* data, u64* timestamp, u32 capacity = 2048) = 0;
     virtual int SendCmd(int inst, u8* data, int len, u64 timestamp) = 0;
     virtual int SendReply(int inst, u8* data, int len, u64 timestamp, u16 aid) = 0;
     virtual int SendAck(int inst, u8* data, int len, u64 timestamp) = 0;
-    virtual int RecvHostPacket(int inst, u8* data, u64* timestamp) = 0;
+    virtual int RecvHostPacket(int inst, u8* data, u64* timestamp, u32 capacity = 2048) = 0;
+    // data contains fifteen 1024-byte reply slots, indexed by AID 1..15.
     virtual u16 RecvReplies(int inst, u8* data, u64 timestamp, u16 aidmask) = 0;
 
 protected:

@@ -56,6 +56,8 @@ FileHandle* OpenLocalFile(const std::string& path, FileMode mode)
     return new FileHandle{SourceBytes, 0, true};
 }
 bool CloseFile(FileHandle* f) { delete f; return true; }
+// Import controls never export host files; this host fails export safely.
+bool WriteFileAtomically(const std::string&, const std::function<bool(const FileWriteCallback&)>&, bool) { return false; }
 u64 FileLength(FileHandle* f) { return f->bytes.size(); }
 bool FileSeek(FileHandle* f, s64 offset, FileSeekOrigin origin)
 {

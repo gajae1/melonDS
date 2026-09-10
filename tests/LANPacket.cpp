@@ -254,6 +254,27 @@ bool Frame(u32 type, size_t size)
         && SentPacket.size() == sizeof(MPPacketHeader) + reply.size();
 }
 
+bool ReceiveCapacity()
+{
+    LANPacketTest f;
+    Output out;
+    u64 stamp = 0;
+    for (u32 capacity : {17u, 0x2000u})
+    {
+        out.fill(Sentinel);
+        Inject(Packet(1, 1, 0x2000), &f.Peers[1]);
+        const unsigned freed = FreedPackets;
+        if (f.Net.RecvPacket(0, nullptr, &stamp) != 0 ||
+            f.Net.RecvPacket(0, out.data() + 32, &stamp, 0) != 0 ||
+            FreedPackets != freed || !Unchanged(out)) return false;
+        if (f.Net.RecvHostPacket(0, out.data() + 32, &stamp, capacity) != int(capacity) ||
+            stamp != Timestamp || !Copied(out, 0, capacity) || FreedPackets != freed + 1) return false;
+    }
+    out.fill(Sentinel);
+    Inject(Packet(0, 1, 40), &f.Peers[1]);
+    return f.Net.RecvPacket(0, out.data() + 32, &stamp) == 40 && Copied(out, 0, 40);
+}
+
 bool Replies()
 {
     LANPacketTest f;
@@ -435,6 +456,7 @@ int main()
     Check("normal-command-route", Frame(1, 40));
     Check("normal-ack-keeps-route", Frame(3, 44));
     Check("full-wifi-frame-preserves-v1-crop", Frame(1, 0x2000));
+    Check("caller-capacity-preserves-next-datagram", ReceiveCapacity());
     Check("blank-and-aid15-reply-preserve-v1-slot-crop", Replies());
     Check("blank-reply-completes-without-timeout", BlankReplyCompletes());
     Check("ready-notification-may-lag-other-channel", ReadyNotificationCanLag());

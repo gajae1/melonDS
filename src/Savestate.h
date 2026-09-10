@@ -124,6 +124,7 @@ private:
     u8* buffer;
     u32 buffer_offset;
     u32 buffer_length;
+    u32 section_end;
     bool buffer_owned;
     bool finished;
 };

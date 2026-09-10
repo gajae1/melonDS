@@ -20,17 +20,57 @@
 #include <dirent.h>
 #include <inttypes.h>
 #include <vector>
+#include <algorithm>
 
 #include "FATIO.h"
 #include "FATStorage.h"
 #include "Platform.h"
 #include "UTF8.h"
+#include "sha1/sha1.hpp"
 
 namespace melonDS
 {
 namespace fs = std::filesystem;
 using namespace Platform;
 using std::string;
+
+// Content evidence for retry reconciliation, using the core's existing SHA-1
+// implementation. This is an integrity fingerprint, not authentication.
+static std::string FinishFileHash(SHA1_CTX& context)
+{
+    u8 digest[20];
+    SHA1Final(digest, &context);
+    std::string hash;
+    for (u8 byte : digest)
+    {
+        hash += "0123456789abcdef"[byte >> 4];
+        hash += "0123456789abcdef"[byte & 15];
+    }
+    return hash;
+}
+
+static bool HostFileHash(const fs::path& path, std::string& hash)
+{
+    FileHandle* file = OpenFile(UTF8ToString(path.u8string()), FileMode::Read);
+    if (!file) return false;
+    u64 remaining = FileLength(file);
+    bool complete = remaining != 0 || IsEndOfFile(file);
+    SHA1_CTX context;
+    SHA1Init(&context);
+    u8 buffer[0x1000];
+    while (complete && remaining)
+    {
+        const u32 count = std::min<u64>(remaining, sizeof(buffer));
+        complete = FileRead(buffer, 1, count, file) == count;
+        if (complete) SHA1Update(&context, buffer, count);
+        remaining -= count;
+    }
+    if (!IsEndOfFile(file)) complete = false;
+    if (!CloseFile(file)) complete = false;
+    if (!complete) return false;
+    hash = FinishFileHash(context);
+    return true;
+}
 
 FATStorage::FATStorage(const std::string& filename, u64 size, bool readonly, const std::optional<string>& sourcedir) :
     FATStorage(FATStorageArgs { filename, size, readonly, sourcedir })
@@ -77,7 +117,8 @@ FATStorage& FATStorage::operator=(FATStorage&& other) noexcept
     {
         if (File)
         { // Sync this file's contents to the host (if applicable) before closing it
-            if (!ReadOnly) Save();
+            if (!ReadOnly && !Save())
+                Log(LogLevel::Error, "Failed to sync SD image to host directory\n");
             CloseFile(File);
         }
 
@@ -100,7 +141,8 @@ FATStorage& FATStorage::operator=(FATStorage&& other) noexcept
 
 FATStorage::~FATStorage()
 {
-    if (!ReadOnly) Save();
+    if (File && !ReadOnly && !Save())
+        Log(LogLevel::Error, "Failed to sync SD image to host directory\n");
 
     if (File) CloseFile(File);
     File = nullptr;
@@ -266,19 +308,21 @@ u32 FATStorage::WriteSectorsInternal(FileHandle* file, u64 filelen, u32 start, u
 }
 
 
-void FATStorage::LoadIndex()
+bool FATStorage::LoadIndex()
 {
     DirIndex.clear();
     FileIndex.clear();
 
     FileHandle* f = OpenLocalFile(IndexPath, FileMode::ReadText);
-    if (!f) return;
+    if (!f) return false;
 
+    bool sized = false;
+    bool complete = true;
     char linebuf[1536];
     while (!IsEndOfFile(f))
     {
         if (!FileReadLine(linebuf, 1536, f))
-            break;
+        { complete = false; break; }
 
         if (linebuf[0] == 'S')
         {
@@ -287,6 +331,7 @@ void FATStorage::LoadIndex()
             if (ret < 1) continue;
 
             FileSize = fsize;
+            sized = fsize != 0;
         }
         else if (linebuf[0] == 'D')
         {
@@ -334,9 +379,18 @@ void FATStorage::LoadIndex()
 
             FileIndex[entry.Path] = entry;
         }
+        else if (linebuf[0] == 'H')
+        {
+            char hash[41] = {}, fpath[1536] = {};
+            if (sscanf(linebuf, "HASH %40[0-9a-f] %[^\t\r\n]", hash, fpath) == 2 && strlen(hash) == 40)
+            {
+                const auto entry = FileIndex.find(fpath);
+                if (entry != FileIndex.end()) entry->second.HostHash = hash;
+            }
+        }
     }
 
-    CloseFile(f);
+    if (!CloseFile(f)) complete = false;
 
     // ensure the indexes are sane
 
@@ -399,82 +453,171 @@ void FATStorage::LoadIndex()
     {
         FileIndex.erase(key);
     }
+    return sized && complete;
 }
 
-void FATStorage::SaveIndex()
+bool FATStorage::SaveIndex()
 {
-    FileHandle* f = OpenLocalFile(IndexPath, FileMode::WriteText);
-    if (!f) return;
-
-    FileWriteFormatted(f, "SIZE %" PRIu64 "\n", FileSize);
-
-    for (const auto& [key, val] : DirIndex)
+    return WriteFileAtomically(IndexPath, [&](const FileWriteCallback& write)
     {
-        FileWriteFormatted(f, "DIR %u %s\n",
-                val.IsReadOnly?1:0, val.Path.c_str());
-    }
-
-    for (const auto& [key, val] : FileIndex)
-    {
-        FileWriteFormatted(f, "FILE %u %" PRIu64 " %" PRId64 " %u %s\n",
-                val.IsReadOnly?1:0, val.Size, val.LastModified, val.LastModifiedInternal, val.Path.c_str());
-    }
-
-    CloseFile(f);
+        const auto line = [&](const std::string& text) { return write(text.data(), text.size()); };
+        if (!line("SIZE " + std::to_string(FileSize) + "\n")) return false;
+        for (const auto& [key, val] : DirIndex)
+            if (!line("DIR " + std::to_string(val.IsReadOnly ? 1 : 0) + " " + val.Path + "\n")) return false;
+        for (const auto& [key, val] : FileIndex)
+        {
+            if (!line("FILE " + std::to_string(val.IsReadOnly ? 1 : 0) + " " + std::to_string(val.Size) + " " +
+                std::to_string(val.LastModified) + " " + std::to_string(val.LastModifiedInternal) + " " + val.Path + "\n")) return false;
+            // Older versions ignore HASH records and still read FILE records.
+            if (!val.HostHash.empty() && !line("HASH " + val.HostHash + " " + val.Path + "\n")) return false;
+        }
+        return true;
+    }, true);
 }
 
 
-bool FATStorage::ExportFile(const std::string& path, fs::path out)
+bool FATStorage::ExportFile(const std::string& path, fs::path out, std::string& hash)
 {
     FF_FIL file;
-    FileHandle* fout;
     FRESULT res;
 
     res = f_open(&file, path.c_str(), FA_OPEN_EXISTING | FA_READ);
     if (res != FR_OK)
         return false;
 
-    u32 len = f_size(&file);
-
-    if (fs::exists(out))
+    bool sourceOpen = true;
+    SHA1_CTX context;
+    SHA1Init(&context);
+    const bool result = WriteFileAtomically(UTF8ToString(out.u8string()), [&](const FileWriteCallback& write)
     {
-        std::error_code err;
-        fs::permissions(out,
-                        fs::perms::owner_read | fs::perms::owner_write,
-                        fs::perm_options::add,
-                        err);
-    }
-
-    fout = OpenFile(UTF8ToString(out.u8string()), FileMode::Write);
-    if (!fout)
-    {
-        f_close(&file);
-        return false;
-    }
-
-    u8 buf[0x1000];
-    for (u32 i = 0; i < len; i += 0x1000)
-    {
-        u32 blocklen;
-        if ((i + 0x1000) > len)
-            blocklen = len - i;
-        else
-            blocklen = 0x1000;
-
-        u32 nread;
-        f_read(&file, buf, blocklen, &nread);
-        FileWrite(buf, blocklen, 1, fout);
-    }
-
-    CloseFile(fout);
-    f_close(&file);
-
-    return true;
+        u8 buf[0x1000];
+        u32 remaining = f_size(&file);
+        bool copied = true;
+        while (remaining && copied)
+        {
+            const u32 count = std::min<u32>(remaining, sizeof(buf));
+            u32 got = 0;
+            copied = f_read(&file, buf, count, &got) == FR_OK && got == count;
+            if (copied)
+            {
+                SHA1Update(&context, buf, count);
+                copied = write(buf, count);
+            }
+            remaining -= count;
+        }
+        sourceOpen = false;
+        return f_close(&file) == FR_OK && copied;
+    });
+    if (sourceOpen) f_close(&file);
+    if (result) hash = FinishFileHash(context);
+    return result;
 }
 
-void FATStorage::ExportDirectory(const std::string& path, const std::string& outbase, int level)
+bool FATStorage::FileNeedsExport(const std::string& path, const FF_FILINFO& info, bool& needed) const
 {
-    if (level >= 32) return;
+    const auto previous = FileIndex.find(path);
+    needed = previous == FileIndex.end() || info.fsize != previous->second.Size ||
+        ((info.fdate << 16) | info.ftime) != previous->second.LastModifiedInternal || previous->second.HostHash.empty();
+    if (needed) return true;
+
+    // FAT timestamps have only two-second resolution. Check content before
+    // skipping an apparently unchanged file, rather than losing such edits.
+    FF_FIL file;
+    if (f_open(&file, ("0:/" + path).c_str(), FA_READ) != FR_OK) return false;
+    SHA1_CTX context;
+    SHA1Init(&context);
+    u8 buffer[0x1000];
+    u32 remaining = f_size(&file);
+    bool complete = true;
+    while (remaining && complete)
+    {
+        const u32 count = std::min<u32>(remaining, sizeof(buffer));
+        u32 got = 0;
+        complete = f_read(&file, buffer, count, &got) == FR_OK && got == count;
+        if (complete) SHA1Update(&context, buffer, count);
+        remaining -= count;
+    }
+    if (f_close(&file) != FR_OK) complete = false;
+    if (complete) needed = FinishFileHash(context) != previous->second.HostHash;
+    return complete;
+}
+
+// A prior export may have committed while its index write failed. Exact
+// equality makes that case safe to retry even though host metadata advanced.
+static bool HostFileMatchesFATFile(const std::string& path, const fs::path& host)
+{
+    FileHandle* input = OpenFile(UTF8ToString(host.u8string()), FileMode::Read);
+    if (!input) return false;
+    FF_FIL file;
+    if (f_open(&file, path.c_str(), FA_READ) != FR_OK)
+    { CloseFile(input); return false; }
+    u32 remaining = f_size(&file);
+    bool equal = FileLength(input) == remaining;
+    u8 guest[0x1000], external[0x1000];
+    while (equal && remaining)
+    {
+        const u32 count = std::min<u32>(remaining, sizeof(guest));
+        u32 got = 0;
+        equal = f_read(&file, guest, count, &got) == FR_OK && got == count &&
+            FileRead(external, 1, count, input) == count && memcmp(guest, external, count) == 0;
+        remaining -= count;
+    }
+    if (f_close(&file) != FR_OK) equal = false;
+    if (!CloseFile(input)) equal = false;
+    return equal;
+}
+
+bool FATStorage::CheckPendingExports(const std::string& path, const std::string& outbase, int level, bool& pending)
+{
+    if (level >= 32) return false;
+    FF_DIR dir;
+    if (f_opendir(&dir, ("0:/" + path).c_str()) != FR_OK) return false;
+    bool safe = true;
+    FF_FILINFO info;
+    while (safe)
+    {
+        if (f_readdir(&dir, &info) != FR_OK) { safe = false; break; }
+        if (!info.fname[0]) break;
+        const std::string fullpath = path + info.fname;
+        const auto host = melonDS::PathFromUTF8(outbase + "/" + fullpath);
+        std::error_code err;
+        const bool exists = fs::exists(host, err);
+        if (err) { safe = false; break; }
+        if (info.fattrib & AM_DIR)
+        {
+            if (exists && !fs::is_directory(host, err)) { safe = false; break; }
+            if (DirIndex.count(fullpath) == 0) pending = true;
+            safe = CheckPendingExports(fullpath + "/", outbase, level + 1, pending);
+            continue;
+        }
+        bool needed;
+        if (!FileNeedsExport(fullpath, info, needed)) { safe = false; break; }
+        if (!needed) continue;
+
+        pending = true;
+        const auto previous = FileIndex.find(fullpath);
+        if (!exists)
+        {
+            // An absent previously synced file is a host deletion, hence a
+            // conflict with pending guest edits. A fresh guest file is safe.
+            safe = previous == FileIndex.end();
+            continue;
+        }
+        if (!fs::is_regular_file(host, err) || err) { safe = false; break; }
+        std::string hash;
+        if (!HostFileHash(host, hash)) { safe = false; break; }
+        const bool unchanged = previous != FileIndex.end() && previous->second.HostHash == hash;
+        // Legacy entries lack content evidence: only exact host/guest equality
+        // can resolve that ambiguity automatically. Otherwise preserve both.
+        safe = unchanged || HostFileMatchesFATFile("0:/" + fullpath, host);
+    }
+    if (f_closedir(&dir) != FR_OK) safe = false;
+    return safe;
+}
+
+bool FATStorage::ExportDirectory(const std::string& path, const std::string& outbase, int level)
+{
+    if (level >= 32) return false;
 
     FF_DIR dir;
     FF_FILINFO info;
@@ -482,14 +625,15 @@ void FATStorage::ExportDirectory(const std::string& path, const std::string& out
 
     std::string fullpath = "0:/" + path;
     res = f_opendir(&dir, fullpath.c_str());
-    if (res != FR_OK) return;
+    if (res != FR_OK) return false;
 
     std::vector<std::string> subdirlist;
+    bool complete = true;
 
     for (;;)
     {
         res = f_readdir(&dir, &info);
-        if (res != FR_OK) break;
+        if (res != FR_OK) { complete = false; break; }
         if (!info.fname[0]) break;
 
         std::string fullpath = path + info.fname;
@@ -501,6 +645,7 @@ void FATStorage::ExportDirectory(const std::string& path, const std::string& out
             {
                 std::error_code err;
                 fs::create_directory(outpath, err);
+                if (err) { complete = false; continue; }
 
                 DirIndexEntry entry;
                 entry.Path = fullpath;
@@ -513,46 +658,22 @@ void FATStorage::ExportDirectory(const std::string& path, const std::string& out
         }
         else
         {
-            bool doexport = false;
-
-            if (FileIndex.count(fullpath) < 1)
-            {
-                doexport = true;
-
-                FileIndexEntry entry;
-                entry.Path = fullpath;
-                entry.IsReadOnly = (info.fattrib & AM_RDO) != 0;
-                entry.Size = info.fsize;
-                entry.LastModifiedInternal = (info.fdate << 16) | info.ftime;
-
-                FileIndex[entry.Path] = entry;
-            }
-            else
-            {
-                u32 lastmod = (info.fdate << 16) | info.ftime;
-
-                FileIndexEntry& entry = FileIndex[fullpath];
-                if ((info.fsize != entry.Size) || (lastmod != entry.LastModifiedInternal))
-                    doexport = true;
-
-                entry.Size = info.fsize;
-                entry.LastModifiedInternal = lastmod;
-            }
-
+            const u32 lastmod = (info.fdate << 16) | info.ftime;
+            bool doexport;
+            if (!FileNeedsExport(fullpath, info, doexport)) { complete = false; continue; }
             if (doexport)
             {
-                if (ExportFile("0:/"+fullpath, outpath))
+                std::string hash;
+                if (!ExportFile("0:/"+fullpath, outpath, hash))
                 {
-                    fs::file_time_type modtime = fs::last_write_time(outpath);
-                    s64 modtime_raw = std::chrono::duration_cast<std::chrono::seconds>(modtime.time_since_epoch()).count();
-
-                    FileIndexEntry& entry = FileIndex[fullpath];
-                    entry.LastModified = modtime_raw;
+                    complete = false;
+                    continue; // Keep the previous index entry and host permissions for retry.
                 }
-                else
-                {
-                    // ??????
-                }
+                std::error_code err;
+                const auto modtime = fs::last_write_time(outpath, err);
+                if (err) { complete = false; continue; }
+                const s64 modtime_raw = std::chrono::duration_cast<std::chrono::seconds>(modtime.time_since_epoch()).count();
+                FileIndex[fullpath] = {fullpath, (info.fattrib & AM_RDO) != 0, info.fsize, modtime_raw, lastmod, std::move(hash)};
             }
         }
 
@@ -563,12 +684,13 @@ void FATStorage::ExportDirectory(const std::string& path, const std::string& out
                         err);
     }
 
-    f_closedir(&dir);
+    if (f_closedir(&dir) != FR_OK) complete = false;
 
     for (auto& entry : subdirlist)
     {
-        ExportDirectory(entry+"/", outbase, level+1);
+        if (!ExportDirectory(entry+"/", outbase, level+1)) complete = false;
     }
+    return complete;
 }
 
 bool FATStorage::DeleteHostDirectory(const std::string& path, const std::string& outbase, int level)
@@ -644,7 +766,7 @@ bool FATStorage::DeleteHostDirectory(const std::string& path, const std::string&
     return true;
 }
 
-void FATStorage::ExportChanges(const std::string& outbase)
+bool FATStorage::ExportChanges(const std::string& outbase)
 {
     // reflect changes in the FAT volume to the host filesystem
     // * delete directories and files that exist in the index but not in the volume
@@ -712,7 +834,7 @@ void FATStorage::ExportChanges(const std::string& outbase)
         DeleteHostDirectory(key, outbase, 0);
     }
 
-    ExportDirectory("", outbase, 0);
+    return ExportDirectory("", outbase, 0);
 }
 
 
@@ -947,6 +1069,8 @@ bool FATStorage::ImportDirectory(const std::string& sourcedir)
         else if (entry.is_regular_file())
         {
             u64 filesize = entry.file_size();
+            std::string hash;
+            if (!HostFileHash(entry.path(), hash)) return false;
 
             auto lastmodified = entry.last_write_time();
             s64 lastmodified_raw = std::chrono::duration_cast<std::chrono::seconds>(lastmodified.time_since_epoch()).count();
@@ -961,6 +1085,7 @@ bool FATStorage::ImportDirectory(const std::string& sourcedir)
                 FileIndexEntry& chk = FileIndex[innerpath];
                 if (chk.Size != filesize) import = true;
                 if (chk.LastModified != lastmodified_raw) import = true;
+                if (!chk.HostHash.empty() && chk.HostHash != hash) import = true;
             }
 
             if (import)
@@ -970,6 +1095,7 @@ bool FATStorage::ImportDirectory(const std::string& sourcedir)
                 ientry.IsReadOnly = readonly;
                 ientry.Size = filesize;
                 ientry.LastModified = lastmodified_raw;
+                ientry.HostHash = hash;
 
                 innerpath = "0:/" + innerpath;
                 if (ImportFile(innerpath, entry.path()))
@@ -982,14 +1108,13 @@ bool FATStorage::ImportDirectory(const std::string& sourcedir)
                     FileIndex[ientry.Path] = ientry;
                 }
             }
+            else FileIndex[innerpath].HostHash = std::move(hash);
         }
 
         f_chmod(innerpath.c_str(), readonly?AM_RDO:0, AM_RDO);
     }
 
-    SaveIndex();
-
-    return true;
+    return SaveIndex();
 }
 
 u64 FATStorage::GetDirectorySize(fs::path sourcedir) const
@@ -1039,8 +1164,8 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
         return false;
 
     IndexPath = FilePath + ".idx";
-    if (!isnew)
-        LoadIndex();
+    const bool hadIndex = !isnew && LocalFileExists(IndexPath);
+    const bool loadedIndex = !isnew && LoadIndex();
 
     const u64 physicalSize = FileLength(File);
     if (FileSize == 0)
@@ -1125,12 +1250,33 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
             res = f_mount(&fs, "0:", 1);
     }
 
+    bool synced = true;
     if (res == FR_OK)
     {
         if (needformat)
-            SaveIndex();
-        if (hasdir)
-            ImportDirectory(*sourcedir);
+        {
+            const bool indexed = SaveIndex();
+            // Image-only storage historically treats the sidecar as optional;
+            // frontends need atomic host-file support only for folder sync.
+            synced = indexed || !hasdir;
+        }
+        if (hasdir && !needformat && hadIndex)
+        {
+            // Preflight every pending guest export before host-import cleanup
+            // can remove unindexed guest files. Host-only edits still import.
+            bool pending = false;
+            synced = loadedIndex && CheckPendingExports("", *sourcedir, 0, pending);
+            if (synced && pending)
+            {
+                const bool exported = ExportDirectory("", *sourcedir, 0);
+                const bool indexed = SaveIndex();
+                synced = exported && indexed;
+            }
+            if (!synced)
+                Log(LogLevel::Error, "SD sync refused: pending guest exports conflict with host changes or could not be saved; preserve the image, host directory and index before resolving\n");
+        }
+        if (hasdir && synced)
+            synced = ImportDirectory(*sourcedir);
     }
     else
         Log(LogLevel::Error, "Failed to mount or format SD image (FAT error %d)\n", res);
@@ -1139,7 +1285,7 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
 
     ff_disk_close();
 
-    return res == FR_OK;
+    return res == FR_OK && synced;
 }
 
 bool FATStorage::Save()
@@ -1164,15 +1310,16 @@ bool FATStorage::Save()
         return false;
     }
 
-    ExportChanges(*SourceDir);
-
-    SaveIndex();
+    const bool exported = ExportChanges(*SourceDir);
+    // Successful files may advance independently, but failed entries retain
+    // their old metadata. Atomic index writes preserve that retry evidence.
+    const bool indexed = SaveIndex();
 
     f_unmount("0:");
 
     ff_disk_close();
 
-    return true;
+    return exported && indexed;
 }
 
 }

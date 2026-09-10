@@ -2,11 +2,11 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <array>
 #include <charconv>
 #include <span>
 #include <string_view>
 
-#include "../CRC32.h"
 #include "../Platform.h"
 #include "hexutil.h"
 
@@ -609,35 +609,65 @@ ExecResult GdbStub::Handle_q_Supported(GdbStub* stub,
 	return ExecResult::Ok;
 }
 
+// GDB qCRC (libiberty xcrc32): MSB-first polynomial 0x04C11DB7, initial value
+// 0xFFFFFFFF, no reflection and no final XOR. The shared melonDS CRC32 is the
+// reflected/zlib variant used by other subsystems and must stay unchanged.
+constexpr u32 GdbCrcPolynomial = 0x04C11DB7;
+
+constexpr auto MakeGdbCrcTable()
+{
+	std::array<u32, 256> table {};
+	for (u32 index = 0; index < 256; index++)
+	{
+		u32 entry = index << 24;
+		for (int bit = 0; bit < 8; bit++)
+			entry = (entry & 0x80000000) ? (entry << 1) ^ GdbCrcPolynomial : entry << 1;
+		table[index] = entry;
+	}
+	return table;
+}
+
+constexpr auto GdbCrcTable = MakeGdbCrcTable();
+
+static u32 GdbCrcUpdate(const u8* data, u32 len, u32 crc)
+{
+	for (u32 i = 0; i < len; i++)
+		crc = (crc << 8) ^ GdbCrcTable[(crc >> 24) ^ data[i]];
+	return crc;
+}
+
 ExecResult GdbStub::Handle_q_CRC(GdbStub* stub,
 		const u8* cmd, ssize_t llen)
 {
 	static u8 crcbuf[128];
 
 	u32 addr, len;
-	if (sscanf((const char*)cmd, "%x,%x", &addr, &len) != 2)
+	size_t offset;
+	if (!ParseMemoryRange(cmd, llen, false, addr, len, offset))
 	{
 		stub->RespStr("E01");
 		return ExecResult::Ok;
 	}
 
-	u32 val = 0; // start at 0
+	// A counted remainder keeps a range ending exactly at 2^32 finite; an
+	// end-address comparison would wrap and terminate early instead.
+	u32 val = 0xFFFFFFFF;
+	u32 remaining = len;
 	u32 caddr = addr;
-	u32 realend = addr + len;
 
-	for (; caddr < addr + len; )
+	while (remaining)
 	{
 		// calc partial CRC in 128-byte chunks
-		u32 end = caddr + sizeof(crcbuf)/sizeof(crcbuf[0]);
-		if (end > realend) end = realend;
-		u32 clen = end - caddr;
+		u32 clen = remaining < sizeof(crcbuf) ? remaining : u32(sizeof(crcbuf));
 
-		for (size_t i = 0; caddr < end; ++caddr, ++i)
+		for (u32 i = 0; i < clen; ++i)
 		{
 			crcbuf[i] = stub->Cb->ReadMem(caddr, 8);
+			++caddr;
 		}
 
-		val = CRC32(crcbuf, clen, val);
+		val = GdbCrcUpdate(crcbuf, clen, val);
+		remaining -= clen;
 	}
 
 	stub->RespFmt("C%x", val);

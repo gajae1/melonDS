@@ -107,11 +107,11 @@ public:
     void End(int inst) override;
 
     int SendPacket(int inst, u8* data, int len, u64 timestamp) override;
-    int RecvPacket(int inst, u8* data, u64* timestamp) override;
+    int RecvPacket(int inst, u8* data, u64* timestamp, u32 capacity = 2048) override;
     int SendCmd(int inst, u8* data, int len, u64 timestamp) override;
     int SendReply(int inst, u8* data, int len, u64 timestamp, u16 aid) override;
     int SendAck(int inst, u8* data, int len, u64 timestamp) override;
-    int RecvHostPacket(int inst, u8* data, u64* timestamp) override;
+    int RecvHostPacket(int inst, u8* data, u64* timestamp, u32 capacity = 2048) override;
     u16 RecvReplies(int inst, u8* data, u64 timestamp, u16 aidmask) override;
 
 private:
@@ -171,7 +171,7 @@ private:
     void ProcessLAN(int type);
 
     int SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp);
-    int RecvPacketGeneric(u8* packet, bool block, u64* timestamp);
+    int RecvPacketGeneric(u8* packet, bool block, u64* timestamp, u32 capacity);
 };
 
 }

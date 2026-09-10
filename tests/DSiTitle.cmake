@@ -44,3 +44,19 @@ foreach(case IN ITEMS normal invalid source short-write staging swap rollback-5 
     add_test(NAME dsi-title-${case} COMMAND DSiTitle ${case})
     set_tests_properties(dsi-title-${case} PROPERTIES TIMEOUT 30)
 endforeach()
+
+if (TARGET FATStorageLifecycle)
+    add_executable(DSiTitleStorage "${CMAKE_CURRENT_LIST_DIR}/DSiTitleStorage.cpp"
+        ${dsi_title_methods} "${storage_export_atomic}"
+        "${dsi_title_root}/src/FATIO.cpp" "${dsi_title_root}/src/fatfs/ff.c"
+        "${dsi_title_root}/src/fatfs/ffunicode.c" "${dsi_title_root}/src/fatfs/ffsystem.c"
+        "${dsi_title_root}/src/tiny-AES-c/aes.c" "${dsi_title_root}/src/sha1/sha1.c")
+    target_include_directories(DSiTitleStorage PRIVATE "${dsi_title_root}/src"
+        "${CMAKE_CURRENT_BINARY_DIR}" "${dsi_title_generated}")
+    target_compile_features(DSiTitleStorage PRIVATE cxx_std_26)
+    target_link_libraries(DSiTitleStorage PRIVATE Qt6::Core)
+    foreach(case IN LISTS storage_export_cases)
+        add_test(NAME fs-export-nand-${case} COMMAND DSiTitleStorage ${case})
+        set_tests_properties(fs-export-nand-${case} PROPERTIES TIMEOUT 15)
+    endforeach()
+endif()

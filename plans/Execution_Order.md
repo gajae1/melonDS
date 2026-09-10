@@ -178,18 +178,36 @@ GR-11/12에서 확인한 실제 호출 경계를 진행한다. 창 교체/해제
 
 [1차 감사](Audit_2026-09-11.md)의 다음 후보는 malformed state의 section 경계, FAT export 중간 실패·ROM/GBA/firmware 길이, GDB·LocalMP의 수신 경계, GL alpha/capture 및 Compute workload 한도다. 먼저 호출 가능한 최소 반례를 만든 뒤 필요한 소유 파일만 수정한다. 동일 소스 현상은 기존 ID에 합치며, 실기 값이 없는 임의 zero-fill·작업 생략·사이클 변경을 정확한 기본값으로 채택하지 않는다. 후속 네트워크 보안 점검은 NP-01/02/03/07의 패킷 길이·송신자/peer·협상·수신 버퍼 경계를 포함하고 원본 v1 호환 대조를 유지한다.
 
+[1.1.32 증분](releases/1.1.32.md)에서 상태 section, FAT/NAND export, LocalMP/GDB 입력의 세 제한 블록을 통합했다. Windows 607개 회귀, 실제 Qt 복구, 수정하지 않은 원본 14.0 생성 상태 이관이 통과했다. 파일별 보존을 폴더 전체 복구나 모든 상태·게임 호환으로 확대하지 않는다.
+
 후속 항목은 아래 순서와 첫 산출물로 넘긴다. 하나의 제한된 수정·필요한 검증이 끝나면 다음 독립 블록을 시작하고, 외부 수락을 기다리는 항목은 근거와 재개 조건을 남긴다.
 
 | 순서·소유 블록 | 기존 ID | 다음에 만들 반례·대조 | 완료 또는 재개 조건 |
 |---|---|---|---|
-| 1. 상태 파일 | CJ-10/FS-01/02 | 누락된 NDSG와 짧은 section이 이웃 section payload를 읽는 생성 파일; 원본 14.0 정상 상태 대조 | 적용 전 거부/후반 실패 복구를 구분하고 RAM·기존 세션 보존; serializer 변경 시 원본 writer 이관을 다시 확인 |
-| 2. 폴더 export | FS-02/06 | FAT 파일 두 번째 블록의 읽기 실패·짧은 쓰기·교체 실패; 기존 host 파일과 index snapshot, 같은 NAND export 경로 | 실패 뒤 목적지·index 보존, 정상 export와 재시도; 기존 표준 저장/교체 기능을 먼저 평가 |
-| 3. 통신 입력 | NP-01/02/03/10/11 | LocalMP 수신 크기와 목적지 용량 불일치, GDB qCRC 주소 wrap·잘못된 hex | 경계 밖 쓰기·무한 대기 없이 오류 처리, 정상 패킷/명령·원본 v1 연결 대조 보존 |
-| 4. 그래픽 | GR-06/07/08 | Compute 실제 producer의 workload 초과·indirect 한도, GL alpha와 texture 끝의 capture 검색 | 작업을 버리지 않는 결과 보존과 실제 backend 픽셀 대조; 한도 미도달은 반증으로 기록 |
-| 5. JIT/ISA | CJ-06/16/18 | 기존 guest fixture를 이용한 빈 PUSH/POP·조건부 사이클·비정렬 메모리 비교 | interpreter/생성 코드 대조와 문헌 의미를 구분; ARM64 native·실기 타이밍은 해당 실행 환경에서 재개 |
-| 6. 배포 결속 | BV-01/05/18 | 다른 source revision의 EXE를 현재 소스와 묶으려는 입력 | 빌드 시 source 신원과 package 입력을 연결해 불일치 거부; 동일 EXE·문서만 변경한 경우의 정책도 명시 |
+| 1. 그래픽 | GR-06/07/08 | Compute 실제 producer의 workload 초과·indirect 한도, GL alpha와 texture 끝의 capture 검색 | 작업을 버리지 않는 결과 보존과 실제 backend 픽셀 대조; 한도 미도달은 반증으로 기록 |
+| 2. JIT/ISA | CJ-06/16/18 | 기존 guest fixture를 이용한 빈 PUSH/POP·조건부 사이클·비정렬 메모리 비교 | interpreter/생성 코드 대조와 문헌 의미를 구분; ARM64 native·실기 타이밍은 해당 실행 환경에서 재개 |
+| 3. 배포 결속 | BV-01/05/18 | 다른 source revision의 EXE를 현재 소스와 묶으려는 입력 | 빌드 시 source 신원과 package 입력을 연결해 불일치 거부; 동일 EXE·문서만 변경한 경우의 정책도 명시 |
+| 4. 통신 안정성 | NP-01/02/03, FS-17 | timestamp 0~31 reply, host 큐의 시각 wrap·가변 대기·늦은 peer; 먼저 자동조절 없이 계측 | host ms/guest μs 분리, 정상/구버전 대조와 취소 응답성; 자동조절은 아래 계약과 관측 후 판정 |
+| 5. 성능 기준선·컴파일러 | BV-08/09/10/12, CJ-18 | 동일 입력의 cold/warm compile·CPU 실행·GPU 전송/대기 비용, 학습 밖 workload | JIT/PGO/SIMD 후보를 병목별로 분리; LTO guard를 근거 없이 해제하지 않고 동일 결과·median/tail을 확인 |
+| 6. 저장 후속 | FS-02/06, CJ-10 | export 충돌의 사용자 복구 경로·폴더 삭제 충돌·ROM/GBA/firmware 부가 길이 | 1.1.32 파일별 보존 유지, 읽기/동기화 추가 I/O 비용 계측; whole-directory·동시 writer·다른 파일시스템은 별도 범위 |
 
 [추가 참고 자료](Reference_Notes_2026-09-11.md)는 Qt/Dolphin의 저장 오류 처리, ENet의 소유권, QEMU/Dynarmic과 원 논문의 차등 검증, Khronos/parallel-rdp의 한도·가시성·작업 분할을 위 ID에 연결한다. 자료 수집 완료와 코드 적용·반례 해결을 구별한다.
+
+[최적화 조사](Optimization_Research_2026-09-11.md)는 계측·컴파일러·JIT·GPU·멀티코어·네트워크의 후보를 중복 ID에 합쳐 정리한다. 먼저 BV-10/CJ-18의 비용 분리와 BV-09의 대표 workload/holdout을 준비한다. 직접 block chaining·x64 cycle register·GPU upload 재사용은 해당 병목이 확인될 때 독립 블록으로 넘기며, 공유 CMake와 release 문서는 한 작성자가 통합한다.
+
+### 설정 없이 안정적으로 연결하기
+
+NP-01/02/03과 FS-17의 후속 목표는 인터넷·PC·참여자 상태가 달라도 기본 설정으로 안정적으로 연결되는 것이다. 모든 환경에서 최저 지연을 보장한다는 뜻은 아니다. 먼저 host 수신 대기·큐 적체·지터·끊김을 관찰하고 게스트 Wi-Fi의 시간·IRQ 의미와 구분한다. 자동조절은 측정값과 검증된 제한 범위가 생긴 항목부터 적용한다.
+
+- 기존 v1 형식과 구버전의 연결 절차를 유지한다. peer 협조가 필요한 확장은 지원 확인 뒤 사용하며 미지원·협상 실패 시 기존 경로로 돌아간다.
+- 관찰만 하는 단계로 시작한다. 나쁜 한 번의 표본이나 절전·프레임 정지·peer 합류/이탈에 과민하게 반응하지 않도록 유효 표본·변경률·히스테리시스·복귀 조건을 명시한다.
+- 대기 시간이나 큐만 늘려 끊김을 숨기지 않는다. 지연 상한·메모리 상한·취소/종료 응답성을 함께 검증하며, 상태가 나빠지거나 관측이 부족하면 검증된 기본값으로 복귀한다.
+- 한 PC의 빠름을 기준으로 상대를 탈락시키지 않는다. 느린 peer, 가변 RTT·손실·재정렬, 대칭/비대칭 연결, 구버전 혼합을 포함한 같은 입력에서 기본값보다 악화되는 조건을 찾는다.
+- host transport 개선을 DS의 가상 무선 timing 변경으로 대체하지 않는다. 프레임·패킷·연산 생략이나 emulated clock 변경이 필요하면 별도의 동작 변경으로 판정한다. 실제 두 PC·실제 게임은 생성 패킷 검증 뒤에도 남는 수락 조건이다.
+
+먼저 넘길 산출물은 현재 계측·조절 지점 목록과 제한된 네트워크 상태 재현이다. 새 프로토콜, NAT 우회·중계 서비스, 게임 내 무선 메뉴 생략은 이 요구만으로 자동 도입하지 않는다.
+
+1.1.32 수신 경계를 검토하며 발견한 `LocalMP::RecvReplies`의 `timestamp - 32` unsigned 경계는 NP-03 후속 반례로 남긴다. timestamp 0~31의 정상 reply와 32 이상 stale/정상 대조를 먼저 만들고 LAN의 같은 비교도 확인한다. 이번 capacity 수정의 완료에 timestamp 정책까지 포함하지 않는다.
 
 DSP 부족 출력·IRQ·채널 정렬, 실제 두 PC/구버전 혼합 LAN, 물리 오디오, Android·native A64·다른 OS·장기 게임 수락은 계속 열린 상태다. 실기 또는 해당 환경이 없다는 이유로 위 로컬 반례들을 함께 미루지 않는다.
 

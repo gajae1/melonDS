@@ -84,13 +84,15 @@ private:
     static u32 ReadSectorsInternal(Platform::FileHandle* file, u64 filelen, u32 start, u32 num, u8* data);
     static u32 WriteSectorsInternal(Platform::FileHandle* file, u64 filelen, u32 start, u32 num, const u8* data);
 
-    void LoadIndex();
-    void SaveIndex();
+    bool LoadIndex();
+    bool SaveIndex();
 
-    bool ExportFile(const std::string& path, std::filesystem::path out);
-    void ExportDirectory(const std::string& path, const std::string& outbase, int level);
+    bool ExportFile(const std::string& path, std::filesystem::path out, std::string& hash);
+    bool FileNeedsExport(const std::string& path, const FF_FILINFO& info, bool& needed) const;
+    bool CheckPendingExports(const std::string& path, const std::string& outbase, int level, bool& pending);
+    bool ExportDirectory(const std::string& path, const std::string& outbase, int level);
     bool DeleteHostDirectory(const std::string& path, const std::string& outbase, int level);
-    void ExportChanges(const std::string& outbase);
+    bool ExportChanges(const std::string& outbase);
 
     bool CanFitFile(u32 len);
     bool DeleteDirectory(const std::string& path, int level);
@@ -116,6 +118,7 @@ private:
         u64 Size;
         s64 LastModified;
         u32 LastModifiedInternal;
+        std::string HostHash;
 
     } FileIndexEntry;
 

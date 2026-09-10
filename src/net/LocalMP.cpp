@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <algorithm>
 #include <cstring>
 
 #include "LocalMP.h"
@@ -65,6 +66,7 @@ LocalMP::~LocalMP() noexcept
 
 void LocalMP::Begin(int inst)
 {
+    if (static_cast<u32>(inst) >= 16) return;
     Mutex_Lock(MPQueueLock);
     ResetFIFO(inst, 0);
     ResetFIFO(inst, 1);
@@ -80,6 +82,7 @@ void LocalMP::Begin(int inst)
 
 void LocalMP::End(int inst)
 {
+    if (static_cast<u32>(inst) >= 16) return;
     Mutex_Lock(MPQueueLock);
     MPStatus.ConnectedBitmask &= ~(1 << inst);
     ResetFIFO(inst, 0);
@@ -139,13 +142,16 @@ void LocalMP::FIFORead(int inst, int fifo, void* buf, int len) noexcept
     if ((offset + len) >= datalen)
     {
         u32 part1 = datalen - offset;
-        memcpy(buf, &data[offset], part1);
-        memcpy(&((u8*)buf)[part1], data, len - part1);
+        if (buf)
+        {
+            memcpy(buf, &data[offset], part1);
+            memcpy(&((u8*)buf)[part1], data, len - part1);
+        }
         offset = len - part1;
     }
     else
     {
-        memcpy(buf, &data[offset], len);
+        if (buf) memcpy(buf, &data[offset], len);
         offset += len;
     }
 
@@ -190,6 +196,11 @@ void LocalMP::FIFOWrite(int inst, int fifo, void* buf, int len) noexcept
 
 int LocalMP::SendPacketGeneric(int inst, u32 type, u8* packet, int len, u64 timestamp) noexcept
 {
+    const u32 kind = type & 0xFFFF;
+    const u32 aid = type >> 16;
+    if (static_cast<u32>(inst) >= 16 || len < 0 || (len && !packet) || kind > 3 ||
+        (kind == 2 ? (aid > 15 || (!aid && len)) : aid != 0))
+        return 0;
     if (len > kMaxFrameSize)
     {
         Log(LogLevel::Warn, "wifi: attempting to send frame too big (len=%d max=%d)\n", len, kMaxFrameSize);
@@ -272,8 +283,9 @@ int LocalMP::SendPacketGeneric(int inst, u32 type, u8* packet, int len, u64 time
     return len;
 }
 
-int LocalMP::RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp) noexcept
+int LocalMP::RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp, u32 capacity) noexcept
 {
+    if (static_cast<u32>(inst) >= 16 || !packet || !capacity) return 0;
     for (;;)
     {
         if (!Semaphore_TryWait(SemPool[inst], block ? GetRecvTimeout() : 0))
@@ -300,6 +312,7 @@ int LocalMP::RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp)
             FIFORead(inst, 0, &pktheader, sizeof(pktheader));
 
         if (pktheader.Magic != 0x4946494E || pktheader.Length > kMaxFrameSize ||
+            pktheader.SenderID >= 16 || pktheader.Type > 3 || pktheader.Type == 2 ||
             available < sizeof(pktheader) + pktheader.Length)
         {
             Log(LogLevel::Warn, "INVALID PACKET FIFO RECORD\n");
@@ -311,17 +324,17 @@ int LocalMP::RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp)
         if (pktheader.SenderID == inst)
         {
             // skip this packet
-            PacketReadOffset[inst] += pktheader.Length;
-            if (PacketReadOffset[inst] >= kPacketQueueSize)
-                PacketReadOffset[inst] -= kPacketQueueSize;
+            FIFORead(inst, 0, nullptr, pktheader.Length);
 
             Mutex_Unlock(MPQueueLock);
             continue;
         }
 
+        const u32 len = std::min(pktheader.Length, capacity);
         if (pktheader.Length)
         {
-            FIFORead(inst, 0, packet, pktheader.Length);
+            FIFORead(inst, 0, packet, len);
+            FIFORead(inst, 0, nullptr, pktheader.Length - len);
 
             if (pktheader.Type == 1)
                 LastHostID[inst] = pktheader.SenderID;
@@ -329,7 +342,7 @@ int LocalMP::RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp)
 
         if (timestamp) *timestamp = pktheader.Timestamp;
         Mutex_Unlock(MPQueueLock);
-        return pktheader.Length;
+        return len;
     }
 }
 
@@ -338,9 +351,9 @@ int LocalMP::SendPacket(int inst, u8* packet, int len, u64 timestamp)
     return SendPacketGeneric(inst, 0, packet, len, timestamp);
 }
 
-int LocalMP::RecvPacket(int inst, u8* packet, u64* timestamp)
+int LocalMP::RecvPacket(int inst, u8* packet, u64* timestamp, u32 capacity)
 {
-    return RecvPacketGeneric(inst, packet, false, timestamp);
+    return RecvPacketGeneric(inst, packet, false, timestamp, capacity);
 }
 
 int LocalMP::SendCmd(int inst, u8* packet, int len, u64 timestamp)
@@ -350,7 +363,7 @@ int LocalMP::SendCmd(int inst, u8* packet, int len, u64 timestamp)
 
 int LocalMP::SendReply(int inst, u8* packet, int len, u64 timestamp, u16 aid)
 {
-    return SendPacketGeneric(inst, 2 | (aid<<16), packet, len, timestamp);
+    return SendPacketGeneric(inst, 2 | (u32(aid)<<16), packet, len, timestamp);
 }
 
 int LocalMP::SendAck(int inst, u8* packet, int len, u64 timestamp)
@@ -358,19 +371,21 @@ int LocalMP::SendAck(int inst, u8* packet, int len, u64 timestamp)
     return SendPacketGeneric(inst, 3, packet, len, timestamp);
 }
 
-int LocalMP::RecvHostPacket(int inst, u8* packet, u64* timestamp)
+int LocalMP::RecvHostPacket(int inst, u8* packet, u64* timestamp, u32 capacity)
 {
+    if (static_cast<u32>(inst) >= 16) return 0;
     Mutex_Lock(MPQueueLock);
     const int host = LastHostID[inst];
     const bool hostleft = host != -1 && !(MPStatus.ConnectedBitmask & (1 << host));
     Mutex_Unlock(MPQueueLock);
     if (hostleft) return -1;
 
-    return RecvPacketGeneric(inst, packet, true, timestamp);
+    return RecvPacketGeneric(inst, packet, true, timestamp, capacity);
 }
 
 u16 LocalMP::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
 {
+    if (static_cast<u32>(inst) >= 16 || !packets) return 0;
     u16 ret = 0;
     u16 myinstmask = (1 << inst);
     u16 curinstmask;
@@ -408,7 +423,10 @@ u16 LocalMP::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
         if (available >= sizeof(pktheader))
             FIFORead(inst, 1, &pktheader, sizeof(pktheader));
 
+        const u32 aid = pktheader.Type >> 16;
         if (pktheader.Magic != 0x4946494E || pktheader.Length > kMaxFrameSize ||
+            pktheader.SenderID >= 16 || (pktheader.Type & 0xFFFF) != 2 ||
+            aid > 15 || (!aid && pktheader.Length) ||
             available < sizeof(pktheader) + pktheader.Length)
         {
             Log(LogLevel::Warn, "INVALID REPLY FIFO RECORD\n");
@@ -421,9 +439,7 @@ u16 LocalMP::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
             (pktheader.Timestamp < (timestamp - 32))) // stale packet
         {
             // skip this packet
-            ReplyReadOffset[inst] += pktheader.Length;
-            if (ReplyReadOffset[inst] >= kReplyQueueSize)
-                ReplyReadOffset[inst] -= kReplyQueueSize;
+            FIFORead(inst, 1, nullptr, pktheader.Length);
 
             Mutex_Unlock(MPQueueLock);
             continue;
@@ -431,8 +447,9 @@ u16 LocalMP::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
 
         if (pktheader.Length)
         {
-            u32 aid = (pktheader.Type >> 16);
-            FIFORead(inst, 1, &packets[(aid-1)*1024], pktheader.Length);
+            const u32 len = std::min(pktheader.Length, 1024u);
+            FIFORead(inst, 1, &packets[(aid-1)*1024], len);
+            FIFORead(inst, 1, nullptr, pktheader.Length - len);
             ret |= (1 << aid);
         }
 

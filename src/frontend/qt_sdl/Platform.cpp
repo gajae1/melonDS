@@ -30,6 +30,7 @@
 #include <QSemaphore>
 #include <QMutex>
 #include <QTemporaryFile>
+#include <QSaveFile>
 #include <SDL_loadso.h>
 
 #include "Platform.h"
@@ -163,6 +164,24 @@ std::string GetLocalFilePath(const std::string& filename)
 FileHandle* OpenLocalFile(const std::string& path, FileMode mode)
 {
     return OpenFile(GetLocalFilePath(path), mode);
+}
+
+bool WriteFileAtomically(const std::string& path, const std::function<bool(const FileWriteCallback&)>& write, bool local)
+{
+    QSaveFile file(QString::fromStdString(local ? GetLocalFilePath(path) : path));
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) return false;
+
+    bool complete = true;
+    const FileWriteCallback output = [&](const void* data, u32 length)
+    {
+        if (complete)
+            complete = file.write(static_cast<const char*>(data), length) == length;
+        return complete;
+    };
+    // The producer's success includes its source-close result. QSaveFile owns
+    // temporary cleanup on every early return; commit also checks flush/close.
+    return write(output) && complete && file.commit();
 }
 
 bool CloseFile(FileHandle* file)

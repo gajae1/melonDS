@@ -61,18 +61,42 @@ if (TARGET Qt6::Core)
         set_tests_properties(dsi-sd-fat-${case} PROPERTIES TIMEOUT 10)
     endforeach()
 
-    # Full production lifecycle and FatFs over real files. Only the file-open
-    # adapter injects host I/O failures; mount/format/index code is unchanged.
+    # Current Qt atomic writer, shared by FAT and NAND export regressions.
+    set(storage_export_atomic "${CMAKE_CURRENT_BINARY_DIR}/StorageExportAtomic.inc")
+    add_custom_command(OUTPUT "${storage_export_atomic}"
+        COMMAND "${Python3_EXECUTABLE}" "${dsifat_root}/tests/ExtractFunction.py"
+            "${dsifat_root}/src/frontend/qt_sdl/Platform.cpp"
+            "bool WriteFileAtomically(const std::string& path, const std::function<bool(const FileWriteCallback&)>& write, bool local)"
+            "${storage_export_atomic}"
+        DEPENDS "${dsifat_root}/tests/ExtractFunction.py"
+            "${dsifat_root}/src/frontend/qt_sdl/Platform.cpp" VERBATIM)
+    # The test includes full FATStorage.cpp; seams inject only storage failures.
     add_executable(FATStorageLifecycle "${CMAKE_CURRENT_LIST_DIR}/FATStorageLifecycle.cpp"
-        "${dsifat_root}/src/FATStorage.cpp" "${dsifat_root}/src/FATIO.cpp"
+        "${dsifat_root}/src/sha1/sha1.c" "${dsifat_root}/src/FATIO.cpp"
         "${dsifat_root}/src/fatfs/ff.c" "${dsifat_root}/src/fatfs/ffsystem.c"
-        "${dsifat_root}/src/fatfs/ffunicode.c" ${dsifat_platform_outputs})
+        "${dsifat_root}/src/fatfs/ffunicode.c" ${dsifat_platform_outputs} "${storage_export_atomic}")
     target_include_directories(FATStorageLifecycle PRIVATE "${dsifat_root}/src" "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_features(FATStorageLifecycle PRIVATE cxx_std_26)
     target_link_libraries(FATStorageLifecycle PRIVATE Qt6::Core)
     foreach(case IN ITEMS normal empty mount-read-error mount-seek-error length-error malformed format-write-error)
         add_test(NAME fat-storage-${case} COMMAND FATStorageLifecycle ${case})
         set_tests_properties(fat-storage-${case} PROPERTIES TIMEOUT 15)
+    endforeach()
+    set(storage_export_cases normal empty read short-read backing-read short-write close commit)
+    if (WIN32)
+        list(APPEND storage_export_cases replacement)
+    endif()
+    foreach(case IN LISTS storage_export_cases)
+        add_test(NAME fs-export-fat-${case} COMMAND FATStorageLifecycle export-${case})
+        set_tests_properties(fs-export-fat-${case} PROPERTIES TIMEOUT 15)
+    endforeach()
+    foreach(case IN ITEMS new-read host-conflict new-conflict host-collision guest-collision mixed index-write index-commit)
+        add_test(NAME fs-export-fat-${case} COMMAND FATStorageLifecycle export-${case})
+        set_tests_properties(fs-export-fat-${case} PROPERTIES TIMEOUT 15)
+    endforeach()
+    foreach(case IN ITEMS legacy-normal legacy-pending no-index-adoption host-only no-source-index-error)
+        add_test(NAME fs-sync-${case} COMMAND FATStorageLifecycle sync-${case})
+        set_tests_properties(fs-sync-${case} PROPERTIES TIMEOUT 15)
     endforeach()
 else()
     message(STATUS "Qt Core unavailable: DSiSDFATBacking real-file checks not registered")

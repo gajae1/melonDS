@@ -48,8 +48,8 @@ bool Receive(LocalMP& net, int inst, const std::vector<u8>& frame, u64 stamp,
     Output out;
     out.fill(Sentinel);
     u64 received = 0;
-    int len = host ? net.RecvHostPacket(inst, out.data() + 32, &received)
-                   : net.RecvPacket(inst, out.data() + 32, &received);
+    int len = host ? net.RecvHostPacket(inst, out.data() + 32, &received, out.size() - 64)
+                   : net.RecvPacket(inst, out.data() + 32, &received, out.size() - 64);
     return Check(len == static_cast<int>(frame.size()) && received == stamp
                  && Copied(out, frame), "frame length, timestamp, body or guards differ");
 }
@@ -80,7 +80,7 @@ bool PacketWrap(bool exact = false)
         Output out;
         out.fill(Sentinel);
         u64 stamp = 0;
-        int len = net.RecvPacket(2, out.data() + 32, &stamp);
+        int len = net.RecvPacket(2, out.data() + 32, &stamp, out.size() - 64);
         if (!len) break;
         if (!Check(stamp > 1000 + last && stamp <= 1000 + total,
                    "overwritten, duplicate or unordered packet header")) return false;
@@ -223,6 +223,83 @@ bool NewHostSession()
     net.SendCmd(2, frame.data(), frame.size(), 2000);
     return Receive(net, 1, frame, 2000, true);
 }
+
+bool ReceiveBounds(bool reply)
+{
+    LocalMP net;
+    net.SetRecvTimeout(1);
+    net.Begin(0);
+    net.Begin(1);
+    auto frame = Frame(99, kMaxFrameSize);
+    if (reply) net.SendCmd(0, frame.data(), 40, 1000);
+    // Extra guards contain the old overwrite without corrupting the test process.
+    std::array<u8, 15 * 1024 + kMaxFrameSize + 64> out;
+    for (unsigned aid : {1u, 15u})
+    {
+        out.fill(Sentinel);
+        const size_t offset = reply ? (aid - 1) * 1024 : 0;
+        const size_t copied = reply ? 1024 : (aid == 1 ? 2048 : 17);
+        u64 stamp = 0;
+        if (reply) net.SendReply(1, frame.data(), frame.size(), 1001, aid);
+        else net.SendPacket(0, frame.data(), frame.size(), 1001);
+        const int result = reply ? net.RecvReplies(0, out.data() + 32, 1000, 1u << aid)
+            : aid == 1 ? net.RecvPacket(1, out.data() + 32, &stamp)
+                       : net.RecvPacket(1, out.data() + 32, &stamp, copied);
+        bool ok = result == (reply ? int(1u << aid) : int(copied)) && (reply || stamp == 1001);
+        for (size_t i = 0; i < out.size(); ++i)
+            ok &= out[i] == (i >= 32 + offset && i < 32 + offset + copied
+                ? frame[i - 32 - offset] : Sentinel);
+        if (!Check(ok, "receive crossed packet/slot capacity or returned an unbounded count")) return false;
+        auto next = Frame(100, 40);
+        if (reply)
+        {
+            net.SendReply(1, next.data(), next.size(), 1002, 1);
+            Output retry;
+            retry.fill(Sentinel);
+            if (!Check(net.RecvReplies(0, retry.data() + 32, 1000, 2) == 2 && Copied(retry, next),
+                       "cropped reply left unread bytes in the FIFO")) return false;
+        }
+        else
+        {
+            net.SendPacket(0, next.data(), next.size(), 1002);
+            if (!Receive(net, 1, next, 1002)) return false;
+        }
+    }
+    return true;
+}
+
+bool InvalidInput()
+{
+    LocalMP net;
+    net.SetRecvTimeout(1);
+    net.Begin(0);
+    net.Begin(1);
+    auto frame = Frame(1, 40);
+    Output out;
+    out.fill(Sentinel);
+    u64 stamp = 777;
+    for (int inst : {-1, 16})
+    {
+        net.Begin(inst);
+        net.End(inst);
+        if (net.SendCmd(inst, frame.data(), frame.size(), 1000) != 0 ||
+            net.RecvHostPacket(inst, out.data() + 32, &stamp) != 0 ||
+            net.RecvReplies(inst, out.data() + 32, 1000, 2) != 0) return false;
+    }
+    if (net.SendPacket(0, frame.data(), -1, 1000) != 0 ||
+        net.SendPacket(0, nullptr, frame.size(), 1000) != 0) return false;
+    net.SendCmd(0, frame.data(), frame.size(), 1000);
+    if (net.RecvPacket(1, nullptr, &stamp) != 0 ||
+        net.RecvPacket(1, out.data() + 32, &stamp, 0) != 0 || stamp != 777 ||
+        !std::all_of(out.begin(), out.end(), [](u8 b) { return b == Sentinel; }) ||
+        !Receive(net, 1, frame, 1000, true)) return false;
+    for (u16 aid : {0, 16, 65535})
+        if (net.SendReply(1, frame.data(), frame.size(), 1001, aid) != 0) return false;
+    net.SendReply(1, frame.data(), frame.size(), 1001, 15);
+    if (net.RecvReplies(0, nullptr, 1000, 0x8000) != 0) return false;
+    return Check(net.RecvReplies(0, out.data() + 32, 1000, 0x8000) == 0x8000 &&
+                 Copied(out, frame, 14 * 1024), "invalid input damaged following command/reply");
+}
 }
 
 int main(int argc, char** argv)
@@ -237,6 +314,9 @@ int main(int argc, char** argv)
     else if (name == "roundtrip") ok = Roundtrip();
     else if (name == "lifecycle") ok = Lifecycle();
     else if (name == "new-host-session") ok = NewHostSession();
+    else if (name == "packet-bounds") ok = ReceiveBounds(false);
+    else if (name == "reply-bounds") ok = ReceiveBounds(true);
+    else if (name == "invalid-input") ok = InvalidInput();
     else return 2;
     std::printf("%s: %s\n", argv[1], ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;

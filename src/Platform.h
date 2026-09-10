@@ -185,6 +185,16 @@ FileHandle* OpenFile(const std::string& path, FileMode mode);
 // For regular UNIX builds, the user's configuration directory is always used.
 FileHandle* OpenLocalFile(const std::string& path, FileMode mode);
 
+using FileWriteCallback = std::function<bool(const void*, u32)>;
+/** Replace a complete file without exposing partial output. The producer must
+ * check every write and close its source before returning true. A false return
+ * from the producer, a short write, or an open/commit failure discards temporary
+ * output and preserves the destination. No direct-write fallback is permitted.
+ * The write callback is valid only during this call. With local=true, resolve
+ * the path like OpenLocalFile. Frontends without this facility must return false.
+ */
+bool WriteFileAtomically(const std::string& path, const std::function<bool(const FileWriteCallback&)>& write, bool local = false);
+
 /// Returns true if the given file exists.
 bool FileExists(const std::string& name);
 bool LocalFileExists(const std::string& name);

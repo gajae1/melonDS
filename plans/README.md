@@ -10,6 +10,8 @@
 | [검증 방법](Validation.md) | 로컬 빌드·회귀·측정과 증거 작성 기준 |
 | [2026-09-11 감사](Audit_2026-09-11.md) | 실제 읽기 범위·추가 반례 후보·upstream와 Android/macOS/Linux 이식 경계 |
 | [추가 참고 자료](Reference_Notes_2026-09-11.md) | 파일 보존·통신·JIT·GPU의 다른 구현/논문과 다음 검증 조건 |
+| [최적화 조사와 실험 후보](Optimization_Research_2026-09-11.md) | 멀티코어·C/C++·컴파일러·JIT·GPU·자동 네트워크의 코드 근거와 다음 실험 |
+| [1.1.32 구현 기록](releases/1.1.32.md) | 상태 section·FAT/NAND 내보내기 보존·LocalMP 수신 용량·GDB qCRC |
 | [1.1.31 구현 기록](releases/1.1.31.md) | SD 이미지 마운트 실패의 보존·DSP 홀수 FIFO·Compute 초기화 |
 | [1.1.30 구현 기록](releases/1.1.30.md) | LAN 다자간 mesh·상태 로드 뒤 host 오디오·source A DMA/warmed JIT 검증 |
 | [1.1.29 구현 기록](releases/1.1.29.md) | LAN 연결·취소·재접속, 장치 identity·인스턴스 배정, DSi 타이틀 교체/복구 |

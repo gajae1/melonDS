@@ -315,6 +315,41 @@ int main(int argc, char** argv)
     if (!directory.isValid()) return 2;
     const auto path = directory.filePath(QStringLiteral("state-\uD55C\uAE00.mln")).toStdString();
     if (test == "late-section") target[target.size() - 20] = 'X';
+    if (test == "missing-global") target[16] = 'X';
+    if (test == "empty-global")
+    {
+        u32 sectionLength = 0;
+        std::memcpy(&sectionLength, target.data() + 20, sizeof(sectionLength));
+        target.erase(target.begin() + 32, target.begin() + 16 + sectionLength);
+        sectionLength = 16;
+        std::memcpy(target.data() + 20, &sectionLength, sizeof(sectionLength));
+    }
+    if (test == "short-section")
+    {
+        // The final TEST device lacks its word. A valid unknown section follows,
+        // so a file-wide bounds check alone consumes its magic as device data.
+        target.resize(target.size() - 4);
+        u32 sectionLength = 16;
+        std::memcpy(target.data() + target.size() - 12, &sectionLength, sizeof(sectionLength));
+        const u8 tail[] = {'T', 'A', 'I', 'L', 20, 0, 0, 0,
+                          0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34, 0x56, 0x78};
+        target.insert(target.end(), std::begin(tail), std::end(tail));
+    }
+    if (test == "empty-global" || test == "short-section")
+    {
+        const u32 size = static_cast<u32>(target.size());
+        std::memcpy(target.data() + 8, &size, sizeof(size));
+    }
+    if (test == "missing-global" || test == "empty-global")
+    {
+        Savestate early(target.data(), static_cast<u32>(target.size()), false);
+        const bool rejected = !nds.DoSavestate(&early);
+        if (!rejected || !early.Error || Snapshot(nds) != previous || nds.loadCalls)
+        {
+            std::fprintf(stderr, "%s: invalid NDSG did not reject before applying core state\n", test.c_str());
+            return 1;
+        }
+    }
     if (test == "header") target[0] = 'X';
     QFile file(QString::fromStdString(path));
     if (!file.open(QIODevice::WriteOnly) ||

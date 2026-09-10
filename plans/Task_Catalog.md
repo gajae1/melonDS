@@ -15,7 +15,7 @@
 | CJ-07 | [callback 중 event 취소](workstreams/01-core-jit.md#CJ-07) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.17 취소된 due event 실행 수정, 정상·재예약·교체·periodic·snapshot 6개 case 통과; IRQ/DMA/sleep 장치 경계는 CJ-08 후속 |
 | CJ-08 | [IRQ·DMA·sleep 경계](workstreams/01-core-jit.md#CJ-08) | 실행 재현 | P2 | [1.1.15](Release_Plan.md#v15) | — | 1.1.19 Timer0/HALT/ARM9 IRQ의 F 보존 수정·IME/IE/CPSR 대조와 warmed guest 검증; ARM7/Thumb·DMA/sleep·실기 latency 후속 |
 | CJ-09 | [savestate event 값 검증](workstreams/01-core-jit.md#CJ-09) | 정적 후보 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.03 구현·로컬 회귀; DSi HLE 실사용 후속 |
-| CJ-10 | [부분 load 실패 복원](workstreams/01-core-jit.md#CJ-10) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | FS-01 | 1.1.04 load·undo 복원·정지 구현, 합성 core/JIT 회귀; 카트·DSi·게임 수락 후속 |
+| CJ-10 | [부분 load 실패 복원](workstreams/01-core-jit.md#CJ-10) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | FS-01 | 1.1.04 load·undo 복원·정지; 1.1.32 짧은 section의 이웃 읽기·NDSG 선검사, 원본 14.0 생성 상태 이관; 카트·DSi·전체 게임 후속 |
 | CJ-11 | [GDB SPSR bank 접근](workstreams/01-core-jit.md#CJ-11) | 정적 후보 | P1 | [1.1.10](Release_Plan.md#v10) | — | 미착수 |
 | CJ-12 | [DMA 버스 타이밍](workstreams/01-core-jit.md#CJ-12) | 정적 후보 | P2 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
 | CJ-13 | [ARM9 cache·ITCM 타이밍](workstreams/01-core-jit.md#CJ-13) | 관찰/확장 | P2 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
@@ -69,12 +69,12 @@
 | AD-24 | [AES block backend 실효성](workstreams/03-audio-dsi.md#AD-24) | 미측정 가설 | P3 | [1.1.29](Release_Plan.md#v29) | — | 미착수 |
 | AD-25 | [SPU 정수 보간·pan 가속](workstreams/03-audio-dsi.md#AD-25) | 미측정 가설 | P3 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-26 | [DSP opcode/상태 coverage](workstreams/03-audio-dsi.md#AD-26) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
-| FS-01 | [load/undo 실패의 세션 복원](workstreams/04-frontend-storage.md#FS-01) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.04 CJ-10과 공동 구현·회귀; 전체 게임·장치 수락 후속 |
-| FS-02 | [길이·전체 read·적용 전 검증](workstreams/04-frontend-storage.md#FS-02) | 실행 재현 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.04 상태·1.1.05 SRAM·1.1.06 ROM/import; 1.1.31 기존 FAT 마운트/길이 오류의 재포맷 금지·파일/인덱스/폴더 보존·실패 SD 삽입 방지; export 중간 실패·다른 부가 파일 후속 |
+| FS-01 | [load/undo 실패의 세션 복원](workstreams/04-frontend-storage.md#FS-01) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.04 CJ-10 공동 구현; 1.1.32 누락/빈 global·후반 짧은 section 거부와 기존 세션/다음 frame 보존; 전체 게임·장치 후속 |
+| FS-02 | [길이·전체 read·적용 전 검증](workstreams/04-frontend-storage.md#FS-02) | 실행 재현 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.04 상태·1.1.05 SRAM·1.1.06 ROM/import; 1.1.31 FAT 마운트/길이 실패 보존; 1.1.32 section 끝·FAT/NAND export read/write/close/교체 검사와 파일별 보존·재시도; 다른 부가 파일 후속 |
 | FS-03 | [ROM 교체와 save 소유권](workstreams/04-frontend-storage.md#FS-03) | 실행 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.05 준비 실패 보존·queued 카트·save 연결 구현·로컬 회귀; 실제 게임·DSi 수락 후속 |
 | FS-04 | [손상 TOML 보존·오류 전파](workstreams/04-frontend-storage.md#FS-04) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.03 원본 보존·회귀; 상세 오류 UI 후속 |
 | FS-05 | [save worker/path/buffer 수명](workstreams/04-frontend-storage.md#FS-05) | 잠금 경계 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.04 mutex 통일·worker/파일 회귀; 느린 I/O·장기 경쟁 수락 후속 |
-| FS-06 | [종료 시 지속 저장 실패](workstreams/04-frontend-storage.md#FS-06) | 실행 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.05 pending·복구 API·종료 선택; 1.1.25 종료 후 앱 상태 알림의 해제된 인스턴스 접근 차단; 기존 저장 회귀 유지, 실제 저장장치·장기 수락 후속 |
+| FS-06 | [종료 시 지속 저장 실패](workstreams/04-frontend-storage.md#FS-06) | 실행 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.05 pending·복구/종료 선택, 1.1.25 해제 후 알림 차단; 1.1.32 FAT 소멸 export 실패·atomic index·pending 재시도/동일 시각 충돌 보존; 폴더 전체 transaction·복구 UI·물리 장치 후속 |
 | FS-07 | [archive EOF/누락/오류·자원](workstreams/04-frontend-storage.md#FS-07) | 실행 재현 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.06 입력·자원·전체 읽기 구현·로컬 회귀 확인; 전체 형식·대용량 수락 후속 |
 | FS-08 | [Zstd 실제 길이·frame 완료](workstreams/04-frontend-storage.md#FS-08) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.03 구현·회귀; 실제 최대 출력 경계 후속 |
 | FS-09 | [controller 핸들·capability 정리](workstreams/04-frontend-storage.md#FS-09) | 실행 재현 | P1 | [1.1.06](Release_Plan.md#v06) | — | 1.1.07 공통 핸들/capability/rumble 정리·가상 SDL 장치 회귀; 실물 hotplug·motion 수락 후속 |
@@ -90,9 +90,9 @@
 | FS-19 | [DS/DSi 설정·부팅 진단](workstreams/04-frontend-storage.md#FS-19) | 미측정 가설 | P2 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
 | FS-20 | [느린 ROM 준비·취소](workstreams/04-frontend-storage.md#FS-20) | 미측정 가설 | P2 | [1.1.07](Release_Plan.md#v07) | — | 미착수 |
 | FS-21 | [카메라 미리보기·hotplug 수명](workstreams/04-frontend-storage.md#FS-21) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
-| NP-01 | [LAN payload·AID·peer 검증](workstreams/05-connectivity-peripherals.md#NP-01) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.08 실제 ENet payload·type·sender/peer·AID 검증과 27개 생성 패킷 회귀; 빈 AID0 reply 보존, 두 PC 게임 수락 후속 |
+| NP-01 | [LAN payload·AID·peer 검증](workstreams/05-connectivity-peripherals.md#NP-01) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.08 ENet payload·type·sender/peer·AID 검증; 1.1.32 caller capacity와 기존 2048/1024 crop·큰 v1 프레임·빈 AID0 대조; 두 PC 게임 후속 |
 | NP-02 | [LAN handshake·취소·소유권](workstreams/05-connectivity-peripherals.md#NP-02) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.29 소유·초기화/종료·잠금·검사·비동기 완료/취소; 1.1.30 v1 호환·선택 포트 교환·단방향 mesh·4명/ID 재사용; 1.1.29 양방향/원본 호스트 통과, 원본 클라이언트의 첫 UDP 유실·두 PC 게임/다른 OS 후속 |
-| NP-03 | [LocalMP FIFO 넘침·복구](workstreams/05-connectivity-peripherals.md#NP-03) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | [1.1.26](releases/1.1.26.md) 뒤처진 수신자 backlog 폐기·기록 경계/permit 동기화·종료/새 host·수신 중 reset; 실제 무선 게임·다중 그룹 후속 |
+| NP-03 | [LocalMP FIFO 넘침·복구](workstreams/05-connectivity-peripherals.md#NP-03) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.26 backlog/기록/permit·수명 복구; 1.1.32 수신 용량·reply 슬롯·잘못된 instance/길이/AID 보호, 최대 2376 전송 유지; timestamp 0~31 반례·실제 무선·다중 그룹 후속 |
 | NP-04 | [LocalMP 그룹 격리](workstreams/05-connectivity-peripherals.md#NP-04) | 관찰/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
 | NP-05 | [PCap library 실패 중복 해제](workstreams/05-connectivity-peripherals.md#NP-05) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 누락 심볼 시 단일 unload·이동/소유권 회귀; 실제 DLL·POSIX 수락 후속 |
 | NP-06 | [PCap caplen/link type·I/O](workstreams/05-connectivity-peripherals.md#NP-06) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 완전한 Ethernet 캡처·datalink·I/O 오류와 open/열거 자원 회귀; 실제 어댑터·driver 실패 수락 후속 |
@@ -100,7 +100,7 @@
 | NP-08 | [DS/DSi Wi-Fi 실패 event](workstreams/05-connectivity-peripherals.md#NP-08) | 부분 실행 재현 | P2 | [1.1.12](Release_Plan.md#v12) | — | [1.1.27](releases/1.1.27.md) DSi CONNECT/scan 오류·기존 상태 보존·완전한 연결 본문과 IRQ/재연결; guest 자동 복구·DS retry/host 소실·실기 후속 |
 | NP-09 | [Netplay host/client 실제 게임](workstreams/05-connectivity-peripherals.md#NP-09) | 관찰/확장 | P2 | [1.1.31](Release_Plan.md#v31) | — | 미착수 |
 | NP-10 | [GDB packet/framing 용량](workstreams/05-connectivity-peripherals.md#NP-10) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 framing/escape/checksum·응답 용량·불량 패킷 뒤 회복 회귀; 정확히 찬 수신 버퍼의 NUL 제거는 정적 결함 수정 |
-| NP-11 | [GDB M/X 파싱·무부분쓰기](workstreams/05-connectivity-peripherals.md#NP-11) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 m/M/X 범위·정확한 본문 길이·escape를 전부 검증한 뒤 쓰기; 기존 MMIO 폭 보존, 실제 ARM debugger 수락 후속 |
+| NP-11 | [GDB M/X 파싱·무부분쓰기](workstreams/05-connectivity-peripherals.md#NP-11) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 m/M/X 범위·본문/escape 검증 후 쓰기; 1.1.32 qCRC exact hex·주소 끝과 GNU xcrc32 oracle 일치; 공용 CRC/MMIO 폭 유지, 실제 ARM debugger 후속 |
 | NP-12 | [GDB 재접속·EOF·부분 송신](workstreams/05-connectivity-peripherals.md#NP-12) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 SOCKET 폭·EOF·부분/0-byte 전송·NoAck 초기화, 실제 Windows loopback 분할/재접속/해제 확인; Linux·양 CPU debugger 후속 |
 | NP-13 | [IR 미초기화 응답·복원](workstreams/05-connectivity-peripherals.md#NP-13) | 실행 재현 | P1 | [1.1.24](Release_Plan.md#v24) | — | 1.1.10 FF 호환성 fallback·IRPos/reset/14.1 상태·14.0 새 명령 경계·section 검증; 실제 IR 통신/응답값 후속 |
 | NP-14 | [BT 키보드 최소 protocol](workstreams/05-connectivity-peripherals.md#NP-14) | 관찰/확장 | P2 | [1.1.24](Release_Plan.md#v24) | — | 미착수 |

@@ -60,6 +60,7 @@ Savestate::Savestate(void *buffer, u32 size, bool save) :
     buffer(static_cast<u8 *>(buffer)),
     buffer_offset(0),
     buffer_length(size),
+    section_end(size),
     buffer_owned(false),
     finished(false)
 {
@@ -131,6 +132,7 @@ Savestate::Savestate(u32 initial_size) :
     buffer(nullptr),
     buffer_offset(0),
     buffer_length(initial_size),
+    section_end(initial_size),
     buffer_owned(true),
     finished(false)
 {
@@ -190,6 +192,9 @@ void Savestate::Section(const char* magic)
         if (section_offset != NO_SECTION)
         {
             buffer_offset = section_offset;
+            u32 section_length = 0;
+            memcpy(&section_length, buffer + section_offset - 12, sizeof(section_length));
+            section_end = section_offset - 16 + section_length;
         }
         else
         {
@@ -263,9 +268,9 @@ void Savestate::VarArray(void* data, u32 len)
     }
     else
     {
-        if (len > buffer_length - buffer_offset)
-        { // If reading the requested amount of data would take us past the buffer's edge...
-            Log(LogLevel::Error, "savestate: %u-byte read would exceed %u-byte savestate buffer\n", len, buffer_length);
+        if (buffer_offset > section_end || len > section_end - buffer_offset)
+        { // A short section cannot borrow bytes from the next section's header or payload.
+            Log(LogLevel::Error, "savestate: %u-byte read exceeds the current section\n", len);
             Error = true;
             return;
 
@@ -283,8 +288,11 @@ void Savestate::VarArray(void* data, u32 len)
 void Savestate::Finish()
 {
     if (Error || finished) return;
-    CloseCurrentSection();
-    WriteStateLength();
+    if (Saving)
+    {
+        CloseCurrentSection();
+        WriteStateLength();
+    }
     finished = true;
 }
 
@@ -293,6 +301,7 @@ void Savestate::Rewind(bool save)
     Error = false;
     Saving = save;
     CurSection = NO_SECTION;
+    section_end = buffer_length;
 
     buffer_offset = 0;
     finished = false;

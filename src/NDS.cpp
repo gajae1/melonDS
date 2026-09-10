@@ -634,6 +634,7 @@ u32 NDS::GetSavestateConfig()
 bool NDS::DoSavestate(Savestate* file)
 {
     file->Section("NDSG");
+    if (file->Error) return false;
 
     u32 config = GetSavestateConfig();
     if (file->Saving)
@@ -642,8 +643,9 @@ bool NDS::DoSavestate(Savestate* file)
     }
     else
     {
-        u32 config_chk;
+        u32 config_chk = 0;
         file->Var32(&config_chk);
+        if (file->Error) return false;
         if (config_chk != config)
         {
             Log(LogLevel::Error, "savestate: Expected config word %08X, got %08X. cannot load.\n", config, config_chk);

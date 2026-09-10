@@ -33,6 +33,50 @@ static bool Rejects(std::vector<u8>& data, const char* magic)
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
+    if (!strcmp(argv[1], "section-bounds") || !strcmp(argv[1], "read-only-finish"))
+    {
+        Savestate saved(128);
+        u32 value = 0x12345678;
+        saved.Section("ONE1");
+        saved.Var32(&value);
+        saved.Section("EMPT");
+        saved.Section("TWO2");
+        saved.Var32(&value);
+        saved.Finish();
+        const auto* bytes = static_cast<const u8*>(saved.Buffer());
+        const std::vector<u8> original(bytes, bytes + saved.Length());
+        Savestate loaded(saved.Buffer(), saved.Length(), false);
+        if (!strcmp(argv[1], "read-only-finish"))
+        {
+            loaded.Section("ONE1");
+            loaded.Var32(&value);
+            loaded.Finish();
+            if (loaded.Error || memcmp(original.data(), saved.Buffer(), original.size()))
+            {
+                fprintf(stderr, "Finishing a partial/reordered load changed the source state\n");
+                return 1;
+            }
+            return 0;
+        }
+        for (const char* section : {"ONE1", "EMPT"})
+        {
+            loaded.Rewind(false);
+            loaded.Section(section);
+            u64 guard = 0xA5A5A5A5A5A5A5A5ULL;
+            loaded.Var64(&guard);
+            if (!loaded.Error || guard != 0xA5A5A5A5A5A5A5A5ULL)
+            {
+                fprintf(stderr, "%s consumed adjacent section bytes: error=%d value=%llx\n",
+                        section, loaded.Error, static_cast<unsigned long long>(guard));
+                return 1;
+            }
+        }
+        loaded.Rewind(false);
+        loaded.Section("TWO2");
+        u32 result = 0;
+        loaded.Var32(&result);
+        return !loaded.Error && result == value ? 0 : 1;
+    }
     if (!strcmp(argv[1], "array-bounds"))
     {
         auto truncated = MakeState(12);

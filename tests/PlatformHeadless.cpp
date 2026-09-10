@@ -8,6 +8,7 @@ namespace melonDS::Platform {
 void SignalStop(StopReason, void*) {}
 FileHandle* OpenFile(const std::string&, FileMode) { return nullptr; }
 FileHandle* OpenLocalFile(const std::string&, FileMode) { return nullptr; }
+bool WriteFileAtomically(const std::string&, const std::function<bool(const FileWriteCallback&)>&, bool) { return false; }
 bool LocalFileExists(const std::string&) { return false; }
 #ifndef MELONDS_TEST_FILE_EXISTS
 bool FileExists(const std::string&) { return false; }

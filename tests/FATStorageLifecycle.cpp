@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Generated FAT images, full FATStorage/FatFs and current Qt I/O methods.
-// QFile failures are injected only at the host file boundary, never in FatFs.
+// Lifecycle faults use QFile boundaries; export faults also use FatFs I/O seams.
 #include <array>
 #include <cstdarg>
 #include <cstdio>
@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include "FATStorage.h"
+#include "StorageExportTest.h"
 
 using namespace melonDS;
 namespace {
@@ -41,6 +42,8 @@ public:
 protected:
     qint64 readData(char* data, qint64 size) override
     {
+        if (ExportTest::backingRead)
+        { ExportTest::backingRead = false; ++ExportTest::faults; return -1; }
         if (failure == Failure::Read || failure == Failure::LengthAndRead)
         { failure = Failure::None; ++injectedFailures; return -1; }
         return QFile::readData(data, size);
@@ -72,7 +75,7 @@ FileHandle* OpenFile(const std::string& path, FileMode mode)
 {
     const QString name = QString::fromStdString(path);
     const bool image = name.endsWith(".img");
-    QFile* file = image ? new ImageFile(name) : new QFile(name);
+    QFile* file = image ? static_cast<QFile*>(new ImageFile(name)) : new ExportTest::HostFile(name);
     if (image) ++openImages;
     QIODevice::OpenMode access = QIODevice::Unbuffered;
     if (mode & Read) access |= QIODevice::ReadOnly;
@@ -88,9 +91,208 @@ bool LocalFileExists(const std::string& path) { return QFile::exists(QString::fr
 bool CloseFile(FileHandle* handle) { delete reinterpret_cast<QFile*>(handle); return true; }
 void Log(LogLevel, const char* format, ...)
 {
+    if (ExportTest::active && std::string(format).find("sync") != std::string::npos) ++ExportTest::errors;
     va_list args; va_start(args, format); std::vfprintf(stderr, format, args); va_end(args);
 }
 #include "DSiSDFATQtMethods.inc"
+std::string GetLocalFilePath(const std::string& path) { return path; }
+#define QSaveFile ExportTest::SaveFile
+#include "StorageExportAtomic.inc"
+#undef QSaveFile
+}
+
+// Compile the entire current implementation; only FatFs I/O boundaries change.
+#define f_read ExportTest::Read
+#define f_close ExportTest::Close
+#include "../src/FATStorage.cpp"
+#undef f_read
+#undef f_close
+
+static void TestExport(const std::string& scenario, const QString& path, const QString& source)
+{
+    using namespace ExportTest;
+    const std::string mode = scenario.substr(7);
+    const bool newFile = mode == "new-read" || mode == "new-conflict";
+    const bool mixed = mode == "mixed";
+    const bool conflict = mode == "host-conflict" || mode == "new-conflict" || mode == "host-collision";
+    const QString output = source + (newFile ? "/NEW.BIN" : "/KEEP.BIN");
+    const QString index = path + ".idx";
+    QByteArray before, indexBefore;
+    std::filesystem::file_time_type hostTime;
+    const QByteArray next = Payload(mode == "empty" ? 0 : mode == "guest-collision" ? 8193 : 12291);
+    targetSize = next.size();
+    ReplacementLock lock;
+    QStringList entries;
+    QStringList rootEntries;
+    {
+        FATStorage storage(path.toStdString(), Capacity, false, source.toStdString());
+        Check(storage.IsValid(), "export seed valid");
+        before = newFile ? QByteArray{} : ExportTest::Bytes(output);
+        if (!newFile) hostTime = std::filesystem::last_write_time(PathFromUTF8(output.toStdString()));
+        indexBefore = ExportTest::Bytes(index);
+        entries = Entries(source);
+        rootEntries = Entries(QFileInfo(path).absolutePath());
+        FF_FILINFO timestamp{};
+        const auto guestTimestamp = [&](bool restore)
+        {
+            ff_disk_open([&](BYTE* data, LBA_t start, UINT count) { return storage.ReadSectors(start, count, data); },
+                [&](const BYTE* data, LBA_t start, UINT count) { return storage.WriteSectors(start, count, data); }, storage.GetSectorCount());
+            FATFS volume;
+            Check(f_mount(&volume, "0:", 1) == FR_OK, "guest timestamp fixture mount");
+            Check((restore ? f_utime("0:/KEEP.BIN", &timestamp) : f_stat("0:/KEEP.BIN", &timestamp)) == FR_OK,
+                "preserve exact guest FAT timestamp");
+            f_unmount("0:"); ff_disk_close();
+        };
+        if (mode == "guest-collision") guestTimestamp(false);
+        Check(storage.InjectFile(newFile ? "NEW.BIN" : "KEEP.BIN",
+            reinterpret_cast<u8*>(const_cast<char*>(next.constData())), next.size()), "guest update");
+        if (mode == "guest-collision") guestTimestamp(true);
+        if (mixed)
+        {
+            auto other = Payload(513);
+            Check(storage.InjectFile("ZGOOD.BIN", reinterpret_cast<u8*>(other.data()), other.size()), "second guest file");
+            entries.append("ZGOOD.BIN"); entries.sort();
+        }
+        if (mode == "replacement") lock.Lock(output);
+        Reset((newFile || conflict || mixed) ? Fault::Read : Parse(mode));
+    } // Actual production destructor -> Save -> ExportChanges -> ExportFile.
+    active = false;
+    lock.Unlock();
+    const bool failing = fault != Fault::None || mode == "replacement";
+    const bool indexFailure = fault == Fault::IndexWrite || fault == Fault::IndexCommit;
+    const bool preserved = newFile ? !QFile::exists(output) : ExportTest::Bytes(output) == before;
+    std::printf("export=%s preserved=%d index_unchanged=%d reads=%u closes=%u faults=%u commits=%u owner_errors=%u\n",
+        mode.c_str(), preserved, ExportTest::Bytes(index) == indexBefore, reads, closes, faults, commits, errors);
+    if (failing)
+    {
+        Check(indexFailure || preserved, "failed export preserves prior host destination");
+        if (mixed)
+        {
+            const auto record = [](const QByteArray& text)
+            {
+                QByteArray result;
+                for (const auto& line : text.split('\n')) if (line.endsWith(" KEEP.BIN")) result += line + '\n';
+                return result;
+            };
+            Check(record(ExportTest::Bytes(index)) == record(indexBefore), "failed entry unchanged while another file succeeds");
+            Check(ExportTest::Bytes(source + "/ZGOOD.BIN") == Payload(513) && ExportTest::Bytes(index).contains(" ZGOOD.BIN\n"),
+                "other file and its index commit independently");
+        }
+        else Check(ExportTest::Bytes(index) == indexBefore, "failed export/index commit preserves exact prior index");
+        Check(mode == "replacement" || faults == 1, "requested failure reached once");
+        Check(errors > 0, "destructor reports sync failure");
+        Check(Entries(source) == entries, "failed export leaves no temporary file");
+        Check(Entries(QFileInfo(path).absolutePath()) == rootEntries, "failed index write leaves no temporary file");
+        if (conflict)
+        {
+            QByteArray hostEdit("independent host edit after failed export\0binary", 47);
+            if (mode == "host-collision")
+            {
+                hostEdit = before;
+                hostEdit[hostEdit.size() / 2] ^= 0x5A;
+            }
+            Put(output, hostEdit);
+            if (mode == "host-collision")
+                std::filesystem::last_write_time(PathFromUTF8(output.toStdString()), hostTime);
+            const QByteArray imageBefore = ExportTest::Bytes(path);
+            {
+                FATStorage retry(path.toStdString(), Capacity, false, source.toStdString());
+                Check(!retry.IsValid(), "conflicting retry refuses safely");
+            }
+            Check(ExportTest::Bytes(path) == imageBefore && ExportTest::Bytes(output) == hostEdit &&
+                ExportTest::Bytes(index) == indexBefore, "conflict preserves guest image host edit and index");
+            // Resolve only this generated conflict by restoring the prior host side.
+            if (newFile) Check(QFile::remove(output), "remove generated conflicting host file");
+            else
+            {
+                Put(output, before);
+                std::filesystem::last_write_time(PathFromUTF8(output.toStdString()), hostTime);
+            }
+        }
+        Reset();
+        {
+            FATStorage retry(path.toStdString(), Capacity, false, source.toStdString());
+            Check(retry.IsValid(), "unchanged-host retry opens");
+        }
+        active = false;
+    }
+    Check(ExportTest::Bytes(output) == next, "normal/retry exact empty binary multiblock export");
+    Check(ExportTest::Bytes(index).contains(QByteArray::number(next.size()) + " "), "successful export indexed");
+    Check(openImages == 0, "export lifecycle releases backing image");
+    std::printf("PASS: %s\n", scenario.c_str());
+}
+
+static void TestReconciliation(const std::string& mode, const QString& path, const QString& source)
+{
+    using namespace ExportTest;
+    const QString host = source + "/KEEP.BIN", index = path + ".idx";
+    QByteArray expected = ExportTest::Bytes(host);
+    if (mode == "no-source-index-error")
+    {
+        Reset(Fault::IndexCommit);
+        FATStorage storage(path.toStdString(), Capacity, false);
+        active = false;
+        Check(storage.IsValid() && faults == 1, "image-only storage does not require host-sync index support");
+        Check(storage.InjectFile("KEEP.BIN", reinterpret_cast<u8*>(expected.data()), expected.size()), "image-only guest I/O after sidecar failure");
+        Check(!QFile::exists(index), "failed optional sidecar remains absent");
+        std::printf("PASS: sync-%s\n", mode.c_str());
+        return;
+    }
+    {
+        FATStorage seed(path.toStdString(), Capacity, false,
+            mode == "no-index-adoption" ? std::nullopt : std::optional(source.toStdString()));
+        Check(seed.IsValid(), "reconciliation seed");
+        if (mode == "no-index-adoption")
+            Check(seed.InjectFile("OLDONLY.BIN", reinterpret_cast<u8*>(expected.data()), expected.size()), "unindexed adoption fixture");
+    }
+    if (mode.starts_with("legacy-"))
+    {
+        QByteArray legacy;
+        for (const auto& line : ExportTest::Bytes(index).split('\n'))
+            if (!line.startsWith("HASH ") && !line.isEmpty()) legacy += line + '\n';
+        Put(index, legacy);
+    }
+    if (mode == "legacy-pending")
+    {
+        {
+            FATStorage guest(path.toStdString(), Capacity, false);
+            auto data = Payload(12291);
+            Check(guest.InjectFile("KEEP.BIN", reinterpret_cast<u8*>(data.data()), data.size()), "legacy pending guest edit");
+        }
+        const auto imageBefore = ExportTest::Bytes(path), indexBefore = ExportTest::Bytes(index);
+        {
+            FATStorage retry(path.toStdString(), Capacity, false, source.toStdString());
+            Check(!retry.IsValid(), "ambiguous legacy pending data refuses");
+        }
+        Check(ExportTest::Bytes(path) == imageBefore && ExportTest::Bytes(index) == indexBefore && ExportTest::Bytes(host) == expected,
+            "legacy refusal preserves exact image host and index");
+        FATStorage recovery(path.toStdString(), Capacity, true);
+        QByteArray actual(12291, '\0');
+        Check(recovery.ReadFile("KEEP.BIN", 0, actual.size(), reinterpret_cast<u8*>(actual.data())) == actual.size() && actual == Payload(12291),
+            "refused guest data remains accessible without folder sync");
+    }
+    else
+    {
+        if (mode == "no-index-adoption") Check(QFile::remove(index), "remove generated sidecar for explicit no-index adoption");
+        if (mode == "host-only")
+        {
+            const auto time = std::filesystem::last_write_time(PathFromUTF8(host.toStdString()));
+            expected[23] ^= 0x6A;
+            Put(host, expected);
+            std::filesystem::last_write_time(PathFromUTF8(host.toStdString()), time);
+        }
+        {
+            FATStorage storage(path.toStdString(), Capacity, false, source.toStdString());
+            Check(storage.IsValid(), "ordinary legacy/no-index/host-only adoption");
+            QByteArray actual(expected.size(), '\0');
+            Check(storage.ReadFile("KEEP.BIN", 0, actual.size(), reinterpret_cast<u8*>(actual.data())) == actual.size() && actual == expected,
+                "ordinary host import stays exact");
+            if (mode == "no-index-adoption")
+                Check(storage.ReadFile("OLDONLY.BIN", 0, 1, reinterpret_cast<u8*>(actual.data())) == 0, "no-index source adoption retains existing semantics");
+        }
+        Check(ExportTest::Bytes(host) == expected && ExportTest::Bytes(index).contains("HASH "), "ordinary adoption retains host bytes and upgrades index");
+    }
+    std::printf("PASS: sync-%s\n", mode.c_str());
 }
 
 int main(int argc, char** argv)
@@ -108,6 +310,18 @@ int main(int argc, char** argv)
     QByteArray payload(8193, '\0');
     for (qsizetype i = 0; i < payload.size(); ++i) payload[i] = char((i * 17 + i / 512 + 9) & 255);
     WriteBytes(hostFile, payload);
+
+    if (scenario.starts_with("sync-"))
+    {
+        TestReconciliation(scenario.substr(5), path, source);
+        return 0;
+    }
+
+    if (scenario.starts_with("export-"))
+    {
+        TestExport(scenario, path, source);
+        return 0;
+    }
 
     if (scenario == "empty" || scenario == "format-write-error")
     {

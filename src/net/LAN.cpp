@@ -1130,8 +1130,9 @@ int LAN::SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp)
     return len;
 }
 
-int LAN::RecvPacketGeneric(u8* packet, bool block, u64* timestamp)
+int LAN::RecvPacketGeneric(u8* packet, bool block, u64* timestamp, u32 capacity)
 {
+    if (!packet || !capacity) return 0;
     std::lock_guard lock(SessionMutex);
     if (!Host || Connection != ClientState::Connected) return 0;
 
@@ -1145,7 +1146,7 @@ int LAN::RecvPacketGeneric(u8* packet, bool block, u64* timestamp)
     u32 len = header->Length;
     if (len)
     {
-        if (len > 2048) len = 2048;
+        if (len > capacity) len = capacity;
 
         memcpy(packet, &enetpacket->data[sizeof(MPPacketHeader)], len);
 
@@ -1167,9 +1168,9 @@ int LAN::SendPacket(int inst, u8* packet, int len, u64 timestamp)
     return SendPacketGeneric(0, packet, len, timestamp);
 }
 
-int LAN::RecvPacket(int inst, u8* packet, u64* timestamp)
+int LAN::RecvPacket(int inst, u8* packet, u64* timestamp, u32 capacity)
 {
-    return RecvPacketGeneric(packet, false, timestamp);
+    return RecvPacketGeneric(packet, false, timestamp, capacity);
 }
 
 
@@ -1188,7 +1189,7 @@ int LAN::SendAck(int inst, u8* packet, int len, u64 timestamp)
     return SendPacketGeneric(3, packet, len, timestamp);
 }
 
-int LAN::RecvHostPacket(int inst, u8* packet, u64* timestamp)
+int LAN::RecvHostPacket(int inst, u8* packet, u64* timestamp, u32 capacity)
 {
     std::lock_guard lock(SessionMutex);
     if (Connection == ClientState::Disconnected) return -1;
@@ -1200,7 +1201,7 @@ int LAN::RecvHostPacket(int inst, u8* packet, u64* timestamp)
             return -1;
     }
 
-    return RecvPacketGeneric(packet, true, timestamp);
+    return RecvPacketGeneric(packet, true, timestamp, capacity);
 }
 
 u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
