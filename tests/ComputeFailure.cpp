@@ -51,6 +51,8 @@ struct EmuThread
     FixtureInstance* emuInstance;
     int videoRenderer = renderer3D_OpenGLCompute;
     int lastVideoRenderer = renderer3D_Software;
+    bool PublishedFailure = false;
+    void publishVideoSettings(bool failed = false) { PublishedFailure = failed; }
     void updateRenderer();
     void compileShaders();
 };
@@ -239,6 +241,7 @@ bool CheckFrontendFailure(NDS& nds)
                     "frontend did not update active renderer state");
     passed &= Check(instance.Errors == 1 && instance.Progress == 0,
                     "frontend did not report one terminal error");
+    passed &= Check(thread.PublishedFailure, "shader fallback was not published to the settings UI");
     passed &= Check(SoftwareFrame(nds), "frontend fallback did not produce RAM framebuffers");
     passed &= Check(Dispatches == 0, "frontend fallback reached compute dispatch");
 
@@ -251,6 +254,7 @@ bool CheckFrontendFailure(NDS& nds)
         thread.compileShaders();
     passed &= Check(dynamic_cast<GLRenderer*>(&nds.GetRenderer()) &&
                     !nds.GetRenderer().NeedsShaderCompile(), "frontend reselection did not compile");
+    passed &= Check(!thread.PublishedFailure, "successful retry retained the settings failure");
     instance.Config.Scale = 2;
     thread.updateRenderer();
     const unsigned progress = instance.Progress;
@@ -264,6 +268,7 @@ bool CheckFrontendFailure(NDS& nds)
     ActiveFault = Fault::Capability;
     thread.videoRenderer = renderer3D_OpenGLCompute;
     thread.updateRenderer();
+    passed &= Check(thread.PublishedFailure, "unsupported Compute fallback was not published");
     thread.updateRenderer();
     passed &= Check(thread.videoRenderer == renderer3D_Software &&
                     thread.lastVideoRenderer == renderer3D_Software && instance.Errors == 3,

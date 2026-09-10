@@ -163,12 +163,7 @@ void blah(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length
 
 bool ComputeRenderer3D::Init()
 {
-    GLint major = 0, minor = 0;
-    glGetIntegerv(GL_MAJOR_VERSION, &major);
-    glGetIntegerv(GL_MINOR_VERSION, &minor);
-    if (major < 4 || (major == 4 && minor < 3) ||
-        !glDispatchCompute || !glDispatchComputeIndirect ||
-        !glBindImageTexture || !glMemoryBarrier || !glTexStorage2D)
+    if (!OpenGL::SupportsCompute())
     {
         Platform::Log(Platform::LogLevel::Error, "Compute renderer requires OpenGL 4.3 and loaded compute functions\n");
         return false;

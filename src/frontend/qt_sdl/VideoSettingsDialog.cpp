@@ -19,6 +19,7 @@
 #include <QFileDialog>
 #include <QtGlobal>
 #include <QStandardItemModel>
+#include <QSignalBlocker>
 
 #include "types.h"
 #include "Platform.h"
@@ -113,12 +114,57 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     ui->cbBetterPolygons->setChecked(oldGLBetterPolygons != 0);
     ui->cbxComputeHiResCoords->setChecked(oldHiresCoordinates != 0);
 
-    setEnabled();
+    connect(emuInstance->getEmuThread(), &EmuThread::videoSettingsStatusChanged,
+            this, &VideoSettingsDialog::refreshRendererStatus, Qt::QueuedConnection);
+    refreshRendererStatus();
 }
 
 VideoSettingsDialog::~VideoSettingsDialog()
 {
     delete ui;
+}
+
+void VideoSettingsDialog::refreshRendererStatus()
+{
+    // A queued result may arrive after the owner has closed its instance.
+    if (!static_cast<MainWindow*>(parent())->getEmuInstance()) return;
+    auto* thread = emuInstance->getEmuThread();
+    const auto status = thread->videoSettingsStatus();
+    auto& cfg = emuInstance->getGlobalConfig();
+    const int selected = cfg.GetInt("3D.Renderer");
+    if (auto* button = grp3DRenderer->button(selected)) button->setChecked(true);
+    {
+        const QSignalBlocker blocker(ui->cbGLDisplay);
+        ui->cbGLDisplay->setChecked(cfg.GetBool("Screen.UseGL"));
+    }
+#ifndef __APPLE__
+    ui->rb3DCompute->setEnabled(status.computeSupport != 0);
+#endif
+    ui->rb3DCompute->setToolTip(status.computeSupport == 0
+        ? tr("Compute rendering requires OpenGL 4.3 and compute functions on this context.") : QString());
+    setEnabled();
+
+    const auto name = [this](int renderer) {
+        switch (renderer)
+        {
+            case renderer3D_Software: return tr("Software");
+            case renderer3D_OpenGL: return tr("OpenGL");
+            case renderer3D_OpenGLCompute: return tr("OpenGL Compute");
+            default: return tr("Not started");
+        }
+    };
+    QString text = tr("Selected: %1. Active: %2.").arg(name(selected), name(status.renderer));
+    if (thread->hasGLFailure())
+        text += tr("\nOpenGL display failed. Rendering is paused until recovery succeeds.");
+    else if (status.pending)
+        text += tr("\nChanges are pending; start or resume emulation to apply them.");
+    else if (status.compiling)
+        text += tr("\nCompiling shaders; the selected renderer is not ready yet.");
+    else if (status.failed)
+        text += tr("\nSelected renderer failed; using Software. Reselect a renderer to retry.");
+    if (status.computeSupport == 0)
+        text += tr("\nCompute rendering is unavailable on this OpenGL context.");
+    ui->lblRendererStatus->setText(text);
 }
 
 void VideoSettingsDialog::on_VideoSettingsDialog_accepted()

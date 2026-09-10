@@ -62,6 +62,10 @@ public:
     u16 RecvReplies(int inst, u8* data, u64 timestamp, u16 aidmask);
 
 private:
+    // Queue helpers require MPQueueLock. Equal cursors always mean empty;
+    // writers leave one byte unused so a full ring cannot look empty.
+    void ResetFIFO(int inst, int fifo) noexcept;
+    void MakeRoom(int inst, int fifo, u32 len) noexcept;
     void FIFORead(int inst, int fifo, void* buf, int len) noexcept;
     void FIFOWrite(int inst, int fifo, void* buf, int len) noexcept;
     int SendPacketGeneric(int inst, u32 type, u8* packet, int len, u64 timestamp) noexcept;
@@ -74,7 +78,7 @@ private:
     u32 PacketReadOffset[16] {};
     u32 ReplyReadOffset[16] {};
 
-    int LastHostID = -1;
+    int LastHostID[16];
     Platform::Semaphore* SemPool[32] {};
 };
 }

@@ -52,6 +52,7 @@
 #include "DSi_I2C.h"
 #include "GPU_Soft.h"
 #include "GPU_OpenGL.h"
+#include "OpenGLSupport.h"
 
 #include "Savestate.h"
 
@@ -632,8 +633,20 @@ void EmuThread::handleMessages()
             msgResult = emuInstance->reset(assets.DS, assets.GBA);
             if (!msgResult)
             {
-                if (emuStatus == emuStatus_Running) emuInstance->audioEnable();
-                emuInstance->osdAddMessage(0xFFA0A0, "Reset failed; current session retained");
+                if (emuInstance->nds && !emuInstance->nds->IsRunning())
+                {
+                    stateRecoveryFailed = true;
+                    emuStatus = prevEmuStatus = emuStatus_Paused;
+                    emuPauseStack = emuPauseStackRunning;
+                    emuActive = false;
+                    emit windowEmuStop();
+                    emuInstance->osdAddMessage(0xFFA0A0, "Reset failed; emulation stopped");
+                }
+                else
+                {
+                    if (emuStatus == emuStatus_Running && !hasGLFailure()) emuInstance->audioEnable();
+                    emuInstance->osdAddMessage(0xFFA0A0, "Reset failed; current session retained");
+                }
                 break;
             }
             if (savedata) emuInstance->nds->SetNDSSave(savedata.get(), savelen);
@@ -676,7 +689,10 @@ void EmuThread::handleMessages()
                 break;
             }
             if (msg.param.value<int>() == 0)
+            {
                 useOpenGL = false;
+                setComputeSupport(-1);
+            }
             clearGLFailure(msg.param.value<int>());
             msgResult = 1;
             break;
@@ -701,7 +717,15 @@ void EmuThread::handleMessages()
             if (!emuInstance->loadROM(msg.param.value<CartLoadRequest>().Files, true, msgError,
                                      msg.param.value<CartLoadRequest>().Assets))
             {
-                if (emuStatus == emuStatus_Running) emuInstance->audioEnable();
+                if (emuInstance->nds && !emuInstance->nds->IsRunning())
+                {
+                    stateRecoveryFailed = true;
+                    emuStatus = prevEmuStatus = emuStatus_Paused;
+                    emuPauseStack = emuPauseStackRunning;
+                    emuActive = false;
+                    emit windowEmuStop();
+                }
+                else if (emuStatus == emuStatus_Running && !hasGLFailure()) emuInstance->audioEnable();
                 break;
             }
 
@@ -823,7 +847,11 @@ bool EmuThread::initializeGL(int win)
     else
     {
         clearGLFailure(win);
-        if (win == 0) videoSettingsDirty = true;
+        if (win == 0)
+        {
+            setComputeSupport(OpenGL::SupportsCompute());
+            videoSettingsDirty = true;
+        }
     }
     return initialized;
 }
@@ -841,6 +869,7 @@ void EmuThread::reportGLFailure(int win)
     const int previous = glFailureWindow.exchange(win);
     emuInstance->audioDisable();
     if (previous < 0) emit windowOpenGLFailed(win);
+    emit videoSettingsStatusChanged();
 }
 
 void EmuThread::clearGLFailure(int win)
@@ -1089,6 +1118,7 @@ void EmuThread::enableCheats(bool enable)
 void EmuThread::updateRenderer()
 {
     auto nds = emuInstance->nds;
+    bool failed = false;
 
     if (videoRenderer != lastVideoRenderer)
     {
@@ -1110,6 +1140,7 @@ void EmuThread::updateRenderer()
         dynamic_cast<SoftRenderer*>(&nds->GetRenderer()))
     {
         videoRenderer = renderer3D_Software;
+        failed = true;
         emuInstance->osdAddMessage(0xFFA0A0, "OpenGL renderer initialization failed; using software rendering");
     }
     lastVideoRenderer = videoRenderer;
@@ -1126,11 +1157,13 @@ void EmuThread::updateRenderer()
     if (!nds->GetRenderer().SetRenderSettings(settings))
     {
         videoRenderer = renderer3D_Software;
+        failed = true;
         nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
         nds->GetRenderer().SetRenderSettings(settings);
         lastVideoRenderer = videoRenderer;
         emuInstance->osdAddMessage(0xFFA0A0, "OpenGL resolution or allocation failed; using software rendering");
     }
+    publishVideoSettings(failed);
 }
 
 void EmuThread::compileShaders()
@@ -1147,6 +1180,7 @@ void EmuThread::compileShaders()
         {
             videoRenderer = renderer3D_Software;
             updateRenderer();
+            publishVideoSettings(true);
             emuInstance->osdAddMessage(0xFFA0A0, "Compute shader compilation failed; using software rendering");
             return;
         }
@@ -1154,4 +1188,42 @@ void EmuThread::compileShaders()
     while (renderer.NeedsShaderCompile() &&
              (SDL_GetPerformanceCounter() - startTime) * perfCountsSec < 1.0 / 6.0);
     emuInstance->osdAddMessage(0, "Compiling shader %d/%d", currentShader+1, shadersCount);
+    if (!renderer.NeedsShaderCompile()) publishVideoSettings();
+}
+
+EmuThread::VideoSettingsStatus EmuThread::videoSettingsStatus()
+{
+    QMutexLocker locker(&videoSettingsMutex);
+    return videoStatus;
+}
+
+void EmuThread::setComputeSupport(int supported)
+{
+    {
+        QMutexLocker locker(&videoSettingsMutex);
+        videoStatus.computeSupport = supported;
+    }
+    emit videoSettingsStatusChanged();
+}
+
+void EmuThread::updateVideoSettings()
+{
+    {
+        QMutexLocker locker(&videoSettingsMutex);
+        videoStatus.pending = true;
+    }
+    videoSettingsDirty = true;
+    emit videoSettingsStatusChanged();
+}
+
+void EmuThread::publishVideoSettings(bool failed)
+{
+    {
+        QMutexLocker locker(&videoSettingsMutex);
+        videoStatus.renderer = videoRenderer;
+        videoStatus.pending = false;
+        videoStatus.compiling = emuInstance->nds->GetRenderer().NeedsShaderCompile();
+        videoStatus.failed = failed;
+    }
+    emit videoSettingsStatusChanged();
 }

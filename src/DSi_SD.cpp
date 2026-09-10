@@ -94,6 +94,7 @@ DSi_SDHost::~DSi_SDHost()
 
 void DSi_SDHost::Reset()
 {
+    DSi.CancelEvent(Num ? Event_DSi_SDIOTransfer : Event_DSi_SDMMCTransfer);
     if (Num == 0)
     {
         PortSelect = 0x0200; // CHECKME
@@ -360,13 +361,21 @@ void DSi_SDHost::FinishRX(u32 param)
 
 u32 DSi_SDHost::DataRX(const u8* data, u32 len)
 {
-    if (len != BlockLen16) { Log(LogLevel::Warn, "!! BAD BLOCKLEN\n"); len = BlockLen16; }
-
-    bool last = (BlockCountInternal == 0);
+    // A short producer (e.g. SCR/SSR) cannot supply the host's larger block.
+    // Reject the mismatched transfer instead of reading beyond its payload.
+    if (!len || len != BlockLen16 || len > MMC_MAXIMUM_BLOCK_SIZE)
+    {
+        AbortTransfer();
+        return 0;
+    }
 
     u32 f = CurFIFO ^ 1;
     for (u32 i = 0; i < len; i += 2)
-        DataFIFO[f].Write(*(u16*)&data[i]);
+    {
+        u16 val = data[i];
+        if (i + 1 < len) val |= u16(data[i + 1]) << 8;
+        DataFIFO[f].Write(val);
+    }
 
     //CurFIFO = f;
     //SetIRQ(24);
@@ -406,6 +415,12 @@ void DSi_SDHost::FinishTX(u32 param)
 
 u32 DSi_SDHost::DataTX(u8* data, u32 len)
 {
+    if (!len || len != BlockLen16 || len > MMC_MAXIMUM_BLOCK_SIZE)
+    {
+        AbortTransfer();
+        return 0;
+    }
+
     TXReq = true;
 
     u32 f = CurFIFO;
@@ -451,7 +466,11 @@ u32 DSi_SDHost::DataTX(u8* data, u32 len)
     }
 
     for (u32 i = 0; i < len; i += 2)
-        *(u16*)&data[i] = DataFIFO[f].Read();
+    {
+        u16 val = DataFIFO[f].Read();
+        data[i] = val & 0xFF;
+        if (i + 1 < len) data[i + 1] = val >> 8;
+    }
 
     CurFIFO ^= 1;
     BlockCountInternal--;
@@ -466,6 +485,24 @@ u32 DSi_SDHost::GetTransferrableLen(u32 len) const
 {
     if (len > BlockLen16) len = BlockLen16; // checkme
     return len;
+}
+
+void DSi_SDHost::AbortTransfer()
+{
+    // Backing I/O failure cannot complete a data block. In particular, DataTX
+    // may already have scheduled FinishTX before the synchronous write failed.
+    DSi.CancelEvent(Num ? Event_DSi_SDIOTransfer : Event_DSi_SDMMCTransfer);
+    TXReq = false;
+    BlockCountInternal = 0;
+    DataFIFO[0].Clear();
+    DataFIFO[1].Clear();
+    DataFIFO32.Clear();
+    CurFIFO = 0;
+    Data32IRQ &= ~0x0300;
+    IRQStatus &= ~((1 << 2) | (1 << 24) | (1 << 25));
+    // SD_IRQ_STATUS.DATATIMEOUT: no complete data/CRC status from the device.
+    // This is a failure indication, not a model of physical timeout latency.
+    SetIRQ(19);
 }
 
 void DSi_SDHost::CheckRX()
@@ -730,7 +767,14 @@ void DSi_SDHost::Write(u32 addr, u16 val)
             SDClock &= ~0x0500;
             SDOption = 0x40EE;
             // TODO: CARD_IRQ_STAT
-            // TODO: FIFO16 shit
+            DSi.CancelEvent(Num ? Event_DSi_SDIOTransfer : Event_DSi_SDMMCTransfer);
+            TXReq = false;
+            BlockCountInternal = 0;
+            DataFIFO[0].Clear();
+            DataFIFO[1].Clear();
+            DataFIFO32.Clear();
+            CurFIFO = 0;
+            Data32IRQ &= ~0x0300;
 
             if (Ports[0]) Ports[0]->Reset();
             if (Ports[1]) Ports[1]->Reset();
@@ -802,7 +846,7 @@ void DSi_SDHost::UpdateFIFO32()
         if (DataFIFO[f].IsEmpty()) break;
 
         u32 val = DataFIFO[f].Read();
-        val |= (DataFIFO[f].Read() << 16);
+        if (!DataFIFO[f].IsEmpty()) val |= (u32(DataFIFO[f].Read()) << 16);
         DataFIFO32.Write(val);
     }
 
@@ -828,6 +872,17 @@ void DSi_SDHost::CheckSwapFIFO()
 
 
 #define MMC_DESC  (Internal?"NAND":"SDcard")
+
+enum : u32
+{
+    MMCStatusError = 1u << 19,
+    MMCStatusWriteProtect = 1u << 26,
+    MMCStatusBlockLength = 1u << 29,
+    MMCStatusAddress = 1u << 30,
+    MMCStatusOutOfRange = 1u << 31,
+    MMCTransferErrors = MMCStatusError | MMCStatusWriteProtect | MMCStatusBlockLength |
+                        MMCStatusAddress | MMCStatusOutOfRange,
+};
 
 DSi_MMCStorage::DSi_MMCStorage(melonDS::DSi& dsi, DSi_SDHost* host, DSi_NAND::NANDImage&& nand) noexcept
     : DSi_SDDevice(host), DSi(dsi), Storage(std::move(nand))
@@ -904,7 +959,7 @@ void DSi_MMCStorage::SendCMD(MMCCommand cmd, u32 param)
     switch (cmd)
     {
     case MMCCommand::Reset:
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
 
     case MMCCommand::GetOCR:
@@ -949,11 +1004,11 @@ void DSi_MMCStorage::SendCMD(MMCCommand cmd, u32 param)
 
     case MMCCommand::Switch:
         // TODO!
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
 
     case MMCCommand::Select:
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
 
     case MMCCommand::SetVoltage:
@@ -972,23 +1027,23 @@ void DSi_MMCStorage::SendCMD(MMCCommand cmd, u32 param)
         if (auto* nand = get_if<DSi_NAND::NANDImage>(&Storage))
             FileFlush(nand->GetFile());
         RWCommand = MMCCommand::Reset;
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
 
     case MMCCommand::GetCSR:
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
 
     case MMCCommand::SetBlockLength:
-        BlockSize = param;
-        if (BlockSize > MMC_MAXIMUM_BLOCK_SIZE)
+        if (!param || param > MMC_MAXIMUM_BLOCK_SIZE)
         {
-            // TODO! raise error
-            Log(LogLevel::Warn, "!! SD/MMC: BAD BLOCK LEN %d\n", BlockSize);
-            BlockSize = MMC_DEFAULT_BLOCK_SIZE;
+            CSR |= MMCStatusBlockLength;
+            SendStatus();
+            return;
         }
+        BlockSize = param;
         SetState(0x04); // CHECKME
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
 
     case MMCCommand::ReadSingleBlock:
@@ -1001,9 +1056,9 @@ void DSi_MMCStorage::SendCMD(MMCCommand cmd, u32 param)
             BlockSize = MMC_DEFAULT_BLOCK_SIZE;
         }
         RWCommand = cmd;
-        Host->SendResponse(CSR, true);
-        RWAddress += ReadBlock(RWAddress);
+        SendStatus();
         SetState(0x05);
+        RWAddress += ReadBlock(RWAddress);
         return;
 
     case MMCCommand::WriteSingleBlock:
@@ -1016,14 +1071,14 @@ void DSi_MMCStorage::SendCMD(MMCCommand cmd, u32 param)
             BlockSize = MMC_DEFAULT_BLOCK_SIZE;
         }
         RWCommand = cmd;
-        Host->SendResponse(CSR, true);
-        RWAddress += WriteBlock(RWAddress);
+        SendStatus();
         SetState(0x04);
+        RWAddress += WriteBlock(RWAddress);
         return;
 
     case MMCCommand::AppCommand:
         CSR |= (1<<5);
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
     default:
         break;
@@ -1038,11 +1093,11 @@ void DSi_MMCStorage::SendACMD(MMCAppCommand cmd, u32 param)
     {
     case MMCAppCommand::SetBusWidth:
         //printf("SET BUS WIDTH %08X\n", param);
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
 
     case MMCAppCommand::GetSSR:
-        Host->SendResponse(CSR, true);
+        SendStatus();
         Host->DataRX(SSR, 64);
         return;
 
@@ -1059,11 +1114,11 @@ void DSi_MMCStorage::SendACMD(MMCAppCommand cmd, u32 param)
         return;
 
     case MMCAppCommand::SetCardDetect: // ???
-        Host->SendResponse(CSR, true);
+        SendStatus();
         return;
 
     case MMCAppCommand::GetSCR:
-        Host->SendResponse(CSR, true);
+        SendStatus();
         Host->DataRX(SCR, 8);
         return;
     default:
@@ -1099,20 +1154,63 @@ void DSi_MMCStorage::ContinueTransfer()
     RWAddress += len;
 }
 
+void DSi_MMCStorage::SendStatus()
+{
+    Host->SendResponse(CSR, true);
+    // These error flags are cleared once reported in an R1 response.
+    CSR &= ~MMCTransferErrors;
+}
+
+u32 DSi_MMCStorage::FailTransfer(u32 status)
+{
+    CSR |= status;
+    RWCommand = MMCCommand::Reset;
+    SetState(0x04);
+    Host->AbortTransfer();
+    return 0;
+}
+
+u32 DSi_MMCStorage::GetBlockLength(u64 addr)
+{
+    u32 len = Host->GetTransferrableLen(BlockSize);
+    if (!len || len != Host->GetTransferrableLen(MMC_MAXIMUM_BLOCK_SIZE))
+        return FailTransfer(MMCStatusBlockLength);
+    // Byte-addressed partial blocks must fit in the same 512-byte sector.
+    if (len > MMC_MAXIMUM_BLOCK_SIZE - (addr & 0x1FF))
+        return FailTransfer(MMCStatusAddress);
+
+    if (auto* sd = get_if<FATStorage>(&Storage))
+    {
+        if ((addr >> 9) > UINT32_MAX || (addr >> 9) >= sd->GetSectorCount())
+            return FailTransfer(MMCStatusOutOfRange);
+    }
+    else if (auto* nand = get_if<DSi_NAND::NANDImage>(&Storage))
+    {
+        if (addr > nand->GetLength() || len > nand->GetLength() - addr)
+            return FailTransfer(MMCStatusOutOfRange);
+    }
+    else
+        return FailTransfer(MMCStatusError);
+
+    return len;
+}
+
 u32 DSi_MMCStorage::ReadBlock(u64 addr)
 {
-    u32 len = BlockSize;
-    len = Host->GetTransferrableLen(len);
+    u32 len = GetBlockLength(addr);
+    if (!len) return 0;
 
     u8 data[MMC_MAXIMUM_BLOCK_SIZE];
     if (auto* sd = std::get_if<FATStorage>(&Storage))
     {
-        sd->ReadSectors((u32)(addr >> 9), 1, data);
+        if (sd->ReadSectors((u32)(addr >> 9), 1, data) != 1)
+            return FailTransfer(MMCStatusError);
     }
     else if (auto* nand = std::get_if<DSi_NAND::NANDImage>(&Storage))
     {
-        FileSeek(nand->GetFile(), addr, FileSeekOrigin::Start);
-        FileRead(&data[addr & 0x1FF], 1, len, nand->GetFile());
+        if (!FileSeek(nand->GetFile(), addr, FileSeekOrigin::Start) ||
+            FileRead(&data[addr & 0x1FF], 1, len, nand->GetFile()) != len)
+            return FailTransfer(MMCStatusError);
     }
 
     return Host->DataRX(&data[addr & 0x1FF], len);
@@ -1120,30 +1218,31 @@ u32 DSi_MMCStorage::ReadBlock(u64 addr)
 
 u32 DSi_MMCStorage::WriteBlock(u64 addr)
 {
-    u32 len = BlockSize;
-    len = Host->GetTransferrableLen(len);
+    u32 len = GetBlockLength(addr);
+    if (!len) return 0;
+    if (ReadOnly) return FailTransfer(MMCStatusWriteProtect);
 
     u8 data[MMC_MAXIMUM_BLOCK_SIZE];
     if (len < MMC_DEFAULT_BLOCK_SIZE)
     {
         if (auto* sd = get_if<FATStorage>(&Storage))
         {
-            sd->ReadSectors((u32)(addr >> 9), 1, data);
+            if (sd->ReadSectors((u32)(addr >> 9), 1, data) != 1)
+                return FailTransfer(MMCStatusError);
         }
     }
     if ((len = Host->DataTX(&data[addr & 0x1FF], len)))
     {
-        if (!ReadOnly)
+        if (auto* sd = get_if<FATStorage>(&Storage))
         {
-            if (auto* sd = get_if<FATStorage>(&Storage))
-            {
-                sd->WriteSectors((u32)(addr >> 9), 1, data);
-            }
-            else if (auto* nand = get_if<DSi_NAND::NANDImage>(&Storage))
-            {
-                FileSeek(nand->GetFile(), addr, FileSeekOrigin::Start);
-                FileWrite(&data[addr & 0x1FF], 1, len, nand->GetFile());
-            }
+            if (sd->WriteSectors((u32)(addr >> 9), 1, data) != 1)
+                return FailTransfer(MMCStatusError);
+        }
+        else if (auto* nand = get_if<DSi_NAND::NANDImage>(&Storage))
+        {
+            if (!FileSeek(nand->GetFile(), addr, FileSeekOrigin::Start) ||
+                FileWrite(&data[addr & 0x1FF], 1, len, nand->GetFile()) != len)
+                return FailTransfer(MMCStatusError);
         }
     }
 

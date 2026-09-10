@@ -29,7 +29,7 @@
 | CJ-21 | [DSi 동일 조건 upstream 부팅 비교](workstreams/01-core-jit.md#CJ-21) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | AD-17 | 미착수 |
 | GR-01 | [배율 변경의 pending capture 보존](workstreams/02-renderers.md#GR-01) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 이전 크기에서 pending 캡처 보존·CPU-synced 참조 폐기; 두 GL의 1x/2x·CPU 읽기·후속 texture 재사용 검증; 진행 중 캡처·다른 driver 후속 |
 | GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capture 종류별 sampler unit 수정; 실제 128/256·S/T wrap·일반 texture 왕복의 binding/픽셀 검증; 다른 driver·비표준 capture·실기 후속 |
-| GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 core·1.1.23 표시 초기화 실패; 1.1.24 실행 중 실패 복구; 1.1.25 생성 fallback을 기존 창에도 적용; 실제 3.2-only 장치·설정 dialog 선택/capability·binary cache 후속 |
+| GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19~25 core·표시 실패 복구; [1.1.26](releases/1.1.26.md) 실제 설정창의 선택/활성 renderer·대기/실패·worker capability·Cancel/재시도; 실제 3.2-only 장치·binary cache 후속 |
 | GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 core handle·1.1.23 표시 부분 해제/OSD·1.1.24 current 실패 거부; 1.1.25 새 context 반환 실패 시 GUI 정리와 native 전환; 물리 context 상실·native 삭제 실패·다른 driver 후속 |
 | GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
 | GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 관찰/확장 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 software/OpenGL/Compute 각 30조건의 실제 A/B·혼합·bank wrap→guest LDRH 및 128/256 재사용; DMA·모든 2D source A·실기 후속 |
@@ -51,11 +51,11 @@
 | AD-06 | [SPU capture 소스·가산](workstreams/03-audio-dsi.md#AD-06) | 관찰/확장 | P2 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-07 | [one-shot hold 동작](workstreams/03-audio-dsi.md#AD-07) | 관찰/확장 | P2 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-08 | [ADPCM loop·보간 oracle](workstreams/03-audio-dsi.md#AD-08) | 고정 timer 합성 비교 | P2 | [1.1.09](Release_Plan.md#v09) | — | 1.1.18 SpeexDSP Q3 독립 비교·제품 채택 보류; 실제 채널의 변속 history·capture·상대 지연·tick 비용과 ADPCM/실기 oracle 후속 |
-| AD-09 | [modcrypt dev key 초기화](workstreams/03-audio-dsi.md#AD-09) | 정적 후보 | P1 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
-| AD-10 | [modcrypt subarea offset](workstreams/03-audio-dsi.md#AD-10) | 정적 후보 | P2 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
-| AD-11 | [SD producer/FIFO/sector 길이](workstreams/03-audio-dsi.md#AD-11) | 정적 후보 | P1 | [1.1.19](Release_Plan.md#v19) | — | 미착수 |
-| AD-12 | [SD backing I/O 실패 전파](workstreams/03-audio-dsi.md#AD-12) | 정적 후보 | P1 | [1.1.19](Release_Plan.md#v19) | — | 미착수 |
-| AD-13 | [NAND metadata exact read](workstreams/03-audio-dsi.md#AD-13) | 정적 후보 | P1 | [1.1.19](Release_Plan.md#v19) | — | 미착수 |
+| AD-09 | [modcrypt dev key 초기화](workstreams/03-audio-dsi.md#AD-09) | 실행 재현 | P1 | [1.1.18](Release_Plan.md#v18) | — | [1.1.26](releases/1.1.26.md) dev key 초기화·debugger bit 수정, 독립 OpenSSL vector 대조; 실제 DSi 부팅 후속 |
+| AD-10 | [modcrypt subarea offset](workstreams/03-audio-dsi.md#AD-10) | 실행 재현 | P2 | [1.1.18](Release_Plan.md#v18) | — | [1.1.26](releases/1.1.26.md) 네 binary의 ROM→RAM offset과 영역 밖 보존; malformed/overflow·부분 block 정책·실기 후속 |
+| AD-11 | [SD producer/FIFO/sector 길이](workstreams/03-audio-dsi.md#AD-11) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | [1.1.26](releases/1.1.26.md) 길이 불일치·sector 범위 거부, 홀수 byte/FIFO 패딩·정상 단/다중 block·IRQ 검증; SDIO 연속 전송·실기 후속 |
+| AD-12 | [SD backing I/O 실패 전파](workstreams/03-audio-dsi.md#AD-12) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | [1.1.26](releases/1.1.26.md) short/seek/read-only/매체 끝 오류의 완료 차단·CMD12/리셋 복구, 실제 Qt -1 오류와 sparse EOF 대조; 지속 저장·물리 오류/타이밍 후속 |
+| AD-13 | [NAND metadata exact read](workstreams/03-audio-dsi.md#AD-13) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | [1.1.26](releases/1.1.26.md) exact read·출력 보존·core/frontend/worker 실패 전파, 사전 실패의 세션 보존과 늦은 실패의 정지·재시도; footer·실제 NAND 부팅 후속 |
 | AD-14 | [AES CCM FIFO tag 모드](workstreams/03-audio-dsi.md#AD-14) | 관찰/확장 | P2 | [1.1.29](Release_Plan.md#v29) | — | 미착수 |
 | AD-15 | [AES/SD 완료 event 타이밍](workstreams/03-audio-dsi.md#AD-15) | 관찰/확장 | P2 | [1.1.20](Release_Plan.md#v20) | — | 미착수 |
 | AD-16 | [NDMA arbitration·subblock](workstreams/03-audio-dsi.md#AD-16) | 관찰/확장 | P2 | [1.1.20](Release_Plan.md#v20) | — | 미착수 |
@@ -92,7 +92,7 @@
 | FS-21 | [카메라 미리보기·hotplug 수명](workstreams/04-frontend-storage.md#FS-21) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
 | NP-01 | [LAN payload·AID·peer 검증](workstreams/05-connectivity-peripherals.md#NP-01) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.08 실제 ENet payload·type·sender/peer·AID 검증과 27개 생성 패킷 회귀; 빈 AID0 reply 보존, 두 PC 게임 수락 후속 |
 | NP-02 | [LAN handshake·취소·소유권](workstreams/05-connectivity-peripherals.md#NP-02) | 정적 후보 | P1 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
-| NP-03 | [LocalMP FIFO 넘침·복구](workstreams/05-connectivity-peripherals.md#NP-03) | 정적 후보 | P1 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
+| NP-03 | [LocalMP FIFO 넘침·복구](workstreams/05-connectivity-peripherals.md#NP-03) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | [1.1.26](releases/1.1.26.md) 뒤처진 수신자 backlog 폐기·기록 경계/permit 동기화·종료/새 host·수신 중 reset; 실제 무선 게임·다중 그룹 후속 |
 | NP-04 | [LocalMP 그룹 격리](workstreams/05-connectivity-peripherals.md#NP-04) | 관찰/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
 | NP-05 | [PCap library 실패 중복 해제](workstreams/05-connectivity-peripherals.md#NP-05) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 누락 심볼 시 단일 unload·이동/소유권 회귀; 실제 DLL·POSIX 수락 후속 |
 | NP-06 | [PCap caplen/link type·I/O](workstreams/05-connectivity-peripherals.md#NP-06) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 완전한 Ethernet 캡처·datalink·I/O 오류와 open/열거 자원 회귀; 실제 어댑터·driver 실패 수락 후속 |

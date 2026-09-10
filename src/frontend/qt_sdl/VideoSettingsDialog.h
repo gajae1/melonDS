@@ -58,6 +58,7 @@ signals:
     void updateVideoSettings(bool glchange);
 
 private slots:
+    void refreshRendererStatus();
     void on_VideoSettingsDialog_accepted();
     void on_VideoSettingsDialog_rejected();
 

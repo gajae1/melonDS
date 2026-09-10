@@ -37,6 +37,8 @@ struct EmuThread
     Instance* emuInstance;
     int videoRenderer = renderer3D_OpenGLCompute;
     int lastVideoRenderer = renderer3D_Software;
+    bool PublishedFailure = false;
+    void publishVideoSettings(bool failed = false) { PublishedFailure = failed; }
     void updateRenderer();
 };
 #include "computeUpdateRenderer.inc"
@@ -252,6 +254,7 @@ int CheckGLAllocationFailure(const char* name)
     bool passed = Check((dynamic_cast<SoftRenderer*>(&nds->GetRenderer()) != nullptr) == failed,
                         "failed settings did not select software rendering");
     passed &= Check(instance.Errors == unsigned(failed), "wrong terminal error count");
+    passed &= Check(thread.PublishedFailure == failed, "allocation result was not published to the settings UI");
     if (failed)
     {
         passed &= Check(thread.videoRenderer == renderer3D_Software && thread.lastVideoRenderer == renderer3D_Software,
@@ -286,6 +289,7 @@ int CheckGLAllocationFailure(const char* name)
         thread.updateRenderer();
         passed &= Check(dynamic_cast<GLRenderer*>(&nds->GetRenderer()) &&
                         Compile(nds->GetRenderer()) && Frame(*nds, false), "explicit retry failed");
+        passed &= Check(!thread.PublishedFailure, "successful allocation retry retained the settings failure");
     }
     return passed ? 0 : 1;
 }

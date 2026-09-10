@@ -290,7 +290,7 @@ bool NDS::NeedsDirectBoot() const
     return false;
 }
 
-void NDS::SetupDirectBoot()
+bool NDS::SetupDirectBoot()
 {
     const NDSHeader& header = NDSCartSlot.GetCart()->GetHeader();
     u32 cartid = NDSCartSlot.GetCart()->ID();
@@ -385,12 +385,14 @@ void NDS::SetupDirectBoot()
     ARM9.CP15Write(0x671, 0x027FF017);
     ARM9.CP15Write(0x910, 0x0300000A);
     ARM9.CP15Write(0x911, 0x00000020);
+    return true;
 }
 
-void NDS::SetupDirectBoot(const std::string& romname)
+bool NDS::SetupDirectBoot(const std::string& romname)
 {
     const NDSHeader& header = NDSCartSlot.GetCart()->GetHeader();
-    SetupDirectBoot();
+    if (!SetupDirectBoot())
+        return false;
 
     NDSCartSlot.SetupDirectBoot(romname);
 
@@ -433,6 +435,7 @@ void NDS::SetupDirectBoot(const std::string& romname)
     SPU.SetBias(0x200);
 
     SetWifiWaitCnt(0x0030);
+    return true;
 }
 
 void NDS::Reset()

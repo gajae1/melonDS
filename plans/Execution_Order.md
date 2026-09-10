@@ -129,13 +129,20 @@ GR-11/12에서 확인한 실제 호출 경계를 진행한다. 창 교체/해제
 
 [1.1.25 구현 기록](releases/1.1.25.md)은 worker 반환 실패의 거부·부분/중첩 소유권 반환과 새 context의 GUI 정리를 다룬다. 전체 Qt에서 생성 DS 두 개·세 인스턴스·네 창의 실패·재시도·native 전환을 확인했고, 생성 fallback 설정 불일치와 종료 후 앱 알림 충돌도 수정했다. 물리 driver 오류와 다른 플랫폼까지 완료 처리하지 않는다.
 
-## 다음 실제 증분 1.1.26 — Video settings 선택과 실제 renderer 상태
+## 실제 증분 1.1.26 — 독립 패치 묶음
 
-1. **재현:** GR-03의 설정 dialog에서 표시하는 선택·활성 renderer·지원 capability를 대조한다. 컴파일/할당/표시 실패 뒤 dialog가 열린 상태와 Cancel·재선택을 정상 입력과 비교한다.
-2. **수정:** 입증한 불일치만 수정한다. 현재 지원하지 않는 실행 경로로 진입하거나 실패한 선택을 성공으로 표시하지 않도록 하며, 기존 설정·취소 계약을 유지한다.
-3. **통합:** worker의 실제 결과를 GUI에 전달하고 사용 가능한 선택·오류·재시도와 연결한다. GUI가 context를 강제로 가져와 capability를 조회하지 않도록 기존 소유권 경계를 지킨다.
-4. **검증:** 실제 Qt dialog의 선택·실패·Cancel·재시도와 생성 guest 상태를 대조한다. 주입한 capability 판정과 실제 3.2-only 장치를 구분한다.
-5. **배포:** 검증된 설정 동작만 반영한다. binary cache·다른 GPU/OS·물리 장치와 공개 전체 계획의 남은 과제는 유지한다.
+| 블록 | 구현·소유 경계 | 확인한 결과 |
+|---|---|---|
+| DSi 부팅: AD-09/10/13 | DSi·NAND metadata·NDS direct boot·EmuInstance | 독립 암호 vector·정확한 읽기·사전 실패의 세션 보존·늦은 실패의 정지 |
+| SD 전송: AD-11/12 | DSi_SD·FATStorage | 길이/sector 경계·backing 실패·FIFO/IRQ·명시적 복구 |
+| LocalMP: NP-03 | LocalMP·전용 큐 fixture | 느린 수신자 넘침·record/permit 정합·종료/새 host |
+| 그래픽 설정·통합: GR-03 | OpenGLSupport·Compute·EmuThread·VideoSettingsDialog·공유 CMake | 선택/실제 renderer·worker capability·실패/Cancel/재시도와 부팅 실패의 실행 차단 |
+
+[1.1.26 구현 기록](releases/1.1.26.md)에 반례·5페이즈·최종 빌드와 498/498 회귀·전체 Qt의 확인 범위를 기록했다. 세 구현 블록은 격리된 작업 공간에서 진행했고 공유 연결부는 순차 통합했다. 새 제품 소스 파일은 없다. 실제 게임·물리 장치·장기 수락과 전체 계획의 미착수 과제는 유지한다.
+
+## 다음 독립 블록
+
+다음 실제 증분도 관련 과제를 묶되 같은 파일은 한 작성자가 맡는다. 우선 후보는 software 3D worker 공개·중단(GR-13), DSi AES/SD 완료·NDMA 순서(AD-15/16), DS/DSi Wi-Fi 실패 event(NP-08)다. 각각 기존 renderer, DSi 장치, Wi-Fi 소유 범위를 먼저 고정하고 결정적인 반례와 정상 경로를 대조한다. 공유 scheduler·EmuThread·CMake 변경은 부모가 순차 통합한다. 아직 재현하지 않은 장치 타이밍을 추측 구현하거나 이 후보 선정을 완료 판정으로 취급하지 않는다.
 
 ## 작업 소유권
 

@@ -35,6 +35,16 @@ using Platform::LogLevel;
 namespace OpenGL
 {
 
+bool SupportsCompute()
+{
+    GLint major = 0, minor = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    return (major > 4 || (major == 4 && minor >= 3)) &&
+        glDispatchCompute && glDispatchComputeIndirect &&
+        glBindImageTexture && glMemoryBarrier && glTexStorage2D;
+}
+
 bool CheckError(const char* operation)
 {
     bool success = true;

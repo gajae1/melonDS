@@ -370,12 +370,12 @@ void DSi::DecryptModcryptArea(u32 offset, u32 size, const u8* iv)
 
     const NDSHeader& header = NDSCartSlot.GetCart()->GetHeader();
 
-    if ((header.DSiCryptoFlags & (1<<4)) ||
+    if ((header.DSiCryptoFlags & (1<<2)) ||
         (header.AppFlags & (1<<7)))
     {
         // dev key
         const u8* cartrom = NDSCartSlot.GetCart()->GetROM();
-        memcpy(key, &cartrom[0], 16);
+        memcpy(tmp, &cartrom[0], 16);
     }
     else
     {
@@ -403,7 +403,7 @@ void DSi::DecryptModcryptArea(u32 offset, u32 size, const u8* iv)
 
     // find a matching binary area
 
-    u32 binaryaddr, binarysize;
+    u32 binaryaddr;
     u32 roundedsize = (size + 0xF) & ~0xF;
 
     // CHECKME: GBAtek says the modcrypt area should be the same size, or bigger,
@@ -415,23 +415,19 @@ void DSi::DecryptModcryptArea(u32 offset, u32 size, const u8* iv)
 
     if (BINARY_GOOD(ARM9))
     {
-        binaryaddr = header.ARM9RAMAddress;
-        binarysize = header.ARM9Size;
+        binaryaddr = header.ARM9RAMAddress + (offset - header.ARM9ROMOffset);
     }
     else if (BINARY_GOOD(ARM7))
     {
-        binaryaddr = header.ARM7RAMAddress;
-        binarysize = header.ARM7Size;
+        binaryaddr = header.ARM7RAMAddress + (offset - header.ARM7ROMOffset);
     }
     else if (BINARY_GOOD(DSiARM9i))
     {
-        binaryaddr = header.DSiARM9iRAMAddress;
-        binarysize = header.DSiARM9iSize;
+        binaryaddr = header.DSiARM9iRAMAddress + (offset - header.DSiARM9iROMOffset);
     }
     else if (BINARY_GOOD(DSiARM7i))
     {
-        binaryaddr = header.DSiARM7iRAMAddress;
-        binarysize = header.DSiARM7iSize;
+        binaryaddr = header.DSiARM7iRAMAddress + (offset - header.DSiARM7iROMOffset);
     }
     else
         return;
@@ -467,7 +463,7 @@ bool DSi::NeedsDirectBoot() const
     return false;
 }
 
-void DSi::SetupDirectBoot()
+bool DSi::SetupDirectBoot()
 {
     bool dsmode = false;
     NDSHeader& header = NDSCartSlot.GetCart()->GetHeader();
@@ -480,6 +476,26 @@ void DSi::SetupDirectBoot()
     // TODO: add controls for forcing DS or DSi mode?
     if (!(header.UnitCode & 0x02))
         dsmode = true;
+
+    // Read required metadata before changing guest memory or boot registers.
+    DSi_NAND::DSiFirmwareSystemSettings userdata {};
+    DSi_NAND::DSiSerialData hwinfoS {};
+    DSi_NAND::DSiHardwareInfoN hwinfoN {};
+    bool hasNANDData = false;
+    if (!dsmode)
+    {
+        if (DSi_NAND::NANDImage* image = SDMMC.GetNAND(); image && *image)
+        {
+            DSi_NAND::NANDMount nand(*image);
+            if (!nand || !nand.ReadSerialData(hwinfoS) || !nand.ReadHardwareInfoN(hwinfoN))
+            {
+                Log(LogLevel::Error, "DSi direct boot: failed to read complete NAND hardware metadata\n");
+                return false;
+            }
+            nand.ReadUserData(userdata);
+            hasNANDData = true;
+        }
+    }
 
     if (dsmode)
     {
@@ -606,26 +622,16 @@ void DSi::SetupDirectBoot()
             ARM9Write32(0x02FFE000+i, tmp);
         }
 
-        if (DSi_NAND::NANDImage* image = SDMMC.GetNAND(); image && *image)
-        { // If a NAND image is installed, and it's valid...
-            if (DSi_NAND::NANDMount nand = DSi_NAND::NANDMount(*image))
-            {
-                DSi_NAND::DSiFirmwareSystemSettings userdata {};
-                nand.ReadUserData(userdata);
-                for (u32 i = 0; i < 0x128; i+=4)
-                    ARM9Write32(0x02000400+i, *(u32*)&userdata.Bytes[0x88+i]);
+        if (hasNANDData)
+        {
+            for (u32 i = 0; i < 0x128; i+=4)
+                ARM9Write32(0x02000400+i, *(u32*)&userdata.Bytes[0x88+i]);
 
-                DSi_NAND::DSiSerialData hwinfoS {};
-                nand.ReadSerialData(hwinfoS);
-                DSi_NAND::DSiHardwareInfoN hwinfoN;
-                nand.ReadHardwareInfoN(hwinfoN);
+            for (u32 i = 0; i < 0x14; i+=4)
+                ARM9Write32(0x02000600+i, *(u32*)&hwinfoN[0x88+i]);
 
-                for (u32 i = 0; i < 0x14; i+=4)
-                    ARM9Write32(0x02000600+i, *(u32*)&hwinfoN[0x88+i]);
-
-                for (u32 i = 0; i < 0x18; i+=4)
-                    ARM9Write32(0x02FFFD68+i, *(u32*)&hwinfoS.Bytes[0x88+i]);
-            }
+            for (u32 i = 0; i < 0x18; i+=4)
+                ARM9Write32(0x02FFFD68+i, *(u32*)&hwinfoS.Bytes[0x88+i]);
         }
 
         Firmware::WifiBoard nwifiver = SPI.GetFirmware().GetHeader().WifiBoard;
@@ -761,6 +767,7 @@ void DSi::SetupDirectBoot()
     ARM9.CP15Write(0x911, 0x00000020);
 
     UpdateVRAMTimings();
+    return true;
 }
 
 void DSi::SoftReset()

@@ -473,30 +473,36 @@ bool NANDMount::ReadSerialData(DSiSerialData& dataS)
 {
     FF_FIL file;
     FRESULT res = f_open(&file, "0:/sys/HWINFO_S.dat", FA_OPEN_EXISTING | FA_READ);
+    if (res != FR_OK)
+        return false;
 
-    if (res == FR_OK)
-    {
-        u32 nread;
-        f_read(&file, &dataS, sizeof(DSiSerialData), &nread);
-        f_close(&file);
-    }
+    DSiSerialData data;
+    u32 nread = 0;
+    res = f_read(&file, &data, sizeof(data), &nread);
+    f_close(&file);
+    if (res != FR_OK || nread != sizeof(data))
+        return false;
 
-    return res == FR_OK;
+    dataS = data;
+    return true;
 }
 
 bool NANDMount::ReadHardwareInfoN(DSiHardwareInfoN& dataN)
 {
     FF_FIL file;
     FRESULT res = f_open(&file, "0:/sys/HWINFO_N.dat", FA_OPEN_EXISTING | FA_READ);
+    if (res != FR_OK)
+        return false;
 
-    if (res == FR_OK)
-    {
-        u32 nread;
-        f_read(&file, dataN.data(), sizeof(dataN), &nread);
-        f_close(&file);
-    }
+    DSiHardwareInfoN data;
+    u32 nread = 0;
+    res = f_read(&file, data.data(), sizeof(data), &nread);
+    f_close(&file);
+    if (res != FR_OK || nread != sizeof(data))
+        return false;
 
-    return res == FR_OK;
+    dataN = data;
+    return true;
 }
 
 void NANDMount::ReadHardwareInfo(DSiSerialData& dataS, DSiHardwareInfoN& dataN)

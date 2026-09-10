@@ -94,7 +94,7 @@ public:
     void SetCartInserted(bool inserted);
 
     bool NeedsDirectBoot() const override;
-    void SetupDirectBoot() override;
+    [[nodiscard]] bool SetupDirectBoot() override;
     void SoftReset();
 
     bool LoadNAND();

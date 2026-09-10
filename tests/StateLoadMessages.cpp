@@ -82,6 +82,7 @@ struct FixtureConsole
     QByteArray save;
     void Start() { running = true; }
     void Stop() { running = false; }
+    bool IsRunning() const { return running; }
     void SetNDSSave(const u8* data, u32 length)
     {
         ++imports;
@@ -99,6 +100,8 @@ public:
     StateLoadResult result = StateLoadResult::Success;
     bool audio = true;
     bool bootOK = true;
+    bool stopOnBootFailure = false;
+    std::string lastOSD;
     bool callbacksDuringLoad = false;
     int loads = 0, undos = 0;
     unsigned resets = 0;
@@ -108,13 +111,21 @@ public:
     EmuInstance() { console.audio = &audio; }
     void audioDisable() { audio = false; }
     void audioEnable() { audio = true; }
-    void osdAddMessage(unsigned, const char*) {}
+    void osdAddMessage(unsigned, const char* text) { lastOSD = text; }
     void clearBackupState() {}
     void discardPreservedFrame() {}
     bool reset(const AssetIdentity::Selection& = {}, const AssetIdentity::Selection& = {})
-    { ++resets; callbacksDuringLoad |= audio; if (!bootOK) return false; nds->Start(); return true; }
+    {
+        ++resets; callbacksDuringLoad |= audio;
+        if (!bootOK) { if (stopOnBootFailure) nds->Stop(); return false; }
+        nds->Start(); return true;
+    }
     bool loadROM(const QStringList&, bool, QString&, const AssetIdentity::Selection&)
-    { callbacksDuringLoad |= audio; return bootOK; }
+    {
+        callbacksDuringLoad |= audio;
+        if (!bootOK && stopOnBootFailure) nds->Stop();
+        return bootOK;
+    }
     bool bootToMenu(QString&) { callbacksDuringLoad |= audio; return bootOK; }
     bool cartInserted() { return console.hasCart; }
     StateLoadResult loadState(const std::string&)
@@ -151,6 +162,7 @@ struct MPInterface
 // A real Qt object and signals, but no event-loop or device thread is started.
 void EmuThread::run() {}
 bool EmuThread::initializeGL(int) { std::abort(); }
+void EmuThread::setComputeSupport(int) { std::abort(); }
 void EmuThread::updateRenderer() { std::abort(); }
 #include "statePrepareGL.inc"
 #include "stateReportGL.inc"
@@ -221,6 +233,42 @@ int main(int argc, char** argv)
         check(!thread.hasGLFailure() && instance.resets == 1 && instance.audio,
               "Context recovery did not restore normal message processing");
         std::printf("graphics state-message gate: %s\n", failures ? "FAIL" : "PASS");
+        return failures ? 1 : 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "boot-failure")
+    {
+        for (auto message : {EmuThread::msg_EmuReset, EmuThread::msg_BootROM})
+        for (bool stopped : {false, true})
+        {
+            instance.bootOK = true;
+            dispatch(EmuThread::msg_EmuReset);
+            const auto previousStops = stops;
+            instance.bootOK = false;
+            instance.stopOnBootFailure = stopped;
+            dispatch(message);
+            check(thread.msgResult == 0 && instance.audio == !stopped &&
+                  instance.console.running == !stopped && thread.emuActive == !stopped &&
+                  thread.stateRecoveryFailed == stopped && stops == previousStops + stopped,
+                  "Boot failure confused a retained session with a stopped core");
+            if (stopped)
+            {
+                if (message == EmuThread::msg_EmuReset)
+                    check(instance.lastOSD.find("retained") == std::string::npos,
+                          "Stopped reset reported a retained session");
+                for (auto resume : {EmuThread::msg_EmuUnpause, EmuThread::msg_EmuRun,
+                                    EmuThread::msg_EmuFrameStep}) dispatch(resume);
+                check(!instance.audio && !thread.emuActive &&
+                      thread.emuStatus == EmuThread::emuStatus_Paused,
+                      "Resume escaped a failed direct boot");
+            }
+        }
+        instance.bootOK = true;
+        dispatch(EmuThread::msg_BootROM);
+        dispatch(EmuThread::msg_EmuRun);
+        check(thread.msgResult == 1 && instance.audio && instance.console.running &&
+              thread.emuActive && !thread.stateRecoveryFailed && !instance.callbacksDuringLoad,
+              "Successful explicit boot retry did not recover");
+        std::printf("direct boot message failure and retry: %s\n", failures ? "FAIL" : "PASS");
         return failures ? 1 : 0;
     }
     if (argc == 2)

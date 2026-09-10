@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # No C++ module units are used; do not require a separate dependency scanner.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 enable_testing()
+include(LocalMPQueue.cmake)
+include(DSiSDTransfer.cmake)
+include(DSiBoot26.cmake)
 
 # Standalone: no Qt, SDL, BIOS images, ROMs, or full core build required.
 add_executable(SavestateSections SavestateSections.cpp ../src/Savestate.cpp)

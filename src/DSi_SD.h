@@ -93,6 +93,7 @@ public:
     u32 DataRX(const u8* data, u32 len);
     u32 DataTX(u8* data, u32 len);
     u32 GetTransferrableLen(u32 len) const;
+    void AbortTransfer();
 
     void CheckRX();
     void CheckTX();
@@ -246,6 +247,9 @@ private:
 
     void SetState(u32 state) { CSR &= ~(0xF << 9); CSR |= (state << 9); }
 
+    void SendStatus();
+    u32 FailTransfer(u32 status);
+    u32 GetBlockLength(u64 addr);
     u32 ReadBlock(u64 addr);
     u32 WriteBlock(u64 addr);
 };

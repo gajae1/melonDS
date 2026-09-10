@@ -148,8 +148,18 @@ public:
     bool hasGLFailure() const { return glFailureWindow.load() >= 0; }
     bool borrowGL();
     void returnGL();
-    void updateVideoSettings() { videoSettingsDirty = true; }
-    void updateVideoRenderer() { videoSettingsDirty = true; lastVideoRenderer = -1; }
+    void updateVideoSettings();
+    void updateVideoRenderer() { updateVideoSettings(); lastVideoRenderer = -1; }
+
+    struct VideoSettingsStatus
+    {
+        int renderer = -1; // No renderer has been applied to a guest yet.
+        int computeSupport = -1; // Unknown until a GL context is initialized.
+        bool pending = false;
+        bool compiling = false;
+        bool failed = false;
+    };
+    VideoSettingsStatus videoSettingsStatus();
 
     QWaitCondition glBorrowCond;
     QMutex glBorrowMutex;
@@ -164,6 +174,7 @@ signals:
     void windowEmuPause(bool pause);
     void windowEmuReset();
     void windowOpenGLFailed(int win);
+    void videoSettingsStatusChanged();
 
     void windowLimitFPSChange();
 
@@ -189,6 +200,10 @@ private:
 
     void updateRenderer();
     void compileShaders();
+    void publishVideoSettings(bool failed = false);
+    void setComputeSupport(int supported);
+    QMutex videoSettingsMutex;
+    VideoSettingsStatus videoStatus;
 
     enum EmuStatusKind
     {

@@ -133,7 +133,7 @@ public:
     // return: empty string = setup OK, non-empty = error message
     QString verifySetup();
 
-    bool updateConsole() noexcept;
+    bool updateConsole(bool directBoot = false) noexcept;
 
     void enableCheats(bool enable);
     melonDS::ARCodeFile* getCheatFile();

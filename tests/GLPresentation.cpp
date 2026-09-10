@@ -310,6 +310,8 @@ struct EmuThread
     bool useOpenGL = true, videoSettingsDirty = false;
     int unsafeRetires = 0;
     int msgResult = 0, glFailure = -1;
+    void publishVideoSettings(bool = false) {}
+    void setComputeSupport(int) {}
     void reportGLFailure(int win) { glFailure = win; }
     void clearGLFailure(int win) { if (glFailure == win) glFailure = -1; }
     void updateRenderer();

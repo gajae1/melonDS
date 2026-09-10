@@ -168,7 +168,7 @@ struct CartLoader
     QString getSavErrorString(string& filepath, bool gba);
     bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {});
     bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {});
-    bool updateConsole() noexcept;
+    bool updateConsole(bool directBoot = false) noexcept;
     bool reset(const AssetIdentity::Selection& dsAssets = {}, const AssetIdentity::Selection& gbaAssets = {});
 };
 

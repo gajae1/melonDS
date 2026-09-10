@@ -219,9 +219,12 @@ u32 FATStorage::ReadSectorsInternal(FileHandle* file, u64 filelen, u32 start, u3
         num = len >> 9;
     }
 
-    FileSeek(file, addr, FileSeekOrigin::Start);
+    if (!FileSeek(file, addr, FileSeekOrigin::Start)) return 0;
 
-    u32 res = FileRead(data, 0x200, num, file);
+    u64 res = FileRead(data, 0x200, num, file);
+    // Signed backend errors (e.g. Qt's -1) can arrive as unsigned counts.
+    // Reject them before the sparse-image EOF path or narrowing to u32.
+    if (res > num) return 0;
     if (res < num)
     {
         if (IsEndOfFile(file))
@@ -231,7 +234,7 @@ u32 FATStorage::ReadSectorsInternal(FileHandle* file, u64 filelen, u32 start, u3
         }
     }
 
-    return res;
+    return static_cast<u32>(res);
 }
 
 u32 FATStorage::WriteSectorsInternal(FileHandle* file, u64 filelen, u32 start, u32 num, const u8* data)
@@ -248,10 +251,11 @@ u32 FATStorage::WriteSectorsInternal(FileHandle* file, u64 filelen, u32 start, u
         num = len >> 9;
     }
 
-    FileSeek(file, addr, FileSeekOrigin::Start);
+    if (!FileSeek(file, addr, FileSeekOrigin::Start)) return 0;
 
-    u32 res = Platform::FileWrite(data, 0x200, num, file);
-    return res;
+    u64 res = Platform::FileWrite(data, 0x200, num, file);
+    if (res > num) return 0;
+    return static_cast<u32>(res);
 }
 
 

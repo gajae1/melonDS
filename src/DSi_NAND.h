@@ -93,6 +93,7 @@ public:
     NANDMount(NANDMount&&) = delete;
     NANDMount& operator=(NANDMount&&) = delete;
 
+    // Require a complete metadata read; leave the output unchanged on failure.
     bool ReadSerialData(DSiSerialData& dataS);
     bool ReadHardwareInfoN(DSiHardwareInfoN& dataN);
     void ReadHardwareInfo(DSiSerialData& dataS, DSiHardwareInfoN& dataN);

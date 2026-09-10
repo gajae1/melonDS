@@ -387,8 +387,8 @@ public: // TODO: Encapsulate the rest of these members
     }
 
     virtual bool NeedsDirectBoot() const;
-    void SetupDirectBoot(const std::string& romname);
-    virtual void SetupDirectBoot();
+    [[nodiscard]] bool SetupDirectBoot(const std::string& romname);
+    [[nodiscard]] virtual bool SetupDirectBoot();
 
     [[nodiscard]] GBACart::CartCommon* GetGBACart() { return (ConsoleType == 1) ? nullptr : GBACartSlot.GetCart(); }
     [[nodiscard]] const GBACart::CartCommon* GetGBACart() const {  return (ConsoleType == 1) ? nullptr : GBACartSlot.GetCart(); }

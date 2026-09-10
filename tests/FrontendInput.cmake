@@ -348,6 +348,17 @@ foreach(pair IN ITEMS "statePrepareGL|bool EmuThread::prepareGL()"
         DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuThread.cpp VERBATIM)
     target_sources(StateLoadMessages PRIVATE "${output}")
 endforeach()
+
+add_executable(VideoSettingsUI "${CMAKE_SOURCE_DIR}/tests/VideoSettingsUI.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    Config.cpp VideoSettingsDialog.h VideoSettingsDialog.ui)
+target_include_directories(VideoSettingsUI PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/src/net"
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_definitions(VideoSettingsUI PRIVATE MELONDS_TEST_FILE_EXISTS)
+set_target_properties(VideoSettingsUI PROPERTIES AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(VideoSettingsUI PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)
+add_test(NAME video-settings-dialog-recovery COMMAND VideoSettingsUI)
+set_tests_properties(video-settings-dialog-recovery PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 target_link_libraries(StateLoadMessages PRIVATE core Threads::Threads)
 if (USE_QT6)
     target_link_libraries(StateLoadMessages PRIVATE Qt6::Core)
@@ -355,6 +366,7 @@ else()
     target_link_libraries(StateLoadMessages PRIVATE Qt5::Core)
 endif()
 add_test(NAME savestate-message-recovery COMMAND StateLoadMessages)
+add_test(NAME direct-boot-message-failure COMMAND StateLoadMessages boot-failure)
 add_test(NAME gl-state-message-gate COMMAND StateLoadMessages gl-gate)
 set_tests_properties(gl-state-message-gate PROPERTIES TIMEOUT 10)
 set_tests_properties(savestate-message-recovery PROPERTIES TIMEOUT 10)
@@ -417,7 +429,7 @@ foreach(method IN ITEMS BuildPath FlushSave FlushAll AssetPath SaveError ReadSav
     elseif (method STREQUAL "Reset")
         set(signature "bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIdentity::Selection& gbaAssets)")
     else()
-        set(signature "bool EmuInstance::updateConsole() noexcept")
+        set(signature "bool EmuInstance::updateConsole(bool directBoot) noexcept")
     endif()
     set(output "${CMAKE_CURRENT_BINARY_DIR}/cart${method}.inc")
     add_custom_command(OUTPUT "${output}"

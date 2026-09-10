@@ -1335,7 +1335,7 @@ void EmuInstance::syncRTC()
 }
 
 
-bool EmuInstance::updateConsole() noexcept
+bool EmuInstance::updateConsole(bool directBoot) noexcept
 {
     // Prepare resources before moving either the active or queued cartridges.
     const int requestedType = globalCfg.GetInt("Emu.ConsoleType");
@@ -1402,6 +1402,21 @@ bool EmuInstance::updateConsole() noexcept
             return false;
 
         auto nand = loadNAND(*arm7ibios);
+        // Reject bad direct-boot metadata before committing new resources or
+        // moving cartridges, so an ordinary read failure retains the session.
+        const auto* bootCart = changeCart ? nextCart.get() : (nds ? nds->GetNDSCart() : nullptr);
+        if (directBoot && bootCart &&
+            bootCart->GetHeader().IsDSi() && nand && *nand)
+        {
+            DSi_NAND::NANDMount mount(*nand);
+            DSi_NAND::DSiSerialData serial {};
+            DSi_NAND::DSiHardwareInfoN hardware {};
+            if (!mount || !mount.ReadSerialData(serial) || !mount.ReadHardwareInfoN(hardware))
+            {
+                Log(LogLevel::Error, "DSi direct boot: failed to read complete NAND hardware metadata\n");
+                return false;
+            }
+        }
         auto sdcard = loadSDCard("DSi.SD");
 
         DSiArgs _dsiargs {
@@ -1498,11 +1513,20 @@ bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIde
         osdAddMessage(0xFFA0A0, "%s", errorstr.toUtf8().constData());
         return false;
     }
-    if (!updateConsole()) return false;
+    if (!updateConsole(!baseROMName.empty() && globalCfg.GetBool("Emu.DirectBoot"))) return false;
 
     if (consoleType == 1) ejectGBACart();
 
     nds->Reset();
+    if (!baseROMName.empty() && (globalCfg.GetBool("Emu.DirectBoot") || nds->NeedsDirectBoot()) &&
+        !nds->SetupDirectBoot(baseROMName))
+    {
+        // A new I/O failure after resource preparation cannot resume reset state.
+        nds->Stop();
+        clearBackupState();
+        osdAddMessage(0xFFA0A0, "Direct boot failed: NAND hardware metadata could not be read. Emulation stopped.");
+        return false;
+    }
     setBatteryLevels();
     setDateTime();
 
@@ -1535,14 +1559,6 @@ bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIde
     }
 
     initFirmwareSaveManager();
-
-    if (!baseROMName.empty())
-    {
-        if (globalCfg.GetBool("Emu.DirectBoot") || nds->NeedsDirectBoot())
-        {
-            nds->SetupDirectBoot(baseROMName);
-        }
-    }
 
     nds->Start();
     loadCheats();
@@ -2046,6 +2062,7 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
 
     auto oldSave = std::move(ndsSave);
     ndsSave = std::move(newSave);
+    bool directBootFailed = false;
     if (reset)
     {
         auto queuedCart = std::move(nextCart);
@@ -2053,7 +2070,7 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
         nextCart = std::move(cart);
         changeCart = true;
 
-        if (!updateConsole())
+        if (!updateConsole(globalCfg.GetBool("Emu.DirectBoot")))
         {
             nextCart = std::move(queuedCart);
             changeCart = queuedChange;
@@ -2068,7 +2085,12 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
 
         if (globalCfg.GetBool("Emu.DirectBoot") || nds->NeedsDirectBoot())
         { // If direct boot is enabled or forced...
-            nds->SetupDirectBoot(romname);
+            if (!nds->SetupDirectBoot(romname))
+            {
+                nds->Stop();
+                errorstr = "Direct boot failed: NAND hardware metadata could not be read. Emulation stopped.";
+                directBootFailed = true;
+            }
         }
 
         setBatteryLevels();
@@ -2093,6 +2115,9 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
     baseAssetName = std::move(asset);
     dsAssetPaths = assets;
     clearBackupState();
+    // Resources and the cartridge were already committed. Keep their matching
+    // save/asset identity, but never report success or resume the failed boot.
+    if (directBootFailed) return false;
     if (reset || emuIsActive()) loadCheats();
 
     return true; // success

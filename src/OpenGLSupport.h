@@ -31,6 +31,9 @@ namespace melonDS::OpenGL
 // Report and consume GL errors at initialization/settings boundaries.
 bool CheckError(const char* operation);
 
+// Requires the renderer's context to be current on the calling thread.
+bool SupportsCompute();
+
 void LoadShaderCache();
 void SaveShaderCache();
 

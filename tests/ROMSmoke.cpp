@@ -141,7 +141,11 @@ int main(int argc, char** argv)
             int step, total;
             if (!nds->GetRenderer().ShaderCompileStep(step, total)) return 5;
         }
-        if (!firmwareBoot) nds->SetupDirectBoot(UTF8ToString(PathFromUTF8(argv[1]).filename().u8string()));
+        if (!firmwareBoot && !nds->SetupDirectBoot(UTF8ToString(PathFromUTF8(argv[1]).filename().u8string())))
+        {
+            std::fprintf(stderr, "direct boot preparation failed\n");
+            return 13;
+        }
         // Optional frame/mask pairs exercise real game input without driving a desktop.
         std::vector<std::pair<int, u32>> inputs;
         if (const char* script = std::getenv("MELONDS_SMOKE_INPUT_SCRIPT")) {
