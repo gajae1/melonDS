@@ -199,25 +199,52 @@ void TitleManagerDialog::onImportTitleFinished(int res)
 
     assert(nand != nullptr);
     assert(*nand);
-    // remove anything that might hinder the install
-    nandmount.DeleteTitle(titleid[0], titleid[1]);
-
     bool importres = nandmount.ImportTitle(importAppPath.toStdString().c_str(), importTmdData, importReadOnly);
-    if (!importres)
+    using Result = DSi_NAND::TitleImportResult;
+    const auto result = nandmount.GetTitleImportResult();
+    if (importres)
     {
-        // remove a potential half-completed install
-        nandmount.DeleteTitle(titleid[0], titleid[1]);
-
-        QMessageBox::critical(this,
-                              "Import title - melonDS",
-                              "An error occured while installing the title to the NAND.\nCheck that your NAND dump is valid.");
-    }
-    else
-    {
-        // it worked, wee!
+        // Replace the existing row only after the complete install committed.
+        const u64 id = ((u64)titleid[0] << 32) | titleid[1];
+        for (int row = ui->lstTitleList->count() - 1; row >= 0; --row)
+            if (ui->lstTitleList->item(row)->data(Qt::UserRole).toULongLong() == id)
+                delete ui->lstTitleList->takeItem(row);
         createTitleItem(titleid[0], titleid[1]);
         ui->lstTitleList->sortItems();
     }
+    if (result == Result::Success) return;
+
+    QString message;
+    switch (result)
+    {
+    case Result::InvalidInput:
+        message = "The executable or metadata is incomplete, invalid, or does not match. The previous installation was kept.";
+        break;
+    case Result::Failed:
+        message = "The title could not be installed. The previous installation and save data were kept. Check the input file and available NAND space, then retry.";
+        break;
+    case Result::CleanupPending:
+        message = "The title was not installed. Temporary NAND files could not be fully cleaned up. Check the recovery details before retrying.";
+        break;
+    case Result::InstalledCleanupPending:
+        message = "The title was installed and existing save data was kept, but backup cleanup or flushing failed. Check the recovery details before another import.";
+        break;
+    default:
+        message = "The NAND needs recovery after an incomplete title transaction. Some title files may be in the recovery directory. Remaining backup files have been kept; do not delete them. Further title changes are disabled in this dialog.";
+        ui->lstTitleList->setEnabled(false);
+        ui->btnImportTitle->setEnabled(false);
+        ui->btnDeleteTitle->setEnabled(false);
+        ui->btnImportTitleData->setEnabled(false);
+        ui->btnExportTitleData->setEnabled(false);
+        break;
+    }
+    QMessageBox error(importres ? QMessageBox::Warning : QMessageBox::Critical,
+        "Import title - melonDS", message, QMessageBox::Ok, this);
+    const auto& recovery = nandmount.GetTitleImportRecoveryPath();
+    if (!recovery.empty())
+        error.setDetailedText("Transaction directory inside the NAND: " + QString::fromStdString(recovery) +
+            "\nold-content and old-ticket hold any remaining previous content/metadata and ticket. Existing saves stay in the title's data directory. Preserve the NAND image before attempting recovery. A failed cleanup/flush may leave only part of this directory.");
+    error.exec();
 }
 
 void TitleManagerDialog::on_btnDeleteTitle_clicked()
@@ -388,7 +415,7 @@ void TitleManagerDialog::onExportTitleData()
 }
 
 
-TitleImportDialog::TitleImportDialog(QWidget* parent, QString& apppath, const DSi_TMD::TitleMetadata* tmd, bool& readonly, DSi_NAND::NANDMount& nandmount)
+TitleImportDialog::TitleImportDialog(QWidget* parent, QString& apppath, DSi_TMD::TitleMetadata* tmd, bool& readonly, DSi_NAND::NANDMount& nandmount)
 : QDialog(parent), ui(new Ui::TitleImportDialog), appPath(apppath), tmdData(tmd), readOnly(readonly), nandmount(nandmount)
 {
     ui->setupUi(this);
@@ -424,11 +451,11 @@ void TitleImportDialog::accept()
         return;
     }
 
-    Platform::FileSeek(f, 0x230, FileSeekOrigin::Start);
-    Platform::FileRead(titleid, 8, 1, f);
+    bool readID = Platform::FileSeek(f, 0x230, FileSeekOrigin::Start) &&
+        Platform::FileRead(titleid, 8, 1, f) == 1;
     Platform::CloseFile(f);
 
-    if (titleid[1] != 0x00030004)
+    if (!readID || titleid[1] != 0x00030004)
     {
         QMessageBox::critical(this,
                               "Import title - melonDS",
@@ -448,8 +475,15 @@ void TitleImportDialog::accept()
             return;
         }
 
-        Platform::FileRead((void *) tmdData, sizeof(DSi_TMD::TitleMetadata), 1, f);
+        DSi_TMD::TitleMetadata metadata{};
+        bool readTmd = Platform::FileRead(&metadata, sizeof(metadata), 1, f) == 1;
         Platform::CloseFile(f);
+        if (!readTmd)
+        {
+            QMessageBox::critical(this, "Import title - melonDS", "Could not read the complete metadata file.");
+            return;
+        }
+        *tmdData = metadata;
 
         u32 tmdtitleid[2];
         tmdtitleid[0] = tmdData->GetCategory();
@@ -468,7 +502,7 @@ void TitleImportDialog::accept()
     {
         if (QMessageBox::question(this,
                                   "Import title - melonDS",
-                                  "The selected title is already installed. Overwrite it?",
+                                  "The selected title is already installed. Replace its content and ticket, keeping existing save data?",
                                   QMessageBox::StandardButtons(QMessageBox::Yes|QMessageBox::No),
                                   QMessageBox::No) != QMessageBox::Yes)
             return;
@@ -515,20 +549,24 @@ void TitleImportDialog::tmdDownloaded()
     }
     else
     {
-        netreply->read((char*)tmdData, sizeof(*tmdData));
+        DSi_TMD::TitleMetadata metadata{};
+        bool readTmd = netreply->read(reinterpret_cast<char*>(&metadata), sizeof(metadata)) == sizeof(metadata);
 
         u32 tmdtitleid[2];
-        tmdtitleid[0] = tmdData->GetCategory();
-        tmdtitleid[1] = tmdData->GetID();
+        tmdtitleid[0] = metadata.GetCategory();
+        tmdtitleid[1] = metadata.GetID();
 
-        if (tmdtitleid[1] != titleid[0] || tmdtitleid[0] != titleid[1])
+        if (!readTmd || tmdtitleid[1] != titleid[0] || tmdtitleid[0] != titleid[1])
         {
             QMessageBox::critical(this,
                                   "Import title - melonDS",
                                   "NUS returned a malformed metadata file.");
         }
         else
+        {
+            *tmdData = metadata;
             good = true;
+        }
     }
 
     netreply->deleteLater();

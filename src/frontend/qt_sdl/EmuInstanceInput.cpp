@@ -106,6 +106,10 @@ void EmuInstance::inputInit()
 void EmuInstance::inputDeInit()
 {
     SDL_LockMutex(joyMutex.get());
+    // The GUI destroys instances before the final Config::Save. Preserve
+    // identity collisions learned by the input thread, without having that
+    // thread mutate the shared configuration tree.
+    saveJoystickConfig();
     closeJoystick();
     SDL_UnlockMutex(joyMutex.get());
 }
@@ -129,7 +133,28 @@ void EmuInstance::inputLoadConfig()
         hkJoyMapping[i] = joycfg.GetInt(hotkeyNames[i]);
     }
 
-    setJoystick(localCfg.GetInt("JoystickID"));
+    JoystickSelection saved;
+    saved.legacyIndex = localCfg.GetInt("JoystickID");
+    saved.device.guid = localCfg.GetString("JoystickDevice.GUID");
+    saved.device.serial = localCfg.GetString("JoystickDevice.Serial");
+    saved.device.name = localCfg.GetString("JoystickDevice.Name");
+    saved.requireSelection = localCfg.GetBool("JoystickDevice.RequireSelection");
+    // Reloading mappings must retain the live session identity. A saved SDL
+    // enumeration index or a persisted SDL instance ID cannot replace it.
+    if (!joystickSelection.SameIdentity(saved)) joystickSelection = saved;
+    openJoystick();
+    saveJoystickConfig(); // Migrate in memory; the usual Config::Save persists it.
+    SDL_UnlockMutex(joyMutex.get());
+}
+
+void EmuInstance::saveJoystickConfig()
+{
+    SDL_LockMutex(joyMutex.get());
+    localCfg.SetInt("JoystickID", joystickSelection.legacyIndex);
+    localCfg.SetString("JoystickDevice.GUID", joystickSelection.device.guid);
+    localCfg.SetString("JoystickDevice.Serial", joystickSelection.device.serial);
+    localCfg.SetString("JoystickDevice.Name", joystickSelection.device.name);
+    localCfg.SetBool("JoystickDevice.RequireSelection", joystickSelection.requireSelection);
     SDL_UnlockMutex(joyMutex.get());
 }
 
@@ -217,25 +242,53 @@ float EmuInstance::inputMotionQuery(melonDS::Platform::MotionQueryType type)
 void EmuInstance::setJoystick(int id)
 {
     SDL_LockMutex(joyMutex.get());
-    joystickID = id;
+    {
+        JoystickListLock devicesLock;
+        joystickSelection.Select(id, ListJoysticks());
+        closeJoystick();
+        openJoystick();
+    }
+    SDL_UnlockMutex(joyMutex.get());
+}
+
+void EmuInstance::setJoystickSelection(const JoystickSelection& selection)
+{
+    SDL_LockMutex(joyMutex.get());
+    joystickSelection = selection;
     openJoystick();
     SDL_UnlockMutex(joyMutex.get());
 }
 
+JoystickSelection EmuInstance::getJoystickSelection()
+{
+    SDL_LockMutex(joyMutex.get());
+    openJoystick();
+    auto selection = joystickSelection;
+    SDL_UnlockMutex(joyMutex.get());
+    return selection;
+}
+
 void EmuInstance::openJoystick()
 {
-    closeJoystick();
-
-    int num = SDL_NumJoysticks();
-    if (num < 1)
+    joystickLastOpen = SDL_GetTicks();
+    JoystickListLock devicesLock;
+    const auto devices = ListJoysticks();
+    joystickID = joystickSelection.Resolve(devices);
+    joystickTopology.clear();
+    for (const auto& device : devices) joystickTopology.push_back(device.instance);
+    if (joystick && SDL_JoystickGetAttached(joystick) &&
+        SDL_JoystickInstanceID(joystick) == joystickSelection.device.instance && joystickID >= 0)
         return;
 
-    if (joystickID >= num)
-        joystickID = 0;
+    closeJoystick();
+    if (joystickID < 0) return;
 
     joystick = SDL_JoystickOpen(joystickID);
     if (!joystick)
+    {
+        joystickSelection.status = JoystickSelection::Status::Missing;
         return;
+    }
 
     if (SDL_IsGameController(joystickID))
     {
@@ -381,7 +434,20 @@ void EmuInstance::inputProcess()
             closeJoystick();
         }
     }
-    if (!joystick && (SDL_NumJoysticks() > 0))
+    // Query cheap session IDs every frame; enumerate/open for identity only on
+    // topology changes. Missing or ambiguous selections must not open every
+    // other device on every frame.
+    bool topologyChanged;
+    {
+        JoystickListLock devicesLock;
+        const int count = SDL_NumJoysticks();
+        topologyChanged = count != static_cast<int>(joystickTopology.size());
+        for (int i = 0; !topologyChanged && i < count; ++i)
+            topologyChanged = joystickTopology[i] != SDL_JoystickGetDeviceInstanceID(i);
+    }
+    if (topologyChanged || (!joystick &&
+        joystickSelection.status == JoystickSelection::Status::Missing &&
+        Uint32(SDL_GetTicks() - joystickLastOpen) >= 1000))
     {
         openJoystick();
     }

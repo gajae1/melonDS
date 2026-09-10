@@ -37,6 +37,8 @@ set_tests_properties(qt-keyboard-mapping-input PROPERTIES
 
 set(input_dialog_methods)
 foreach(pair IN ITEMS "inputLoadConfig|void EmuInstance::inputLoadConfig()"
+        "joystickDeInit|void EmuInstance::inputDeInit()"
+        "joystickSaveConfig|void EmuInstance::saveJoystickConfig()"
         "inputButtonNames|const char* EmuInstance::buttonNames[12] ="
         "inputHotkeyNames|const char* EmuInstance::hotkeyNames[HK_MAX] =")
     string(REPLACE "|" ";" parts "${pair}")
@@ -50,7 +52,7 @@ foreach(pair IN ITEMS "inputLoadConfig|void EmuInstance::inputLoadConfig()"
     list(APPEND input_dialog_methods "${output}")
 endforeach()
 add_executable(InputConfigUI "${CMAKE_SOURCE_DIR}/tests/InputConfigUI.cpp"
-    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp"
     Config.cpp KeyboardInput.cpp InputConfig/InputConfigDialog.h InputConfig/InputConfigDialog.ui
     InputConfig/MapButton.h InputConfig/KeyMapButton.h InputConfig/resources/ds.qrc
     ${input_dialog_methods} ${input_methods})
@@ -67,9 +69,11 @@ else()
     find_package(Qt5 REQUIRED COMPONENTS Test)
     target_link_libraries(InputConfigUI PRIVATE Qt5::Test)
 endif()
-foreach(case IN ITEMS letter controller space return tab hotkey escape unbind cancel)
+foreach(case IN ITEMS letter controller space return tab hotkey escape unbind cancel missing-selection
+        selection-reorder selection-migration selection-draft selection-ambiguous selection-stale
+        selection-no-device selection-malformed selection-shutdown)
     add_test(NAME input-dialog-${case} COMMAND InputConfigUI ${case})
-    set_tests_properties(input-dialog-${case} PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(input-dialog-${case} PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
 
 set(touch_methods)
@@ -133,11 +137,14 @@ set_tests_properties(frontend-touch-publication PROPERTIES TIMEOUT 15)
 
 set(joystick_methods)
 foreach(pair IN ITEMS "joystickSet|void EmuInstance::setJoystick(int id)"
+        "joystickRestore|void EmuInstance::setJoystickSelection(const JoystickSelection& selection)"
+        "joystickGetSelection|JoystickSelection EmuInstance::getJoystickSelection()"
         "joystickOpen|void EmuInstance::openJoystick()"
         "joystickClose|void EmuInstance::closeJoystick()"
         "joystickButton|bool EmuInstance::joystickButtonDown(int val)"
         "joystickProcess|void EmuInstance::inputProcess()"
         "joystickRumbleStart|void EmuInstance::inputRumbleStart(melonDS::u32 len_ms)"
+        "joystickMotion|float EmuInstance::inputMotionQuery(melonDS::Platform::MotionQueryType type)"
         "joystickRumbleStop|void EmuInstance::inputRumbleStop()")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
@@ -150,9 +157,10 @@ foreach(pair IN ITEMS "joystickSet|void EmuInstance::setJoystick(int id)"
     list(APPEND joystick_methods "${output}")
 endforeach()
 add_executable(FrontendJoystick "${CMAKE_SOURCE_DIR}/tests/FrontendJoystick.cpp" ${joystick_methods})
+target_sources(InputConfigUI PRIVATE ${joystick_methods})
 target_include_directories(FrontendJoystick PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FrontendJoystick PRIVATE PkgConfig::SDL2 Threads::Threads)
-foreach(case IN ITEMS controls transition capabilities detach open-failure close)
+foreach(case IN ITEMS controls transition capabilities detach open-failure close reorder ambiguous serial-reconnect duplicate-serial)
     add_test(NAME frontend-joystick-${case} COMMAND FrontendJoystick ${case})
     set_tests_properties(frontend-joystick-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()

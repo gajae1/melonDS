@@ -23,6 +23,7 @@
 #include <vector>
 #include <map>
 #include <queue>
+#include <mutex>
 
 #include <enet/enet.h>
 
@@ -86,13 +87,19 @@ public:
     bool StartDiscovery();
     void EndDiscovery();
     bool StartHost(const char* player, int numplayers);
+    // Starts a nonblocking connection to a numeric IPv4 address. Frontends
+    // resolve names asynchronously. Process() advances the handshake; cancelling
+    // uses EndSession(), including before the first ENet connection event.
     bool StartClient(const char* player, const char* host);
     void EndSession();
 
+    enum class ClientState { Idle, Connecting, Connected, Failed, Incompatible, TimedOut, Disconnected };
+    ClientState GetClientState();
+
     std::map<u32, DiscoveryData> GetDiscoveryList();
     std::vector<Player> GetPlayerList();
-    int GetNumPlayers() { return NumPlayers; }
-    int GetMaxPlayers() { return MaxPlayers; }
+    int GetNumPlayers();
+    int GetMaxPlayers();
 
     void Process() override;
 
@@ -110,6 +117,13 @@ public:
 private:
     friend struct LANPacketTest;
 
+    // UI discovery/connect/cancel and emulation packet processing share one
+    // ENet host. Nested public session operations take the same recursive lock.
+    std::recursive_mutex SessionMutex;
+    ClientState Connection = ClientState::Idle;
+    u32 ConnectionStartTick = 0;
+    bool ClientInitReceived = false;
+
     bool Inited;
     bool Active;
     bool IsHost;
@@ -120,19 +134,16 @@ private:
     socket_t DiscoverySocket;
     u32 DiscoveryLastTick;
     std::map<u32, DiscoveryData> DiscoveryList;
-    Platform::Mutex* DiscoveryMutex;
 
     Player Players[16];
     int NumPlayers;
     int MaxPlayers;
-    Platform::Mutex* PlayersMutex;
 
     Player MyPlayer;
     u32 HostAddress;
 
     u16 ConnectedBitmask;
 
-    int MPRecvTimeout;
     int LastHostID;
     ENetPeer* LastHostPeer;
     std::queue<ENetPacket*> RXQueue;
@@ -142,7 +153,8 @@ private:
     void ProcessDiscovery();
 
     void HostUpdatePlayerList();
-    void ClientUpdatePlayerList();
+    void ClearPeer(int id);
+    bool ReadPlayerList(const ENetEvent& event);
 
     void ProcessHostEvent(ENetEvent& event);
     void ProcessClientEvent(ENetEvent& event);

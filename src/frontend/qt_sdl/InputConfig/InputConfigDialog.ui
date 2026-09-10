@@ -2273,7 +2273,7 @@
         </sizepolicy>
        </property>
        <property name="whatsThis">
-        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Selects which joystick will be used for joystick input, if any is present.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+        <string>Select a controller for this instance. Missing or indistinguishable controllers require reconnection or an explicit selection.</string>
        </property>
       </widget>
      </item>
@@ -2284,6 +2284,13 @@
      <property name="text">
       <string>Configuring mappings for instance X</string>
      </property>
+    </widget>
+   </item>
+   <item row="8" column="0">
+    <widget class="QLabel" name="lblJoystickStatus">
+     <property name="textFormat"><enum>Qt::PlainText</enum></property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string>Controller selection status</string></property>
     </widget>
    </item>
   </layout>

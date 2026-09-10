@@ -10,6 +10,7 @@ enable_testing()
 include(LocalMPQueue.cmake)
 include(DSiSDTransfer.cmake)
 include(DSiBoot26.cmake)
+include(DSiTitle.cmake)
 include(WifiState.cmake)
 include(DSiAES.cmake)
 
@@ -427,6 +428,26 @@ if (TARGET net-utils)
     endif()
     add_test(NAME lan-packet-validation COMMAND LANPacket)
     set_tests_properties(lan-packet-validation PROPERTIES TIMEOUT 15)
+
+    add_executable(LANLoopback LANLoopback.cpp PlatformSync.cpp)
+    target_include_directories(LANLoopback PRIVATE ../src)
+    target_link_libraries(LANLoopback PRIVATE net-utils Threads::Threads)
+    add_test(NAME lan-loopback-session COMMAND LANLoopback)
+    set_tests_properties(lan-loopback-session PROPERTIES TIMEOUT 20 RESOURCE_LOCK lan-loopback-port)
+
+    find_package(Qt6 QUIET COMPONENTS Widgets Network)
+    if (TARGET Qt6::Widgets AND TARGET Qt6::Network)
+        set(lan_ui_dir "${CMAKE_SOURCE_DIR}/src/frontend/qt_sdl")
+        add_executable(LANUI LANUI.cpp PlatformSync.cpp "${lan_ui_dir}/LANDialog.h"
+            "${lan_ui_dir}/LANDialog.ui" "${lan_ui_dir}/LANStartHostDialog.ui"
+            "${lan_ui_dir}/LANStartClientDialog.ui")
+        set_target_properties(LANUI PROPERTIES AUTOMOC ON AUTOUIC ON AUTOUIC_SEARCH_PATHS "${lan_ui_dir}")
+        target_include_directories(LANUI PRIVATE ../src "${lan_ui_dir}")
+        target_link_libraries(LANUI PRIVATE net-utils Qt6::Widgets Qt6::Network Threads::Threads)
+        add_test(NAME lan-ui-session COMMAND LANUI)
+        set_tests_properties(lan-ui-session PROPERTIES TIMEOUT 20 RESOURCE_LOCK lan-loopback-port
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endif()
 endif()
 
 add_executable(PCapInput PCapInput.cpp)

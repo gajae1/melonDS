@@ -159,7 +159,7 @@ void EmuThread::run()
     while (emuStatus != emuStatus_Exit)
     {
         if (emuInstance->instanceID == 0)
-            MPInterface::Get().Process();
+            MPInterface::Acquire()->Process();
 
         emuInstance->inputProcess();
 
@@ -539,7 +539,7 @@ void EmuThread::handleMessages()
             emuPauseStack = emuPauseStackRunning;
 
             emuInstance->audioDisable();
-            MPInterface::Get().End(emuInstance->instanceID);
+            MPInterface::Acquire()->End(emuInstance->instanceID);
             break;
 
         case msg_EmuRun:

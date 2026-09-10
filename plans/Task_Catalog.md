@@ -80,18 +80,18 @@
 | FS-09 | [controller 핸들·capability 정리](workstreams/04-frontend-storage.md#FS-09) | 실행 재현 | P1 | [1.1.06](Release_Plan.md#v06) | — | 1.1.07 공통 핸들/capability/rumble 정리·가상 SDL 장치 회귀; 실물 hotplug·motion 수락 후속 |
 | FS-10 | [touch 좌표·cancel·공유 snapshot](workstreams/04-frontend-storage.md#FS-10) | 실행 재현 | P1 | [1.1.06](Release_Plan.md#v06) | — | 1.1.07 현재 좌표·취소/포커스 해제·원자적 좌표 게시 회귀; 실물·DPI/회전·다중 창 후속 |
 | FS-11 | [DPI·다중 창·종료 경계](workstreams/04-frontend-storage.md#FS-11) | 관찰/확장 | P2 | [1.1.06](Release_Plan.md#v06) | — | 미착수 |
-| FS-12 | [장치 identity·인스턴스 배정](workstreams/04-frontend-storage.md#FS-12) | 정적 후보 | P2 | [1.1.06](Release_Plan.md#v06) | — | 미착수 |
+| FS-12 | [장치 identity·인스턴스 배정](workstreams/04-frontend-storage.md#FS-12) | 실행 재현 | P2 | [1.1.06](Release_Plan.md#v06) | — | 1.1.29 GUID/serial·연결 identity·누락/중복 표시·숫자 이관·인스턴스 배정·Cancel 구현; 고유 serial 없는 재연결은 재선택, 실물/다른 OS 후속 |
 | FS-13 | [동일 basename save 충돌](workstreams/04-frontend-storage.md#FS-13) | 정적 확인·동작 검증 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.10 DS/GBA/member 정체성·기존/별도/취소 선택·사용자 공용 기록·고정 활성 경로; 생성 파일·Qt·코어 회귀, 실제 저장 재로드/이관 후속 |
 | FS-14 | [RTC 파일 읽기·원자 저장](workstreams/04-frontend-storage.md#FS-14) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.06 파일 경계·원자 쓰기 구현·로컬 회귀 확인; 독립 파일 정책·날짜/게임 수락 후속 |
 | FS-15 | [치트 편집 저장 실패](workstreams/04-frontend-storage.md#FS-15) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.12 편집 사본·직렬화 사전 검사·QSaveFile commit·재시도/유지/취소·실행 목록 갱신 회귀; 실제 게임 적용·전원 손실 수락 후속 |
-| FS-16 | [DSi title 교체 rollback](workstreams/04-frontend-storage.md#FS-16) | 정적 후보 | P1 | [1.1.19](Release_Plan.md#v19) | — | 미착수 |
-| FS-17 | [LAN/Netplay UI 연결 수명](workstreams/04-frontend-storage.md#FS-17) | 관찰/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
+| FS-16 | [DSi title 교체 rollback](workstreams/04-frontend-storage.md#FS-16) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | 1.1.29 NAND staging/backup·기존 저장 보존·rollback/불확실한 복구/정리 실패 경고 구현·생성 NAND 회귀; 실제 title 부팅/매체·수동 복구 후속 |
+| FS-17 | [LAN/Netplay UI 연결 수명](workstreams/04-frontend-storage.md#FS-17) | 실행 재현/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 1.1.29 활성 LAN 비동기 연결·취소·부모 종료·재시도·host 소실/Local 복귀·공유 수명 구현·Qt/loopback 회귀; 두 PC/휴면·다자간 mesh·비활성 Netplay 후속 |
 | FS-18 | [GDB UI/코어 종료 경계](workstreams/04-frontend-storage.md#FS-18) | 관찰/확장 | P2 | [1.1.10](Release_Plan.md#v10) | — | 미착수 |
 | FS-19 | [DS/DSi 설정·부팅 진단](workstreams/04-frontend-storage.md#FS-19) | 미측정 가설 | P2 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
 | FS-20 | [느린 ROM 준비·취소](workstreams/04-frontend-storage.md#FS-20) | 미측정 가설 | P2 | [1.1.07](Release_Plan.md#v07) | — | 미착수 |
 | FS-21 | [카메라 미리보기·hotplug 수명](workstreams/04-frontend-storage.md#FS-21) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
 | NP-01 | [LAN payload·AID·peer 검증](workstreams/05-connectivity-peripherals.md#NP-01) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.08 실제 ENet payload·type·sender/peer·AID 검증과 27개 생성 패킷 회귀; 빈 AID0 reply 보존, 두 PC 게임 수락 후속 |
-| NP-02 | [LAN handshake·취소·소유권](workstreams/05-connectivity-peripherals.md#NP-02) | 정적 후보 | P1 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
+| NP-02 | [LAN handshake·취소·소유권](workstreams/05-connectivity-peripherals.md#NP-02) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.29 packet 단일 소유·세션 초기화/종료·목록 잠금·배정/버전 검사·비동기 완료/취소 구현·실제 loopback 회귀; 두 PC 게임·방화벽/다른 OS 후속 |
 | NP-03 | [LocalMP FIFO 넘침·복구](workstreams/05-connectivity-peripherals.md#NP-03) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | [1.1.26](releases/1.1.26.md) 뒤처진 수신자 backlog 폐기·기록 경계/permit 동기화·종료/새 host·수신 중 reset; 실제 무선 게임·다중 그룹 후속 |
 | NP-04 | [LocalMP 그룹 격리](workstreams/05-connectivity-peripherals.md#NP-04) | 관찰/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
 | NP-05 | [PCap library 실패 중복 해제](workstreams/05-connectivity-peripherals.md#NP-05) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 누락 심볼 시 단일 unload·이동/소유권 회귀; 실제 DLL·POSIX 수락 후속 |

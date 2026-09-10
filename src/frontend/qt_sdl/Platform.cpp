@@ -460,55 +460,55 @@ void WriteDateTime(int year, int month, int day, int hour, int minute, int secon
 void MP_Begin(void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    MPInterface::Get().Begin(inst);
+    MPInterface::Acquire()->Begin(inst);
 }
 
 void MP_End(void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    MPInterface::Get().End(inst);
+    MPInterface::Acquire()->End(inst);
 }
 
 int MP_SendPacket(u8* data, int len, u64 timestamp, void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    return MPInterface::Get().SendPacket(inst, data, len, timestamp);
+    return MPInterface::Acquire()->SendPacket(inst, data, len, timestamp);
 }
 
 int MP_RecvPacket(u8* data, u64* timestamp, void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    return MPInterface::Get().RecvPacket(inst, data, timestamp);
+    return MPInterface::Acquire()->RecvPacket(inst, data, timestamp);
 }
 
 int MP_SendCmd(u8* data, int len, u64 timestamp, void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    return MPInterface::Get().SendCmd(inst, data, len, timestamp);
+    return MPInterface::Acquire()->SendCmd(inst, data, len, timestamp);
 }
 
 int MP_SendReply(u8* data, int len, u64 timestamp, u16 aid, void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    return MPInterface::Get().SendReply(inst, data, len, timestamp, aid);
+    return MPInterface::Acquire()->SendReply(inst, data, len, timestamp, aid);
 }
 
 int MP_SendAck(u8* data, int len, u64 timestamp, void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    return MPInterface::Get().SendAck(inst, data, len, timestamp);
+    return MPInterface::Acquire()->SendAck(inst, data, len, timestamp);
 }
 
 int MP_RecvHostPacket(u8* data, u64* timestamp, void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    return MPInterface::Get().RecvHostPacket(inst, data, timestamp);
+    return MPInterface::Acquire()->RecvHostPacket(inst, data, timestamp);
 }
 
 u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata)
 {
     int inst = ((EmuInstance*)userdata)->getInstanceID();
-    return MPInterface::Get().RecvReplies(inst, data, timestamp, aidmask);
+    return MPInterface::Acquire()->RecvReplies(inst, data, timestamp, aidmask);
 }
 
 

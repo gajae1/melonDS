@@ -276,7 +276,7 @@ int LocalMP::RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp)
 {
     for (;;)
     {
-        if (!Semaphore_TryWait(SemPool[inst], block ? RecvTimeout : 0))
+        if (!Semaphore_TryWait(SemPool[inst], block ? GetRecvTimeout() : 0))
         {
             return 0;
         }
@@ -386,7 +386,7 @@ u16 LocalMP::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
         if (!receiving || ((myinstmask & curinstmask) == curinstmask))
             return ret;
 
-        if (!Semaphore_TryWait(SemPool[16+inst], RecvTimeout))
+        if (!Semaphore_TryWait(SemPool[16+inst], GetRecvTimeout()))
         {
             // no more replies available
             return ret;

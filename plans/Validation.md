@@ -74,6 +74,8 @@ ASan/UBSan/TSan의 지원 조합 표와 추가 JIT 통합은 BV-11의 후속 과
 
 ## 증거와 측정
 
+[1.1.29](releases/1.1.29.md)의 `lan-packet-validation`, `lan-loopback-session`, `lan-ui-session`은 packet 경계와 실제 loopback/Qt 연결·취소·재시도를 구분한다. `input-dialog-selection-`과 `frontend-joystick-`는 가상 장치·임시 설정·일부 serial/센서 대역을 사용한다. `dsi-title-`는 생성 NAND·실제 FatFs/암호/I/O와 통제한 실패 경계를 사용한다. 실제 매체·게임·실물 입력·다른 OS 결과로 확대하지 않는다. 같은 최종 소스의 전체 548/548 성공은 재사용한다.
+
 한 변경 기록에 소스 기준·변경 ID·빌드 종류·compiler/의존성 버전·관련 옵션·실행 명령·입력 종류·기대 결과·실패/성공/skip·남은 범위를 적는다.
 재현 입력은 합성 자료를 우선하고 실제 게임·저장 파일은 공개 자료에 넣지 않는다. 공개 가능한 digest와 필요한 비식별 환경 정보만 사용한다.
 

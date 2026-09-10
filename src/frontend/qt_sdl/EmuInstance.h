@@ -30,6 +30,7 @@
 #include "Config.h"
 #include "SaveManager.h"
 #include "KeyboardInput.h"
+#include "JoystickSelection.h"
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
@@ -160,6 +161,9 @@ public:
     float inputMotionQuery(melonDS::Platform::MotionQueryType type);
 
     void setJoystick(int id);
+    void setJoystickSelection(const JoystickSelection& selection);
+    JoystickSelection getJoystickSelection();
+    void saveJoystickConfig();
     int getJoystickID() { return joystickID; }
     SDL_Joystick* getJoystick() { return joystick; }
     std::shared_ptr<SDL_mutex> getJoyMutex() { return joyMutex; }
@@ -371,7 +375,10 @@ private:
     int hkKeyMapping[HK_MAX];
     int hkJoyMapping[HK_MAX];
 
-    int joystickID;
+    int joystickID = -1;
+    JoystickSelection joystickSelection;
+    std::vector<SDL_JoystickID> joystickTopology;
+    Uint32 joystickLastOpen = 0;
     SDL_Joystick* joystick;
     SDL_GameController* controller;
     bool hasAccelerometer = false;

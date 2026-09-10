@@ -116,7 +116,7 @@ class TitleImportDialog : public QDialog
     Q_OBJECT
 
 public:
-    explicit TitleImportDialog(QWidget* parent, QString& apppath, const melonDS::DSi_TMD::TitleMetadata* tmd, bool& readonly, melonDS::DSi_NAND::NANDMount& nand);
+    explicit TitleImportDialog(QWidget* parent, QString& apppath, melonDS::DSi_TMD::TitleMetadata* tmd, bool& readonly, melonDS::DSi_NAND::NANDMount& nand);
     ~TitleImportDialog();
 
 private slots:
@@ -137,7 +137,7 @@ private:
     QNetworkReply* netreply;
 
     QString& appPath;
-    const melonDS::DSi_TMD::TitleMetadata* tmdData;
+    melonDS::DSi_TMD::TitleMetadata* tmdData;
     bool& readOnly;
 
     melonDS::u32 titleid[2];

@@ -299,17 +299,15 @@ void setMPInterface(MPInterfaceType type)
 
     // set receive timeout
     // TODO: different settings per interface?
-    MPInterface::Get().SetRecvTimeout(Config::GetGlobalTable().GetInt("MP.RecvTimeout"));
+    MPInterface::Acquire()->SetRecvTimeout(Config::GetGlobalTable().GetInt("MP.RecvTimeout"));
 
     // update UI appropriately
-    // TODO: decide how to deal with multi-window when it becomes a thing
     for (int i = 0; i < kMaxEmuInstances; i++)
     {
         EmuInstance* inst = emuInstances[i];
         if (!inst) continue;
 
-        MainWindow* win = inst->getMainWindow();
-        if (win) win->updateMPInterface(type);
+        inst->doOnAllWindows([type](MainWindow* win) { win->updateMPInterface(type); });
     }
 }
 

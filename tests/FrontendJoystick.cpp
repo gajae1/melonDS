@@ -15,7 +15,20 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <map>
 #include "types.h"
+#include "Platform.h"
+// Virtual SDL2 devices cannot report serials. Supply only that identity
+// boundary for serial reconnect cases; enumeration/handles/input remain SDL.
+static std::map<SDL_JoystickID, std::string> deviceSerials;
+static const char* DeviceSerial(SDL_Joystick* joystick)
+{
+    const auto found = deviceSerials.find(SDL_JoystickInstanceID(joystick));
+    return found == deviceSerials.end() ? SDL_JoystickGetSerial(joystick) : found->second.c_str();
+}
+#define SDL_JoystickGetSerial DeviceSerial
+#include "../src/frontend/qt_sdl/JoystickSelection.h"
+#undef SDL_JoystickGetSerial
 
 static int failures = 0;
 static void Check(bool ok, const char* message)
@@ -87,6 +100,14 @@ static int Rumble(SDL_GameController* controller, Uint16 low, Uint16 high, Uint3
 {
     return Live(controller) ? SDL_GameControllerRumble(controller, low, high, duration) : -1;
 }
+static int SensorData(SDL_GameController* controller, SDL_SensorType type, float* data, int count)
+{
+    if (!Live(controller)) return -1;
+    if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)) != sensorDevice)
+        return SDL_GameControllerGetSensorData(controller, type, data, count);
+    for (int i = 0; i < count; ++i) data[i] = float(i + 1);
+    return 0;
+}
 
 // Two independent hotkeys suffice to exercise merging and edge transitions;
 // this fixture supplies host state, not the application's hotkey catalogue.
@@ -94,6 +115,9 @@ constexpr int HK_MAX = 2;
 struct JoystickInput
 {
     int joystickID = 0;
+    JoystickSelection joystickSelection;
+    std::vector<SDL_JoystickID> joystickTopology;
+    Uint32 joystickLastOpen = 0;
     SDL_Joystick* joystick = nullptr;
     SDL_GameController* controller = nullptr;
     bool hasRumble = false, hasAccelerometer = false, hasGyroscope = false, isRumbling = false;
@@ -116,12 +140,15 @@ struct JoystickInput
     }
     ~JoystickInput() { closeJoystick(); }
     void setJoystick(int id);
+    void setJoystickSelection(const JoystickSelection& selection);
+    JoystickSelection getJoystickSelection();
     void openJoystick();
     void closeJoystick();
     bool joystickButtonDown(int val);
     void inputProcess();
     void inputRumbleStart(melonDS::u32 len_ms);
     void inputRumbleStop();
+    float inputMotionQuery(melonDS::Platform::MotionQueryType type);
 };
 
 #define EmuInstance JoystickInput
@@ -133,13 +160,18 @@ struct JoystickInput
 #define SDL_GameControllerHasSensor HasSensor
 #define SDL_GameControllerSetSensorEnabled EnableSensor
 #define SDL_GameControllerRumble Rumble
+#define SDL_GameControllerGetSensorData SensorData
 #include "joystickSet.inc"
+#include "joystickRestore.inc"
+#include "joystickGetSelection.inc"
 #include "joystickOpen.inc"
 #include "joystickClose.inc"
 #include "joystickButton.inc"
 #include "joystickProcess.inc"
 #include "joystickRumbleStart.inc"
 #include "joystickRumbleStop.inc"
+#include "joystickMotion.inc"
+#undef SDL_GameControllerGetSensorData
 #undef SDL_GameControllerRumble
 #undef SDL_GameControllerSetSensorEnabled
 #undef SDL_GameControllerHasSensor
@@ -154,7 +186,8 @@ struct VirtualDevice
 {
     SDL_JoystickID id = -1;
     int rumbleStarts = 0;
-    VirtualDevice(bool controller, bool rumble)
+    VirtualDevice(bool controller, bool rumble, const char* serial = "") { attach(controller, rumble, serial); }
+    void attach(bool controller, bool rumble, const char* serial = "")
     {
         SDL_VirtualJoystickDesc desc{};
         desc.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION;
@@ -174,6 +207,7 @@ struct VirtualDevice
         const int device = SDL_JoystickAttachVirtualEx(&desc);
         Require(device >= 0, "Fixture virtual device attachment failed");
         id = SDL_JoystickGetDeviceInstanceID(device);
+        if (*serial) deviceSerials[id] = serial;
         Require(id >= 0 && SDL_IsGameController(device) == (controller ? SDL_TRUE : SDL_FALSE),
                 "Fixture did not create the requested controller/joystick type");
     }
@@ -187,11 +221,13 @@ struct VirtualDevice
     {
         const int device = index();
         Require(device >= 0 && SDL_JoystickDetachVirtual(device) == 0, "Fixture virtual detach failed");
+        deviceSerials.erase(id);
     }
     ~VirtualDevice()
     {
         const int device = index();
         if (device >= 0) SDL_JoystickDetachVirtual(device);
+        deviceSerials.erase(id);
     }
 };
 
@@ -220,7 +256,9 @@ int main(int argc, char** argv)
     if (argc != 2) return 2;
     const std::string scenario = argv[1];
     if (scenario != "controls" && scenario != "transition" && scenario != "capabilities" &&
-        scenario != "detach" && scenario != "open-failure" && scenario != "close") return 2;
+        scenario != "detach" && scenario != "open-failure" && scenario != "close" &&
+        scenario != "reorder" && scenario != "ambiguous" && scenario != "serial-reconnect" &&
+        scenario != "duplicate-serial") return 2;
     SDL_SetMainReady();
     // Only this process's synthetic devices may be opened, polled or rumbled.
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
@@ -238,7 +276,8 @@ int main(int argc, char** argv)
     }
     try
     {
-        VirtualDevice pad(true, true);
+        const bool serialCase = scenario == "serial-reconnect" || scenario == "duplicate-serial";
+        VirtualDevice pad(true, true, serialCase ? "generated-controller-A" : "");
         std::unique_ptr<VirtualDevice> other;
         JoystickInput input; // Destroy before device callbacks/userdata go away.
         sensorDevice = pad.id;
@@ -262,6 +301,14 @@ int main(int argc, char** argv)
                   "Normal hotkey release did not preserve the independent keyboard hotkey");
             input.inputRumbleStop();
             Check(!input.isRumbling, "Normal rumble stop did not release its state");
+            using namespace melonDS::Platform;
+            Check(input.inputMotionQuery(MotionAccelerationX) == 1.0f &&
+                  input.inputMotionQuery(MotionAccelerationY) == -3.0f &&
+                  input.inputMotionQuery(MotionAccelerationZ) == 2.0f &&
+                  input.inputMotionQuery(MotionRotationX) == 1.0f &&
+                  input.inputMotionQuery(MotionRotationY) == -3.0f &&
+                  input.inputMotionQuery(MotionRotationZ) == 2.0f,
+                  "Selected controller's supplied sensor samples did not follow the normal orientation path");
         }
         else if (scenario == "transition" || scenario == "capabilities")
         {
@@ -291,10 +338,9 @@ int main(int argc, char** argv)
                   "Detach left joystick input pressed or erased keyboard input");
             other = std::make_unique<VirtualDevice>(false, false);
             input.inputProcess();
-            Check(input.joystick && SDL_JoystickInstanceID(input.joystick) == other->id,
-                  "Existing reconnect/fallback selection stopped working");
+            Check(!input.joystick,
+                  "Detached selection silently retargeted a different device at the same index");
             NoCapabilities(input);
-            PressButton(input, true);
         }
         else if (scenario == "open-failure")
         {
@@ -309,6 +355,66 @@ int main(int argc, char** argv)
             NoCapabilities(input);
             PressButton(input, true);
             failControllerOpen = false;
+        }
+        else if (scenario == "reorder")
+        {
+            other = std::make_unique<VirtualDevice>(true, false);
+            input.setJoystick(other->index());
+            const auto selected = input.getJoystickSelection();
+            pad.detach();
+            input.inputProcess();
+            Check(input.joystickID == 0 && input.joystick && SDL_JoystickInstanceID(input.joystick) == other->id,
+                  "Removing the earlier device changed the selected session identity");
+            input.setJoystickSelection(selected);
+            PressButton(input, true);
+        }
+        else if (scenario == "ambiguous" || serialCase)
+        {
+            const char* otherSerial = scenario == "duplicate-serial" ? "generated-controller-A" :
+                                      serialCase ? "generated-controller-B" : "";
+            other = std::make_unique<VirtualDevice>(true, false, otherSerial);
+            JoystickInput second;
+            second.setJoystick(other->index());
+            // Observe both devices before removal, including duplicate serials.
+            input.inputProcess();
+            pad.detach();
+            input.inputProcess();
+            second.inputProcess();
+            Check(!input.joystick && second.joystick && SDL_JoystickInstanceID(second.joystick) == other->id,
+                  "Disconnect stole the controller assigned to another instance");
+            PressButton(second, true);
+            input.inputProcess();
+            Check(input.inputMask == 0xFFF, "Unresolved instance sampled another instance's input");
+            pad.attach(true, true, serialCase ? "generated-controller-A" : "");
+            sensorDevice = pad.id;
+            input.inputProcess();
+            second.inputProcess();
+            if (scenario == "serial-reconnect")
+            {
+                Check(input.joystick && SDL_JoystickInstanceID(input.joystick) == pad.id && input.hasRumble,
+                      "Unique serial did not reacquire the intended controller after index reorder");
+                auto restarted = input.getJoystickSelection();
+                restarted.device.instance = -1;
+                input.setJoystickSelection(restarted);
+                Check(input.joystick && SDL_JoystickInstanceID(input.joystick) == pad.id,
+                      "Saved serial identity selected the other same-model controller");
+                input.inputRumbleStart(10000);
+                Check(pad.rumbleStarts >= 2 && input.hasAccelerometer && input.hasGyroscope,
+                      "Reattached serial controller lost its normal rumble/sensor capabilities");
+            }
+            else
+            {
+                Check(!input.joystick && input.getJoystickSelection().status == JoystickSelection::Status::Ambiguous,
+                      "Indistinguishable reconnection was not kept explicitly ambiguous");
+                input.setJoystick(pad.index());
+                PressButton(input, true);
+                // Sharing is allowed when explicitly selected, including devices
+                // that another instance already has open.
+                input.setJoystick(other->index());
+                input.inputProcess();
+                Check(!(input.inputMask & 1) && !(second.inputMask & 1),
+                      "Explicit shared assignment was incorrectly forbidden");
+            }
         }
         else // close, including a repeated close while rumbling.
         {

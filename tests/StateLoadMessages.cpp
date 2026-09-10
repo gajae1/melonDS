@@ -156,6 +156,7 @@ public:
 struct MPInterface
 {
     static MPInterface& Get() { static MPInterface instance; return instance; }
+    static MPInterface* Acquire() { return &Get(); }
     void End(int) { std::abort(); }
 };
 

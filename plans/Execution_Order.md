@@ -160,9 +160,19 @@ GR-11/12에서 확인한 실제 호출 경계를 진행한다. 창 교체/해제
 
 [1.1.28 구현 기록](releases/1.1.28.md)에 수정 전 반례와 최종 Windows 빌드·517/517 회귀·전체 Qt 검증 범위를 기록했다. 기존 GPU·DMA·I2C·저장 도구를 재사용하며 새 제품 소스 파일은 없다. 실제 게임·물리 타이밍·부팅·NWRAM 등 미확정 조건은 완료로 보지 않는다.
 
+## 실제 증분 1.1.29 — LAN·입력 identity·타이틀 교체
+
+| 블록 | 구현·소유 경계 | 확인한 결과 |
+|---|---|---|
+| LAN: NP-02/FS-17 | LAN·MPInterface·LANDialog와 공유 frontend 호출 | 빈 제어 packet·초기화/종료·참가자 목록·비동기 연결/취소·실제 loopback/Qt 재시도와 수명 |
+| 입력: FS-12 | EmuInstanceInput·JoystickSelection·InputConfig·Config | 누락/재정렬/동일 모델·숫자 설정 이관·인스턴스 배정·Cancel·설정 재로드 |
+| DSi title: FS-16 | DSi_NAND·TitleManagerDialog | 입력/TMD 확인·기존 save 보존·NAND staging/backup·rollback·복구/정리 실패 경고 |
+
+[1.1.29 구현 기록](releases/1.1.29.md)의 최종 Windows 빌드와 548/548 회귀·기존 전체 Qt 생성 guest 검증은 통과했다. 실제 매체·두 PC 게임/다자간 mesh·물리 hotplug·다른 OS 수락과 공개 전체 계획은 유지한다. 고유 serial 없는 패드는 재연결 뒤 재선택하며, NAND transaction은 전원 상실 복구를 보장하지 않는다.
+
 ## 다음 독립 블록
 
-다음 후보는 DSi title 교체 rollback(FS-16), LAN handshake·취소·UI 연결 수명(NP-02/FS-17), 입력 장치 identity·인스턴스 배정(FS-12)이다. 각각 NAND/title, LAN 연결, 입력 장치의 소유 파일을 먼저 고정하고 생성 자료·로컬 연결·기존 장치 fixture로 반례를 확인한다. 공유 frontend·core 연결·CMake는 부모가 순차 통합한다. 실제 매체·두 PC 게임·물리 hotplug 수락은 독립 gate로 남기고 앞선 잔여 과제와 공개 전체 계획을 유지한다.
+새 감사의 실제 반례를 우선 합류시킨다. 이미 확인한 검증 공백은 3D source A→DMA-first/warmed JIT 캡처 소비(CJ-19/GR-05/06)와 상태 복원 뒤 host 오디오 이력(AD-05/CJ-20)이다. 전자는 기존 capture guest fixture, 후자는 생성 PCM의 성공 load/복구 가능한 실패에서 시작한다. 같은 파일의 쓰기는 한 담당자가 통합하며 실기·native A64·플랫폼 수락을 기다리는 동안 독립 로컬 작업을 계속한다.
 
 ## 작업 소유권
 

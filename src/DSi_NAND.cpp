@@ -17,6 +17,8 @@
 */
 
 #include <stdio.h>
+#include <algorithm>
+#include <limits>
 
 #include "DSi.h"
 #include "DSi_AES.h"
@@ -212,9 +214,9 @@ u32 NANDImage::ReadFATBlock(u64 addr, u32 len, u8* buf)
     AES_ctx ctx;
     SetupFATCrypto(&ctx, ctr);
 
-    FileSeek(CurFile, addr, FileSeekOrigin::Start);
-    u32 res = FileRead(buf, len, 1, CurFile);
-    if (!res) return 0;
+    if (!FileSeek(CurFile, addr, FileSeekOrigin::Start) ||
+        FileRead(buf, len, 1, CurFile) != 1)
+        return 0;
 
     for (u32 i = 0; i < len; i += 16)
     {
@@ -234,7 +236,7 @@ u32 NANDImage::WriteFATBlock(u64 addr, u32 len, const u8* buf)
     AES_ctx ctx;
     SetupFATCrypto(&ctx, ctr);
 
-    FileSeek(CurFile, addr, FileSeekOrigin::Start);
+    if (!FileSeek(CurFile, addr, FileSeekOrigin::Start)) return 0;
 
     for (u32 s = 0; s < len; s += 0x200)
     {
@@ -248,8 +250,7 @@ u32 NANDImage::WriteFATBlock(u64 addr, u32 len, const u8* buf)
             Bswap128(&tempbuf[i], tmp);
         }
 
-        u32 res = FileWrite(tempbuf, sizeof(tempbuf), 1, CurFile);
-        if (!res) return 0;
+        if (FileWrite(tempbuf, sizeof(tempbuf), 1, CurFile) != 1) return 0;
     }
 
     return len;
@@ -625,7 +626,7 @@ void debug_listfiles(const char* path)
 
 bool NANDMount::ImportFile(const char* path, const u8* data, size_t len)
 {
-    if (!data || !len || !path)
+    if (!data || !len || !path || len > std::numeric_limits<FSIZE_t>::max())
         return false;
 
     FF_FIL file;
@@ -638,7 +639,7 @@ bool NANDMount::ImportFile(const char* path, const u8* data, size_t len)
     }
 
     u8 buf[0x1000];
-    for (u32 i = 0; i < len; i += sizeof(buf))
+    for (size_t i = 0; i < len; i += sizeof(buf))
     { // For each block in the file...
         u32 blocklen;
         if ((i + sizeof(buf)) > len)
@@ -648,10 +649,14 @@ bool NANDMount::ImportFile(const char* path, const u8* data, size_t len)
 
         u32 nwrite;
         memcpy(buf, data + i, blocklen);
-        f_write(&file, buf, blocklen, &nwrite);
+        if (f_write(&file, buf, blocklen, &nwrite) != FR_OK || nwrite != blocklen)
+        {
+            f_close(&file);
+            return false;
+        }
     }
 
-    f_close(&file);
+    if (f_close(&file) != FR_OK) return false;
     Log(LogLevel::Debug, "Imported file from memory to %s\n", path);
 
     return true;
@@ -945,13 +950,11 @@ bool NANDMount::CreateTicket(const char* path, u32 titleid0, u32 titleid1, u8 ve
 
     memset(&ticket[0x222], 0xFF, 0x20);
 
-    Image->ESEncrypt(ticket, 0x2A4);
+    bool ok = Image->ESEncrypt(ticket, 0x2A4);
 
-    f_write(&file, ticket, 0x2C4, &nwrite);
+    ok = ok && f_write(&file, ticket, sizeof(ticket), &nwrite) == FR_OK && nwrite == sizeof(ticket);
 
-    f_close(&file);
-
-    return true;
+    return f_close(&file) == FR_OK && ok;
 }
 
 bool NANDMount::CreateSaveFile(const char* path, u32 len)
@@ -960,17 +963,17 @@ bool NANDMount::CreateSaveFile(const char* path, u32 len)
     if (len < 0x200) return false;
     if (len > 0x8000000) return false;
 
-    u32 clustersize, maxfiles, totsec16, fatsz16;
+    u32 clustersize, maxfiles, totsec16 = 1, fatsz16;
 
     // CHECKME!
     // code inspired from https://github.com/Epicpkmn11/NTM/blob/master/arm9/src/sav.c
     const u16 sectorsize = 0x200;
 
     // fit maximum sectors for the size
-    const u16 maxsectors = len / sectorsize;
-    u16 tracksize = 1;
-    u16 headcount = 1;
-    u16 totsec16next = 0;
+    const u32 maxsectors = std::min<u32>(len / sectorsize, 0xFFFF);
+    u32 tracksize = 1;
+    u32 headcount = 1;
+    u32 totsec16next = 0;
     while (totsec16next <= maxsectors)
     {
         totsec16next = tracksize * (headcount + 1) * (headcount + 1);
@@ -1013,8 +1016,8 @@ bool NANDMount::CreateSaveFile(const char* path, u32 len)
         return false;
     }
 
-    u8* data = new u8[len];
-    memset(data, 0, len);
+    // Only the boot sector is nonzero; do not allocate the full save size.
+    u8 data[0x200] = {};
 
     // create FAT header
     data[0x000] = 0xE9;
@@ -1036,166 +1039,321 @@ bool NANDMount::CreateSaveFile(const char* path, u32 len)
     memcpy(&data[0x036], "FAT12   ", 8);
     *(u16*)&data[0x1FE] = 0xAA55;
 
-    f_write(&file, data, len, &nwrite);
-
-    f_close(&file);
-    delete[] data;
-
-    return true;
+    bool ok = f_write(&file, data, sizeof(data), &nwrite) == FR_OK && nwrite == sizeof(data);
+    u8 zeros[0x1000] = {};
+    for (u32 offset = sizeof(data); ok && offset < len;)
+    {
+        u32 count = std::min<u32>(len - offset, sizeof(zeros));
+        ok = f_write(&file, zeros, count, &nwrite) == FR_OK && nwrite == count;
+        offset += count;
+    }
+    return f_close(&file) == FR_OK && ok;
 }
 
-bool NANDMount::InitTitleFileStructure(const NDSHeader& header, const DSi_TMD::TitleMetadata& tmd, bool readonly)
+// Only remove transaction-owned paths. Stop on the first error, leaving the
+// remainder available for inspection/recovery. Never use the unchecked UI delete
+// helpers on a backup or on the previous installation.
+static bool RemoveTitleStage(const std::string& path)
 {
-    u32 titleid0 = tmd.GetCategory();
-    u32 titleid1 = tmd.GetID();
-    FRESULT res;
-    FF_DIR ticketdir;
     FF_FILINFO info;
-
-    char fname[128];
-    FF_FIL file;
-    u32 nwrite;
-
-    // ticket
-    snprintf(fname, sizeof(fname), "0:/ticket/%08x", titleid0);
-    f_mkdir(fname);
-
-    snprintf(fname, sizeof(fname), "0:/ticket/%08x/%08x.tik", titleid0, titleid1);
-    if (!CreateTicket(fname, tmd.GetCategoryNoByteswap(), tmd.GetIDNoByteswap(), header.ROMVersion))
-        return false;
-
-    if (readonly) f_chmod(fname, AM_RDO, AM_RDO);
-
-    // folder
-
-    snprintf(fname, sizeof(fname), "0:/title/%08x", titleid0);
-    f_mkdir(fname);
-    snprintf(fname, sizeof(fname), "0:/title/%08x/%08x", titleid0, titleid1);
-    f_mkdir(fname);
-    snprintf(fname, sizeof(fname), "0:/title/%08x/%08x/content", titleid0, titleid1);
-    f_mkdir(fname);
-    snprintf(fname, sizeof(fname), "0:/title/%08x/%08x/data", titleid0, titleid1);
-    f_mkdir(fname);
-
-    // data
-
-    snprintf(fname, sizeof(fname), "0:/title/%08x/%08x/data/public.sav", titleid0, titleid1);
-    if (!CreateSaveFile(fname, header.DSiPublicSavSize))
-        return false;
-
-    snprintf(fname, sizeof(fname), "0:/title/%08x/%08x/data/private.sav", titleid0, titleid1);
-    if (!CreateSaveFile(fname, header.DSiPrivateSavSize))
-        return false;
-
-    if (header.AppFlags & 0x04)
+    FRESULT res = f_stat(path.c_str(), &info);
+    if (res == FR_NO_FILE || res == FR_NO_PATH) return true;
+    if (res != FR_OK) return false;
+    if (info.fattrib & AM_DIR)
     {
-        // custom banner file
-        snprintf(fname, sizeof(fname), "0:/title/%08x/%08x/data/banner.sav", titleid0, titleid1);
-        res = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
-        if (res != FR_OK)
+        FF_DIR dir;
+        if (f_opendir(&dir, path.c_str()) != FR_OK) return false;
+        std::vector<std::string> children;
+        while ((res = f_readdir(&dir, &info)) == FR_OK && info.fname[0])
+            children.push_back(path + "/" + info.fname);
+        bool closed = f_closedir(&dir) == FR_OK;
+        if (res != FR_OK || !closed) return false;
+        for (const auto& child : children)
+            if (!RemoveTitleStage(child)) return false;
+    }
+    if (f_chmod(path.c_str(), 0, AM_RDO) != FR_OK) return false;
+    return f_unlink(path.c_str()) == FR_OK;
+}
+
+static bool TitleDirectory(const std::string& path)
+{
+    FRESULT res = f_mkdir(path.c_str());
+    if (res == FR_OK) return true;
+    FF_FILINFO info;
+    return res == FR_EXIST && f_stat(path.c_str(), &info) == FR_OK && (info.fattrib & AM_DIR);
+}
+
+// FatFs rename is NOT power-loss atomic. In particular FR_DISK_ERR may leave
+// cross-linked directory entries. Do not unlink either name in that situation.
+// A non-I/O failure can be rolled back only if the names establish what moved.
+static bool MoveTitlePath(const std::string& from, const std::string& to, bool& moved, bool& uncertain)
+{
+    FRESULT res = f_rename(from.c_str(), to.c_str());
+    moved = res == FR_OK;
+    if (moved) return true;
+    if (res == FR_DISK_ERR || res == FR_INT_ERR)
+    {
+        uncertain = true;
+        return false;
+    }
+    FRESULT src = f_stat(from.c_str(), nullptr);
+    FRESULT dst = f_stat(to.c_str(), nullptr);
+    moved = src == FR_NO_FILE && dst == FR_OK;
+    uncertain = !moved && !(src == FR_OK && dst == FR_NO_FILE);
+    return false;
+}
+
+bool NANDMount::ImportTitle(const NDSHeader& header, u64 length,
+    const std::function<bool(u8*, u32)>& read, const DSi_TMD::TitleMetadata& tmd, bool readonly)
+{
+    u64 expectedLength = 0;
+    for (u8 byte : tmd.Contents.ContentSize) expectedLength = (expectedLength << 8) | byte;
+    auto validSave = [](u32 size) { return size == 0 || (size >= 0x200 && size <= 0x8000000 && !(size & 0x1FF)); };
+    if (!header.IsDSiWare() || header.DSiTitleIDHigh != tmd.GetCategory() ||
+        header.DSiTitleIDLow != tmd.GetID() || length < 0x4000 ||
+        length > std::numeric_limits<FSIZE_t>::max() || expectedLength != length ||
+        tmd.NumberOfContents != 0x0100 || tmd.BootContentIndex != 0 ||
+        tmd.Contents.ContentIndex[0] != 0 || tmd.Contents.ContentIndex[1] != 0 ||
+        !validSave(header.DSiPublicSavSize) || !validSave(header.DSiPrivateSavSize))
+    {
+        ImportResult = TitleImportResult::InvalidInput;
+        return false;
+    }
+
+    char id[32], version[16];
+    snprintf(id, sizeof(id), "%08x/%08x", tmd.GetCategory(), tmd.GetID());
+    snprintf(version, sizeof(version), "%08x.app", tmd.Contents.GetVersion());
+    const std::string title = std::string("0:/title/") + id;
+    const std::string ticket = std::string("0:/ticket/") + id + ".tik";
+    snprintf(id, sizeof(id), "%08x-%08x", tmd.GetCategory(), tmd.GetID());
+    const std::string stage = std::string("0:/_install/") + id;
+    FRESULT pending = f_stat(stage.c_str(), nullptr);
+    if (pending == FR_OK)
+    {
+        ImportResult = TitleImportResult::RecoveryRequired;
+        ImportRecoveryPath = stage;
+        return false;
+    }
+    if (pending != FR_NO_FILE && pending != FR_NO_PATH) return false;
+    if (!TitleDirectory("0:/_install")) return false;
+    if (f_mkdir(stage.c_str()) != FR_OK) return false;
+    ImportRecoveryPath = stage;
+
+    // Five fixed installation objects, not a general filesystem transaction.
+    // Existing save files (including unknown data files) are never written or
+    // renamed. Missing requested saves are prepared before publishing content.
+    struct Swap
+    {
+        std::string live, next, backup;
+        bool active = true, old = false, installed = false;
+    };
+    std::array<Swap, 5> swaps = {{
+        {title + "/data/public.sav", stage + "/public.sav", ""},
+        {title + "/data/private.sav", stage + "/private.sav", ""},
+        {title + "/data/banner.sav", stage + "/banner.sav", ""},
+        {ticket, stage + "/ticket", stage + "/old-ticket"},
+        {title + "/content", stage + "/content", stage + "/old-content"}
+    }};
+    std::vector<std::string> createdDirectories;
+    auto fail = [&](TitleImportResult result = TitleImportResult::Failed)
+    {
+        ImportResult = result;
+        for (auto it = createdDirectories.rbegin(); it != createdDirectories.rend(); ++it)
         {
-            Log(LogLevel::Error, "ImportTitle: failed to create banner.sav (%d)\n", res);
+            if (f_unlink(it->c_str()) != FR_OK)
+            {
+                ImportResult = TitleImportResult::CleanupPending;
+                return false;
+            }
+        }
+        if (!RemoveTitleStage(stage) || !FileFlush(Image->GetFile()))
+            ImportResult = TitleImportResult::CleanupPending;
+        else
+            ImportRecoveryPath.clear();
+        return false;
+    };
+
+    if (f_mkdir((stage + "/content").c_str()) != FR_OK) return fail();
+    FF_FIL app;
+    const std::string appPath = stage + "/content/" + version;
+    if (f_open(&app, appPath.c_str(), FA_CREATE_NEW | FA_WRITE) != FR_OK) return fail();
+    SHA1_CTX sha;
+    SHA1Init(&sha);
+    bool copied = true;
+    u8 buffer[0x1000];
+    for (u64 offset = 0; copied && offset < length;)
+    {
+        u32 count = static_cast<u32>(std::min<u64>(sizeof(buffer), length - offset));
+        u32 written = 0;
+        copied = read(buffer, count);
+        // Keep the validated header and streamed content from the same input.
+        if (copied && offset == 0 && memcmp(buffer, &header, sizeof(header))) copied = false;
+        if (copied)
+        {
+            SHA1Update(&sha, buffer, count);
+            copied = f_write(&app, buffer, count, &written) == FR_OK && written == count;
+        }
+        offset += count;
+    }
+    bool closed = f_close(&app) == FR_OK;
+    u8 digest[20];
+    SHA1Final(digest, &sha);
+    if (!copied || !closed) return fail();
+    if (memcmp(digest, tmd.Contents.ContentSha1Hash, sizeof(digest)))
+        return fail(TitleImportResult::InvalidInput);
+
+    // Verify the staged executable through real NAND reads before swapping. This
+    // catches read failures and successful-but-corrupt writes; signatures/actual
+    // title boot compatibility are not established by this hash comparison.
+    if (f_open(&app, appPath.c_str(), FA_READ) != FR_OK) return fail();
+    SHA1Init(&sha);
+    copied = f_size(&app) == length;
+    for (u64 offset = 0; copied && offset < length;)
+    {
+        u32 count = static_cast<u32>(std::min<u64>(sizeof(buffer), length - offset)), got = 0;
+        copied = f_read(&app, buffer, count, &got) == FR_OK && got == count;
+        if (copied) SHA1Update(&sha, buffer, count);
+        offset += count;
+    }
+    closed = f_close(&app) == FR_OK;
+    SHA1Final(digest, &sha);
+    if (!copied || !closed || memcmp(digest, tmd.Contents.ContentSha1Hash, sizeof(digest))) return fail();
+
+    if (!CreateTicket(swaps[3].next.c_str(), tmd.GetCategoryNoByteswap(), tmd.GetIDNoByteswap(), header.ROMVersion) ||
+        !ImportFile((stage + "/content/title.tmd").c_str(), reinterpret_cast<const u8*>(&tmd), sizeof(tmd)))
+        return fail();
+    const u32 sizes[] = {header.DSiPublicSavSize, header.DSiPrivateSavSize, (header.AppFlags & 4) ? 0x4000U : 0U};
+    for (size_t i = 0; i < 3; ++i)
+    {
+        auto& swap = swaps[i];
+        FF_FILINFO info;
+        FRESULT res = f_stat(swap.live.c_str(), &info);
+        if (res == FR_OK)
+        {
+            if (info.fattrib & AM_DIR) return fail();
+            swap.active = false;
+        }
+        else if (res != FR_NO_FILE && res != FR_NO_PATH) return fail();
+        else if (sizes[i] == 0) swap.active = false;
+        else if (i == 2)
+        {
+            u8 banner[0x4000] = {};
+            if (!ImportFile(swap.next.c_str(), banner, sizeof(banner))) return fail();
+        }
+        else if (!CreateSaveFile(swap.next.c_str(), sizes[i])) return fail();
+    }
+    if (readonly)
+    {
+        for (const auto& path : {appPath, stage + "/content/title.tmd", swaps[3].next})
+            if (f_chmod(path.c_str(), AM_RDO, AM_RDO) != FR_OK) return fail();
+    }
+    if (!FileFlush(Image->GetFile())) return fail();
+
+    // Create only missing parent directories. Remember them so an ordinary
+    // failure restores the absence of a previously uninstalled title as well.
+    for (const auto& path : {std::string("0:/title"), title.substr(0, title.find_last_of('/')), title,
+                            title + "/data", std::string("0:/ticket"), ticket.substr(0, ticket.find_last_of('/'))})
+    {
+        FF_FILINFO info;
+        FRESULT res = f_stat(path.c_str(), &info);
+        if (res == FR_OK) { if (!(info.fattrib & AM_DIR)) return fail(); }
+        else if (res == FR_NO_FILE || res == FR_NO_PATH)
+        {
+            if (f_mkdir(path.c_str()) != FR_OK) return fail();
+            createdDirectories.push_back(path);
+        }
+        else return fail();
+    }
+
+    bool uncertain = false;
+    auto rollback = [&]()
+    {
+        if (uncertain)
+        {
+            ImportResult = TitleImportResult::RecoveryRequired;
             return false;
         }
-
-        u8 bannersav[0x4000];
-        memset(bannersav, 0, sizeof(bannersav));
-        f_write(&file, bannersav, sizeof(bannersav), &nwrite);
-
-        f_close(&file);
-    }
-
-    // TMD
-
-    snprintf(fname, sizeof(fname), "0:/title/%08x/%08x/content/title.tmd", titleid0, titleid1);
-    res = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
-    if (res != FR_OK)
+        bool restored = true;
+        for (auto it = swaps.rbegin(); it != swaps.rend(); ++it)
+        {
+            bool moved = false;
+            if (it->installed)
+            {
+                if (!MoveTitlePath(it->live, it->next, moved, uncertain)) restored = false;
+                if (uncertain) break;
+                if (!moved) continue; // Never overwrite/delete an unremoved new object.
+            }
+            if (uncertain) break;
+            if (it->old && !MoveTitlePath(it->backup, it->live, moved, uncertain)) restored = false;
+            if (uncertain) break;
+        }
+        if (!restored || uncertain || !FileFlush(Image->GetFile()))
+        {
+            ImportResult = TitleImportResult::RollbackFailed;
+            return false; // Preserve ALL remaining backup/stage objects.
+        }
+        return fail();
+    };
+    for (auto& swap : swaps)
     {
-        Log(LogLevel::Error, "ImportTitle: failed to create TMD (%d)\n", res);
-        return false;
+        if (!swap.active) continue;
+        FRESULT exists = f_stat(swap.live.c_str(), nullptr);
+        if (exists == FR_OK)
+        {
+            // A save appeared after staging: do not overwrite it.
+            if (swap.backup.empty()) return rollback();
+            if (!MoveTitlePath(swap.live, swap.backup, swap.old, uncertain)) return rollback();
+        }
+        else if (exists != FR_NO_FILE) return rollback();
+        if (!MoveTitlePath(swap.next, swap.live, swap.installed, uncertain)) return rollback();
     }
+    if (!FileFlush(Image->GetFile())) return rollback();
 
-    f_write(&file, &tmd, sizeof(DSi_TMD::TitleMetadata), &nwrite);
-
-    f_close(&file);
-
-    if (readonly) f_chmod(fname, AM_RDO, AM_RDO);
-
+    // This is the commit point: all content, metadata, ticket and missing saves
+    // are installed. Cleanup failure is a distinct installed-with-warning result.
+    ImportResult = TitleImportResult::Success;
+    if (!RemoveTitleStage(stage) || !FileFlush(Image->GetFile()))
+        ImportResult = TitleImportResult::InstalledCleanupPending;
+    else
+        ImportRecoveryPath.clear();
     return true;
 }
 
 bool NANDMount::ImportTitle(const char* appfile, const DSi_TMD::TitleMetadata& tmd, bool readonly)
 {
-    NDSHeader header {};
-    {
-        Platform::FileHandle* f = OpenLocalFile(appfile, FileMode::Read);
-        if (!f) return false;
-        FileRead(&header, sizeof(header), 1, f);
-        CloseFile(f);
-    }
-
-    u32 version = tmd.Contents.GetVersion();
-    Log(LogLevel::Info, ".app version: %08x\n", version);
-
-    u32 titleid0 = tmd.GetCategory();
-    u32 titleid1 = tmd.GetID();
-    Log(LogLevel::Info, "Title ID: %08x/%08x\n", titleid0, titleid1);
-
-    if (!InitTitleFileStructure(header, tmd, readonly))
-    {
-        Log(LogLevel::Error, "ImportTitle: failed to initialize file structure for imported title\n");
-        return false;
-    }
-
-    // executable
-
-    char fname[128];
-    snprintf(fname, sizeof(fname), "0:/title/%08x/%08x/content/%08x.app", titleid0, titleid1, version);
-    if (!ImportFile(fname, appfile))
-    {
-        Log(LogLevel::Error, "ImportTitle: failed to create executable\n");
-        return false;
-    }
-
-    if (readonly) f_chmod(fname, AM_RDO, AM_RDO);
-
-    return true;
+    ImportResult = TitleImportResult::Failed;
+    ImportRecoveryPath.clear();
+    if (!appfile) { ImportResult = TitleImportResult::InvalidInput; return false; }
+    Platform::FileHandle* file = OpenLocalFile(appfile, FileMode::Read);
+    if (!file) return false;
+    NDSHeader header{};
+    u64 length = FileLength(file);
+    bool readable = FileRead(&header, sizeof(header), 1, file) == 1 && FileSeek(file, 0, FileSeekOrigin::Start);
+    bool installed = false;
+    if (readable)
+        installed = ImportTitle(header, length, [file](u8* data, u32 count) {
+            return FileRead(data, 1, count, file) == count;
+        }, tmd, readonly);
+    else
+        ImportResult = TitleImportResult::InvalidInput;
+    CloseFile(file);
+    return installed;
 }
 
 bool NANDMount::ImportTitle(const u8* app, size_t appLength, const DSi_TMD::TitleMetadata& tmd, bool readonly)
 {
-    if (!app || appLength < sizeof(NDSHeader))
-        return false;
-
-    NDSHeader header {};
+    ImportResult = TitleImportResult::InvalidInput;
+    ImportRecoveryPath.clear();
+    if (!app || appLength < sizeof(NDSHeader)) return false;
+    NDSHeader header;
     memcpy(&header, app, sizeof(header));
-
-    u32 version = tmd.Contents.GetVersion();
-    Log(LogLevel::Info, ".app version: %08x\n", version);
-
-    u32 titleid0 = tmd.GetCategory();
-    u32 titleid1 = tmd.GetID();
-    Log(LogLevel::Info, "Title ID: %08x/%08x\n", titleid0, titleid1);
-
-    if (!InitTitleFileStructure(header, tmd, readonly))
-    {
-        Log(LogLevel::Error, "ImportTitle: failed to initialize file structure for imported title\n");
-        return false;
-    }
-
-    // executable
-
-    char fname[128];
-    snprintf(fname, sizeof(fname), "0:/title/%08x/%08x/content/%08x.app", titleid0, titleid1, version);
-    if (!ImportFile(fname, app, appLength))
-    {
-        Log(LogLevel::Error, "ImportTitle: failed to create executable\n");
-        return false;
-    }
-
-    if (readonly) f_chmod(fname, AM_RDO, AM_RDO);
-
-    return true;
+    ImportResult = TitleImportResult::Failed;
+    size_t offset = 0;
+    return ImportTitle(header, appLength, [&](u8* data, u32 count) {
+        memcpy(data, app + offset, count);
+        offset += count;
+        return true;
+    }, tmd, readonly);
 }
 
 void NANDMount::DeleteTitle(u32 category, u32 titleid)

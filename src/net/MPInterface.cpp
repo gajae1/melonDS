@@ -41,28 +41,30 @@ public:
 };
 
 
-std::unique_ptr<MPInterface> MPInterface::Current(std::make_unique<DummyMP>());
-MPInterfaceType MPInterface::CurrentType = MPInterface_Dummy;
+std::atomic<std::shared_ptr<MPInterface>> MPInterface::Current{std::make_shared<DummyMP>()};
+std::atomic<MPInterfaceType> MPInterface::CurrentType{MPInterface_Dummy};
 
 
 void MPInterface::Set(MPInterfaceType type)
 {
+    std::shared_ptr<MPInterface> next;
     switch (type)
     {
     case MPInterface_Local:
-        Current = std::make_unique<LocalMP>();
+        next = std::make_shared<LocalMP>();
         break;
 
     case MPInterface_LAN:
-        Current = std::make_unique<LAN>();
+        next = std::make_shared<LAN>();
         break;
 
     default:
-        Current = std::make_unique<DummyMP>();
+        next = std::make_shared<DummyMP>();
         break;
     }
 
-    CurrentType = type;
+    Current.store(std::move(next));
+    CurrentType.store(type);
 }
 
 }

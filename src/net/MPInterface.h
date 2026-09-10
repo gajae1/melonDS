@@ -20,6 +20,7 @@
 #define MPINTERFACE_H
 
 #include <memory>
+#include <atomic>
 #include "types.h"
 
 namespace melonDS
@@ -48,12 +49,15 @@ class MPInterface
 public:
     virtual ~MPInterface() = default;
 
-    static MPInterface& Get() { return *Current; }
-    static MPInterfaceType GetType() { return CurrentType; }
+    // Retain the interface for the whole operation: a UI session switch can
+    // otherwise destroy it while an emulation worker is still receiving.
+    static std::shared_ptr<MPInterface> Acquire() { return Current.load(); }
+    static MPInterface& Get() { return *Acquire(); } // Requires externally excluded Set().
+    static MPInterfaceType GetType() { return CurrentType.load(); }
     static void Set(MPInterfaceType type);
 
-    [[nodiscard]] int GetRecvTimeout() const noexcept { return RecvTimeout; }
-    void SetRecvTimeout(int timeout) noexcept { RecvTimeout = timeout; }
+    [[nodiscard]] int GetRecvTimeout() const noexcept { return RecvTimeout.load(); }
+    void SetRecvTimeout(int timeout) noexcept { RecvTimeout.store(timeout); }
 
     // function called every video frame
     virtual void Process() = 0;
@@ -70,11 +74,11 @@ public:
     virtual u16 RecvReplies(int inst, u8* data, u64 timestamp, u16 aidmask) = 0;
 
 protected:
-    int RecvTimeout = 25;
+    std::atomic<int> RecvTimeout{25};
 
 private:
-    static MPInterfaceType CurrentType;
-    static std::unique_ptr<MPInterface> Current;
+    static std::atomic<MPInterfaceType> CurrentType;
+    static std::atomic<std::shared_ptr<MPInterface>> Current;
 };
 
 }

@@ -24,6 +24,7 @@
 #include <fstream>
 #include <filesystem>
 #include <utility>
+#include <climits>
 #include <QSaveFile>
 #include "UTF8.h"
 #include <regex>
@@ -580,6 +581,10 @@ Table Table::GetTable(const std::string& path, const std::string& defpath)
 int Table::GetInt(const std::string& path)
 {
     toml::value& tval = ResolvePath(path);
+    // An invalid device number must not wrap/truncate or become device zero.
+    if (path == "JoystickID" && !tval.is_empty() &&
+        (!tval.is_integer() || tval.as_integer() < -1 || tval.as_integer() > INT_MAX))
+        return -2;
     if (!tval.is_integer())
         tval = FindDefault(path, 0, DefaultInts);
 
@@ -893,7 +898,16 @@ Table GetLocalTable(int instance)
     std::string key = "Instance" + std::to_string(instance);
     toml::value& tbl = RootTable[key];
     if (tbl.is_empty())
+    {
         RootTable[key] = RootTable["Instance0"];
+        if (instance > 0)
+        {
+            // Inherit mappings, but a new logical instance has no assignment
+            // until selected. Explicitly saved shared assignments remain valid.
+            RootTable[key]["JoystickID"] = -1;
+            RootTable[key]["JoystickDevice"] = toml::table();
+        }
+    }
 
     return Table(tbl, key);
 }

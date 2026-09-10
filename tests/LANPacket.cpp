@@ -10,6 +10,7 @@
 #include <cstring>
 #include <deque>
 #include <string_view>
+#include <span>
 #include <vector>
 
 namespace
@@ -18,6 +19,31 @@ std::deque<ENetEvent> Events;
 unsigned FreedPackets = 0;
 ENetPeer* SentPeer = nullptr;
 std::vector<melonDS::u8> SentPacket;
+melonDS::u64 Tick = 1000;
+ENetPeer ClientPeer{};
+unsigned HostsCreated = 0, HostsDestroyed = 0;
+
+ENetHost* MakeHost(const ENetAddress*, size_t, size_t, enet_uint32, enet_uint32)
+{
+    ++HostsCreated;
+    return new ENetHost{};
+}
+void DestroyHost(ENetHost* host)
+{
+    ++HostsDestroyed;
+    delete host;
+    for (auto& event : Events)
+        if (event.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(event.packet);
+    Events.clear();
+}
+ENetPeer* ConnectHost(ENetHost*, const ENetAddress* address, size_t, enet_uint32)
+{
+    ClientPeer = {};
+    ClientPeer.address = *address;
+    ClientPeer.state = ENET_PEER_STATE_CONNECTED;
+    return &ClientPeer;
+}
+void DisconnectPeer(ENetPeer* peer, enet_uint32) { peer->state = ENET_PEER_STATE_DISCONNECTED; }
 
 int InjectHostService(ENetHost*, ENetEvent* event, enet_uint32)
 {
@@ -47,16 +73,26 @@ void NoFlush(ENetHost*) {}
 #define enet_peer_send CapturePeerSend
 #define enet_host_broadcast CaptureBroadcast
 #define enet_host_flush NoFlush
+#define enet_host_create MakeHost
+#define enet_host_destroy DestroyHost
+#define enet_host_connect ConnectHost
+#define enet_peer_disconnect DisconnectPeer
+#define enet_peer_disconnect_now DisconnectPeer
 #include "../src/net/LAN.cpp"
 #undef enet_host_service
 #undef enet_peer_send
 #undef enet_host_broadcast
 #undef enet_host_flush
+#undef enet_host_create
+#undef enet_host_destroy
+#undef enet_host_connect
+#undef enet_peer_disconnect
+#undef enet_peer_disconnect_now
 
 namespace melonDS::Platform
 {
 // Keep packets younger than one frame; waiting for input is deterministic too.
-u64 GetMSCount() { return 1000; }
+u64 GetMSCount() { return Tick; }
 }
 
 namespace melonDS
@@ -81,6 +117,7 @@ struct LANPacketTest
     LANPacketTest()
     {
         Net.Active = true;
+        Net.Connection = LAN::ClientState::Connected;
         Net.Host = &Host;
         Net.MyPlayer = {};
         Net.MyPlayer.ID = 0;
@@ -98,6 +135,7 @@ struct LANPacketTest
         Net.LastHostID = 2;
         Net.LastHostPeer = &Peers[2];
         FreedPackets = 0;
+        Tick = 1000;
         SentPeer = nullptr;
         SentPacket.clear();
     }
@@ -125,6 +163,7 @@ struct LANPacketTest
     void MismatchPlayer(int id) { Net.Players[id].ID = 16; }
     void ConnectingPlayer(int id) { Net.Players[id].Status = LAN::Player_Connecting; }
     void ReadyPlayers(u16 mask) { Net.ConnectedBitmask = mask; }
+    void SetHost(bool host) { Net.IsHost = host; }
 };
 }
 
@@ -252,6 +291,101 @@ bool ReadyNotificationCanLag()
         && Copied(out, 0, 40) && FreedPackets == 1;
 }
 
+bool EmptyControl(bool host)
+{
+    LANPacketTest f;
+    f.SetHost(host);
+    auto* packet = enet_packet_create(nullptr, 0, 0);
+    packet->freeCallback = PacketFreed;
+    Inject(packet, &f.Peers[1]);
+    Events.back().channelID = 0;
+    const auto before = f.Snapshot();
+    f.Net.Process();
+    return FreedPackets == 1 && f.Snapshot() == before;
+}
+
+bool ControlFloodYields()
+{
+    LANPacketTest f;
+    for (int i = 0; i < 2000; ++i)
+    {
+        auto* packet = enet_packet_create(nullptr, 0, 0);
+        packet->freeCallback = PacketFreed;
+        Inject(packet, &f.Peers[1]);
+        Events.back().channelID = 0;
+    }
+    const auto before = f.Snapshot();
+    f.Net.Process();
+    return FreedPackets > 0 && !Events.empty() && f.Snapshot() == before;
+}
+
+void Control(std::span<const u8> bytes, ENetPeer* peer = &ClientPeer)
+{
+    auto* packet = enet_packet_create(bytes.data(), bytes.size(), ENET_PACKET_FLAG_RELIABLE);
+    packet->freeCallback = PacketFreed;
+    Inject(packet, peer);
+    Events.back().channelID = 0;
+}
+
+std::array<u8, 11> Init(u8 id = 1, u8 max = 2, u8 version = 1)
+{
+    return {1, 'L', 'A', 'N', 'P', version, 0, 0, 0, id, max};
+}
+
+void PlayerList()
+{
+    std::array<u8, 2 + 16 * sizeof(LAN::Player)> bytes{};
+    bytes[0] = 3;
+    bytes[1] = 2;
+    LAN::Player players[16]{};
+    players[0].Status = LAN::Player_Host;
+    std::strcpy(players[0].Name, "Host");
+    players[1].ID = 1;
+    players[1].Status = LAN::Player_Client;
+    std::strcpy(players[1].Name, "Client");
+    std::memcpy(bytes.data() + 2, players, sizeof(players));
+    Control(bytes);
+}
+
+bool HandshakeAndRejoin()
+{
+    LAN net;
+    Tick = 1000;
+    FreedPackets = 0;
+    const auto destroyed = HostsDestroyed;
+    if (!net.StartClient("Client", "127.0.0.1") || net.GetClientState() != LAN::ClientState::Connecting)
+        return false;
+    Control({});
+    Control(Init());
+    net.Process();
+    if (FreedPackets != 2 || net.GetClientState() != LAN::ClientState::Connecting ||
+        SentPacket.size() != 9 + sizeof(LAN::Player)) return false;
+    PlayerList();
+    net.Process();
+    if (FreedPackets != 3 || net.GetClientState() != LAN::ClientState::Connected ||
+        net.GetPlayerList().size() != 2) return false;
+    net.EndSession();
+    if (HostsDestroyed != destroyed + 1 || !net.GetPlayerList().empty() ||
+        net.GetNumPlayers() || net.GetMaxPlayers()) return false;
+    if (!net.StartClient("Again", "127.0.0.1")) return false;
+    net.EndSession(); // Cancel before the first packet.
+    return net.GetClientState() == LAN::ClientState::Idle && HostsDestroyed == destroyed + 2;
+}
+
+bool HandshakeFailure(LAN::ClientState expected, bool timeout, u8 id = 1, u8 max = 2, u8 version = 1)
+{
+    LAN net;
+    Tick = 0xFFFFFF00;
+    FreedPackets = 0;
+    const auto destroyed = HostsDestroyed;
+    if (!net.StartClient("Client", "127.0.0.1")) return false;
+    if (timeout) Tick += 5000;
+    else Control(Init(id, max, version));
+    net.Process();
+    return net.GetClientState() == expected && HostsDestroyed == destroyed + 1 &&
+        net.GetPlayerList().empty() && FreedPackets == (timeout ? 0u : 1u);
+}
+
 int Failures = 0;
 int Cases = 0;
 void Check(std::string_view name, bool pass)
@@ -271,6 +405,14 @@ int main()
     Check("blank-and-aid15-reply-preserve-v1-slot-crop", Replies());
     Check("blank-reply-completes-without-timeout", BlankReplyCompletes());
     Check("ready-notification-may-lag-other-channel", ReadyNotificationCanLag());
+    Check("host-empty-control-releases-packet", EmptyControl(true));
+    Check("client-empty-control-releases-packet", EmptyControl(false));
+    Check("control-flood-yields-to-cancellation", ControlFloodYields());
+    Check("handshake-awaits-player-list-and-cancel-rejoin", HandshakeAndRejoin());
+    Check("handshake-version-mismatch", HandshakeFailure(LAN::ClientState::Incompatible, false, 1, 2, 2));
+    Check("handshake-rejects-host-id", HandshakeFailure(LAN::ClientState::Failed, false, 0));
+    Check("handshake-rejects-invalid-capacity", HandshakeFailure(LAN::ClientState::Failed, false, 1, 0));
+    Check("handshake-timeout-across-clock-wrap", HandshakeFailure(LAN::ClientState::TimedOut, true));
 
     for (size_t length : {size_t{0}, size_t{23}})
     {

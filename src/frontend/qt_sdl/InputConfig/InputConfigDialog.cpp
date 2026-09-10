@@ -20,6 +20,8 @@
 #include <QLabel>
 #include <QKeyEvent>
 #include <QDebug>
+#include <QSignalBlocker>
+#include <QTimer>
 
 #include <SDL2/SDL.h>
 
@@ -76,23 +78,11 @@ InputConfigDialog::InputConfigDialog(QWidget* parent) : QDialog(parent), ui(new 
     populatePage(ui->tabAddons, hk_addons_labels, addonsKeyMap, addonsJoyMap);
     populatePage(ui->tabHotkeysGeneral, hk_general_labels, hkGeneralKeyMap, hkGeneralJoyMap);
 
-    joystickID = instcfg.GetInt("JoystickID");
-
-    int njoy = SDL_NumJoysticks();
-    if (njoy > 0)
-    {
-        for (int i = 0; i < njoy; i++)
-        {
-            const char* name = SDL_JoystickNameForIndex(i);
-            ui->cbxJoystick->addItem(QString(name));
-        }
-        ui->cbxJoystick->setCurrentIndex(joystickID);
-    }
-    else
-    {
-        ui->cbxJoystick->addItem("(no joysticks available)");
-        ui->cbxJoystick->setEnabled(false);
-    }
+    joystickSelection = emuInstance->getJoystickSelection();
+    refreshJoysticks();
+    auto* joystickTimer = new QTimer(this);
+    connect(joystickTimer, &QTimer::timeout, this, &InputConfigDialog::refreshJoysticks);
+    joystickTimer->start(500);
 
     setupKeypadPage();
 
@@ -105,6 +95,10 @@ InputConfigDialog::InputConfigDialog(QWidget* parent) : QDialog(parent), ui(new 
 
 InputConfigDialog::~InputConfigDialog()
 {
+    auto mutex = getJoyMutex();
+    SDL_LockMutex(mutex.get());
+    if (previewJoystick) SDL_JoystickClose(previewJoystick);
+    SDL_UnlockMutex(mutex.get());
     delete ui;
 }
 
@@ -209,7 +203,10 @@ void InputConfigDialog::on_InputConfigDialog_accepted()
         i++;
     }
 
-    instcfg.SetInt("JoystickID", joystickID);
+    // The draft holds a session identity, never a stale combo-box index. The
+    // selection can remain missing/ambiguous while keyboard mappings are saved.
+    emuInstance->setJoystickSelection(joystickSelection);
+    emuInstance->saveJoystickConfig();
     Config::Save();
 
     emuInstance->inputLoadConfig();
@@ -219,24 +216,102 @@ void InputConfigDialog::on_InputConfigDialog_accepted()
 
 void InputConfigDialog::on_InputConfigDialog_rejected()
 {
-    Config::Table& instcfg = emuInstance->getLocalConfig();
-    emuInstance->setJoystick(instcfg.GetInt("JoystickID"));
-
     closeDlg();
 }
 
 void InputConfigDialog::on_cbxJoystick_currentIndexChanged(int id)
 {
-    // prevent a spurious change
-    if (ui->cbxJoystick->count() < 2) return;
+    if (id < 0) return;
+    const auto instance = ui->cbxJoystick->itemData(id).toInt();
+    if (instance == -2) return; // Informational missing/ambiguous row.
+    // Use the snapshot that supplied the clicked row. If it just disappeared,
+    // retain that choice and show its missing/ambiguous state on refresh.
+    if (instance == -1) joystickSelection.Select(-1, joystickChoices);
+    else
+    {
+        for (const auto& device : joystickChoices)
+            if (device.instance == instance) joystickSelection.Select(device.index, joystickChoices);
+    }
+    refreshJoysticks();
+}
 
-    joystickID = id;
-    emuInstance->setJoystick(id);
+void InputConfigDialog::refreshJoysticks()
+{
+    auto mutex = getJoyMutex();
+    SDL_LockMutex(mutex.get());
+    std::vector<JoystickDevice> devices;
+    int selected;
+    {
+        JoystickListLock devicesLock;
+        SDL_JoystickUpdate();
+        devices = ListJoysticks();
+        selected = joystickSelection.Resolve(devices);
+        if (previewJoystick && (selected < 0 || !SDL_JoystickGetAttached(previewJoystick) ||
+            SDL_JoystickInstanceID(previewJoystick) != joystickSelection.device.instance))
+        {
+            SDL_JoystickClose(previewJoystick);
+            previewJoystick = nullptr;
+        }
+        if (!previewJoystick && selected >= 0) previewJoystick = SDL_JoystickOpen(selected);
+        if (selected >= 0 && !previewJoystick)
+        {
+            selected = -1;
+            joystickSelection.status = JoystickSelection::Status::Missing;
+        }
+    }
+    SDL_UnlockMutex(mutex.get());
+    joystickChoices = devices;
+
+    using Status = JoystickSelection::Status;
+    QStringList labels{tr("No controller")};
+    QList<int> ids{-1};
+    int selectedRow = 0;
+    for (const auto& device : devices)
+    {
+        QString name = QString::fromStdString(device.name);
+        if (name.isEmpty()) name = tr("Controller");
+        // Human-facing connection order distinguishes identical display names;
+        // the item's private data uses session identity, never that order.
+        labels.append(tr("%1 (controller %2)").arg(name).arg(device.index + 1));
+        ids.append(device.instance);
+        if (device.index == selected) selectedRow = labels.size() - 1;
+    }
+    QString status;
+    if (joystickSelection.status == Status::Missing || joystickSelection.status == Status::Ambiguous)
+    {
+        const bool ambiguous = joystickSelection.status == Status::Ambiguous;
+        QString name = QString::fromStdString(joystickSelection.device.name);
+        if (name.isEmpty()) name = tr("Selected controller");
+        labels.append(ambiguous ? tr("%1 needs reselection").arg(name) : tr("%1 unavailable").arg(name));
+        ids.append(-2);
+        selectedRow = labels.size() - 1;
+        status = ambiguous ? tr("Cannot identify the saved controller. Select it again; another controller will not be used automatically.")
+                           : tr("The selected controller is unavailable. Reconnect it or choose a controller.");
+    }
+    else if (joystickSelection.status == Status::Disabled)
+        status = devices.empty() ? tr("No controllers connected. Keyboard input is available.")
+                                 : tr("Controller input is disabled for this instance.");
+    else if (joystickSelection.device.serial.empty() || joystickSelection.requireSelection)
+        status = tr("This controller is identified for this connection only. Select it again after reconnecting or restarting.");
+    else
+        status = tr("The selected controller will be remembered when it reconnects.");
+    ui->lblJoystickStatus->setText(status);
+
+    QSignalBlocker blocker(ui->cbxJoystick);
+    bool changed = ui->cbxJoystick->count() != labels.size();
+    for (int i = 0; !changed && i < labels.size(); ++i)
+        changed = ui->cbxJoystick->itemText(i) != labels[i] || ui->cbxJoystick->itemData(i).toInt() != ids[i];
+    if (changed)
+    {
+        ui->cbxJoystick->clear();
+        for (int i = 0; i < labels.size(); ++i) ui->cbxJoystick->addItem(labels[i], ids[i]);
+    }
+    ui->cbxJoystick->setCurrentIndex(selectedRow);
 }
 
 SDL_Joystick* InputConfigDialog::getJoystick()
 {
-    return emuInstance->getJoystick();
+    return previewJoystick;
 }
 
 std::shared_ptr<SDL_mutex> InputConfigDialog::getJoyMutex()

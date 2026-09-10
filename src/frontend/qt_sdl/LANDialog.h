@@ -22,8 +22,14 @@
 #include <QDialog>
 #include <QMutex>
 #include <QItemSelection>
+#include <QElapsedTimer>
+#include <memory>
 
 #include "types.h"
+
+namespace melonDS { class LAN; }
+class QLabel;
+class QPushButton;
 
 namespace Ui
 {
@@ -52,6 +58,8 @@ private slots:
 
 private:
     Ui::LANStartHostDialog* ui;
+    std::shared_ptr<melonDS::LAN> session;
+    bool accepted = false;
 };
 
 class LANStartClientDialog : public QDialog
@@ -83,6 +91,16 @@ private slots:
 private:
     Ui::LANStartClientDialog* ui;
     int timerID;
+    std::shared_ptr<melonDS::LAN> session;
+    QPushButton* directButton;
+    QLabel* statusLabel;
+    bool connecting = false;
+    bool accepted = false;
+    int lookupID = -1;
+    QElapsedTimer connectionTimer;
+    void startConnection(const QString& host);
+    void connectAddress(const QString& address);
+    void connectionFailed(const QString& message);
 };
 
 class LANDialog : public QDialog
@@ -112,6 +130,7 @@ private slots:
 private:
     Ui::LANDialog* ui;
     int timerID;
+    std::shared_ptr<melonDS::LAN> session;
 };
 
 #endif // LANDIALOG_H

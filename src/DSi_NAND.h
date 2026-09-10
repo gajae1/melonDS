@@ -28,6 +28,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <functional>
 
 struct AES_ctx;
 
@@ -45,6 +46,17 @@ union DSiFirmwareSystemSettings;
 union DSiSerialData;
 using DSiHardwareInfoN = std::array<u8, 0x9C>;
 using DSiKey = std::array<u8, 16>;
+
+enum class TitleImportResult
+{
+    Success,
+    InvalidInput,
+    Failed,                 // Previous content/ticket/saves are unchanged or restored.
+    CleanupPending,         // Import failed; temporary files could not all be removed.
+    RollbackFailed,         // Keep the transaction directory for recovery.
+    RecoveryRequired,       // Existing transaction or uncertain filesystem rename.
+    InstalledCleanupPending // Complete install; backup cleanup/flush failed.
+};
 
 class NANDImage
 {
@@ -109,6 +121,10 @@ public:
     void GetTitleInfo(u32 category, u32 titleid, u32& version, NDSHeader* header, NDSBanner* banner);
     bool ImportTitle(const char* appfile, const DSi_TMD::TitleMetadata& tmd, bool readonly);
     bool ImportTitle(const u8* app, size_t appLength, const DSi_TMD::TitleMetadata& tmd, bool readonly);
+    // True means a complete install, including InstalledCleanupPending. Inspect
+    // the result to report cleanup failures. Never DeleteTitle after a failed import.
+    TitleImportResult GetTitleImportResult() const { return ImportResult; }
+    const std::string& GetTitleImportRecoveryPath() const { return ImportRecoveryPath; }
     void DeleteTitle(u32 category, u32 titleid);
 
     u32 GetTitleDataMask(u32 category, u32 titleid);
@@ -126,7 +142,11 @@ private:
     u32 GetTitleVersion(u32 category, u32 titleid);
     bool CreateTicket(const char* path, u32 titleid0, u32 titleid1, u8 version);
     bool CreateSaveFile(const char* path, u32 len);
-    bool InitTitleFileStructure(const NDSHeader& header, const DSi_TMD::TitleMetadata& tmd, bool readonly);
+    bool ImportTitle(const NDSHeader& header, u64 length,
+        const std::function<bool(u8*, u32)>& read,
+        const DSi_TMD::TitleMetadata& tmd, bool readonly);
+    TitleImportResult ImportResult = TitleImportResult::Failed;
+    std::string ImportRecoveryPath;
     UINT FF_ReadNAND(BYTE* buf, LBA_t sector, UINT num);
     UINT FF_WriteNAND(const BYTE* buf, LBA_t sector, UINT num);
 

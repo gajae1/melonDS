@@ -25,6 +25,10 @@
 #include <QPushButton>
 #include <QInputDialog>
 #include <QMessageBox>
+#include <QHostInfo>
+#include <QLabel>
+#include <QLayout>
+#include <QTimerEvent>
 
 #include "LANDialog.h"
 #include "Config.h"
@@ -38,10 +42,11 @@
 using namespace melonDS;
 
 
-LANStartClientDialog* lanClientDlg = nullptr;
-LANDialog* lanDlg = nullptr;
-
-#define lan() ((LAN&)MPInterface::Get())
+static void returnToLocal(const std::shared_ptr<LAN>& session)
+{
+    session->EndSession();
+    if (MPInterface::Acquire() == session) setMPInterface(MPInterface_Local);
+}
 
 
 LANStartHostDialog::LANStartHostDialog(QWidget* parent) : QDialog(parent), ui(new Ui::LANStartHostDialog)
@@ -50,6 +55,7 @@ LANStartHostDialog::LANStartHostDialog(QWidget* parent) : QDialog(parent), ui(ne
     setAttribute(Qt::WA_DeleteOnClose);
 
     setMPInterface(MPInterface_LAN);
+    session = std::static_pointer_cast<LAN>(MPInterface::Acquire());
 
     auto cfg = Config::GetGlobalTable();
     ui->txtPlayerName->setText(cfg.GetQString("LAN.PlayerName"));
@@ -60,6 +66,7 @@ LANStartHostDialog::LANStartHostDialog(QWidget* parent) : QDialog(parent), ui(ne
 
 LANStartHostDialog::~LANStartHostDialog()
 {
+    if (!accepted) returnToLocal(session);
     delete ui;
 }
 
@@ -82,13 +89,14 @@ void LANStartHostDialog::done(int r)
         std::string player = ui->txtPlayerName->text().toStdString();
         int numplayers = ui->sbNumPlayers->value();
 
-        if (!lan().StartHost(player.c_str(), numplayers))
+        if (!session->StartHost(player.c_str(), numplayers))
         {
             QMessageBox::warning(this, "melonDS", "Failed to start LAN game.");
             return;
         }
 
-        lanDlg = LANDialog::openDlg(parentWidget());
+        accepted = true;
+        LANDialog::openDlg(parentWidget());
 
         auto cfg = Config::GetGlobalTable();
         cfg.SetString("LAN.PlayerName", player);
@@ -97,7 +105,7 @@ void LANStartHostDialog::done(int r)
     }
     else
     {
-        setMPInterface(MPInterface_Local);
+        returnToLocal(session);
     }
 
     QDialog::done(r);
@@ -110,11 +118,12 @@ LANStartClientDialog::LANStartClientDialog(QWidget* parent) : QDialog(parent), u
     setAttribute(Qt::WA_DeleteOnClose);
 
     setMPInterface(MPInterface_LAN);
+    session = std::static_pointer_cast<LAN>(MPInterface::Acquire());
 
     auto cfg = Config::GetGlobalTable();
     ui->txtPlayerName->setText(cfg.GetQString("LAN.PlayerName"));
 
-    QStandardItemModel* model = new QStandardItemModel();
+    QStandardItemModel* model = new QStandardItemModel(this);
     ui->tvAvailableGames->setModel(model);
     const QStringList listheader = {"Name", "Players", "Status", "Host IP"};
     model->setHorizontalHeaderLabels(listheader);
@@ -125,25 +134,31 @@ LANStartClientDialog::LANStartClientDialog(QWidget* parent) : QDialog(parent), u
     ui->buttonBox->button(QDialogButtonBox::Ok)->setText("Connect");
     ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
 
-    QPushButton* btn = ui->buttonBox->addButton("Direct connect...", QDialogButtonBox::ActionRole);
-    connect(btn, SIGNAL(clicked()), this, SLOT(onDirectConnect()));
+    directButton = ui->buttonBox->addButton("Direct connect...", QDialogButtonBox::ActionRole);
+    connect(directButton, &QPushButton::clicked, this, &LANStartClientDialog::onDirectConnect);
+    statusLabel = new QLabel(this);
+    statusLabel->setObjectName("connectionStatus");
+    statusLabel->setTextFormat(Qt::PlainText);
+    statusLabel->setWordWrap(true);
+    layout()->addWidget(statusLabel);
 
-    lanClientDlg = this;
-    lan().StartDiscovery();
+    session->StartDiscovery();
 
-    timerID = startTimer(1000);
+    timerID = startTimer(50);
 }
 
 LANStartClientDialog::~LANStartClientDialog()
 {
     killTimer(timerID);
 
-    lanClientDlg = nullptr;
+    if (lookupID >= 0) QHostInfo::abortHostLookup(lookupID);
+    if (!accepted) returnToLocal(session);
     delete ui;
 }
 
 void LANStartClientDialog::onGameSelectionChanged(const QItemSelection& cur, const QItemSelection& prev)
 {
+    if (connecting) return;
     QModelIndexList indlist = cur.indexes();
     if (indlist.count() == 0)
     {
@@ -162,96 +177,122 @@ void LANStartClientDialog::on_tvAvailableGames_doubleClicked(QModelIndex index)
 
 void LANStartClientDialog::onDirectConnect()
 {
+    if (connecting) return;
+    const QString host = QInputDialog::getText(this, "Direct connect", "Host address:").trimmed();
+    if (!host.isEmpty()) startConnection(host);
+}
+
+void LANStartClientDialog::startConnection(const QString& host)
+{
+    if (connecting) return;
     if (ui->txtPlayerName->text().trimmed().isEmpty())
     {
-        QMessageBox::warning(this, "melonDS", "Please enter a player name before connecting.");
+        statusLabel->setText("Please enter a player name before connecting.");
         return;
     }
+    connecting = true;
+    ui->txtPlayerName->setEnabled(false);
+    ui->tvAvailableGames->setEnabled(false);
+    directButton->setEnabled(false);
+    ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
+    statusLabel->setText(QString("Connecting to %1…").arg(host));
+    connectionTimer.start();
+    session->EndDiscovery();
 
-    QString host = QInputDialog::getText(this, "Direct connect", "Host address:");
-    if (host.isEmpty()) return;
-
-    std::string hostname = host.toStdString();
-    std::string player = ui->txtPlayerName->text().toStdString();
-
-    setEnabled(false);
-    lan().EndDiscovery();
-    if (!lan().StartClient(player.c_str(), hostname.c_str()))
+    QHostAddress address(host);
+    if (address.protocol() == QAbstractSocket::IPv4Protocol)
     {
-        QString msg = QString("Failed to connect to the host %0.").arg(QString::fromStdString(hostname));
-        QMessageBox::warning(this, "melonDS", msg);
-        setEnabled(true);
-        lan().StartDiscovery();
+        connectAddress(address.toString());
         return;
     }
+    lookupID = QHostInfo::lookupHost(host, this, [this](const QHostInfo& info)
+    {
+        // Cancel/timeout may have occurred after DNS completed but before its
+        // queued notification arrived. Never revive that abandoned attempt.
+        if (!connecting || info.lookupId() != lookupID) return;
+        lookupID = -1;
+        for (const auto& address : info.addresses())
+        {
+            if (address.protocol() != QAbstractSocket::IPv4Protocol) continue;
+            connectAddress(address.toString());
+            return;
+        }
+        connectionFailed("Could not find an IPv4 address for this host.");
+    });
+}
 
-    setEnabled(true);
-    lanDlg = LANDialog::openDlg(parentWidget());
-    QDialog::done(QDialog::Accepted);
+void LANStartClientDialog::connectAddress(const QString& address)
+{
+    const auto player = ui->txtPlayerName->text().toStdString();
+    if (!session->StartClient(player.c_str(), address.toStdString().c_str()))
+        connectionFailed("Could not start the LAN connection. Check the host address and try again.");
+}
+
+void LANStartClientDialog::connectionFailed(const QString& message)
+{
+    connecting = false;
+    if (lookupID >= 0) QHostInfo::abortHostLookup(lookupID);
+    lookupID = -1;
+    session->EndSession();
+    ui->txtPlayerName->setEnabled(true);
+    ui->tvAvailableGames->setEnabled(true);
+    directButton->setEnabled(true);
+    ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(
+        !ui->tvAvailableGames->selectionModel()->selectedRows().empty());
+    statusLabel->setText(message);
+    session->StartDiscovery();
 }
 
 void LANStartClientDialog::done(int r)
 {
-    if (!((MainWindow*)parent())->getEmuInstance())
-    {
-        QDialog::done(r);
-        return;
-    }
-
     if (r == QDialog::Accepted)
     {
-        if (ui->txtPlayerName->text().trimmed().isEmpty())
-        {
-            QMessageBox::warning(this, "melonDS", "Please enter a player name before connecting.");
-            return;
-        }
-
-        QModelIndexList indlist = ui->tvAvailableGames->selectionModel()->selectedRows();
-        if (indlist.count() == 0) return;
-
-        QStandardItemModel* model = (QStandardItemModel*)ui->tvAvailableGames->model();
-        QStandardItem* item = model->item(indlist[0].row());
-        u32 addr = item->data().toUInt();
-        char hostname[16];
-        snprintf(hostname, 16, "%d.%d.%d.%d", (addr>>24), ((addr>>16)&0xFF), ((addr>>8)&0xFF), (addr&0xFF));
-
-        std::string player = ui->txtPlayerName->text().toStdString();
-
-        setEnabled(false);
-        lan().EndDiscovery();
-        if (!lan().StartClient(player.c_str(), hostname))
-        {
-            QString msg = QString("Failed to connect to the host %0.").arg(QString(hostname));
-            QMessageBox::warning(this, "melonDS", msg);
-            setEnabled(true);
-            lan().StartDiscovery();
-            return;
-        }
-
-        setEnabled(true);
-        lanDlg = LANDialog::openDlg(parentWidget());
-
-        auto cfg = Config::GetGlobalTable();
-        cfg.SetString("LAN.PlayerName", player);
-        Config::Save();
+        if (connecting) return;
+        const auto selected = ui->tvAvailableGames->selectionModel()->selectedRows();
+        if (selected.empty()) return;
+        auto* model = static_cast<QStandardItemModel*>(ui->tvAvailableGames->model());
+        const u32 address = model->item(selected[0].row())->data().toUInt();
+        startConnection(QHostAddress(address).toString());
+        return;
     }
-    else
-    {
-        lan().EndDiscovery();
-        setMPInterface(MPInterface_Local);
-    }
-
+    connecting = false;
+    if (lookupID >= 0) QHostInfo::abortHostLookup(lookupID);
+    lookupID = -1;
+    returnToLocal(session);
     QDialog::done(r);
 }
 
 void LANStartClientDialog::timerEvent(QTimerEvent *event)
 {
-    doUpdateDiscoveryList();
+    if (event->timerId() != timerID) return;
+    session->Process();
+    if (!connecting)
+    {
+        doUpdateDiscoveryList();
+        return;
+    }
+    const auto state = session->GetClientState();
+    if (state == LAN::ClientState::Connected)
+    {
+        connecting = false;
+        accepted = true;
+        auto cfg = Config::GetGlobalTable();
+        cfg.SetString("LAN.PlayerName", ui->txtPlayerName->text().toStdString());
+        Config::Save();
+        LANDialog::openDlg(parentWidget());
+        QDialog::done(QDialog::Accepted);
+    }
+    else if (state == LAN::ClientState::Incompatible)
+        connectionFailed("The host uses an incompatible LAN protocol version.");
+    else if (state == LAN::ClientState::Failed || state == LAN::ClientState::Disconnected)
+        connectionFailed("The host rejected or closed the connection. You can try again.");
+    else if (state == LAN::ClientState::TimedOut || connectionTimer.elapsed() >= 5000)
+        connectionFailed("The connection timed out. Check that the host is running and the firewall allows LAN play.");
 }
 
 void LANStartClientDialog::doUpdateDiscoveryList()
 {
-    auto disclist = lan().GetDiscoveryList();
+    auto disclist = session->GetDiscoveryList();
 
     QStandardItemModel* model = (QStandardItemModel*)ui->tvAvailableGames->model();
     int curcount = model->rowCount();
@@ -301,9 +342,10 @@ void LANStartClientDialog::doUpdateDiscoveryList()
 LANDialog::LANDialog(QWidget* parent) : QDialog(parent), ui(new Ui::LANDialog)
 {
     ui->setupUi(this);
+    session = std::static_pointer_cast<LAN>(MPInterface::Acquire());
     setAttribute(Qt::WA_DeleteOnClose);
 
-    QStandardItemModel* model = new QStandardItemModel();
+    QStandardItemModel* model = new QStandardItemModel(this);
     ui->tvPlayerList->setModel(model);
     const QStringList header = {"#", "Player", "Status", "Ping", "IP"};
     model->setHorizontalHeaderLabels(header);
@@ -314,6 +356,7 @@ LANDialog::LANDialog(QWidget* parent) : QDialog(parent), ui(new Ui::LANDialog)
 LANDialog::~LANDialog()
 {
     killTimer(timerID);
+    returnToLocal(session);
 
     delete ui;
 }
@@ -332,7 +375,7 @@ void LANDialog::done(int r)
     }
 
     bool showwarning = true;
-    if (lan().GetNumPlayers() < 2)
+    if (session->GetNumPlayers() < 2)
         showwarning = false;
 
     if (showwarning)
@@ -342,21 +385,27 @@ void LANDialog::done(int r)
             return;
     }
 
-    lan().EndSession();
-    setMPInterface(MPInterface_Local);
+    returnToLocal(session);
 
     QDialog::done(r);
 }
 
 void LANDialog::timerEvent(QTimerEvent *event)
 {
+    session->Process();
+    if (session->GetClientState() == LAN::ClientState::Disconnected)
+    {
+        returnToLocal(session);
+        QDialog::done(QDialog::Rejected);
+        return;
+    }
     doUpdatePlayerList();
 }
 
 void LANDialog::doUpdatePlayerList()
 {
-    auto playerlist = lan().GetPlayerList();
-    auto maxplayers = lan().GetMaxPlayers();
+    auto playerlist = session->GetPlayerList();
+    auto maxplayers = session->GetMaxPlayers();
 
     QStandardItemModel* model = (QStandardItemModel*)ui->tvPlayerList->model();
     int curcount = model->rowCount();
