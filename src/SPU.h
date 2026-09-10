@@ -251,6 +251,7 @@ public:
     void DrainOutput();
     void InitOutput();
     int GetOutputSize() const;
+    u64 GetOutputDroppedFrames() const;
     void Sync(bool wait);
     int ReadOutput(s16* data, int samples);
     void SetOutputSampleRate(double rate);
@@ -276,6 +277,7 @@ private:
     s16* OutputBuffer;
     u32 OutputBufferWritePos = 0;
     u32 OutputBufferReadPos = 0;
+    u64 OutputDroppedFrames = 0; // host diagnostic, excluded from savestates
     s16 OutputLastSamples[2];
 
     u32 MixInterval;

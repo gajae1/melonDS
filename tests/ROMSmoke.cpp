@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Optional local ROM smoke run. No save writes, audio/network devices or uploads.
+// Optional local ROM smoke run. No save writes, network devices or uploads.
+// Audio device delivery is opt-in and submits silence (see ROMSmokeAudio.h).
 #include <SDL.h>
 #include "frontend/glad/glad.h"
 #include "NDS.h"
@@ -14,6 +15,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cstdlib>
+#include "ROMSmokeAudio.h"
 
 // DSi writes go to a private RAM copy. The original NAND is never opened for writing.
 namespace melonDS::Platform {
@@ -150,6 +152,8 @@ int main(int argc, char** argv)
             if (!file.eof()) return 2;
         }
         size_t nextInput = 0;
+        SmokeAudio audio{nds.get()};
+        if (!audio.Open()) { std::fprintf(stderr, "audio probe init failed: %s\n", SDL_GetError()); return 77; }
         nds->Start();
         const auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < frames; ++i) {
@@ -167,9 +171,11 @@ int main(int argc, char** argv)
             }
             if (launchCart && i == 2400) nds->SetKeyMask(0xFFF & ~1u);
             if (launchCart && i == 2402) nds->SetKeyMask(0xFFF);
-            nds->RunFrame();
+            const int lines = nds->RunFrame();
             if (!nds->IsRunning()) { std::fprintf(stderr,"stopped frame=%d\n",i); return 6; }
+            audio.AfterFrame(lines);
         }
+        audio.Report();
         if (!software) glFinish();
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
         void *top = nullptr, *bottom = nullptr;
@@ -196,7 +202,8 @@ int main(int argc, char** argv)
         u64 digest=0;
         for(auto pixel:pixels) { digest=digest*31+pixel; const char rgb[]={char(pixel>>16),char(pixel>>8),char(pixel)}; image.write(rgb,3); }
         if(!image) return 10;
-        std::printf("renderer=%s frames=%d seconds=%.3f unthrottled_fps=%.3f framebuffer_digest=%llu running=1\n",argv[2],frames,seconds,frames/seconds,(unsigned long long)digest);
+        std::printf("renderer=%s frames=%d seconds=%.3f %s=%.3f framebuffer_digest=%llu running=1\n",
+            argv[2],frames,seconds,audio.audioDevice ? "paced_fps" : "unthrottled_fps",frames/seconds,(unsigned long long)digest);
         if (std::all_of(pixels.begin(), pixels.end(), [&](u32 p) { return p == pixels.front(); })) {
             std::fprintf(stderr, "uniform-frame: guest execution alone does not prove successful boot\n");
             return 14;

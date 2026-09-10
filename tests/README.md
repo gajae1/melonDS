@@ -290,3 +290,29 @@ periodic deadlines, newly active slots and unchanged ID order. The initial
 snapshot still determines eligible slots; each callback must also remain active.
 These six cases do not establish device IRQ/DMA/sleep or physical DS timing.
 See [1.1.17](../plans/releases/1.1.17.md).
+
+`CoreExecution`'s `mpu-execution` group runs a generated ARM9 program which
+revokes target execution permission after warming its static branch. Normal
+cold/warm entry, dynamic BX denial and restored permission are controls. ARM
+manual exception PC/LR/CPSR/SPSR expectations and absent target register/RAM
+side effects are checked in interpreter/JIT/fastmem. This is not full data
+abort, same-page permission change, Thumb or physical pipeline coverage.
+
+`FrontendAudio` drives the production callback with deliberate partial/empty
+supply and recovery, checking stereo continuity and accounting in addition to
+the existing volume/filter/buffer boundaries. `AudioResampling` observes real
+core FIFO overwrites when consumption stops. These do not establish listening
+quality or the cause of an intermittent device fault.
+
+`ROMSmoke` optionally opens the default SDL output device when
+`MELONDS_SMOKE_AUDIO_BUFFER` is 128, 256, 512 or 1024.
+`MELONDS_SMOKE_AUDIO_INTERPOLATION` selects 0=None, 1=Linear, 2=Cosine,
+3=Cubic or 4=SNESGaussian. With no buffer variable, the original unthrottled
+game smoke behavior remains. The device probe extracts the current frontend
+callback and audio sync method and uses its 60 FPS delay/error policy. Qt event
+processing and screen presentation are absent. PCM is silenced immediately
+before device submission; supply counters measure application delivery, not
+physical latency or listening quality. Device results are opt-in, outside
+CTest, require authorized local game/BIOS inputs, and must not use dummy-driver
+timing as evidence about a physical backend. Keep enough frames to reach a
+known scene; a uniform transition frame fails the existing smoke acceptance.

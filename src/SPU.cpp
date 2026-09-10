@@ -1044,6 +1044,7 @@ void SPU::BufferAudio()
         if (OutputBufferWritePos == OutputBufferReadPos)
         {
             // advance the read position too, to avoid losing the entire FIFO
+            ++OutputDroppedFrames;
             OutputBufferReadPos += 2;
             OutputBufferReadPos &= ((2*OutputBufferSize)-1);
         }
@@ -1096,6 +1097,14 @@ void SPU::InitOutput()
     OutputBufferReadPos = 0;
     OutputBufferWritePos = 0;
     Platform::Mutex_Unlock(AudioLock);
+}
+
+u64 SPU::GetOutputDroppedFrames() const
+{
+    Platform::Mutex_Lock(AudioLock);
+    const u64 dropped = OutputDroppedFrames;
+    Platform::Mutex_Unlock(AudioLock);
+    return dropped;
 }
 
 int SPU::GetOutputSize() const

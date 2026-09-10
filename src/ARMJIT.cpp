@@ -787,7 +787,10 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
                         JIT_DEBUGPRINT("found %s idle loop %d in block %08x\n", thumb ? "thumb" : "arm", cpu->Num, blockAddr);
                     }
                 }
-                else if (hasBranched && !isBackJump && i + 1 < MaxBlockSize)
+                // ARM9 checks execution permission at block entry. Do not
+                // inline a target whose MPU page can have different rights.
+                else if (hasBranched && !isBackJump && i + 1 < MaxBlockSize
+                    && (cpu->Num != 0 || (target >> 12) == (blockAddr >> 12)))
                 {
                     if (link)
                     {
@@ -829,6 +832,11 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         bool secondaryFlagReadCond = !canCompile || (instrs[i - 1].BranchFlags & (branch_FollowCondTaken | branch_FollowCondNotTaken));
         if (instrs[i - 1].Info.ReadFlags != 0 || secondaryFlagReadCond)
             FloodFillSetFlags(instrs, i - 2, !secondaryFlagReadCond ? instrs[i - 1].Info.ReadFlags : 0xF);
+        // Also end sequential traces at the minimum MPU page boundary, even
+        // while the MPU is disabled: permissions can change before reuse.
+        if (cpu->Num == 0
+            && ((r15 - (thumb ? 2 : 4)) >> 12) != (blockAddr >> 12))
+            instrs[i - 1].Info.EndBlock = true;
     } while(!instrs[i - 1].Info.EndBlock && i < MaxBlockSize && !cpu->Halted && (!cpu->IRQ || (cpu->CPSR & 0x80)));
 
     if (numLiterals)

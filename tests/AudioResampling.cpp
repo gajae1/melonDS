@@ -35,4 +35,12 @@ int main()
         }
         std::printf("Audio clock %.1fx: %d output frames in 20 emulated frames\n", speed, total);
     }
+    if (nds->SPU.GetOutputDroppedFrames() != 0) return 2;
+    // Stop consuming: the actual bounded core FIFO must report overwritten
+    // frames. Draining later must not erase that diagnostic evidence.
+    for (int frame = 0; frame < 20; ++frame) nds->RunFrame();
+    const u64 dropped = nds->SPU.GetOutputDroppedFrames();
+    nds->SPU.DrainOutput();
+    if (!dropped || nds->SPU.GetOutputDroppedFrames() != dropped) return 3;
+    std::printf("Audio FIFO: overwritten frames=%llu; drain preserves the counter\n", (unsigned long long)dropped);
 }

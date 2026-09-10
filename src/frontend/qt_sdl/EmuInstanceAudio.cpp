@@ -17,6 +17,7 @@
 */
 
 #include <bit>
+#include <cstring>
 #include "Config.h"
 #include "NDS.h"
 #include "SPU.h"
@@ -69,6 +70,9 @@ void EmuInstance::audioInit()
     }
 
     audioLowPass.Init(audioFreq);
+    audioOutputRamp.Init(audioFreq);
+    const char* diagnostics = SDL_getenv("MELONDS_AUDIO_DIAGNOSTICS");
+    audioDiagnostics.Enabled = diagnostics && std::strcmp(diagnostics, "1") == 0;
 
     micStarted = false;
     micDevice = 0;
@@ -84,6 +88,7 @@ void EmuInstance::audioDeInit()
 {
     if (audioDevice) SDL_CloseAudioDevice(audioDevice);
     audioDevice = 0;
+    audioReportDiagnostics();
     micClose();
     micStarted = false;
 
@@ -136,12 +141,17 @@ void EmuInstance::updateFastForwardMute(bool fastForward)
     audioMutedByFastForward = fastForward && globalCfg.GetBool("MuteFastForward");
 }
 
-void EmuInstance::audioSync()
+void EmuInstance::audioSync(int frameSamples)
 {
     if (audioDevice)
     {
+        // The producer advances a whole emulated frame at once. A small SDL
+        // callback can be delivered in a larger backend burst; waiting for
+        // less than one callback then stalls production until that burst has
+        // already exhausted the queue. Bound lead by a producer frame instead.
+        const int maxQueued = std::max(audioBufSize, frameSamples);
         SDL_LockMutex(audioSyncLock);
-        while (nds->SPU.GetOutputSize() >= audioBufSize)
+        while (nds->SPU.GetOutputSize() >= maxQueued)
         {
             int ret = SDL_CondWaitTimeout(audioSyncCond, audioSyncLock, 500);
             if (ret == SDL_MUTEX_TIMEDOUT) break;
@@ -154,21 +164,25 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
 {
     EmuInstance* inst = (EmuInstance*)data;
     len /= (sizeof(s16) * 2);
+    if (len < 1) return;
 
     // The core resampler already converts to the device rate. Always fill the
     // requested device buffer; changing its length here leaves stale samples.
+    const Uint64 started = inst->audioDiagnostics.Begin();
     SDL_LockMutex(inst->audioSyncLock);
     int num_in = inst->nds->SPU.ReadOutput((s16*) stream, len);
     SDL_CondSignal(inst->audioSyncCond);
     SDL_UnlockMutex(inst->audioSyncLock);
+    inst->audioDiagnostics.Record(len, num_in, started);
 
     const int cutoff = inst->audioLowPassCutoff.load(std::memory_order_relaxed);
     const double targetHz = cutoff > 0 ? cutoff : inst->audioLowPass.WideOpenCutoff();
     const double blockSeconds = static_cast<double>(len) / inst->audioFreq;
 
-    if ((num_in < 1) || inst->audioMutedByWindowFocus || inst->audioMutedToggle || inst->audioMutedByFastForward)
+    if (inst->audioMutedByWindowFocus || inst->audioMutedToggle || inst->audioMutedByFastForward)
     {
         memset(stream, 0, len*sizeof(s16)*2);
+        inst->audioOutputRamp.Reset();
         inst->audioLowPass.ProcessMuted(len, targetHz, blockSeconds);
         return;
     }
@@ -181,18 +195,28 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
             samples[i] = ((s32) samples[i] * volume) >> 8;
     }
 
-    if (num_in < len)
-    {
-        s16* samples = reinterpret_cast<s16*>(stream);
-        const s16 left = samples[(num_in - 1) * 2];
-        const s16 right = samples[(num_in - 1) * 2 + 1];
-        for (int i = num_in; i < len; i++)
-        {
-            samples[i * 2] = left;
-            samples[i * 2 + 1] = right;
-        }
-    }
+    inst->audioOutputRamp.Process(reinterpret_cast<s16*>(stream), num_in, len);
     inst->audioLowPass.Process(reinterpret_cast<s16*>(stream), len, targetHz, blockSeconds);
+}
+
+void EmuInstance::audioReportDiagnostics()
+{
+    // Call only after pausing/closing the device so the counters are stable.
+    auto& stats = audioDiagnostics;
+    if (!stats.Enabled || stats.Callbacks == stats.LastReportedCallbacks) return;
+    stats.LastReportedCallbacks = stats.Callbacks;
+    const double tickUs = 1e6 / SDL_GetPerformanceFrequency();
+    Platform::Log(Platform::LogLevel::Info,
+        "Audio delivery: rate=%d buffer=%d callbacks=%llu requested=%llu supplied=%llu "
+        "missing=%llu underruns=%llu empty=%llu max_read_us=%.1f max_gap_us=%.1f "
+        "core_dropped_total=%llu queue_frames=%d\n",
+        audioFreq, audioBufSize, (unsigned long long)stats.Callbacks,
+        (unsigned long long)stats.RequestedFrames, (unsigned long long)stats.SuppliedFrames,
+        (unsigned long long)(stats.RequestedFrames - stats.SuppliedFrames),
+        (unsigned long long)stats.Underruns, (unsigned long long)stats.EmptyCallbacks,
+        stats.MaxReadTicks * tickUs, stats.MaxGapTicks * tickUs,
+        (unsigned long long)(nds ? nds->SPU.GetOutputDroppedFrames() : 0),
+        nds ? nds->SPU.GetOutputSize() : 0);
 }
 
 
@@ -514,12 +538,20 @@ void EmuInstance::audioUpdateSettings()
 
 void EmuInstance::audioEnable()
 {
-    if (audioDevice) SDL_PauseAudioDevice(audioDevice, 0);
+    if (audioDevice)
+    {
+        SDL_LockAudioDevice(audioDevice);
+        audioOutputRamp.Reset();
+        audioDiagnostics.PreviousStart = 0; // paused time is not callback lateness
+        SDL_UnlockAudioDevice(audioDevice);
+        SDL_PauseAudioDevice(audioDevice, 0);
+    }
     if (micStarted) micOpen();
 }
 
 void EmuInstance::audioDisable()
 {
     if (audioDevice) SDL_PauseAudioDevice(audioDevice, 1);
+    audioReportDiagnostics();
     if (micStarted) micClose();
 }

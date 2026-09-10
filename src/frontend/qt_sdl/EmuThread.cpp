@@ -26,6 +26,7 @@
 #include <string>
 #include <algorithm>
 #include <limits>
+#include <cmath>
 
 #include <SDL2/SDL.h>
 
@@ -309,7 +310,8 @@ void EmuThread::run()
             // Fast-forward retains the existing queue-trimming behavior; its
             // requested speed may exceed what the host can actually execute.
             const double audioFPS = std::min(emuInstance->curFPS.load(std::memory_order_relaxed), emuInstance->targetFPS);
-            emuInstance->nds->SPU.SetOutputSkew(std::max(audioFPS / 59.8260982880808, 0.5));
+            const double outputFPS = std::max(audioFPS, 59.8260982880808 * 0.5);
+            emuInstance->nds->SPU.SetOutputSkew(outputFPS / 59.8260982880808);
             u32 nlines;
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
             {
@@ -396,7 +398,8 @@ void EmuThread::run()
             }
 
             if (emuInstance->doAudioSync && !(fastforward || slowmo))
-                emuInstance->audioSync();
+                emuInstance->audioSync(static_cast<int>(std::ceil(
+                    emuInstance->audioFreq * nlines / (outputFPS * 263.0))));
 
             double frametimeStep = nlines / (currentFPS * 263.0);
 

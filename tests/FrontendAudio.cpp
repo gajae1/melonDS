@@ -9,6 +9,8 @@
 #include <SDL2/SDL.h>
 #include "types.h"
 #include "AudioLowPass.h"
+#include "AudioOutputRamp.h"
+#include "AudioDiagnostics.h"
 using namespace melonDS;
 
 // Drive the production SDL callback with a deterministic sample producer.
@@ -37,6 +39,8 @@ struct AudioState
     int audioBufSize = 512;
     int audioFreq = 48000;
     AudioLowPass audioLowPass;
+    AudioOutputRamp audioOutputRamp;
+    AudioDiagnostics audioDiagnostics;
     std::atomic<int> audioLowPassCutoff{0};
     std::atomic<int> audioVolume{256};
     bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
@@ -54,6 +58,7 @@ int main(int, char**)
     Console console;
     AudioState state{&console};
     state.audioLowPass.Init(state.audioFreq);
+    state.audioOutputRamp.Init(state.audioFreq);
     constexpr s16 poison = 0x5555;
     constexpr int frames = 16;
     std::array<s16, 2048> output;
@@ -80,10 +85,11 @@ int main(int, char**)
     state.audioVolume = 128;
     run();
     check(output[0] == 500 && output[1] == -500, "Stereo volume scaling changed");
-    check(output[frames * 2 - 2] == 500 && output[frames * 2 - 1] == -500,
-          "Underrun does not extend the last stereo sample");
+    check(output[frames * 2 - 2] >= 0 && output[frames * 2 - 2] <= 500 &&
+          std::abs(output[frames * 2 - 2] + output[frames * 2 - 1]) <= 1,
+          "Underrun tail clips or mixes stereo channels");
     console.SPU.available = 0;
-    run();
+    for (unsigned i = 0; i < 4; ++i) run();
     check(std::all_of(output.begin(), output.begin() + frames * 2,
                       [](s16 sample) { return sample == 0; }), "Empty queue is not silent");
     console.SPU.available = 1024;
@@ -92,6 +98,39 @@ int main(int, char**)
     check(std::all_of(output.begin(), output.begin() + frames * 2,
                       [](s16 sample) { return sample == 0; }), "Muted audio is not silent");
     check(console.SPU.rateChanges == 0, "Device thread modifies the core resampler");
+
+    // A constant source has no real discontinuity. Missing samples and their
+    // return must not introduce a full-amplitude step at callback boundaries.
+    // The source shortage is deliberate; this does not reproduce a device fault.
+    for (int buffer : {128, 512})
+    {
+        Console gapConsole;
+        AudioState gapState{&gapConsole};
+        gapState.audioLowPass.Init(gapState.audioFreq);
+        gapState.audioOutputRamp.Init(gapState.audioFreq);
+        gapState.audioDiagnostics.Enabled = true;
+        int previous = 1000, maxStep = 0;
+        for (int available : {buffer, buffer - 2, 0, 0, buffer, buffer})
+        {
+            gapConsole.SPU.available = available;
+            AudioState::audioCallback(&gapState, reinterpret_cast<Uint8*>(output.data()), buffer * 4);
+            for (int i = 0; i < buffer; ++i)
+            {
+                maxStep = std::max(maxStep, std::abs(int(output[2 * i]) - previous));
+                previous = output[2 * i];
+                check(std::abs(int(output[2 * i]) + output[2 * i + 1]) <= 1,
+                      "Gap recovery mixes stereo channels");
+            }
+        }
+        std::printf("Audio shortage/recovery buffer=%d: largest step=%d / amplitude=1000\n", buffer, maxStep);
+        check(maxStep < 250, "A missing/returning audio block creates a full-amplitude click");
+        check(output[0] == 1000 && output[1] == -1000 && previous == 1000,
+              "Normal delivery remains attenuated after recovery");
+        const auto& stats = gapState.audioDiagnostics;
+        check(stats.Callbacks == 6 && stats.RequestedFrames == 6u * buffer &&
+              stats.SuppliedFrames == 4u * buffer - 2 && stats.Underruns == 3 && stats.EmptyCallbacks == 2,
+              "Audio diagnostics do not count the supplied/short/missing blocks");
+    }
 
     // Compare actual output and retained state through cutoff changes, bypass,
     // mute and unmute. Fusing may change rounding by one output LSB.

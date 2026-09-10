@@ -31,6 +31,8 @@
 #include "SaveManager.h"
 #include "KeyboardInput.h"
 #include "AudioLowPass.h"
+#include "AudioOutputRamp.h"
+#include "AudioDiagnostics.h"
 
 const int kMaxWindows = 4;
 
@@ -231,7 +233,8 @@ private:
     void updateAudioMuteByWindowFocus();
     void toggleAudioMute();
     void updateFastForwardMute(bool fastForward);
-    void audioSync();
+    void audioSync(int frameSamples);
+    void audioReportDiagnostics();
     void audioUpdateSettings();
 
     void micOpen();
@@ -323,6 +326,8 @@ private:
     int audioFreq;
     int audioBufSize;
     AudioLowPass audioLowPass;
+    AudioOutputRamp audioOutputRamp;
+    AudioDiagnostics audioDiagnostics;
     std::atomic<int> audioLowPassCutoff;
     std::atomic<bool> audioMutedToggle;
     std::atomic<bool> audioMutedByFastForward;

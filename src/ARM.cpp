@@ -620,6 +620,16 @@ void ARMv5::Execute()
         if constexpr (mode == CPUExecuteMode::JIT)
         {
             u32 instrAddr = R[15] - ((CPSR&0x20)?2:4);
+            // Cached blocks must obey the current execution permission too.
+            if (!(PU_Map[instrAddr >> 12] & 0x04))
+            {
+                PrefetchAbort();
+                NDS.ARM9Timestamp += Cycles;
+                Cycles = 0;
+                if (!NDS.IsRunning())
+                    return;
+                continue;
+            }
 
             if ((instrAddr < FastBlockLookupStart || instrAddr >= (FastBlockLookupStart + FastBlockLookupSize))
                 && !NDS.JIT.SetupExecutableRegion(0, instrAddr, FastBlockLookup, FastBlockLookupStart, FastBlockLookupSize))
