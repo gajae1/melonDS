@@ -847,7 +847,8 @@ public:
     virtual void PreSavestate() {}
     virtual void PostSavestate() {}
 
-    virtual void SetRenderSettings(RendererSettings& settings) = 0;
+    // False means settings could not be applied; replace the renderer before use.
+    virtual bool SetRenderSettings(RendererSettings& settings) = 0;
 
     virtual void DrawScanline(u32 line) = 0;
     virtual void DrawSprites(u32 line) = 0;

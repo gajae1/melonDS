@@ -239,7 +239,7 @@ bool GLRenderer::Init()
     if (!Rend3D->Init()) return false;
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    return true;
+    return OpenGL::CheckError("renderer initialization");
 }
 
 GLRenderer::~GLRenderer()
@@ -320,37 +320,58 @@ void GLRenderer::PostSavestate()
 }
 
 
-void GLRenderer::SetRenderSettings(RendererSettings& settings)
+bool GLRenderer::SetRenderSettings(RendererSettings& settings)
 {
-    SetScaleFactor(settings.ScaleFactor);
+    if (!OpenGL::CheckError("before applying render settings")) return false;
+    const int scale = settings.ScaleFactor;
+    // Match the supported settings range before any signed size arithmetic.
+    if (scale < 1 || scale > 16)
+    {
+        Log(LogLevel::Error, "OpenGL: invalid resolution scale %d\n", scale);
+        return false;
+    }
+    GLint maxTexture = 0, maxViewport[2] {};
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexture);
+    glGetIntegerv(GL_MAX_VIEWPORT_DIMS, maxViewport);
+    if (!OpenGL::CheckError("resolution limits")) return false;
+    // Capture uses a 256x256 viewport even though the displayed screen is 256x192.
+    if (scale > maxTexture / 256 || scale > maxViewport[0] / 256 || scale > maxViewport[1] / 256)
+    {
+        Log(LogLevel::Error, "OpenGL: resolution scale %d exceeds texture/viewport limits\n", scale);
+        return false;
+    }
+    auto* compute = IsCompute ? static_cast<ComputeRenderer3D*>(Rend3D.get()) : nullptr;
+    if (compute && !compute->CheckScaleFactor(scale)) return false;
+
+    if (!SetScaleFactor(scale)) return false;
 
     auto rend2d = dynamic_cast<GLRenderer2D*>(Rend2D_A.get());
-    rend2d->SetScaleFactor(settings.ScaleFactor);
+    if (!rend2d->SetScaleFactor(scale)) return false;
 
     rend2d = dynamic_cast<GLRenderer2D*>(Rend2D_B.get());
-    rend2d->SetScaleFactor(settings.ScaleFactor);
+    if (!rend2d->SetScaleFactor(scale)) return false;
 
-    if (IsCompute)
+    if (compute)
     {
-        auto rend3d = dynamic_cast<ComputeRenderer3D *>(Rend3D.get());
-        rend3d->SetRenderSettings(settings.ScaleFactor, settings.HiresCoordinates);
+        return compute->SetRenderSettings(scale, settings.HiresCoordinates);
     }
     else
     {
         auto rend3d = dynamic_cast<GLRenderer3D *>(Rend3D.get());
-        rend3d->SetRenderSettings(settings.ScaleFactor, settings.BetterPolygons);
+        return rend3d->SetRenderSettings(scale, settings.BetterPolygons);
     }
 }
 
 
-void GLRenderer::SetScaleFactor(int scale)
+bool GLRenderer::SetScaleFactor(int scale)
 {
     if (scale == ScaleFactor)
-        return;
+        return true;
 
     // Read with the old texture dimensions before reallocating capture storage.
     if (ScaleFactor != 0)
         GPU.SyncAllVRAMCaptures();
+    if (!OpenGL::CheckError("preserving captures before resize")) return false;
 
     ScaleFactor = scale;
     ScreenW = 256 * scale;
@@ -360,6 +381,7 @@ void GLRenderer::SetScaleFactor(int scale)
 
     glBindTexture(GL_TEXTURE_2D_ARRAY, CaptureOutput256Tex);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, 256*ScaleFactor, 256*ScaleFactor, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (!OpenGL::CheckError("256 capture storage")) return false;
 
     for (int i = 0; i < 4; i++)
     {
@@ -370,6 +392,7 @@ void GLRenderer::SetScaleFactor(int scale)
 
     glBindTexture(GL_TEXTURE_2D_ARRAY, CaptureOutput128Tex);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, 128*ScaleFactor, 128*ScaleFactor, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (!OpenGL::CheckError("128 capture storage")) return false;
 
     for (int i = 0; i < 16; i++)
     {
@@ -380,6 +403,7 @@ void GLRenderer::SetScaleFactor(int scale)
 
     glBindTexture(GL_TEXTURE_2D_ARRAY, CaptureVRAMTex);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, 256*ScaleFactor, 256*ScaleFactor, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (!OpenGL::CheckError("capture VRAM storage")) return false;
 
     glBindFramebuffer(GL_FRAMEBUFFER, CaptureVRAMFB);
     glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, CaptureVRAMTex, 0, 0);
@@ -390,6 +414,7 @@ void GLRenderer::SetScaleFactor(int scale)
     {
         glBindTexture(GL_TEXTURE_2D_ARRAY, FPOutputTex[i]);
         glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, ScreenW, ScreenH, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        if (!OpenGL::CheckError("final output storage")) return false;
 
         glBindFramebuffer(GL_FRAMEBUFFER, FPOutputFB[i]);
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, FPOutputTex[i], 0, 0);
@@ -398,6 +423,7 @@ void GLRenderer::SetScaleFactor(int scale)
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return OpenGL::CheckError("capture framebuffer setup");
 }
 
 

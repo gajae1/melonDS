@@ -339,10 +339,10 @@ void GLRenderer3D::SetScaleFactor(int scale) noexcept
 }
 
 
-void GLRenderer3D::SetRenderSettings(int scale, bool betterpolygons) noexcept
+bool GLRenderer3D::SetRenderSettings(int scale, bool betterpolygons) noexcept
 {
     if (betterpolygons == BetterPolygons && scale == ScaleFactor)
-        return;
+        return true;
 
     // TODO set it for 2D renderer
     //CurGLCompositor.SetScaleFactor(scale);
@@ -354,11 +354,14 @@ void GLRenderer3D::SetRenderSettings(int scale, bool betterpolygons) noexcept
 
     glBindTexture(GL_TEXTURE_2D, ColorBufferTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ScreenW, ScreenH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    if (!OpenGL::CheckError("3D color storage")) return false;
 
     glBindTexture(GL_TEXTURE_2D, DepthBufferTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, ScreenW, ScreenH, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
+    if (!OpenGL::CheckError("3D depth storage")) return false;
     glBindTexture(GL_TEXTURE_2D, AttrBufferTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, ScreenW, ScreenH, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    if (!OpenGL::CheckError("3D attribute storage")) return false;
 
     GLenum fbassign[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
 
@@ -372,6 +375,7 @@ void GLRenderer3D::SetRenderSettings(int scale, bool betterpolygons) noexcept
 
     //glLineWidth(scale);
     //glLineWidth(1.5);
+    return OpenGL::CheckError("3D framebuffer setup");
 }
 
 

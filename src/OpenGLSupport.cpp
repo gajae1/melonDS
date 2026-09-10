@@ -35,6 +35,17 @@ using Platform::LogLevel;
 namespace OpenGL
 {
 
+bool CheckError(const char* operation)
+{
+    bool success = true;
+    for (GLenum error; (error = glGetError()) != GL_NO_ERROR;)
+    {
+        Log(LogLevel::Error, "OpenGL: %s failed (0x%04X)\n", operation, error);
+        success = false;
+    }
+    return success;
+}
+
 struct ShaderCacheEntry
 {
     u32 Length;

@@ -39,7 +39,7 @@ public:
 
     void PostSavestate() override;
 
-    void SetRenderSettings(RendererSettings& settings) override;
+    bool SetRenderSettings(RendererSettings& settings) override;
 
     void DrawScanline(u32 line) override;
     void DrawSprites(u32 line) override;
@@ -143,7 +143,7 @@ private:
     int LastCapLine;
     int Aux0VRAMCap;
 
-    void SetScaleFactor(int scale);
+    bool SetScaleFactor(int scale);
 
     void RenderScreen(int ystart, int yend);
     void DoCapture(int ystart, int yend);

@@ -622,3 +622,67 @@ foreach(case IN ITEMS controls preflight nested save-short save-error save-flush
     add_test(NAME ar-code-file-${case} COMMAND ARCodeFileIO ${case})
     set_tests_properties(ar-code-file-${case} PROPERTIES TIMEOUT 15)
 endforeach()
+
+
+# Borrow ownership handshake: exact production case, acknowledgement, wait tail,
+# and public request/return methods. Other dispatcher cases are not linked here.
+set(gl_borrow_reduce [=[
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+head = "        switch (msg.type)\n        {\n"
+case = "        case msg_BorrowGL:\n"
+tail = "\n        }\n\n        msgSemaphore.release();"
+for anchor in (head, case, tail):
+    if text.count(anchor) != 1:
+        raise SystemExit("GL borrow extraction needs updating: " + repr(anchor))
+body = text.index(head) + len(head)
+start = text.index(case, body)
+end = text.index("\n        case ", start + len(case))
+close = text.index(tail, end)
+reduced = text[:body] + text[start:end] + text[close:]
+if reduced.count("{") != reduced.count("}"):
+    raise SystemExit("GL borrow extraction: unbalanced braces")
+Path(sys.argv[2]).write_text(reduced, encoding="utf-8")
+header = Path(sys.argv[3]).read_text(encoding="utf-8")
+anchor = "    QWaitCondition glBorrowCond;\n"
+if header.count(anchor) != 1:
+    raise SystemExit("GL borrow state extraction needs updating")
+start = header.index(anchor)
+end = header.index("\nsignals:", start)
+Path(sys.argv[4]).write_text(header[start:end] + "\n", encoding="utf-8")
+]=])
+set(gl_borrow_reduce_script "${CMAKE_CURRENT_BINARY_DIR}/glBorrowReduce.py")
+file(GENERATE OUTPUT "${gl_borrow_reduce_script}" CONTENT "${gl_borrow_reduce}")
+set(gl_borrow_raw "${CMAKE_CURRENT_BINARY_DIR}/glBorrowFullHandler.inc")
+set(gl_borrow_handler "${CMAKE_CURRENT_BINARY_DIR}/glBorrowHandler.inc")
+set(gl_borrow_state "${CMAKE_CURRENT_BINARY_DIR}/glBorrowState.inc")
+set(gl_borrow_request "${CMAKE_CURRENT_BINARY_DIR}/glBorrowRequest.inc")
+set(gl_borrow_return "${CMAKE_CURRENT_BINARY_DIR}/glBorrowReturn.inc")
+add_custom_command(
+    OUTPUT "${gl_borrow_raw}" "${gl_borrow_handler}" "${gl_borrow_state}"
+        "${gl_borrow_request}" "${gl_borrow_return}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::handleMessages()" "${gl_borrow_raw}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::borrowGL()" "${gl_borrow_request}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::returnGL()" "${gl_borrow_return}"
+    COMMAND "${Python3_EXECUTABLE}" "${gl_borrow_reduce_script}"
+        "${gl_borrow_raw}" "${gl_borrow_handler}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.h" "${gl_borrow_state}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" "${gl_borrow_reduce_script}"
+        EmuThread.cpp EmuThread.h VERBATIM)
+add_executable(GLBorrow "${CMAKE_SOURCE_DIR}/tests/GLBorrow.cpp"
+    "${gl_borrow_raw}" "${gl_borrow_handler}" "${gl_borrow_state}"
+    "${gl_borrow_request}" "${gl_borrow_return}")
+target_include_directories(GLBorrow PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+if (USE_QT6)
+    target_link_libraries(GLBorrow PRIVATE Qt6::Core)
+else()
+    target_link_libraries(GLBorrow PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS early waiting)
+    add_test(NAME gl-borrow-${case} COMMAND GLBorrow ${case})
+    set_tests_properties(gl-borrow-${case} PROPERTIES TIMEOUT 20)
+endforeach()

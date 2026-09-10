@@ -312,7 +312,30 @@ void ComputeRenderer3D::Reset()
     RenderSettingsDirty = true;
 }
 
-void ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordinates)
+bool ComputeRenderer3D::CheckScaleFactor(int scale) const
+{
+    // Parent validates 1..16 before querying us. Use wide arithmetic for byte
+    // counts; the texture-buffer limit instead counts RGBA16UI texels (8 bytes).
+    const u64 pixels = u64(256) * 192 * scale * scale;
+    const u64 indices = u64(64) * 2048 * scale;
+    // Tile storage is 4 * TileSize^2 * MaxWorkTiles = 64 * screen pixels.
+    // Other scalable SSBOs are smaller than this or the X-span setup buffer.
+    const u64 largest = std::max({64 * pixels, sizeof(SpanSetupX) * indices,
+        u64(sizeof(SpanSetupY)) * MaxYSpanSetups, u64(sizeof(RenderPolygon)) * 2048});
+    GLint64 storageLimit = 0;
+    GLint texelLimit = 0;
+    glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &storageLimit);
+    glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, &texelLimit);
+    if (!OpenGL::CheckError("Compute storage limits")) return false;
+    if (storageLimit <= 0 || texelLimit <= 0 || largest > u64(storageLimit) || indices > u64(texelLimit))
+    {
+        Platform::Log(Platform::LogLevel::Error, "Compute: resolution scale %d exceeds buffer limits\n", scale);
+        return false;
+    }
+    return true;
+}
+
+bool ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordinates)
 {
     // Native resolution uses the DS's quantized coordinates, matching the
     // software and classic OpenGL renderers. This switch only affects CPU setup.
@@ -320,7 +343,7 @@ void ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
     RenderSettingsDirty |= HiresCoordinates != hires;
     HiresCoordinates = hires;
     if (ScaleFactor == scale)
-        return;
+        return true;
 
     RenderSettingsDirty = true;
     u8 TileScale;
@@ -362,10 +385,12 @@ void ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
     {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, TileMemory[i]);
         glBufferData(GL_SHADER_STORAGE_BUFFER, 4*TileSize*TileSize*MaxWorkTiles, nullptr, GL_DYNAMIC_DRAW);
+        if (!OpenGL::CheckError("Compute tile storage")) return false;
     }
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, FinalTileMemory);
     glBufferData(GL_SHADER_STORAGE_BUFFER, 4*3*2*ScreenWidth*ScreenHeight, nullptr, GL_DYNAMIC_DRAW);
+    if (!OpenGL::CheckError("Compute final tile storage")) return false;
 
     int binResultSize = sizeof(BinResultHeader)
         + TilesPerLine*TileLines*CoarseBinStride*4 // BinnedMaskCoarse
@@ -373,15 +398,18 @@ void ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
         + TilesPerLine*TileLines*BinStride*4; // WorkOffsets
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, BinResultMemory);
     glBufferData(GL_SHADER_STORAGE_BUFFER, binResultSize, nullptr, GL_DYNAMIC_DRAW);
+    if (!OpenGL::CheckError("Compute bin storage")) return false;
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, WorkDescMemory);
     glBufferData(GL_SHADER_STORAGE_BUFFER, MaxWorkTiles*2*4*2, nullptr, GL_DYNAMIC_DRAW);
+    if (!OpenGL::CheckError("Compute work storage")) return false;
 
     if (Framebuffer != 0)
         glDeleteTextures(1, &Framebuffer);
     glGenTextures(1, &Framebuffer);
     glBindTexture(GL_TEXTURE_2D, Framebuffer);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, ScreenWidth, ScreenHeight);
+    if (!OpenGL::CheckError("Compute framebuffer storage")) return false;
 
     Parent.OutputTex3D = Framebuffer;
 
@@ -392,12 +420,15 @@ void ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
 
     glBindBuffer(GL_TEXTURE_BUFFER, YSpanIndicesTextureMemory);
     glBufferData(GL_TEXTURE_BUFFER, maxYSpanIndices*2*4, nullptr, GL_DYNAMIC_DRAW);
+    if (!OpenGL::CheckError("Compute span index storage")) return false;
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, XSpanSetupMemory);
     glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(SpanSetupX)*maxYSpanIndices, nullptr, GL_DYNAMIC_DRAW);
+    if (!OpenGL::CheckError("Compute X-span storage")) return false;
 
     glBindTexture(GL_TEXTURE_BUFFER, YSpanIndicesTexture);
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA16UI, YSpanIndicesTextureMemory);
+    return OpenGL::CheckError("Compute span texture binding");
 }
 
 

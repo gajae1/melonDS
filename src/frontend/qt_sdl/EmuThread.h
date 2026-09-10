@@ -152,6 +152,7 @@ public:
 
     QWaitCondition glBorrowCond;
     QMutex glBorrowMutex;
+    bool glBorrowed = false; // Protected by glBorrowMutex.
 
 signals:
     void windowUpdate();

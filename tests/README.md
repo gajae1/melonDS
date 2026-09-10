@@ -363,3 +363,25 @@ fault is not a full frontend fallback test. Current-context lifetime checks do
 not establish context-loss or complete Qt shutdown recovery. Uninitialized reads
 have undefined behavior, so the original fault need not reproduce identically
 on other compilers. See [1.1.20](../plans/releases/1.1.20.md).
+
+`GLFrameReadback gl-allocation <case>` exercises the current production frontend
+settings method with a real core/GL renderer and isolated config/OSD. Its twelve
+cases cover normal scaling, texture/viewport/SSBO/texture-buffer limits, invalid
+scale, buffer/immutable texture/shared capture/2D depth/classic depth errors and
+simulated OOM. Invalid dimensions produce real driver errors; pressure is simulated
+without exhausting VRAM. A pending source-B capture must survive software fallback.
+Repeated updates produce one error, and explicit reselection produces valid GL
+framebuffer storage again. Limits are injected for a bounded workload, not claimed
+as the physical device limits. Actual OOM can invalidate GL state: software core
+frames do not prove presentation context recovery. Pixel output uses the separate
+capture regressions; full Qt display and physical exhaustion remain separate gates.
+
+`gl-borrow-early` and `gl-borrow-waiting` use real Qt synchronization and the current
+production borrow case/acknowledgement/wait tail plus request/return methods. Other
+message cases are removed during extraction; native GL release is a stub. A barrier
+puts returnGL before the worker wait, or the real mutex/condition transition puts
+it afterwards. Early return must not require a second notification; normal wait
+must hold ownership until return. Baseline early failure is recorded before a
+second return cleans up the worker, so no probabilistic sleep or expected timeout
+is needed. These cases do not validate native context release, window lifetime,
+nested borrows or global GLAD reload safety. See [1.1.21](../plans/releases/1.1.21.md).

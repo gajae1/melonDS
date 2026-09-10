@@ -28,6 +28,9 @@
 namespace melonDS::OpenGL
 {
 
+// Report and consume GL errors at initialization/settings boundaries.
+bool CheckError(const char* operation);
+
 void LoadShaderCache();
 void SaveShaderCache();
 

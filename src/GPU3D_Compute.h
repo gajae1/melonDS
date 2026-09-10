@@ -43,7 +43,8 @@ public:
     bool Init() override;
     void Reset() override;
 
-    void SetRenderSettings(int scale, bool highResolutionCoordinates);
+    bool CheckScaleFactor(int scale) const;
+    bool SetRenderSettings(int scale, bool highResolutionCoordinates);
 
     void RenderFrame() override;
     void RestartFrame() override;

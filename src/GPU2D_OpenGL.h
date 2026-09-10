@@ -41,7 +41,7 @@ public:
 
     void PostSavestate();
 
-    void SetScaleFactor(int scale);
+    bool SetScaleFactor(int scale);
 
     void DrawScanline(u32 line) override;
     void DrawSprites(u32 line) override;

@@ -449,10 +449,10 @@ void GLRenderer2D::PostSavestate()
 }
 
 
-void GLRenderer2D::SetScaleFactor(int scale)
+bool GLRenderer2D::SetScaleFactor(int scale)
 {
     if (scale == ScaleFactor)
-        return;
+        return true;
 
     ScaleFactor = scale;
     ScreenW = 256 * scale;
@@ -465,9 +465,11 @@ void GLRenderer2D::SetScaleFactor(int scale)
 
     glBindTexture(GL_TEXTURE_2D_ARRAY, OBJLayerTex);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, ScreenW, ScreenH, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (!OpenGL::CheckError("2D object color storage")) return false;
 
     glBindTexture(GL_TEXTURE_2D, OBJDepthTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT16, ScreenW, ScreenH, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, nullptr);
+    if (!OpenGL::CheckError("2D object depth storage")) return false;
 
     glBindFramebuffer(GL_FRAMEBUFFER, OBJLayerFB);
     glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, OBJLayerTex, 0, 0);
@@ -477,10 +479,12 @@ void GLRenderer2D::SetScaleFactor(int scale)
 
     glBindTexture(GL_TEXTURE_2D, OutputTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ScreenW, ScreenH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (!OpenGL::CheckError("2D output storage")) return false;
 
     glBindFramebuffer(GL_FRAMEBUFFER, OutputFB);
     glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, OutputTex, 0);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    return OpenGL::CheckError("2D framebuffer setup");
 }
 
 

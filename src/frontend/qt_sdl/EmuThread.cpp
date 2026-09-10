@@ -640,6 +640,9 @@ void EmuThread::handleMessages()
 
         case msg_BorrowGL:
             emuInstance->releaseGL();
+            glBorrowMutex.lock();
+            glBorrowed = true;
+            glBorrowMutex.unlock();
             glborrow = true;
             break;
 
@@ -749,7 +752,8 @@ void EmuThread::handleMessages()
     if (glborrow)
     {
         glBorrowMutex.lock();
-        glBorrowCond.wait(&glBorrowMutex);
+        while (glBorrowed)
+            glBorrowCond.wait(&glBorrowMutex);
         glBorrowMutex.unlock();
     }
 }
@@ -780,6 +784,7 @@ void EmuThread::borrowGL()
 void EmuThread::returnGL()
 {
     glBorrowMutex.lock();
+    glBorrowed = false;
     glBorrowCond.wakeAll();
     glBorrowMutex.unlock();
 }
@@ -1029,7 +1034,14 @@ void EmuThread::updateRenderer()
         .PixelConversion = static_cast<melonDS::PixelConvert::Backend>(cfg.GetInt("3D.Soft.PixelConversion"))
     };
 
-    nds->GetRenderer().SetRenderSettings(settings);
+    if (!nds->GetRenderer().SetRenderSettings(settings))
+    {
+        videoRenderer = renderer3D_Software;
+        nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
+        nds->GetRenderer().SetRenderSettings(settings);
+        lastVideoRenderer = videoRenderer;
+        emuInstance->osdAddMessage(0xFFA0A0, "OpenGL resolution or allocation failed; using software rendering");
+    }
 }
 
 void EmuThread::compileShaders()

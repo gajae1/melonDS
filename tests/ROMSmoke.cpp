@@ -135,7 +135,7 @@ int main(int argc, char** argv)
             if (!dynamic_cast<GLRenderer*>(&nds->GetRenderer())) return 5;
         }
         RendererSettings settings{1,false,false,false};
-        nds->GetRenderer().SetRenderSettings(settings);
+        if (!nds->GetRenderer().SetRenderSettings(settings)) return 5;
         while (nds->GetRenderer().NeedsShaderCompile())
         {
             int step, total;

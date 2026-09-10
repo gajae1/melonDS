@@ -86,11 +86,12 @@ void SoftRenderer::PostSavestate()
 }
 
 
-void SoftRenderer::SetRenderSettings(RendererSettings& settings)
+bool SoftRenderer::SetRenderSettings(RendererSettings& settings)
 {
     ExpandPixels = PixelConvert::Select(settings.PixelConversion);
     auto rend3d = dynamic_cast<SoftRenderer3D*>(Rend3D.get());
     rend3d->SetThreaded(settings.Threaded);
+    return true;
 }
 
 

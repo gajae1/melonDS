@@ -338,6 +338,8 @@ FS-15 편집 사본·직렬화·원자적 저장과 실패 복구는 [1.1.12 증
 
 기본 과제: GR-02, GR-03, GR-07. 공동·후속: GR-01, GR-06, GR-08.
 
+[실제 1.1.21 증분](releases/1.1.21.md)은 GR-07의 texture/viewport·SSBO/texel 한도, 설정 할당 실패 반환·software 복구·pending 캡처 보존·재선택을 검증한다. 모의 OOM 오류 처리를 실제 메모리 고갈 후 GL context 복구로 확대하지 않으며 지원 배율 UI·indirect 상한·작은 VRAM 장치 수락은 남긴다.
+
 소스 시작점: [GPU3D_Compute.cpp](../src/GPU3D_Compute.cpp), [GPU3D_Compute_shaders.h](../src/GPU3D_Compute_shaders.h), [GPU2D_OpenGL.cpp](../src/GPU2D_OpenGL.cpp), [GLFrameReadback.cpp](../tests/GLFrameReadback.cpp).
 
 기존 회귀 시작점: `gpu-compute-frame-capture|capture-readback`.

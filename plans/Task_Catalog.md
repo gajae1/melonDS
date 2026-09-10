@@ -33,12 +33,12 @@
 | GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 program 4개·buffer 1개 해제와 소유 handle 초기화; 정상 반복·실제 shader 실패에서 생존 객체/오삭제 0; context 상실·다른 driver 후속 |
 | GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
 | GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 관찰/확장 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 software/OpenGL/Compute 각 30조건의 실제 A/B·혼합·bank wrap→guest LDRH 및 128/256 재사용; DMA·모든 2D source A·실기 후속 |
-| GR-07 | [고배율 한도·할당 복구](workstreams/02-renderers.md#GR-07) | 정적 후보 | P2 | [1.1.17](Release_Plan.md#v17) | — | 미착수 |
+| GR-07 | [고배율 한도·할당 복구](workstreams/02-renderers.md#GR-07) | 실행 재현 | P2 | [1.1.17](Release_Plan.md#v17) | — | 1.1.21 texture/viewport·SSBO/texel 한도와 첫 할당 오류·software 복구·캡처 보존·재선택 검증; 실장치 OOM/context 복구·작은 VRAM·indirect 상한 후속 |
 | GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 정적 후보 | P1 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-09 | [2D/3D 정수 SIMD·구간 묶음](workstreams/02-renderers.md#GR-09) | 미측정 가설 | P2 | [1.1.27](Release_Plan.md#v27) | — | 미착수 |
 | GR-10 | [texture cache 비용·상주량](workstreams/02-renderers.md#GR-10) | 미측정 가설 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
-| GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 정적 후보 | P2 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
-| GR-12 | [다중 context 초기화 도달성](workstreams/02-renderers.md#GR-12) | 정적 후보 | P2 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
+| GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.21 borrow 반환 lost-wake 수정·실제 Qt 두 순서 검증; deinit→paused 재접근·panel 수명·표시 실패·실제 surface 복구 후속 |
+| GR-12 | [다중 context 초기화 도달성](workstreams/02-renderers.md#GR-12) | 정적 후보 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.21 GUI 생성 경로에서 creator끼리 동시 진입 후보 반증; 새 인스턴스 GLAD 재로딩과 기존 worker 호출 중첩 도달성 확인, 실행 영향·정지 경계 후속 |
 | GR-13 | [software worker 공개·중단 수명](workstreams/02-renderers.md#GR-13) | 정적 후보 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-14 | [render·readback·present 비용 분해](workstreams/02-renderers.md#GR-14) | 미측정 가설 | P2 | [1.1.30](Release_Plan.md#v30) | — | 미착수 |
 | GR-15 | [Vulkan 전체 backend 신설](workstreams/02-renderers.md#GR-15) | 기능 부재 관찰·이득 미측정 | P3 | [1.1.32](Release_Plan.md#v32) | — | 미착수 |

@@ -165,7 +165,7 @@ if (MELONDS_TEST_GPU)
     endif()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GPU_TEST_SDL2 REQUIRED IMPORTED_TARGET sdl2)
-    add_executable(GLFrameReadback GLFrameReadback.cpp ComputeFailure.cpp GLCaptureReadback.cpp GLResourceLifetime.cpp PlatformSync.cpp PlatformHeadless.cpp
+    add_executable(GLFrameReadback GLFrameReadback.cpp ComputeFailure.cpp GLCaptureReadback.cpp GLResourceLifetime.cpp GLAllocationFailure.cpp PlatformSync.cpp PlatformHeadless.cpp
         ../src/frontend/glad/glad.c)
     target_link_libraries(GLFrameReadback PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)
     foreach(method IN ITEMS UpdateRenderer CompileShaders)
@@ -219,6 +219,11 @@ if (MELONDS_TEST_GPU)
     foreach(resource IN ITEMS normal common-fail 3d-fail)
         add_test(NAME gpu-gl-resource-${resource} COMMAND GLFrameReadback gl-resource ${resource})
         set_tests_properties(gpu-gl-resource-${resource}
+            PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endforeach()
+    foreach(allocation IN ITEMS control texture-limit viewport-limit ssbo-limit texel-limit buffer-fail texture-fail oom invalid-scale capture-fail 2d-fail classic-fail)
+        add_test(NAME gpu-gl-allocation-${allocation} COMMAND GLFrameReadback gl-allocation ${allocation})
+        set_tests_properties(gpu-gl-allocation-${allocation}
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endforeach()
 endif()
