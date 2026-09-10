@@ -229,6 +229,49 @@ add_executable(ROMHeaderBounds ROMHeaderBounds.cpp "${CMAKE_CURRENT_BINARY_DIR}/
 target_include_directories(ROMHeaderBounds PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME nds-rom-header-bounds COMMAND ROMHeaderBounds)
 
+set(rtc_methods)
+foreach(pair IN ITEMS
+        "ScheduleEvent|void NDS::ScheduleEvent(u32 id, bool periodic, s32 delay, u32 funcid, u32 param)"
+        "RegisterEventFuncs|void NDS::RegisterEventFuncs(u32 id, void* that, const std::initializer_list<EventFunc>& funcs)"
+        "UnregisterEventFuncs|void NDS::UnregisterEventFuncs(u32 id)"
+        "Reschedule|void NDS::Reschedule(u64 target)"
+        "RunSystem|void NDS::RunSystem(u64 timestamp)"
+        "CancelEvent|void NDS::CancelEvent(u32 id)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/RTC${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/NDS.cpp" "${signature}" "${output}"
+        DEPENDS ExtractFunction.py ../src/NDS.cpp VERBATIM)
+    list(APPEND rtc_methods "${output}")
+endforeach()
+add_executable(RTCCalendar RTCCalendar.cpp ../src/Savestate.cpp ${rtc_methods})
+target_include_directories(RTCCalendar PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
+foreach(case IN ITEMS calendar hour-modes bcd serial-input serial-output alarm-irq periodic-irq minute-rearm reset-bus)
+    add_test(NAME rtc-${case} COMMAND RTCCalendar ${case})
+    set_tests_properties(rtc-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+add_executable(IRCartState IRCartState.cpp
+    ../src/NDSCart/CartRetailIR.cpp ../src/NDSCart/CartRetail.cpp ../src/NDSCart/CartCommon.cpp
+    ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
+target_include_directories(IRCartState PRIVATE ../src)
+foreach(case IN ITEMS id-control save-control unknown-command reset-command restore-id restore-command-start
+        restore-save restore-write legacy-boundary truncated-section position-wrap)
+    add_test(NAME ir-cart-${case} COMMAND IRCartState ${case})
+    set_tests_properties(ir-cart-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+add_executable(GBARumble GBARumble.cpp ../src/GBACart.cpp ../src/GBACartMotionPak.cpp
+    ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
+target_include_directories(GBARumble PRIVATE ../src)
+foreach(case IN ITEMS control ad1-mask state-load)
+    add_test(NAME gba-rumble-${case} COMMAND GBARumble ${case})
+    set_tests_properties(gba-rumble-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
 set(homebrew_methods)
 foreach(pair IN ITEMS
         "SetupDirectBoot|CartHomebrew.cpp|void CartHomebrew::SetupDirectBoot(const std::string& romname, NDS& nds)"

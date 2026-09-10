@@ -1107,7 +1107,7 @@ void MainWindow::dropEvent(QDropEvent* event)
     {
         if (!emuThread->bootROM(file, errorstr))
         {
-            QMessageBox::critical(this, "melonDS", errorstr);
+            if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
             return;
         }
 
@@ -1122,7 +1122,7 @@ void MainWindow::dropEvent(QDropEvent* event)
     {
         if (!emuThread->insertCart(file, true, errorstr))
         {
-            QMessageBox::critical(this, "melonDS", errorstr);
+            if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
             return;
         }
 
@@ -1210,7 +1210,7 @@ bool MainWindow::preloadROMs(QStringList file, QStringList gbafile, bool boot)
     {
         if (!emuThread->insertCart(gbafile, true, errorstr))
         {
-            QMessageBox::critical(this, "melonDS", errorstr);
+            if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
             return false;
         }
 
@@ -1224,7 +1224,7 @@ bool MainWindow::preloadROMs(QStringList file, QStringList gbafile, bool boot)
         {
             if (!emuThread->bootROM(file, errorstr))
             {
-                QMessageBox::critical(this, "melonDS", errorstr);
+                if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
                 return false;
             }
         }
@@ -1232,7 +1232,7 @@ bool MainWindow::preloadROMs(QStringList file, QStringList gbafile, bool boot)
         {
             if (!emuThread->insertCart(file, false, errorstr))
             {
-                QMessageBox::critical(this, "melonDS", errorstr);
+                if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
                 return false;
             }
         }
@@ -1449,7 +1449,7 @@ void MainWindow::onOpenFile()
     QString errorstr;
     if (!emuThread->bootROM(file, errorstr))
     {
-        QMessageBox::critical(this, "melonDS", errorstr);
+        if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
         return;
     }
 
@@ -1562,7 +1562,7 @@ void MainWindow::onClickRecentFile()
     QString errorstr;
     if (!emuThread->bootROM(file, errorstr))
     {
-        QMessageBox::critical(this, "melonDS", errorstr);
+        if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
         return;
     }
 
@@ -1595,7 +1595,7 @@ void MainWindow::onInsertCart()
     QString errorstr;
     if (!emuThread->insertCart(file, false, errorstr))
     {
-        QMessageBox::critical(this, "melonDS", errorstr);
+        if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
         return;
     }
 
@@ -1617,7 +1617,7 @@ void MainWindow::onInsertGBACart()
     QString errorstr;
     if (!emuThread->insertCart(file, true, errorstr))
     {
-        QMessageBox::critical(this, "melonDS", errorstr);
+        if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
         return;
     }
 

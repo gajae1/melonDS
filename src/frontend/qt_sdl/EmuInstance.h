@@ -101,6 +101,7 @@ public:
 
     Config::Table& getGlobalConfig() { return globalCfg; }
     Config::Table& getLocalConfig() { return localCfg; }
+    QString getAssetRegistryDirectory() const;
 
     void broadcastCommand(int cmd, QVariant param = QVariant());
     void handleCommand(int cmd, QVariant& param);
@@ -198,7 +199,7 @@ private:
     std::optional<melonDS::FATStorageArgs> getSDCardArgs(const std::string& key) noexcept;
     std::optional<melonDS::FATStorage> loadSDCard(const std::string& key) noexcept;
     void setBatteryLevels();
-    bool reset();
+    bool reset(const AssetIdentity::Selection& dsAssets = {}, const AssetIdentity::Selection& gbaAssets = {});
     bool bootToMenu(QString& errorstr);
     melonDS::u32 decompressROM(const melonDS::u8* inContent, const melonDS::u32 inSize, std::unique_ptr<melonDS::u8[]>& outContent);
     void clearBackupState();
@@ -211,12 +212,12 @@ private:
                      std::unique_ptr<melonDS::u8[]>& data, melonDS::u32& length, QString& errorstr);
     bool flushSaveData(QString& errorstr);
     QString getSavErrorString(std::string& filepath, bool gba);
-    bool loadROM(QStringList filepath, bool reset, QString& errorstr);
+    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {});
     void ejectCart();
     bool cartInserted();
     QString cartLabel();
 
-    bool loadGBAROM(QStringList filepath, QString& errorstr);
+    bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {});
     void loadGBAAddon(int type, QString& errorstr);
     void ejectGBACart();
     bool gbaCartInserted();
@@ -284,6 +285,7 @@ private:
     std::string baseROMDir;
     std::string baseROMName;
     std::string baseAssetName;
+    AssetIdentity::Selection dsAssetPaths;
     bool changeCart;
     std::unique_ptr<melonDS::NDSCart::CartCommon> nextCart;
 
@@ -291,6 +293,7 @@ private:
     std::string baseGBAROMDir;
     std::string baseGBAROMName;
     std::string baseGBAAssetName;
+    AssetIdentity::Selection gbaAssetPaths;
     bool changeGBACart;
     std::unique_ptr<melonDS::GBACart::CartCommon> nextGBACart;
 

@@ -23,6 +23,7 @@
 #include "ARM.h"
 #include "NDSCart.h"
 #include "GBACart.h"
+#include "AssetIdentity.h"
 #define private public
 #include "EmuThread.h"
 #undef private

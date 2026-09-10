@@ -203,3 +203,30 @@ after core execution returns; it does not run the full GUI dispatcher or physica
 devices. Pause/stop/exit requests, requests preceding the frame, later-code
 suppression and fresh execution after queue drain are checked. No automatic
 deadline or complete Action Replay opcode/timing conformance is claimed.
+
+`AssetIdentityTest` uses real Qt temporary files, atomic ownership records and
+locks. DS/GBA/archive and case-name collisions, legacy choices, split paths,
+unavailable/corrupt registry entries and unchanged resets are covered. Registry
+files stay outside asset folders. The alias case creates a temporary Windows
+junction (a directory symlink elsewhere); it does not alter user directories.
+Read-only ACL and every network/filesystem alias remain separate acceptance.
+`AssetIdentityUI` extracts current preparation/load/reset methods and exercises
+real offscreen choices, including a worker-to-UI reset. Its dispatcher is a
+recording substitute. `CartReplacement` separately runs selected save paths and
+successful/failed resets against the actual core, parsers and SaveManager.
+
+`IRCartState` runs production IR/retail carts and the savestate parser with
+generated SPI input. ID/SRAM controls, command/read/write phase restoration,
+14.0 boundary fallback, short sections and position saturation are covered.
+The deterministic unsupported-command fallback is not hardware evidence.
+
+`RTCCalendar` runs the entire production RTC and extracts six current NDS
+scheduler definitions. A generated clock and IRQ sink check calendar, BCD,
+12/24-hour modes, actual serial edges, alarm/periodic IRQ, minute rearming and
+reset bus determinism while preserving battery state. CPU/MMIO dispatch,
+host-clock synchronization and physical DS/DSi behavior are separate gates.
+
+`GBARumble` runs production cartridge writes and state loading with recording
+Platform callbacks. Normal AD1 transitions, changes to unrelated bits and old
+state values are checked. Physical SDL haptics and pause/eject/device lifetime
+are not exercised here.

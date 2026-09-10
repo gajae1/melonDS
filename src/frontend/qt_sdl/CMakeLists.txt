@@ -8,6 +8,7 @@ set(SOURCES_QT_SDL
     Screen.cpp
     Window.cpp
     EmuInstance.cpp
+    AssetIdentity.cpp
     EmuInstanceAudio.cpp
     EmuInstanceInput.cpp
     KeyboardInput.cpp

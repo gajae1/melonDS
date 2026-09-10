@@ -25,6 +25,8 @@
 
 ## 작업 소유권
 
+[1.1.10 증분](releases/1.1.10.md)은 FS-13의 명시적 파일 선택과 활성 경로, NP-13 IR 위치·미지원 응답, NP-19 RTC edge·분 carry·Reset, NP-17 진동 AD1을 구현했다. 다음은 NP-18 EEPROM page wrap/dirty 통지와 AUXSPI CS 해제의 정상/실패 대조다. NP-14 BT 프로토콜과 NP-15 형식 판별은 근거를 확보한 부분만 좁혀 진행한다. 센서·RAM·실제 무선 통신과 모든 앞선 장치 수락은 그대로 남긴다.
+
 EmuInstance.cpp를 건드리는 상태 로드·ROM 교체·Zstd 변경은 한 작성자가 순차 통합한다. 코어 NDS.cpp와 Config.cpp의 좁은 수정은 독립적으로 진행할 수 있다.
 마이크와 입력 장치, LAN과 PCap/Slirp와 GDB는 독립 반례·소유 파일로 나눈다. 같은 파일의 동시 변경이나 같은 결과를 중복 구현하지 않는다.
 

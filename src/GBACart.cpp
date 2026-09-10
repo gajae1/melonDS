@@ -765,6 +765,9 @@ u16 CartRumblePak::ROMRead(u32 addr) const
 void CartRumblePak::ROMWrite(u32 addr, u16 val)
 {
     addr &= 0x01FFFFFF;
+    // Only AD1 is connected; older savestates may contain other bus bits.
+    val &= 0x0002;
+    RumbleState &= 0x0002;
     if (RumbleState != val)
     {
 	Platform::Addon_RumbleStop(UserData);

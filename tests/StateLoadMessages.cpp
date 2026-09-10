@@ -23,6 +23,7 @@
 #include "NDSCart.h"
 #include "GBACart.h"
 #include "Platform.h"
+#include "AssetIdentity.h"
 // Dependencies are already included: expose only the dispatcher's state.
 #define private public
 #include "EmuThread.h"
@@ -106,8 +107,10 @@ public:
     void audioEnable() { audio = true; }
     void osdAddMessage(unsigned, const char*) {}
     void clearBackupState() {}
-    bool reset() { ++resets; callbacksDuringLoad |= audio; if (!bootOK) return false; nds->Start(); return true; }
-    bool loadROM(const QStringList&, bool, QString&) { callbacksDuringLoad |= audio; return bootOK; }
+    bool reset(const AssetIdentity::Selection& = {}, const AssetIdentity::Selection& = {})
+    { ++resets; callbacksDuringLoad |= audio; if (!bootOK) return false; nds->Start(); return true; }
+    bool loadROM(const QStringList&, bool, QString&, const AssetIdentity::Selection&)
+    { callbacksDuringLoad |= audio; return bootOK; }
     bool bootToMenu(QString&) { callbacksDuringLoad |= audio; return bootOK; }
     bool cartInserted() { return console.hasCart; }
     StateLoadResult loadState(const std::string&)
@@ -127,7 +130,7 @@ public:
     void deinitOpenGL(int) { std::abort(); }
     void releaseGL() { std::abort(); }
     void ejectCart() { std::abort(); }
-    bool loadGBAROM(const QStringList&, QString&) { std::abort(); }
+    bool loadGBAROM(const QStringList&, QString&, const AssetIdentity::Selection&) { std::abort(); }
     void loadGBAAddon(int, QString&) { std::abort(); }
     void ejectGBACart() { std::abort(); }
     void enableCheats(bool) { std::abort(); }

@@ -337,7 +337,7 @@ foreach(case IN ITEMS cancel-ds cancel-gba cancel-firmware child-cancel clean se
 endforeach()
 
 set(cart_methods)
-foreach(method IN ITEMS BuildPath FlushSave FlushAll AssetPath SaveError ReadSave LoadROM LoadGBA UpdateConsole)
+foreach(method IN ITEMS BuildPath FlushSave FlushAll AssetPath SaveError ReadSave LoadROM LoadGBA UpdateConsole Reset)
     if (method STREQUAL "AssetPath")
         set(signature "string EmuInstance::getAssetPath(bool gba, const string& configpath, const string& ext, const string& file = \"\")")
     elseif (method STREQUAL "BuildPath")
@@ -351,9 +351,11 @@ foreach(method IN ITEMS BuildPath FlushSave FlushAll AssetPath SaveError ReadSav
     elseif (method STREQUAL "SaveError")
         set(signature "QString EmuInstance::getSavErrorString(std::string& filepath, bool gba)")
     elseif (method STREQUAL "LoadROM")
-        set(signature "bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)")
+        set(signature "bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets)")
     elseif (method STREQUAL "LoadGBA")
-        set(signature "bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr)")
+        set(signature "bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets)")
+    elseif (method STREQUAL "Reset")
+        set(signature "bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIdentity::Selection& gbaAssets)")
     else()
         set(signature "bool EmuInstance::updateConsole() noexcept")
     endif()
@@ -376,7 +378,8 @@ else()
 endif()
 foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existing-writable gba-existing-writable
         ds-console-failure console-retain ds-queued-failure ds-success ds-reset-success gba-success gba-queued
-        ds-pending-failure gba-pending-failure ds-same-save read-short read-error read-oversize read-denied ds-import-partial)
+        ds-pending-failure gba-pending-failure ds-same-save read-short read-error read-oversize read-denied ds-import-partial
+        ds-asset-path gba-asset-path asset-reset asset-reset-failure)
     add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
     set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
 endforeach()
@@ -425,6 +428,47 @@ else()
 endif()
 add_test(NAME cheat-import-selection COMMAND CheatImportUI)
 set_tests_properties(cheat-import-selection PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+
+add_executable(AssetIdentityTest "${CMAKE_SOURCE_DIR}/tests/AssetIdentity.cpp" AssetIdentity.cpp)
+target_include_directories(AssetIdentityTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+if (USE_QT6)
+    target_link_libraries(AssetIdentityTest PRIVATE Qt6::Core)
+else()
+    target_link_libraries(AssetIdentityTest PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS normal collision gba archive case-name legacy legacy-separate relocation metadata locked record-type registry-failure folders unchanged alias)
+    add_test(NAME asset-identity-${case} COMMAND AssetIdentityTest ${case})
+    set_tests_properties(asset-identity-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+set(asset_ui_methods)
+foreach(pair IN ITEMS
+        "assetPrepareUI|bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExisting, AssetIdentity::Selection& selection, QString& error)"
+        "assetBootUI|int EmuThread::bootROM(const QStringList& filename, QString& errorstr)"
+        "assetInsertUI|int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr)"
+        "assetResetUI|void EmuThread::emuReset()")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuThread.cpp VERBATIM)
+    list(APPEND asset_ui_methods "${output}")
+endforeach()
+add_executable(AssetIdentityUI "${CMAKE_SOURCE_DIR}/tests/AssetIdentityUI.cpp" AssetIdentity.cpp EmuThread.h
+    ${asset_ui_methods} "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc")
+target_include_directories(AssetIdentityUI PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+if (USE_QT6)
+    target_link_libraries(AssetIdentityUI PRIVATE Qt6::Widgets)
+else()
+    target_link_libraries(AssetIdentityUI PRIVATE Qt5::Widgets)
+endif()
+foreach(case IN ITEMS cancel existing separate other reset worker-reset)
+    add_test(NAME asset-ui-${case} COMMAND AssetIdentityUI ${case})
+    set_tests_properties(asset-ui-${case} PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()
 
 set(cheat_message_methods)
 foreach(pair IN ITEMS "cheatSendMessage|void EmuThread::sendMessage(Message msg)"

@@ -19,6 +19,7 @@
 #include "NDS_Header.h"
 #include "NDSCart/CartSD.h"
 #include "SaveManager.h"
+#include "AssetIdentity.h"
 #include "Platform.h"
 using namespace melonDS;
 using namespace melonDS::Platform;
@@ -110,6 +111,7 @@ struct CartLoader
     bool changeCart = false, changeGBACart = false;
     string baseROMDir, baseROMName = "current.nds", baseAssetName = "current";
     string baseGBAROMDir, baseGBAROMName = "current.gba", baseGBAAssetName = "current";
+    AssetIdentity::Selection dsAssetPaths, gbaAssetPaths;
     string incomingDir, cheatAsset;
     unique_ptr<NDSCart::CartCommon> nextCart;
     unique_ptr<GBACart::CartCommon> nextGBACart;
@@ -157,15 +159,17 @@ struct CartLoader
     void loadRTCData() {}
     void loadCheats() { cheatAsset = baseAssetName; }
     void clearBackupState() {}
+    void osdAddMessage(unsigned, const char*, ...) {}
     void ejectGBACart() { std::abort(); } // DSi success is outside this fixture.
     bool flushSaveData(QString& errorstr);
     bool loadSaveRAM(string path, string original, bool gba,
                      unique_ptr<u8[]>& data, u32& length, QString& errorstr);
     string getAssetPath(bool gba, const string& configpath, const string& ext, const string& file);
     QString getSavErrorString(string& filepath, bool gba);
-    bool loadROM(QStringList filepath, bool reset, QString& errorstr);
-    bool loadGBAROM(QStringList filepath, QString& errorstr);
+    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {});
+    bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {});
     bool updateConsole() noexcept;
+    bool reset(const AssetIdentity::Selection& dsAssets = {}, const AssetIdentity::Selection& gbaAssets = {});
 };
 
 static bool captureCartSave = false;
@@ -199,6 +203,7 @@ void WriteNDSSave(const u8* data, u32 length, u32 offset, u32 count, void* userd
 #include "cartLoadROM.inc"
 #include "cartLoadGBA.inc"
 #include "cartUpdateConsole.inc"
+#include "cartReset.inc"
 #undef EmuInstance
 #undef FileExists
 #undef CheckFileWritable
@@ -284,6 +289,54 @@ int main(int argc, char** argv)
             !std::memcmp(loader.nds->GetNDSSave(), expected.constData(), length) &&
             loader.ndsSave->Flush() && ReadSaveFile(oldPath) == expected;
         std::printf("partial import preserves complete cart SRAM and save file: %s\n", passed ? "PASS" : "FAIL");
+        return passed ? 0 : 1;
+    }
+    if (test == "ds-asset-path" || test == "gba-asset-path" || test == "asset-reset" || test == "asset-reset-failure")
+    {
+        const QString target = directory.filePath("separate");
+        if (!QDir().mkpath(target)) return 2;
+        AssetIdentity::Selection selected{{"generated.nds"}, "current-separated", target, target, target};
+        const bool accepted = gba ? loader.loadGBAROM({"current.gba"}, error, selected) :
+            loader.loadROM({"current.nds"}, false, error, selected);
+        auto& currentManager = gba ? loader.gbaSave : loader.ndsSave;
+        const auto expected = (target + "/current-separated.sav").toStdString();
+        bool passed = accepted && currentManager && currentManager->GetPath() == expected &&
+            ReadSaveFile(oldPath) == pending &&
+            loader.getAssetPath(gba, "edited-but-not-applied", ".mch", "") ==
+                (target + "/current-separated.mch").toStdString() &&
+            loader.getAssetPath(gba, "edited-but-not-applied", ".ml0", "") ==
+                (target + "/current-separated.ml0").toStdString();
+        if (passed && (test == "asset-reset" || test == "asset-reset-failure"))
+        {
+            const auto nextDir = directory.filePath("relocated");
+            if (!QDir().mkpath(nextDir)) return 2;
+            auto next = selected;
+            next.Name = "explicit-relocation";
+            next.SaveDirectory = next.StateDirectory = next.CheatDirectory = nextDir;
+            loader.localCfg.savePath = nextDir.toStdString();
+            const QByteArray bytes(8192, '\x6B');
+            captureCartSave = true;
+            loader.nds->SetNDSSave(reinterpret_cast<const u8*>(bytes.constData()), bytes.size());
+            captureCartSave = false;
+            loader.resourcesOK = test != "asset-reset-failure";
+            const auto oldSelection = loader.dsAssetPaths;
+            const bool reset = loader.reset(next, {});
+            const auto nextPath = (nextDir + "/explicit-relocation.sav").toStdString();
+            passed &= reset == loader.resourcesOK && currentManager->Flush() &&
+                ReadSaveFile(expected) == bytes &&
+                std::memcmp(loader.nds->GetNDSSave(), bytes.constData(), bytes.size()) == 0;
+            if (reset)
+                passed &= currentManager->GetPath() == nextPath && ReadSaveFile(nextPath) == bytes &&
+                    loader.dsAssetPaths.Name == next.Name;
+            else
+                passed &= currentManager->GetPath() == expected && !QFile::exists(QString::fromStdString(nextPath)) &&
+                    loader.dsAssetPaths.Name == oldSelection.Name;
+        }
+        std::printf("selected asset paths preserve old data and frozen roots: %s\n", passed ? "PASS" : "FAIL");
+        if (!passed) std::printf("accepted=%d path=%s expected=%s old-after=%lld pending=%lld\n",
+            accepted, currentManager ? currentManager->GetPath().c_str() : "(null)", expected.c_str(),
+            static_cast<long long>(ReadSaveFile(oldPath).size()),
+            static_cast<long long>(pending.size()));
         return passed ? 0 : 1;
     }
     const QString name = QString(test.ends_with("invalid") ? "invalid" : sameSave ? "current" : "incoming") + (gba ? ".gba" : ".nds");

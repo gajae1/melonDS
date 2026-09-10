@@ -55,6 +55,8 @@
 #include "Savestate.h"
 
 #include "EmuInstance.h"
+#include <QMessageBox>
+#include <QPushButton>
 
 using namespace melonDS;
 
@@ -600,7 +602,8 @@ void EmuThread::handleMessages()
                 }
             }
             emuInstance->audioDisable();
-            msgResult = emuInstance->reset();
+            const auto assets = msg.type == msg_EmuReset ? msg.param.value<AssetResetRequest>() : AssetResetRequest{};
+            msgResult = emuInstance->reset(assets.DS, assets.GBA);
             if (!msgResult)
             {
                 if (emuStatus == emuStatus_Running) emuInstance->audioEnable();
@@ -640,7 +643,8 @@ void EmuThread::handleMessages()
         case msg_BootROM:
             emuInstance->audioDisable();
             msgResult = 0;
-            if (!emuInstance->loadROM(msg.param.value<QStringList>(), true, msgError))
+            if (!emuInstance->loadROM(msg.param.value<CartLoadRequest>().Files, true, msgError,
+                                     msg.param.value<CartLoadRequest>().Assets))
             {
                 if (emuStatus == emuStatus_Running) emuInstance->audioEnable();
                 break;
@@ -669,7 +673,8 @@ void EmuThread::handleMessages()
 
         case msg_InsertCart:
             msgResult = 0;
-            if (!emuInstance->loadROM(msg.param.value<QStringList>(), false, msgError))
+            if (!emuInstance->loadROM(msg.param.value<CartLoadRequest>().Files, false, msgError,
+                                     msg.param.value<CartLoadRequest>().Assets))
                 break;
 
             msgResult = 1;
@@ -681,7 +686,8 @@ void EmuThread::handleMessages()
 
         case msg_InsertGBACart:
             msgResult = 0;
-            if (!emuInstance->loadGBAROM(msg.param.value<QStringList>(), msgError))
+            if (!emuInstance->loadGBAROM(msg.param.value<CartLoadRequest>().Files, msgError,
+                                        msg.param.value<CartLoadRequest>().Assets))
                 break;
 
             msgResult = 1;
@@ -829,8 +835,54 @@ void EmuThread::emuFrameStep()
 
 void EmuThread::emuReset()
 {
-    sendMessage(msg_EmuReset);
+    if (QThread::currentThread() == this)
+    {
+        // Hotkeys originate in run(); ownership choices belong to the UI.
+        QMetaObject::invokeMethod(this, [this] { emuReset(); }, Qt::QueuedConnection);
+        return;
+    }
+    AssetResetRequest assets;
+    QString error;
+    if ((!emuInstance->dsAssetPaths.Source.empty() &&
+         !prepareAssets(emuInstance->dsAssetPaths.Source, false, false, assets.DS, error)) ||
+        (!emuInstance->gbaAssetPaths.Source.empty() &&
+         !prepareAssets(emuInstance->gbaAssetPaths.Source, true, false, assets.GBA, error)))
+    {
+        if (!error.isEmpty()) QMessageBox::critical(emuInstance->getMainWindow(), "melonDS", error);
+        return;
+    }
+    sendMessage({.type = msg_EmuReset, .param = QVariant::fromValue(assets)});
     waitMessage();
+}
+
+bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExisting, AssetIdentity::Selection& selection, QString& error)
+{
+    auto& cfg = emuInstance->getLocalConfig();
+    const QStringList directories{cfg.GetQString("SaveFilePath"), cfg.GetQString("SavestatePath"), cfg.GetQString("CheatFilePath")};
+    const auto& active = gba ? emuInstance->gbaAssetPaths : emuInstance->dsAssetPaths;
+    if (!allowExisting && AssetIdentity::PathsUnchanged(active, gba, directories))
+    {
+        selection = active;
+        error.clear();
+        return true;
+    }
+    return AssetIdentity::Prepare(emuInstance->getAssetRegistryDirectory(), source, gba, directories,
+        allowExisting, [this](const AssetIdentity::Conflict& conflict) {
+            QMessageBox dialog(QMessageBox::Question, "Choose game files",
+                conflict.CanUseExisting ?
+                    "Files with this name already exist. Use them only if they belong to this ROM, or start with separate files." :
+                    "These file names are already used. Select separate files to preserve their contents.",
+                QMessageBox::NoButton, emuInstance->getMainWindow());
+            dialog.setDetailedText(conflict.Paths.join('\n'));
+            auto* separate = dialog.addButton("Use separate files", QMessageBox::AcceptRole);
+            auto* existing = conflict.CanUseExisting ? dialog.addButton("Use existing files", QMessageBox::AcceptRole) : nullptr;
+            dialog.addButton(QMessageBox::Cancel);
+            dialog.setDefaultButton(separate);
+            dialog.exec();
+            if (dialog.clickedButton() == separate) return AssetIdentity::Choice::Separate;
+            if (existing && dialog.clickedButton() == existing) return AssetIdentity::Choice::Existing;
+            return AssetIdentity::Choice::Cancel;
+        }, selection, error);
 }
 
 bool EmuThread::emuIsRunning()
@@ -845,7 +897,9 @@ bool EmuThread::emuIsActive()
 
 int EmuThread::bootROM(const QStringList& filename, QString& errorstr)
 {
-    sendMessage({.type = msg_BootROM, .param = filename});
+    CartLoadRequest request{filename, {}};
+    if (!prepareAssets(filename, false, true, request.Assets, errorstr)) return 0;
+    sendMessage({.type = msg_BootROM, .param = QVariant::fromValue(request)});
     waitMessage();
     if (!msgResult)
     {
@@ -879,7 +933,9 @@ int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errors
 {
     MessageType msgtype = gba ? msg_InsertGBACart : msg_InsertCart;
 
-    sendMessage({.type = msgtype, .param = filename});
+    CartLoadRequest request{filename, {}};
+    if (!prepareAssets(filename, gba, true, request.Assets, errorstr)) return 0;
+    sendMessage({.type = msgtype, .param = QVariant::fromValue(request)});
     waitMessage();
     errorstr = msgResult ? "" : msgError;
     return msgResult;

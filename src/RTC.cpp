@@ -50,11 +50,16 @@ RTC::~RTC()
 
 void RTC::Reset()
 {
+    // Use a deterministic, deselected host bus default, not a measured power-on
+    // value of the DS I/O register. The battery-backed State is preserved.
+    IO = 0;
+
     Input = 0;
     InputBit = 0;
     InputPos = 0;
 
     memset(Output, 0, sizeof(Output));
+    OutputBit = 0;
     OutputPos = 0;
 
     CurCmd = 0;
@@ -532,9 +537,10 @@ void RTC::ClockTimer(u32 param)
         // count up one second
         CountSecond();
     }
-    else if ((ClockCount & 0x7FFF) == 4)
+    else if ((ClockCount & 0x7FFF) == 256)
     {
-        // minute-carry flag lasts 4 cycles
+        // The minute-carry signal lasts 7.8125 ms (256 ticks at 32768 Hz).
+        // Reenabling a minute interrupt within this window asserts it again.
         State.IRQFlag &= ~0x01;
     }
 
@@ -900,11 +906,11 @@ void RTC::Write(u16 val, bool byte)
         }
         else
         {
-            if (!(val & 0x0002)) // clock low
+            if ((IO ^ val) & 0x0002) // clock edge
             {
-                if (val & 0x0010)
+                if ((val & 0x0010) && (val & 0x0002))
                 {
-                    // write
+                    // write: sample data on the rising edge
                     if (val & 0x0001)
                         Input |= (1<<InputBit);
 
@@ -917,9 +923,9 @@ void RTC::Write(u16 val, bool byte)
                         InputPos++;
                     }
                 }
-                else
+                else if (!(val & 0x0010) && !(val & 0x0002))
                 {
-                    // read
+                    // read: output data on the falling edge
                     if (Output[OutputPos] & (1<<OutputBit))
                         IO |= 0x0001;
                     else

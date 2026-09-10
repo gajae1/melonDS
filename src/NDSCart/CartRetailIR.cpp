@@ -59,13 +59,46 @@ void CartRetailIR::Reset()
     CartRetail::Reset();
 
     IRCmd = 0;
+    IRPos = 0;
 }
 
 void CartRetailIR::DoSavestate(Savestate* file)
 {
+    u32 sectionEnd = 0;
+    if (!file->Saving)
+    {
+        file->Section("NDCS");
+        if (file->Error) return;
+        // Section() validated this header and its span. Remember its end before
+        // the base loader consumes the variable-length SRAM record.
+        const u32 sectionStart = file->Length() - 16;
+        u32 sectionLength;
+        memcpy(&sectionLength, static_cast<const u8*>(file->Buffer()) + sectionStart + 4, sizeof(sectionLength));
+        sectionEnd = sectionStart + sectionLength;
+    }
+
     CartRetail::DoSavestate(file);
+    if (file->Error) return;
+
+    const bool hasPosition = file->IsAtLeastVersion(14, 1);
+    const u32 irLength = hasPosition ? 5 : 1;
+    if (!file->Saving && (file->Length() > sectionEnd || irLength > sectionEnd - file->Length()))
+    {
+        Log(LogLevel::Error, "savestate: truncated IR cartridge record\n");
+        file->Error = true;
+        return;
+    }
 
     file->Var8(&IRCmd);
+    if (hasPosition)
+        file->Var32(&IRPos);
+    else if (!file->Saving)
+    {
+        // 14.0 did not store the IR phase. Start a new command rather than
+        // combining the restored command with the live session's position.
+        IRPos = 0;
+        CartRetail::SPISelect();
+    }
 }
 
 void CartRetailIR::SPISelect()
@@ -85,7 +118,9 @@ u8 CartRetailIR::SPITransmitReceive(u8 val)
 
     // TODO: emulate actual IR comm
 
-    u8 ret;
+    // Match the retail SPI fallback for unemulated commands. This is not a
+    // measured response from the IR hardware.
+    u8 ret = 0xFF;
     switch (IRCmd)
     {
     case 0x00: // pass-through
@@ -97,7 +132,8 @@ u8 CartRetailIR::SPITransmitReceive(u8 val)
         break;
     }
 
-    IRPos++;
+    // Only zero marks a new command; a long/restored transfer must not wrap.
+    if (IRPos != 0xFFFFFFFF) IRPos++;
     return ret;
 }
 

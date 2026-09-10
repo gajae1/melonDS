@@ -24,6 +24,8 @@ ROM 교체·종료 증분은 `CartReplacement`, `FrontendClose`, `SaveManagerIO`
 홈브루·치트 증분은 `HomebrewInput`, `ARDatabaseInput`, `ARExecution`, `CheatImportUI`, `CheatCancellation`과 `homebrew-|ar-database-|ar-execution-|cheat-import-|cheat-message-`를 사용한다. DLDI/argv는 실제 함수에 SD·메모리 경계를 대체하고, DB는 실제 parser와 Qt 임시 파일에 read/seek 실패를 주입한다. 치트 실행은 실제 ARM7 VBlank hook과 코어 메모리를 사용한다. 메시지 검사는 실제 Qt 게시·토큰 전달·대기와 제어된 worker의 큐 확인까지이며 전체 창·장치·게임 수락을 뜻하지 않는다.
 최종 구성의 전체 검사는 필요할 때 한 번 실행하고 범위가 같은 성공 결과를 재사용한다.
 
+저장 정체성·주변장치 증분은 `AssetIdentityTest`, `AssetIdentityUI`, `CartReplacement`, `IRCartState`, `RTCCalendar`, `GBARumble`과 `asset-identity-|asset-ui-|cart-replacement-.*asset|ir-cart-|rtc-|gba-rumble-`를 사용한다. registry와 게임 파일은 서로 다른 임시 폴더이며 Windows alias case는 임시 경로 안의 junction만 생성한다. IR/진동은 실제 카트 코드, RTC는 전체 생산 RTC와 현재 scheduler 정의를 실행한다. 합성 IRQ·진동 callback과 offscreen 메시지 경계를 물리 장치나 전체 GUI 수락으로 확대하지 않는다.
+
 ```sh
 ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 ```

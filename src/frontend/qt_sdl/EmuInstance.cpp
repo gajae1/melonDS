@@ -31,6 +31,7 @@
 #include <QDateTime>
 #include <QMutexLocker>
 #include <QSaveFile>
+#include <QStandardPaths>
 
 #include <zstd.h>
 #ifdef ARCHIVE_SUPPORT_ENABLED
@@ -62,6 +63,12 @@ using namespace melonDS::Platform;
 
 
 MainWindow* topWindow = nullptr;
+
+QString EmuInstance::getAssetRegistryDirectory() const
+{
+    const auto base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return base.isEmpty() ? QString{} : base + "/melonDS/asset-ownership";
+}
 
 const string kWifiSettingsPath = "wfcsettings.bin";
 extern Net net;
@@ -474,7 +481,11 @@ static string AssetPath(const string& directory, const string& name, const strin
 
 string EmuInstance::getAssetPath(bool gba, const string& configpath, const string& ext, const string& file = "")
 {
-    const string& directory = configpath.empty() ? (gba ? baseGBAROMDir : baseROMDir) : configpath;
+    const auto& selected = gba ? gbaAssetPaths : dsAssetPaths;
+    // Keep active files stable until load/reset applies new path settings.
+    const string directory = selected.Valid() ?
+        (ext == ".sav" ? selected.SaveDirectory : ext == ".mch" ? selected.CheatDirectory : selected.StateDirectory).toStdString() :
+        (configpath.empty() ? (gba ? baseGBAROMDir : baseROMDir) : configpath);
     const string& name = file.empty() ? (gba ? baseGBAAssetName : baseAssetName) : file;
     return AssetPath(directory, name, ext);
 }
@@ -1391,7 +1402,7 @@ bool EmuInstance::updateConsole() noexcept
     return true;
 }
 
-bool EmuInstance::reset()
+bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIdentity::Selection& gbaAssets)
 {
     QString errorstr;
     if (!flushSaveData(errorstr))
@@ -1409,6 +1420,11 @@ bool EmuInstance::reset()
 
     if ((cartType != -1) && ndsSave)
     {
+        if (dsAssets.Valid())
+        {
+            dsAssetPaths = dsAssets;
+            baseAssetName = dsAssets.Name.toStdString();
+        }
         std::string oldsave = ndsSave->GetPath();
         std::string newsave = getAssetPath(false, localCfg.GetString("SaveFilePath"), ".sav");
         newsave += instanceFileSuffix();
@@ -1418,6 +1434,11 @@ bool EmuInstance::reset()
 
     if ((gbaCartType != -1) && gbaSave)
     {
+        if (gbaAssets.Valid())
+        {
+            gbaAssetPaths = gbaAssets;
+            baseGBAAssetName = gbaAssets.Name.toStdString();
+        }
         std::string oldsave = gbaSave->GetPath();
         std::string newsave = getAssetPath(true, localCfg.GetString("SaveFilePath"), ".sav");
         newsave += instanceFileSuffix();
@@ -1879,7 +1900,7 @@ bool EmuInstance::loadSaveRAM(string path, string original, bool gba, unique_ptr
     }
 }
 
-bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
+bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets)
 {
     unique_ptr<u8[]> filedata = nullptr;
     u32 filelen;
@@ -1895,8 +1916,8 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
     // Commit current bytes before reading a prospective save, including when
     // reopening the same game/path. Keep the current manager on any failure.
     if (reset ? !flushSaveData(errorstr) : !FlushSave(ndsSave.get(), errorstr)) return false;
-    string asset = romname.substr(0, romname.rfind('.'));
-    const string saveDir = localCfg.GetString("SaveFilePath");
+    string asset = assets.Valid() ? assets.Name.toStdString() : romname.substr(0, romname.rfind('.'));
+    const string saveDir = assets.Valid() ? assets.SaveDirectory.toStdString() : localCfg.GetString("SaveFilePath");
 
     u32 savelen = 0;
     std::unique_ptr<u8[]> savedata = nullptr;
@@ -1982,6 +2003,7 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
     baseROMDir = std::move(basepath);
     baseROMName = std::move(romname);
     baseAssetName = std::move(asset);
+    dsAssetPaths = assets;
     clearBackupState();
     if (reset || emuIsActive()) loadCheats();
 
@@ -2014,6 +2036,7 @@ void EmuInstance::ejectCart()
     baseROMDir = "";
     baseROMName = "";
     baseAssetName = "";
+    dsAssetPaths = {};
 }
 
 bool EmuInstance::cartInserted()
@@ -2036,7 +2059,7 @@ QString EmuInstance::cartLabel()
 }
 
 
-bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr)
+bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets)
 {
     if (consoleType == 1)
     {
@@ -2056,8 +2079,8 @@ bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr)
     }
 
     if (!FlushSave(gbaSave.get(), errorstr)) return false;
-    string asset = romname.substr(0, romname.rfind('.'));
-    const string saveDir = localCfg.GetString("SaveFilePath");
+    string asset = assets.Valid() ? assets.Name.toStdString() : romname.substr(0, romname.rfind('.'));
+    const string saveDir = assets.Valid() ? assets.SaveDirectory.toStdString() : localCfg.GetString("SaveFilePath");
 
     u32 savelen = 0;
     std::unique_ptr<u8[]> savedata = nullptr;
@@ -2101,6 +2124,7 @@ bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr)
     baseGBAROMDir = std::move(basepath);
     baseGBAROMName = std::move(romname);
     baseGBAAssetName = std::move(asset);
+    gbaAssetPaths = assets;
     clearBackupState();
     return true;
 }
@@ -2135,6 +2159,7 @@ void EmuInstance::loadGBAAddon(int type, QString& errorstr)
     gbaSave = nullptr;
     clearBackupState();
     gbaCartType = type;
+    gbaAssetPaths = {};
     baseGBAROMDir = "";
     baseGBAROMName = "";
     baseGBAAssetName = "";
@@ -2165,6 +2190,7 @@ void EmuInstance::ejectGBACart()
     baseGBAROMDir = "";
     baseGBAROMName = "";
     baseGBAAssetName = "";
+    gbaAssetPaths = {};
 }
 
 bool EmuInstance::gbaCartInserted()

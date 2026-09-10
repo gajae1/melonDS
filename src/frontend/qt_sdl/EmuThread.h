@@ -35,6 +35,7 @@
 #include "NDSCart.h"
 #include "GBACart.h"
 #include "StateLoadResult.h"
+#include "AssetIdentity.h"
 
 namespace melonDS
 {
@@ -92,6 +93,16 @@ public:
     {
         MessageType type;
         QVariant param;
+    };
+
+    struct CartLoadRequest
+    {
+        QStringList Files;
+        AssetIdentity::Selection Assets;
+    };
+    struct AssetResetRequest
+    {
+        AssetIdentity::Selection DS, GBA;
     };
 
     void sendMessage(Message msg);
@@ -165,6 +176,8 @@ signals:
 private:
     void handleMessages();
     std::stop_token cheatStopToken();
+    bool prepareAssets(const QStringList& source, bool gba, bool allowExisting,
+                       AssetIdentity::Selection& selection, QString& error);
 
     void updateRenderer();
     void compileShaders();
@@ -207,4 +220,6 @@ private:
     bool videoSettingsDirty;
 };
 
+Q_DECLARE_METATYPE(EmuThread::CartLoadRequest)
+Q_DECLARE_METATYPE(EmuThread::AssetResetRequest)
 #endif // EMUTHREAD_H
