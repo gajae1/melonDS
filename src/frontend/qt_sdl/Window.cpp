@@ -29,6 +29,7 @@
 #include <utility>
 
 #include <QProcess>
+#include <QPointer>
 #include <QApplication>
 #include <QMessageBox>
 #include <QMenuBar>
@@ -888,6 +889,23 @@ bool MainWindow::prepareClose()
         }
     }
 
+    // Finish every GL teardown before closing any window in this subtree.
+    // A failed acquisition leaves its context and core alive for explicit retry.
+    QList<MainWindow*> retired;
+    for (auto* window : windows)
+    {
+        if (!window->hasOGL) continue;
+        if (!window->emuThread->deinitContext(window->windowID))
+        {
+            for (auto* previous : retired)
+                previous->emuThread->initContext(previous->windowID);
+            for (auto* paused : instances) paused->getEmuThread()->emuUnpause(false);
+            for (auto* pending : windows) pending->closeInProgress = false;
+            return false;
+        }
+        retired.append(window);
+    }
+
     // Keep producers paused through destruction. Approved child close events
     // cannot prompt again after another window has already been destroyed.
     for (auto* window : windows)
@@ -926,7 +944,12 @@ void MainWindow::closeEvent(QCloseEvent* event)
     windowCfg.SetString("Geometry", enc.toStdString());
     Config::Save();
 
-    emuInstance->deleteWindow(windowID, false);
+    if (!emuInstance->deleteWindow(windowID, false))
+    {
+        closeApproved = false;
+        event->ignore();
+        return;
+    }
 
     // emuInstance may be deleted
     // prevent use after free from us
@@ -972,6 +995,7 @@ void MainWindow::createScreenPanel()
         panel->show();
     }
     setCentralWidget(panel);
+    panel->setPreservedFrame(emuInstance->preservedFrame, emuInstance->preservedFrameNumber);
 
     if (hasMenu)
         actScreenFiltering->setEnabled(hasOGL);
@@ -996,12 +1020,13 @@ bool MainWindow::initOpenGL()
     if (!hasOGL) return false;
 
     ScreenPanelGL* glpanel = static_cast<ScreenPanelGL*>(panel);
+    glpanel->setPreservedFrame(emuInstance->preservedFrame, emuInstance->preservedFrameNumber);
     return glpanel->initOpenGL();
 }
 
-void MainWindow::deinitOpenGL()
+bool MainWindow::deinitOpenGL()
 {
-    if (!hasOGL) return;
+    if (!hasOGL) return true;
 
     ScreenPanelGL* glpanel = static_cast<ScreenPanelGL*>(panel);
     return glpanel->deinitOpenGL();
@@ -1016,12 +1041,12 @@ void MainWindow::setGLSwapInterval(int intv)
     return glpanel->setSwapInterval(intv);
 }
 
-void MainWindow::makeCurrentGL()
+bool MainWindow::makeCurrentGL()
 {
-    if (!hasOGL) return;
+    if (!hasOGL) return false;
 
     ScreenPanelGL* glpanel = static_cast<ScreenPanelGL*>(panel);
-    if (!glpanel) return;
+    if (!glpanel) return false;
     return glpanel->makeCurrentGL();
 }
 
@@ -1034,9 +1059,9 @@ void MainWindow::releaseGL()
     return glpanel->releaseGL();
 }
 
-void MainWindow::drawScreen()
+bool MainWindow::drawScreen()
 {
-    if (!panel) return;
+    if (!panel) return true;
     return panel->drawScreen();
 }
 
@@ -1945,7 +1970,7 @@ bool MainWindow::lanWarning(bool host)
         return false;
 
     deleteAllEmuInstances(1);
-    return true;
+    return numEmuInstances() < 2;
 }
 
 void MainWindow::onOpenEmuSettings()
@@ -2405,81 +2430,101 @@ void MainWindow::onEmuReset()
     actUndoStateLoad->setEnabled(false);
 }
 
-void MainWindow::onOpenGLInitFailed(int win)
+void MainWindow::onOpenGLFailed(int win)
 {
-    if (win != windowID || !emuInstance || !hasOGL) return;
+    if (win != windowID || !emuInstance || !emuThread->hasGLFailure()) return;
+    auto* owner = this;
+    while (auto* parent = qobject_cast<MainWindow*>(owner->parentWidget())) owner = parent;
+    owner->recoverOpenGL();
+}
 
-    // This queued GUI slot runs after initialization's worker acknowledgement.
-    // Reuse the normal paused replacement path, outside any GL worker loan.
-    globalCfg.SetBool("Screen.UseGL", false);
-    globalCfg.SetInt("3D.Renderer", renderer3D_Software);
-    onUpdateVideoSettings(true);
-    QMessageBox::warning(this, "OpenGL initialization failed",
-        "OpenGL display initialization failed. Software display is now in use.\n\n"
-        "You can retry OpenGL in Config > Video settings.");
+void MainWindow::recoverOpenGL()
+{
+    if (glRecoveryInProgress || closeInProgress) return;
+    glRecoveryInProgress = true;
+    QPointer<MainWindow> alive(this);
+    while (alive)
+    {
+        if (applyVideoSettings(true, true))
+        {
+            QMessageBox::warning(this, "OpenGL display error",
+                "OpenGL display failed. Software display is now in use.\n\n"
+                "You can retry OpenGL in Config > Video settings.");
+            break;
+        }
+        const auto response = QMessageBox::warning(this, "OpenGL recovery paused",
+            "OpenGL resources could not be safely released. Emulation and its graphics resources have been kept.\n\n"
+            "Retry to recover the display, or cancel and retry later in Config > Video settings.",
+            QMessageBox::Retry | QMessageBox::Cancel, QMessageBox::Retry);
+        if (response != QMessageBox::Retry) break;
+    }
+    if (alive) glRecoveryInProgress = false;
 }
 
 void MainWindow::onUpdateVideoSettings(bool glchange)
 {
-    if (!emuInstance) return;
+    if (applyVideoSettings(glchange, false)) return;
+    auto* owner = this;
+    while (auto* parent = qobject_cast<MainWindow*>(owner->parentWidget())) owner = parent;
+    owner->recoverOpenGL();
+}
+
+bool MainWindow::applyVideoSettings(bool glchange, bool forceSoftware)
+{
+    if (!emuInstance) return false;
 
     // if we have a parent window: pass the message over to the parent
     // the topmost parent takes care of updating all the windows
     MainWindow* parentwin = (MainWindow*)parentWidget();
     if (parentwin)
-        return parentwin->onUpdateVideoSettings(glchange);
+        return parentwin->applyVideoSettings(glchange, forceSoftware);
 
-    auto childwins = findChildren<MainWindow *>(nullptr);
+    auto windows = findChildren<MainWindow *>(nullptr);
+    windows.prepend(this);
+    QList<EmuThread*> threads;
+    for (auto* window : windows)
+    {
+        if (!threads.contains(window->emuThread)) threads.append(window->emuThread);
+        glchange |= window->emuThread->hasGLFailure();
+    }
 
-    bool hadOGL = hasOGL;
     if (glchange)
     {
-        emuThread->emuPause();
-        if (hadOGL)
+        for (auto* thread : threads) thread->emuPause(false);
+        QList<MainWindow*> retired;
+        for (auto* window : windows)
         {
-            emuThread->deinitContext(windowID);
-            for (auto child: childwins)
+            if (!window->hasOGL) continue;
+            if (!window->emuThread->deinitContext(window->windowID))
             {
-                auto thread = child->getEmuInstance()->getEmuThread();
-                thread->deinitContext(child->windowID);
+                for (auto* previous : retired)
+                    previous->emuThread->initContext(previous->windowID);
+                for (auto* thread : threads) thread->emuUnpause(false);
+                return false;
             }
+            retired.append(window);
+        }
+        if (forceSoftware)
+        {
+            globalCfg.SetBool("Screen.UseGL", false);
+            globalCfg.SetInt("3D.Renderer", renderer3D_Software);
         }
 
         {
             // Keep workers stopped throughout replacement and GL/WGL reloads.
             // Nested panel creation shares the loans; init waits follow release.
             ScopedGLWorkers workers(emuThread);
-            createScreenPanel();
-            for (auto child: childwins)
-                child->createScreenPanel();
+            for (auto* window : windows) window->createScreenPanel();
         }
     }
 
-    emuThread->updateVideoSettings();
-    for (auto child: childwins)
-    {
-        // child windows may belong to a different instance
-        // in that case we need to signal their thread appropriately
-        auto thread = child->getEmuInstance()->getEmuThread();
-        if (child->getWindowID() == 0)
-            thread->updateVideoSettings();
-    }
+    for (auto* thread : threads) thread->updateVideoSettings();
 
     if (glchange)
     {
-        if (hasOGL) 
-        {
-            emuThread->initContext(windowID);
-            for (auto child: childwins)
-            {
-                auto thread = child->getEmuInstance()->getEmuThread();
-                thread->initContext(child->windowID);
-            }
-        }
+        for (auto* window : windows)
+            if (window->hasOGL) window->emuThread->initContext(window->windowID);
+        for (auto* thread : threads) thread->emuUnpause(false);
     }
-
-    if (glchange)
-    {
-        emuThread->emuUnpause();
-    }
+    return true;
 }

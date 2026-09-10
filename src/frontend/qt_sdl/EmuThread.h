@@ -144,7 +144,8 @@ public:
     bool emuIsActive();
 
     void initContext(int win);
-    void deinitContext(int win);
+    bool deinitContext(int win);
+    bool hasGLFailure() const { return glFailureWindow.load() >= 0; }
     void borrowGL();
     void returnGL();
     void updateVideoSettings() { videoSettingsDirty = true; }
@@ -162,7 +163,7 @@ signals:
     void windowEmuStop();
     void windowEmuPause(bool pause);
     void windowEmuReset();
-    void windowOpenGLInitFailed(int win);
+    void windowOpenGLFailed(int win);
 
     void windowLimitFPSChange();
 
@@ -178,6 +179,10 @@ signals:
 private:
     void handleMessages();
     bool initializeGL(int win);
+    bool prepareGL();
+    void reportGLFailure(int win);
+    void clearGLFailure(int win);
+    std::atomic<int> glFailureWindow{-1};
     std::stop_token cheatStopToken();
     bool prepareAssets(const QStringList& source, bool gba, bool allowExisting,
                        AssetIdentity::Selection& selection, QString& error);
@@ -217,7 +222,7 @@ private:
     int lastVideoRenderer = -1;
 
 
-    bool useOpenGL;
+    bool useOpenGL = false;
     int videoRenderer;
     bool videoSettingsDirty;
 };

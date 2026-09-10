@@ -64,12 +64,12 @@ public:
     bool hasOpenGL() { return hasOGL; }
     GL::Context* getOGLContext();
     bool initOpenGL();
-    void deinitOpenGL();
+    bool deinitOpenGL();
     void setGLSwapInterval(int intv);
-    void makeCurrentGL();
+    bool makeCurrentGL();
     void releaseGL();
 
-    void drawScreen();
+    bool drawScreen();
 
     bool preloadROMs(QStringList file, QStringList gbafile, bool boot);
     QStringList splitArchivePath(const QString& filename, bool useMemberSyntax);
@@ -181,7 +181,7 @@ private slots:
     void onEmuReset();
 
     void onUpdateVideoSettings(bool glchange);
-    void onOpenGLInitFailed(int win);
+    void onOpenGLFailed(int win);
 
     void onFullscreenToggled();
     void onScreenEmphasisToggled();
@@ -192,6 +192,9 @@ private:
     bool flushSaveManagers(EmuInstance* instance);
     bool closeInProgress = false;
     bool closeApproved = false;
+    bool glRecoveryInProgress = false;
+    bool applyVideoSettings(bool glchange, bool forceSoftware);
+    void recoverOpenGL();
 
     QStringList currentROM;
     QStringList currentGBAROM;

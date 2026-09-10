@@ -781,21 +781,31 @@ void ScreenPanelNative::setupScreenLayout()
     }
 }
 
-void ScreenPanelNative::drawScreen()
+bool ScreenPanelNative::drawScreen()
 {
     auto emuThread = emuInstance->getEmuThread();
     if (!emuThread->emuIsActive())
     {
         hasBuffers = false;
-        return;
+        return true;
     }
 
     auto nds = emuInstance->getNDS();
     assert(nds != nullptr);
 
     bufferLock.lock();
+    if (!preservedFrame[0].isNull() && nds->NumFrames == preservedFrameNumber)
+    {
+        screen[0] = preservedFrame[0];
+        screen[1] = preservedFrame[1];
+        hasBuffers = false;
+        bufferLock.unlock();
+        return true;
+    }
+    preservedFrame = {};
     hasBuffers = nds->GPU.GetFramebuffers(&topBuffer, &bottomBuffer);
     bufferLock.unlock();
+    return true;
 }
 
 void ScreenPanelNative::paintEvent(QPaintEvent* event)
@@ -923,6 +933,7 @@ bool ScreenPanelGL::initOpenGL()
 {
     if (glInited) return true;
     if (!glContext || !glContext->MakeCurrent()) return false;
+    glOwned = true;
 
     if (!OpenGL::CompileVertexFragmentProgram(screenShaderProgram,
                                          kScreenVS, kScreenFS,
@@ -1034,10 +1045,11 @@ bool ScreenPanelGL::initOpenGL()
     return true;
 }
 
-void ScreenPanelGL::deinitOpenGL()
+bool ScreenPanelGL::deinitOpenGL()
 {
     // Failed initialization can own only a prefix of these objects.
-    if (!glContext || !glContext->MakeCurrent()) return;
+    if (!glOwned) return true;
+    if (!glContext || !glContext->MakeCurrent()) return false;
 
     glDeleteTextures(1, &screenTexture);
 
@@ -1069,17 +1081,16 @@ void ScreenPanelGL::deinitOpenGL()
     for (auto& item : splashText) item.rendered = false;
     osdMutex.unlock();
 
-    glContext->DoneCurrent();
-
     lastScreenWidth = lastScreenHeight = -1;
     glInited = false;
+    if (!glContext->DoneCurrent()) return false;
+    glOwned = false;
+    return true;
 }
 
-void ScreenPanelGL::makeCurrentGL()
+bool ScreenPanelGL::makeCurrentGL()
 {
-    if (!glContext) return;
-
-    glContext->MakeCurrent();
+    return glContext && glContext->MakeCurrent();
 }
 
 void ScreenPanelGL::releaseGL()
@@ -1117,15 +1128,15 @@ void ScreenPanelGL::osdDeleteItem(OSDItem* item)
     ScreenPanel::osdDeleteItem(item);
 }
 
-void ScreenPanelGL::drawScreen()
+bool ScreenPanelGL::drawScreen()
 {
     // Deinit is acknowledged before the GUI replaces or removes the panel.
     // Paused frames can still visit it before the ownership barrier is acquired.
-    if (!glContext || !glInited) return;
+    if (!glContext || !glInited) return true;
 
     auto emuThread = emuInstance->getEmuThread();
 
-    glContext->MakeCurrent();
+    if (!glContext->MakeCurrent()) return false;
 
     int w = windowInfo.surface_width;
     int h = windowInfo.surface_height;
@@ -1150,7 +1161,19 @@ void ScreenPanelGL::drawScreen()
         glUniform2f(screenShaderScreenSizeULoc, w / factor, h / factor);
 
         void* topbuf; void* bottombuf;
-        if (nds->GPU.GetFramebuffers(&topbuf, &bottombuf))
+        bool softwareBuffers;
+        if (!preservedFrame[0].isNull() && nds->NumFrames == preservedFrameNumber)
+        {
+            topbuf = preservedFrame[0].bits();
+            bottombuf = preservedFrame[1].bits();
+            softwareBuffers = true;
+        }
+        else
+        {
+            preservedFrame = {};
+            softwareBuffers = nds->GPU.GetFramebuffers(&topbuf, &bottombuf);
+        }
+        if (softwareBuffers)
         {
             // if we're doing a regular render, use the provided framebuffers
             // otherwise, GetFramebuffers() will set up the required state
@@ -1275,7 +1298,7 @@ void ScreenPanelGL::drawScreen()
         osdMutex.unlock();
     }
 
-    glContext->SwapBuffers();
+    return glContext->SwapBuffers();
 }
 
 qreal ScreenPanelGL::devicePixelRatioFromScreen() const

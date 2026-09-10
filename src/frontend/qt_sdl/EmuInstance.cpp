@@ -240,15 +240,14 @@ void EmuInstance::createWindow(int id)
     });
 }
 
-void EmuInstance::deleteWindow(int id, bool close)
+bool EmuInstance::deleteWindow(int id, bool close)
 {
-    if (id >= kMaxWindows) return;
+    if (id >= kMaxWindows) return true;
 
     MainWindow* win = windowList[id];
-    if (!win) return;
+    if (!win) return true;
 
-    if (win->hasOpenGL())
-        emuThread->deinitContext(id);
+    if (win->hasOpenGL() && !emuThread->deinitContext(id)) return false;
 
     {
         ScopedGLWorkers workers(emuThread);
@@ -265,13 +264,14 @@ void EmuInstance::deleteWindow(int id, bool close)
     if (close)
         win->close();
 
-    if (deleting) return;
+    if (deleting) return true;
 
     if (numWindows == 0)
     {
         // if we closed the last window, delete the instance
         // if the main window is closed, Qt will take care of closing any secondary windows
         deleteEmuInstance(instanceID);
+        return true;
     }
     else
     {
@@ -281,6 +281,7 @@ void EmuInstance::deleteWindow(int id, bool close)
             win->actNewWindow->setEnabled(enable);
         });
     }
+    return true;
 }
 
 void EmuInstance::deleteAllWindows()
@@ -403,10 +404,9 @@ bool EmuInstance::initOpenGL(int win)
     return true;
 }
 
-void EmuInstance::deinitOpenGL(int win)
+bool EmuInstance::deinitOpenGL(int win)
 {
-    if (windowList[win])
-        windowList[win]->deinitOpenGL();
+    return !windowList[win] || windowList[win]->deinitOpenGL();
 }
 
 void EmuInstance::setVSyncGL(bool vsync)
@@ -426,9 +426,66 @@ void EmuInstance::setVSyncGL(bool vsync)
     }
 }
 
-void EmuInstance::makeCurrentGL()
+bool EmuInstance::makeCurrentGL()
 {
-    mainWindow->makeCurrentGL();
+    return mainWindow && mainWindow->makeCurrentGL();
+}
+
+bool EmuInstance::preserveFrame()
+{
+    if (!nds || !emuThread->emuIsActive()) return true;
+    // Repeated close/recovery attempts must not replace a good paused image
+    // with the newly constructed renderer's as-yet empty output.
+    if (!preservedFrame[0].isNull() && preservedFrameNumber == nds->NumFrames) return true;
+    std::array<QImage, 2> images;
+    void* top; void* bottom;
+    if (nds->GPU.GetFramebuffers(&top, &bottom))
+    {
+        images[0] = QImage(static_cast<uchar*>(top), 256, 192, QImage::Format_RGB32).copy();
+        images[1] = QImage(static_cast<uchar*>(bottom), 256, 192, QImage::Format_RGB32).copy();
+    }
+    else
+    {
+        const GLuint texture = *static_cast<GLuint*>(top);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
+        GLint width = 0, height = 0;
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_WIDTH, &width);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_HEIGHT, &height);
+        if (width <= 0 || height <= 0) return false;
+        GLuint framebuffer = 0;
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+        bool valid = framebuffer != 0;
+        for (int screen = 0; screen < 2 && valid; ++screen)
+        {
+            glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texture, 0, screen);
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+            valid = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+            QImage image(width, height, QImage::Format_RGB32);
+            valid &= !image.isNull();
+            if (!valid) break;
+            glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, image.bits());
+            valid = glGetError() == GL_NO_ERROR;
+            if (valid) images[screen] = image.scaled(256, 192);
+        }
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &framebuffer);
+        if (!valid) return false;
+    }
+    if (images[0].isNull() || images[1].isNull()) return false;
+    preservedFrame = std::move(images);
+    preservedFrameNumber = nds->NumFrames;
+    return true;
+}
+
+void EmuInstance::discardPreservedFrame()
+{
+    preservedFrame = {};
+    for (auto* window : windowList)
+        if (window) window->panel->setPreservedFrame({}, 0);
 }
 
 void EmuInstance::releaseGL()
@@ -441,13 +498,13 @@ void EmuInstance::releaseGL()
 }
 
 
-void EmuInstance::drawScreen()
+int EmuInstance::drawScreen()
 {
     for (int i = 0; i < kMaxWindows; i++)
     {
-        if (windowList[i])
-            windowList[i]->drawScreen();
+        if (windowList[i] && !windowList[i]->drawScreen()) return i;
     }
+    return -1;
 }
 
 

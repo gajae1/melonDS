@@ -89,6 +89,8 @@ public:
     MainWindow* mainWindow = nullptr;
     MainWindow* windowList[kMaxWindows]{};
     int numWindows = 0;
+    int preservedFrame = 0;
+    unsigned int preservedFrameNumber = 0;
     Configuration Config;
     EmuThread* getEmuThread() { return emuThread; }
     void createWindow(int id = -1);
@@ -229,6 +231,7 @@ public:
     virtual ~Panel() = default;
     void show() {}
     void osdSetEnabled(bool) {}
+    void setPreservedFrame(int, unsigned int) {}
 };
 class ScreenPanelGL : public Panel
 {

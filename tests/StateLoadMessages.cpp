@@ -102,6 +102,7 @@ public:
     bool callbacksDuringLoad = false;
     int loads = 0, undos = 0;
     unsigned resets = 0;
+    bool currentAvailable = true;
     QMutex renderLock;
 
     EmuInstance() { console.audio = &audio; }
@@ -109,6 +110,7 @@ public:
     void audioEnable() { audio = true; }
     void osdAddMessage(unsigned, const char*) {}
     void clearBackupState() {}
+    void discardPreservedFrame() {}
     bool reset(const AssetIdentity::Selection& = {}, const AssetIdentity::Selection& = {})
     { ++resets; callbacksDuringLoad |= audio; if (!bootOK) return false; nds->Start(); return true; }
     bool loadROM(const QStringList&, bool, QString&, const AssetIdentity::Selection&)
@@ -129,8 +131,9 @@ public:
     }
     bool saveState(const std::string&) { std::abort(); }
     void initOpenGL(int) { std::abort(); }
-    void deinitOpenGL(int) { std::abort(); }
-    void makeCurrentGL() { std::abort(); }
+    bool deinitOpenGL(int) { std::abort(); }
+    bool makeCurrentGL() { return currentAvailable; }
+    bool preserveFrame() { std::abort(); }
     void releaseGL() { std::abort(); }
     void ejectCart() { std::abort(); }
     bool loadGBAROM(const QStringList&, QString&, const AssetIdentity::Selection&) { std::abort(); }
@@ -148,6 +151,10 @@ struct MPInterface
 // A real Qt object and signals, but no event-loop or device thread is started.
 void EmuThread::run() {}
 bool EmuThread::initializeGL(int) { std::abort(); }
+void EmuThread::updateRenderer() { std::abort(); }
+#include "statePrepareGL.inc"
+#include "stateReportGL.inc"
+#include "stateClearGL.inc"
 #include "stateThreadConstructor.inc"
 #define OpenFile OpenImportFile
 #define CloseFile CloseImportFile
@@ -186,6 +193,36 @@ int main(int argc, char** argv)
         thread.handleMessages();
         check(thread.msgSemaphore.tryAcquire(), "Message failed to acknowledge completion");
     };
+    if (argc == 2 && std::string(argv[1]) == "gl-gate")
+    {
+        unsigned graphicsErrors = 0;
+        QObject::connect(&thread, &EmuThread::windowOpenGLFailed, [&](int) { ++graphicsErrors; });
+        thread.useOpenGL = true;
+        dispatch(EmuThread::msg_EmuRun);
+        instance.currentAvailable = false;
+        for (auto message : {EmuThread::msg_SaveState, EmuThread::msg_LoadState,
+                             EmuThread::msg_UndoStateLoad, EmuThread::msg_EmuReset,
+                             EmuThread::msg_BootROM, EmuThread::msg_BootFirmware,
+                             EmuThread::msg_EmuFrameStep, EmuThread::msg_EmuRun})
+        {
+            dispatch(message);
+            check(thread.msgResult == 0 && instance.resets == 0 && instance.loads == 0 && starts == 1,
+                  "A core state consumer escaped the graphics failure gate");
+        }
+        dispatch(EmuThread::msg_EmuPause);
+        dispatch(EmuThread::msg_EmuUnpause);
+        check(!instance.audio && thread.hasGLFailure() && graphicsErrors == 1 && thread.emuActive,
+              "Graphics failure lost the session, resumed audio, or repeated its error");
+        thread.clearGLFailure(1);
+        check(thread.hasGLFailure(), "A different window cleared the graphics failure");
+        instance.currentAvailable = true;
+        thread.clearGLFailure(0);
+        dispatch(EmuThread::msg_EmuReset);
+        check(!thread.hasGLFailure() && instance.resets == 1 && instance.audio,
+              "Context recovery did not restore normal message processing");
+        std::printf("graphics state-message gate: %s\n", failures ? "FAIL" : "PASS");
+        return failures ? 1 : 0;
+    }
     if (argc == 2)
     {
         const std::string scenario = argv[1];

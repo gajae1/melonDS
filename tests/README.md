@@ -395,3 +395,12 @@ OSD textures. Glyph generation and QWidget layout are isolated. These checks do
 not cover current/swap failure after successful initialization or physical
 surface loss. See [1.1.23](../plans/releases/1.1.23.md) for the separate full Qt
 two-window initialization-recovery execution and remaining acceptance gates.
+
+`GLPresentation runtime-current|runtime-swap|retire-current` covers failure after
+initialization, rejection before swap without current, retry, and root teardown
+refusal while the accelerated core remains alive. `gl-state-message-gate` uses
+the production dispatcher and failure helpers to check state-consumer rejection,
+audio suspension, one error notification and successful recovery. Native failures
+are injected; physical context loss is not exercised. See
+[1.1.24](../plans/releases/1.1.24.md) for separate full Qt generated-guest runs
+covering root/secondary errors, close refusal, paused images, frame steps and keys.

@@ -29,15 +29,15 @@
 | CJ-21 | [DSi 동일 조건 upstream 부팅 비교](workstreams/01-core-jit.md#CJ-21) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | AD-17 | 미착수 |
 | GR-01 | [배율 변경의 pending capture 보존](workstreams/02-renderers.md#GR-01) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 이전 크기에서 pending 캡처 보존·CPU-synced 참조 폐기; 두 GL의 1x/2x·CPU 읽기·후속 texture 재사용 검증; 진행 중 캡처·다른 driver 후속 |
 | GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capture 종류별 sampler unit 수정; 실제 128/256·S/T wrap·일반 texture 왕복의 binding/픽셀 검증; 다른 driver·비표준 capture·실기 후속 |
-| GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 core capability/shader 실패 복구; 1.1.23 표시 shader·첫 current 실패 결과와 전체 Qt 두 창 native 전환·재선택; 실행 중 실패·실제 3.2-only 장치·설정 dialog 선택 동기화·binary cache 후속 |
-| GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 core 소유 handle·누락 해제; 1.1.23 표시 부분 해제·반복 초기화·OSD texture 재생성; 실제 GL 객체 수명 검증, context 상실·다른 driver 후속 |
+| GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 core 실패 복구; 1.1.23 표시 shader·첫 current 실패; 1.1.24 실행 중 current/swap 전달·core 소비 차단·native 전환·재선택; 실제 3.2-only 장치·설정 dialog 선택 동기화·binary cache 후속 |
+| GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 core handle·누락 해제; 1.1.23 표시 부분 해제·OSD 재생성; 1.1.24 current 실패 시 core/표시 해제 거부·창 유지·재시도; 일반 반환 실패·물리 context 상실·다른 driver 후속 |
 | GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
 | GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 관찰/확장 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 software/OpenGL/Compute 각 30조건의 실제 A/B·혼합·bank wrap→guest LDRH 및 128/256 재사용; DMA·모든 2D source A·실기 후속 |
 | GR-07 | [고배율 한도·할당 복구](workstreams/02-renderers.md#GR-07) | 실행 재현 | P2 | [1.1.17](Release_Plan.md#v17) | — | 1.1.21 texture/viewport·SSBO/texel 한도와 첫 할당 오류·software 복구·캡처 보존·재선택 검증; 실장치 OOM/context 복구·작은 VRAM·indirect 상한 후속 |
 | GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 정적 후보 | P1 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-09 | [2D/3D 정수 SIMD·구간 묶음](workstreams/02-renderers.md#GR-09) | 미측정 가설 | P2 | [1.1.27](Release_Plan.md#v27) | — | 미착수 |
 | GR-10 | [texture cache 비용·상주량](workstreams/02-renderers.md#GR-10) | 미측정 가설 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
-| GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22 deinit 뒤 draw 차단·root/capture 선행 정리·창 접근 중단; 1.1.23 초기화 실패·전체 Qt 두 창 fallback/retry·OSD 재생성; 실행 중 current/swap·해제 거부·paused 게임 이미지·실제 surface 후속 |
+| GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22 root/capture 정리·창 접근 중단; 1.1.23 초기화/OSD 복구; 1.1.24 전체 Qt 주/보조 창 current/swap 실패·해제 거부·재시도·paused 생성 DS 이미지·입력/프레임 보내기 보존; 일반 반환·다중 인스턴스·물리 surface 후속 |
 | GR-12 | [다중 context 초기화 도달성](workstreams/02-renderers.md#GR-12) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22 실제 생성 메서드·Qt worker에서 loader 중첩/조기 재개를 재현하고 GUI 범위 borrow로 차단; worker broadcast 교착 방지. driver lookup은 대역, 이종 GPU 함수표/전체 창 실행 후속 |
 | GR-13 | [software worker 공개·중단 수명](workstreams/02-renderers.md#GR-13) | 정적 후보 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-14 | [render·readback·present 비용 분해](workstreams/02-renderers.md#GR-14) | 미측정 가설 | P2 | [1.1.30](Release_Plan.md#v30) | — | 미착수 |

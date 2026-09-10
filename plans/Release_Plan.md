@@ -342,6 +342,8 @@ FS-15 편집 사본·직렬화·원자적 저장과 실패 복구는 [1.1.12 증
 
 [실제 1.1.23 증분](releases/1.1.23.md)은 GR-03/04/11의 표시 shader·첫 current 실패, 부분 해제·OSD 재생성과 전체 Qt 두 창의 native 전환·명시적 재선택을 다룬다. 실행 중 current/swap 실패·해제 거부와 실제 surface 복구는 다음 증분이며, 책임 버전 1.1.23의 DSi·카메라 과제를 완료 처리하지 않는다.
 
+[실제 1.1.24 증분](releases/1.1.24.md)은 실행 중 current/swap 실패·core 소비 차단·해제 거부·재시도와 일시정지 화면 보존을 다룬다. 전체 Qt의 생성 DS 실행에서 주 창·보조 창의 복구, OpenGL 재선택, 프레임 보내기와 A 입력·해제를 확인했다. 일반 context 반환·borrow 실패와 물리 surface 복구는 후속이며, 책임 버전 1.1.24의 주변장치 과제는 유지한다.
+
 소스 시작점: [GPU3D_Compute.cpp](../src/GPU3D_Compute.cpp), [GPU3D_Compute_shaders.h](../src/GPU3D_Compute_shaders.h), [GPU2D_OpenGL.cpp](../src/GPU2D_OpenGL.cpp), [GLFrameReadback.cpp](../tests/GLFrameReadback.cpp).
 
 기존 회귀 시작점: `gpu-compute-frame-capture|capture-readback`.

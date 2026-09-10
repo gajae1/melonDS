@@ -185,6 +185,12 @@ void deleteEmuInstance(int id)
     auto inst = emuInstances[id];
     if (!inst) return;
 
+    // Explicit instance removal must honor the same save/GL close preflight.
+    if (inst->getNumWindows() > 0)
+    {
+        inst->getMainWindow()->close();
+        return;
+    }
     delete inst;
     emuInstances[id] = nullptr;
 }

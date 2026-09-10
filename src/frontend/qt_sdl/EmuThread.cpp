@@ -78,7 +78,7 @@ void EmuThread::attachWindow(MainWindow* window)
     connect(this, SIGNAL(windowEmuStop()), window, SLOT(onEmuStop()));
     connect(this, SIGNAL(windowEmuPause(bool)), window, SLOT(onEmuPause(bool)));
     connect(this, SIGNAL(windowEmuReset()), window, SLOT(onEmuReset()));
-    connect(this, SIGNAL(windowOpenGLInitFailed(int)), window, SLOT(onOpenGLInitFailed(int)),
+    connect(this, SIGNAL(windowOpenGLFailed(int)), window, SLOT(onOpenGLFailed(int)),
             Qt::QueuedConnection);
     connect(this, SIGNAL(autoScreenSizingChange(int)), window->panel, SLOT(onAutoScreenSizingChanged(int)));
     connect(this, SIGNAL(windowFullscreenToggle()), window, SLOT(onFullscreenToggled()));
@@ -98,7 +98,7 @@ void EmuThread::detachWindow(MainWindow* window)
     disconnect(this, SIGNAL(windowEmuStop()), window, SLOT(onEmuStop()));
     disconnect(this, SIGNAL(windowEmuPause(bool)), window, SLOT(onEmuPause(bool)));
     disconnect(this, SIGNAL(windowEmuReset()), window, SLOT(onEmuReset()));
-    disconnect(this, SIGNAL(windowOpenGLInitFailed(int)), window, SLOT(onOpenGLInitFailed(int)));
+    disconnect(this, SIGNAL(windowOpenGLFailed(int)), window, SLOT(onOpenGLFailed(int)));
     disconnect(this, SIGNAL(autoScreenSizingChange(int)), window->panel, SLOT(onAutoScreenSizingChanged(int)));
     disconnect(this, SIGNAL(windowFullscreenToggle()), window, SLOT(onFullscreenToggled()));
     disconnect(this, SIGNAL(screenEmphasisToggle()), window, SLOT(onScreenEmphasisToggled()));
@@ -173,6 +173,13 @@ void EmuThread::run()
         if (emuInstance->hotkeyPressed(HK_SwapScreens)) emit swapScreensToggle();
         if (emuInstance->hotkeyPressed(HK_SwapScreenEmphasis)) emit screenEmphasisToggle();
 
+        if (!prepareGL())
+        {
+            handleMessages();
+            SDL_Delay(20);
+            continue;
+        }
+
         if (emuStatus == emuStatus_Running || emuStatus == emuStatus_FrameStep)
         {
             if (emuStatus == emuStatus_FrameStep) emuStatus = emuStatus_Paused;
@@ -230,9 +237,6 @@ void EmuThread::run()
 
                 dsi->I2C.GetBPTWL()->ProcessVolumeSwitchInput(currentTime);
             }
-
-            if (useOpenGL)
-                emuInstance->makeCurrentGL();
 
             // update render settings if needed
             if (videoSettingsDirty)
@@ -341,7 +345,12 @@ void EmuThread::run()
             if (emuInstance->firmwareSave)
                 emuInstance->firmwareSave->CheckFlush();
 
-            emuInstance->drawScreen();
+            if (int failedWindow = emuInstance->drawScreen(); failedWindow >= 0)
+            {
+                reportGLFailure(failedWindow);
+                handleMessages();
+                continue;
+            }
 
 #ifdef MELONCAP
             MelonCap::Update();
@@ -462,7 +471,8 @@ void EmuThread::run()
 
             SDL_Delay(75);
 
-            emuInstance->drawScreen();
+            if (int failedWindow = emuInstance->drawScreen(); failedWindow >= 0)
+                reportGLFailure(failedWindow);
         }
 
         handleMessages();
@@ -509,6 +519,18 @@ void EmuThread::handleMessages()
     while (!msgQueue.empty())
     {
         Message msg = msgQueue.dequeue();
+        // These control messages can resolve a failed context without touching
+        // the core. All other consumers must have the root context first.
+        const bool control = msg.type == msg_Exit || msg.type == msg_EmuPause ||
+            msg.type == msg_EmuUnpause || msg.type == msg_InitGL ||
+            msg.type == msg_DeInitGL || msg.type == msg_BorrowGL;
+        if (!control && !prepareGL())
+        {
+            msgResult = 0; // Also StateLoadResult::Failed: the old state is intact.
+            msgError = "OpenGL is unavailable. Retry graphics recovery before changing emulation state.";
+            msgSemaphore.release();
+            continue;
+        }
         switch (msg.type)
         {
         case msg_Exit:
@@ -555,7 +577,7 @@ void EmuThread::handleMessages()
 
             if (emuStatus != emuStatus_Paused)
             {
-                emuInstance->audioEnable();
+                if (!hasGLFailure()) emuInstance->audioEnable();
                 emit windowEmuPause(false);
                 emuInstance->osdAddMessage(0, "Resumed");
             }
@@ -616,6 +638,7 @@ void EmuThread::handleMessages()
             }
             if (savedata) emuInstance->nds->SetNDSSave(savedata.get(), savelen);
             emuInstance->clearBackupState();
+            emuInstance->discardPreservedFrame();
             stateRecoveryFailed = false;
 
             emuStatus = emuStatus_Running;
@@ -633,18 +656,29 @@ void EmuThread::handleMessages()
             break;
 
         case msg_DeInitGL:
+            msgResult = 0;
             if (msg.param.value<int>() == 0 && useOpenGL && emuInstance->nds)
             {
                 // Drain captures and retire core objects in the root context
                 // before the GUI destroys it or builds a new, unrelated one.
                 QMutexLocker lock(&emuInstance->renderLock);
-                emuInstance->makeCurrentGL();
+                if (!emuInstance->makeCurrentGL() || !emuInstance->preserveFrame())
+                {
+                    reportGLFailure(0);
+                    break;
+                }
                 videoRenderer = renderer3D_Software;
                 updateRenderer();
             }
-            emuInstance->deinitOpenGL(msg.param.value<int>());
+            if (!emuInstance->deinitOpenGL(msg.param.value<int>()))
+            {
+                reportGLFailure(msg.param.value<int>());
+                break;
+            }
             if (msg.param.value<int>() == 0)
                 useOpenGL = false;
+            clearGLFailure(msg.param.value<int>());
+            msgResult = 1;
             break;
 
         case msg_BorrowGL:
@@ -667,6 +701,7 @@ void EmuThread::handleMessages()
 
             assert(emuInstance->nds != nullptr);
             emuInstance->nds->Start();
+            emuInstance->discardPreservedFrame();
             stateRecoveryFailed = false;
             msgResult = 1;
             break;
@@ -682,6 +717,7 @@ void EmuThread::handleMessages()
 
             assert(emuInstance->nds != nullptr);
             emuInstance->nds->Start();
+            emuInstance->discardPreservedFrame();
             stateRecoveryFailed = false;
             msgResult = 1;
             break;
@@ -734,6 +770,7 @@ void EmuThread::handleMessages()
                     emuInstance->loadState(msg.param.value<QString>().toStdString()) :
                     emuInstance->undoStateLoad());
             msgResult = static_cast<int>(result);
+            if (result == StateLoadResult::Success) emuInstance->discardPreservedFrame();
             if (result == StateLoadResult::RecoveryFailed)
             {
                 stateRecoveryFailed = true;
@@ -776,8 +813,35 @@ bool EmuThread::initializeGL(int win)
 {
     const bool initialized = emuInstance->initOpenGL(win);
     if (win == 0) useOpenGL = initialized;
-    if (!initialized) emit windowOpenGLInitFailed(win);
+    if (!initialized) reportGLFailure(win);
+    else
+    {
+        clearGLFailure(win);
+        if (win == 0) videoSettingsDirty = true;
+    }
     return initialized;
+}
+
+bool EmuThread::prepareGL()
+{
+    if (hasGLFailure()) return false;
+    if (!useOpenGL || emuInstance->makeCurrentGL()) return true;
+    reportGLFailure(0);
+    return false;
+}
+
+void EmuThread::reportGLFailure(int win)
+{
+    const int previous = glFailureWindow.exchange(win);
+    emuInstance->audioDisable();
+    if (previous < 0) emit windowOpenGLFailed(win);
+}
+
+void EmuThread::clearGLFailure(int win)
+{
+    if (glFailureWindow.compare_exchange_strong(win, -1) &&
+        emuActive && emuStatus == emuStatus_Running)
+        emuInstance->audioEnable();
 }
 
 void EmuThread::initContext(int win)
@@ -786,10 +850,11 @@ void EmuThread::initContext(int win)
     waitMessage();
 }
 
-void EmuThread::deinitContext(int win)
+bool EmuThread::deinitContext(int win)
 {
     sendMessage({.type = msg_DeInitGL, .param = win});
     waitMessage();
+    return msgResult != 0;
 }
 
 void EmuThread::borrowGL()

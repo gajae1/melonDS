@@ -41,6 +41,8 @@ struct EmuThread
 {
     int depth = 0, pauses = 0, unpauses = 0;
     bool broadcastUsed = false;
+    bool deinitContext(int) { return true; }
+    void initContext(int) {}
     void emuPause(bool broadcast = true)
     {
         ++depth;
@@ -108,13 +110,14 @@ struct EmuInstance
     MainWindow* getWindow(int id) { return windows[id]; }
     int getNumWindows() { return std::count_if(windows.begin(), windows.end(), [](auto* w) { return w; }); }
     void saveEnabledWindows() { ++enabledWrites; }
-    void deleteWindow(int id, bool)
+    bool deleteWindow(int id, bool)
     {
         ++deletions;
         if (mainWindow == windows[id]) mainWindow = nullptr;
         windows[id] = nullptr;
         if (!getNumWindows()) deleting = destroyed = true;
         // Keep the fixture alive for assertions after the real QWidget closes.
+        return true;
     }
 };
 
@@ -140,6 +143,7 @@ private:
     bool flushSaveManagers(EmuInstance* instance);
     bool closeInProgress = false;
     bool closeApproved = false;
+    bool hasOGL = false;
     int windowID;
     EmuInstance* emuInstance;
     EmuThread* emuThread;

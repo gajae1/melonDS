@@ -22,6 +22,7 @@
 #include <optional>
 #include <deque>
 #include <map>
+#include <array>
 
 #include <QWidget>
 #include <QImage>
@@ -72,7 +73,10 @@ public:
     void osdSetEnabled(bool enabled);
     void osdAddMessage(unsigned int color, const char* msg);
 
-    virtual void drawScreen() {}// = 0;
+    virtual bool drawScreen() { return true; }
+    // Set only while the worker is held, or on that worker during GL init.
+    void setPreservedFrame(const std::array<QImage, 2>& images, unsigned int frame)
+    { preservedFrame = images; preservedFrameNumber = frame; }
 
 private slots:
     void onScreenLayoutChanged();
@@ -81,6 +85,8 @@ private slots:
 protected:
     MainWindow* mainWindow;
     EmuInstance* emuInstance;
+    std::array<QImage, 2> preservedFrame;
+    unsigned int preservedFrameNumber = 0;
 
     bool filter;
 
@@ -165,7 +171,7 @@ public:
     explicit ScreenPanelNative(QWidget* parent);
     virtual ~ScreenPanelNative();
 
-    void drawScreen() override;
+    bool drawScreen() override;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -198,11 +204,11 @@ public:
     void setSwapInterval(int intv);
 
     bool initOpenGL();
-    void deinitOpenGL();
-    void makeCurrentGL();
+    bool deinitOpenGL();
+    bool makeCurrentGL();
     void releaseGL();
 
-    void drawScreen() override;
+    bool drawScreen() override;
 
     GL::Context* getContext() { return glContext.get(); }
 
@@ -220,6 +226,7 @@ private:
 
     std::unique_ptr<GL::Context> glContext;
     bool glInited;
+    bool glOwned = false; // Includes a partial init or an outstanding current release.
 
     GLuint screenVertexBuffer = 0, screenVertexArray = 0;
     GLuint screenTexture = 0;

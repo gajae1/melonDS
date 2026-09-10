@@ -111,7 +111,7 @@ public:
     std::string instanceFileSuffix();
 
     void createWindow(int id = -1);
-    void deleteWindow(int id, bool close);
+    bool deleteWindow(int id, bool close);
     void deleteAllWindows();
 
     void osdAddMessage(unsigned int color, const char* fmt, ...);
@@ -121,12 +121,14 @@ public:
 
     bool usesOpenGL();
     bool initOpenGL(int win);
-    void deinitOpenGL(int win);
+    bool deinitOpenGL(int win);
     void setVSyncGL(bool vsync);
-    void makeCurrentGL();
+    bool makeCurrentGL();
+    bool preserveFrame();
+    void discardPreservedFrame();
     void releaseGL();
 
-    void drawScreen();
+    int drawScreen(); // -1 on success, otherwise the failing window.
 
     // return: empty string = setup OK, non-empty = error message
     QString verifySetup();
@@ -394,6 +396,8 @@ private:
 
     friend class EmuThread;
     friend class MainWindow;
+    std::array<QImage, 2> preservedFrame;
+    unsigned int preservedFrameNumber = 0;
 };
 
 #endif //EMUINSTANCE_H

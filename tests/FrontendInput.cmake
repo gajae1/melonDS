@@ -334,6 +334,20 @@ add_executable(StateLoadMessages "${CMAKE_SOURCE_DIR}/tests/StateLoadMessages.cp
     "${CMAKE_CURRENT_BINARY_DIR}/stateMessages.inc" "${CMAKE_CURRENT_BINARY_DIR}/stateThreadConstructor.inc"
     "${CMAKE_CURRENT_BINARY_DIR}/importSaveWrapper.inc")
 target_include_directories(StateLoadMessages PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+
+foreach(pair IN ITEMS "statePrepareGL|bool EmuThread::prepareGL()"
+        "stateReportGL|void EmuThread::reportGLFailure(int win)"
+        "stateClearGL|void EmuThread::clearGLFailure(int win)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 name)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${name}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuThread.cpp VERBATIM)
+    target_sources(StateLoadMessages PRIVATE "${output}")
+endforeach()
 target_link_libraries(StateLoadMessages PRIVATE core Threads::Threads)
 if (USE_QT6)
     target_link_libraries(StateLoadMessages PRIVATE Qt6::Core)
@@ -341,6 +355,8 @@ else()
     target_link_libraries(StateLoadMessages PRIVATE Qt5::Core)
 endif()
 add_test(NAME savestate-message-recovery COMMAND StateLoadMessages)
+add_test(NAME gl-state-message-gate COMMAND StateLoadMessages gl-gate)
+set_tests_properties(gl-state-message-gate PROPERTIES TIMEOUT 10)
 set_tests_properties(savestate-message-recovery PROPERTIES TIMEOUT 10)
 foreach(case IN ITEMS normal missing empty short error oversize allocation reset-failure paused-failure no-cart)
     add_test(NAME save-import-${case} COMMAND StateLoadMessages ${case})
@@ -631,16 +647,22 @@ from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 head = "        switch (msg.type)\n        {\n"
+dequeue = "        Message msg = msgQueue.dequeue();\n"
 case = "        case msg_BorrowGL:\n"
 tail = "\n        }\n\n        msgSemaphore.release();"
-for anchor in (head, case, tail):
+for anchor in (head, dequeue, case, tail):
     if text.count(anchor) != 1:
         raise SystemExit("GL borrow extraction needs updating: " + repr(anchor))
 body = text.index(head) + len(head)
 start = text.index(case, body)
 end = text.index("\n        case ", start + len(case))
 close = text.index(tail, end)
-reduced = text[:body] + text[start:end] + text[close:]
+# BorrowGL is a control message; the state-consumer GL preflight does not run
+# for it. Keep the queue/ownership/acknowledgement path without that gate.
+prefix_end = text.index(dequeue) + len(dequeue)
+if prefix_end > text.index(head):
+    raise SystemExit("GL borrow extraction: dequeue must precede dispatch")
+reduced = text[:prefix_end] + head + text[start:end] + text[close:]
 if reduced.count("{") != reduced.count("}"):
     raise SystemExit("GL borrow extraction: unbalanced braces")
 Path(sys.argv[2]).write_text(reduced, encoding="utf-8")
@@ -693,15 +715,10 @@ if (MELONDS_TEST_GPU)
         string(REPLACE "|" ";" parts "${pair}")
         list(GET parts 0 name)
         list(GET parts 1 method)
-        if (method STREQUAL "initOpenGL")
-            set(return_type bool)
-        else()
-            set(return_type void)
-        endif()
         set(output "${CMAKE_CURRENT_BINARY_DIR}/presentation${name}.inc")
         add_custom_command(OUTPUT "${output}"
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
-                "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "${return_type} ScreenPanelGL::${method}()" "${output}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "bool ScreenPanelGL::${method}()" "${output}"
             DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
         list(APPEND presentation_methods "${output}")
     endforeach()
@@ -749,7 +766,7 @@ Path(sys.argv[2]).write_text(body, encoding="utf-8")
     add_test(NAME gl-presentation-deinit COMMAND GLPresentation)
     set_tests_properties(gl-presentation-deinit PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
         RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(mode IN ITEMS fail-screen fail-osd fail-current osd-reinit)
+    foreach(mode IN ITEMS fail-screen fail-osd fail-current osd-reinit runtime-current runtime-swap retire-current)
         add_test(NAME gl-presentation-${mode} COMMAND GLPresentation ${mode})
         set_tests_properties(gl-presentation-${mode} PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
             RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

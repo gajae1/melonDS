@@ -37,6 +37,7 @@ struct NativeContext
     SDL_GLContext context;
     int currentCalls = 0, swaps = 0;
     bool failCurrent = false;
+    bool failSwap = false;
 #ifdef _WIN32
     std::unique_ptr<GL::Context> native;
     bool Replace()
@@ -72,6 +73,7 @@ struct NativeContext
     bool SwapBuffers()
     {
         ++swaps;
+        if (failSwap) return false;
 #ifdef _WIN32
         if (native) return native->SwapBuffers();
 #endif
@@ -105,8 +107,8 @@ class ScreenPanelGL
 {
 public:
     bool initOpenGL();
-    void deinitOpenGL();
-    void drawScreen();
+    bool deinitOpenGL();
+    bool drawScreen();
     void transferLayout() {} // GUI-produced layout snapshot below.
     void osdUpdate();
     void calcSplashLayout() {}
@@ -129,7 +131,9 @@ public:
         }
     }
     std::unique_ptr<NativeContext> glContext;
-    bool glInited = false;
+    bool glInited = false, glOwned = false;
+    std::array<QImage, 2> preservedFrame;
+    unsigned int preservedFrameNumber = 0;
     GLuint screenVertexBuffer = 0, screenVertexArray = 0, screenTexture = 0, screenShaderProgram = 0;
     GLint screenShaderTransformULoc = 0, screenShaderScreenSizeULoc = 0;
     QMutex screenSettingsLock;
@@ -259,6 +263,26 @@ bool OSD(ScreenPanelGL& panel)
 }
 }
 
+bool RuntimeFailure(ScreenPanelGL& panel, bool current)
+{
+    panel.initOpenGL();
+    const bool normal = panel.drawScreen();
+    panel.glContext->DoneCurrent();
+    panel.glContext->failCurrent = current;
+    panel.glContext->failSwap = !current;
+    const int swaps = panel.glContext->swaps;
+    const bool rejected = !panel.drawScreen();
+    const bool noSwapWithoutCurrent = !current || panel.glContext->swaps == swaps;
+    std::printf("runtime-%s: normal=%d rejected=%d no-swap-without-current=%d\n",
+        current ? "current" : "swap", normal, rejected, noSwapWithoutCurrent);
+    panel.glContext->failCurrent = panel.glContext->failSwap = false;
+    panel.glContext->MakeCurrent();
+    while (glGetError() != GL_NO_ERROR) {}
+    const bool retried = panel.drawScreen() && glGetError() == GL_NO_ERROR;
+    panel.deinitOpenGL();
+    return normal && rejected && noSwapWithoutCurrent && retried;
+}
+
 namespace CoreLifetime
 {
 enum { renderer3D_Software, renderer3D_OpenGL, renderer3D_OpenGLCompute };
@@ -275,15 +299,21 @@ struct Instance
     QMutex renderLock;
     Config& getGlobalConfig() { return cfg; }
     void osdAddMessage(u32, const char*, ...) {}
-    void makeCurrentGL() { panel->glContext->MakeCurrent(); }
-    void deinitOpenGL(int) { panel->deinitOpenGL(); }
+    bool makeCurrentGL() { return panel->glContext->MakeCurrent(); }
+    bool preserveFrame() { return true; } // Full Qt recovery probes actual frame snapshots.
+    bool deinitOpenGL(int) { return panel->deinitOpenGL(); }
 };
 struct EmuThread
 {
     Instance* emuInstance;
     int videoRenderer, lastVideoRenderer = renderer3D_Software;
     bool useOpenGL = true, videoSettingsDirty = false;
+    int unsafeRetires = 0;
+    int msgResult = 0, glFailure = -1;
+    void reportGLFailure(int win) { glFailure = win; }
+    void clearGLFailure(int win) { if (glFailure == win) glFailure = -1; }
     void updateRenderer();
+    void updateRendererBody();
     struct Param { int win; template<class T> T value() const { return win; } };
     void retire(int window)
     {
@@ -293,9 +323,17 @@ struct EmuThread
         }
     }
 };
+#define updateRenderer updateRendererBody
 #include "presentationRenderer.inc"
+#undef updateRenderer
+void EmuThread::updateRenderer()
+{
+    // Observe the invalid consumer before executing GL teardown without current.
+    if (emuInstance->panel->glContext->failCurrent) { ++unsafeRetires; return; }
+    updateRendererBody();
+}
 
-bool Check(ScreenPanelGL& panel, int renderer)
+bool Check(ScreenPanelGL& panel, int renderer, bool failCurrent = false)
 {
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
@@ -322,11 +360,23 @@ bool Check(ScreenPanelGL& panel, int renderer)
     nds->ARM9Write32(0x04000064, 0xA0010000);
     nds->RunFrame();
     if ((nds->GPU.CaptureCnt & (1u << 31)) || nds->GPU.GetCaptureBlock_LCDC(0x20000) < 0) return false;
+    bool guarded = true;
+    if (failCurrent)
+    {
+        panel.glContext->DoneCurrent();
+        panel.glContext->failCurrent = true;
+        thread.retire(0);
+        guarded = thread.unsafeRetires == 0 && thread.useOpenGL &&
+            dynamic_cast<GLRenderer*>(&nds->GetRenderer()) && panel.glInited;
+        std::printf("retire-current-failure: unsafe-consumers=%d retained=%d\n", thread.unsafeRetires, guarded);
+        panel.glContext->failCurrent = false;
+        thread.useOpenGL = true; // Restore only after recording the old handler's failure.
+    }
     thread.retire(0);
     const bool software = dynamic_cast<SoftRenderer*>(&nds->GetRenderer()) != nullptr;
     // Inspect CPU RAM directly: a GPU read helper would hide a missing drain.
     const bool captured = nds->GPU.VRAM_B[0] == 0x1F && nds->GPU.VRAM_B[1] == 0x80;
-    bool passed = software && captured && !thread.useOpenGL &&
+    bool passed = guarded && software && captured && !thread.useOpenGL &&
         thread.videoRenderer == renderer3D_Software && thread.lastVideoRenderer == renderer3D_Software &&
         !panel.glContext->IsCurrent();
     std::printf("core-retire: software=%d capture-preserved=%d active=%d last=%d %s\n",
@@ -386,6 +436,9 @@ int main(int argc, char** argv)
         auto worker = std::unique_ptr<QThread>(QThread::create([&] {
             if (!std::strncmp(argv[1], "fail-", 5)) passed = InitFailure::Check(panel, argv[1]);
             else if (!std::strcmp(argv[1], "osd-reinit")) passed = InitFailure::OSD(panel);
+            else if (!std::strcmp(argv[1], "runtime-current")) passed = RuntimeFailure(panel, true);
+            else if (!std::strcmp(argv[1], "runtime-swap")) passed = RuntimeFailure(panel, false);
+            else if (!std::strcmp(argv[1], "retire-current")) passed = CoreLifetime::Check(panel, renderer, true);
             else passed = CoreLifetime::Check(panel, renderer);
         }));
         worker->start();
