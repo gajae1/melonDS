@@ -37,6 +37,8 @@
 
 [1.1.16 증분](releases/1.1.16.md)은 CJ-06의 ARM/Thumb LDM/STM 빈 목록을 CPU별로 처리하고, CJ-03의 일반 ARM7 STM PC값과 상태 전환 후 동일한 pipeline PC의 JIT 분기 누락을 수정한다. 빈 PUSH/POP의 원 실기 oracle은 확보하지 못했으므로 보류하며 기존 LR/PC 단독 경로와 구분한다. 다음은 CJ-05 DTCM remap 구간과 CJ-07 이벤트 취소의 실제 반례다. CJ-04 MPU·전체 CPU 명령·앞선 장치 수락도 유지하며, 원래 책임 버전과 실제 증분 릴리스 번호를 혼동하지 않는다.
 
+[1.1.17 증분](releases/1.1.17.md)은 CJ-05의 DTCM 자체 view·이전 RAM 제외 구간·작은 bank offset과 CJ-07의 취소된 due event 실행을 수정한다. Windows 실제 view와 warmed guest, 재예약·snapshot 계약을 검증했다. 다음은 CJ-04의 MPU 권한 갱신과 exception 진입을 실제 guest의 정상/abort 한 쌍으로 좁힌다. CJ-08의 IRQ/DMA/sleep은 독립 이벤트 경계부터 확인하며, resize/save-load·다른 OS·native A64·장기 게임과 앞선 미완료 과제는 유지한다.
+
 ## 작업 소유권
 
 EmuInstance.cpp를 건드리는 상태 로드·ROM 교체·Zstd 변경은 한 작성자가 순차 통합한다. 코어 NDS.cpp와 Config.cpp의 좁은 수정은 독립적으로 진행할 수 있다.

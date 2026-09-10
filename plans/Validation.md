@@ -42,6 +42,8 @@ ALU·shift는 `CoreExecution`과 `core-.*-(alu-shift|thumb-shift-timing)`을 사
 
 목록 전송은 `CoreExecution`의 `core-.*-block-transfer`에서 ARM9/ARM7 실제 guest 프로그램으로 검사한다. IA/IB/DA/DB·W=0/1·조건 결과가 바뀌는 warmed 진입, 정상 목록 대조·PC 저장값·Thumb 유지·SPSR/은행 SP 복원·같은 pipeline PC에서의 상태 변경을 포함한다. ARM9 비전송은 실제 CPU의 data bus 호출을 계수하고 이전 DataCycles를 바꿔 비용 독립성을 확인한다. CPU별 호환 모델의 회귀와 직접 DS 실리콘 측정은 구분한다. 빈 PUSH/POP은 원 oracle을 확보하기 전 기대값을 만들어 등록하지 않는다.
 
+DTCM은 `CoreExecution`의 `core-.*-dtcm-remap`에서 CP15 이동·해제와 실제 guest 재진입을 검사한다. Windows fastmem은 자신의 OS view를 조회해 예약/매핑·값·코드 보호를 독립 확인한다. 값만 일치하는 느린 helper 전환과 구분하며 다른 플랫폼의 실제 view 검증으로 확대하지 않는다. `core-scheduler-execution`은 실제 NDS의 ScheduleEvent/CancelEvent/RunSystem을 사용해 취소·재예약·교체·periodic·snapshot·정상 순서를 검사한다. 이 생성 callback 계약과 IRQ/DMA/sleep 장치 전체 타이밍은 별도다.
+
 ## 진단 구성
 
 루트 [Sanitizers.cmake](../cmake/Sanitizers.cmake)의 `SANITIZE` 설정은 도구와 runtime이 지원하는 조합에서 사용한다. 작은 parser·buffer 경계는 기존 독립 테스트를 우선한다.

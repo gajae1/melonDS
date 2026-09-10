@@ -16,6 +16,8 @@ using namespace melonDS;
 int TestALUExecution(NDSArgs&& args, bool jit);
 int TestThumbShiftTiming(NDSArgs&& args, bool jit);
 int TestBlockTransferExecution(NDSArgs&& args, bool jit);
+int TestDTCMExecution(NDSArgs&& args, bool jit);
+int TestSchedulerExecution(NDSArgs&& args);
 
 static int TestSchedulerSavestate(NDSArgs&& args)
 {
@@ -142,8 +144,12 @@ int main(int argc, char** argv) {
         return TestThumbShiftTiming(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "block-transfer") == 0)
         return TestBlockTransferExecution(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "dtcm-remap") == 0)
+        return TestDTCMExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
         return TestSchedulerSavestate(std::move(args));
+    if (argc > 2 && std::strcmp(argv[2], "scheduler-execution") == 0)
+        return TestSchedulerExecution(std::move(args));
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
     RendererSettings settings{1, false, false, false};

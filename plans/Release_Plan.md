@@ -302,6 +302,8 @@ FS-15 편집 사본·직렬화·원자적 저장과 실패 복구는 [1.1.12 증
 4. interpreter/JIT 메모리 trace·cycle·IRQ 순서를 비교하고, 외부 RAM/slot/TCM 경계의 실기 결과를 회수한다.
 5. 장치로 확인된 정확도 범위를 기록하고 영향 게임·save/load를 통과한 변경만 배포한다. 전면 cycle 정확도라는 표현은 사용하지 않는다.
 
+[1.1.17 증분](releases/1.1.17.md)은 CJ-05의 DTCM view·이전 RAM 구간·작은 bank offset과 CJ-07의 callback 중 취소 처리를 수정한다. Windows 실제 view·warmed guest와 scheduler snapshot 회귀를 확인한다. CJ-04/08/12/13/15의 나머지 경계와 다른 OS·native A64 수락을 유지하며 실제 배포 번호를 아래 renderer 책임 과제 완료로 집계하지 않는다.
+
 <a id="v16"></a>
 
 ## 1.1.16 — OpenGL context·캡처·자원 수명

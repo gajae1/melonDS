@@ -2,7 +2,7 @@
 
 125개 과제 ID를 유지한다. 이는 확정 버그 수나 독립 구현 수가 아니다. P1은 재현 우선, P2는 호환성·측정 개선, P3은 효용 확인 후 채택이다. 관찰 근거는 1.1.02 분석 당시 분류이며 실행으로 새로 확인한 항목은 처리 상태를 갱신한다.
 
-기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.16.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
+기본 버전은 책임 범위다. 작은 수정의 선반영은 [릴리스 기록](releases/1.1.17.md)에 원 ID와 남은 범위를 남긴다. 다른 ID와 같은 경계를 공유하면 하나의 구현으로 집계한다.
 
 | ID | 작업·상세 계약 | 관찰 근거 | 우선 | 기본 버전 | 공동 대표 | 처리 상태 |
 |---|---|---|---|---|---|---|
@@ -10,9 +10,9 @@
 | CJ-02 | [A64 조건부 사이클 누적](workstreams/01-core-jit.md#CJ-02) | 정적 후보 | P1 | [1.1.39](Release_Plan.md#v39) | — | 미착수 |
 | CJ-03 | [warmed ALU·shift·부분 flags](workstreams/01-core-jit.md#CJ-03) | 실행 재현/확장 | P1 | [1.1.14](Release_Plan.md#v14) | — | 1.1.15 ASR·ALU 회귀, 1.1.16 ARM7 STM PC값·동일 pipeline PC의 ARM/Thumb 복원 수정; 전체 명령/조건·native A64·실기 후속 |
 | CJ-04 | [MPU 실행·data 권한 경계](workstreams/01-core-jit.md#CJ-04) | 정적 후보 | P1 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
-| CJ-05 | [DTCM remap 구간](workstreams/01-core-jit.md#CJ-05) | 정적 후보 | P1 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
+| CJ-05 | [DTCM remap 구간](workstreams/01-core-jit.md#CJ-05) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.17 DTCM 자체 view·이전 RAM 구간·작은 bank offset 수정과 Windows 실제 view/guest 회귀; 다른 OS·native A64·resize/save-load·MPU 후속 |
 | CJ-06 | [빈 LDM/STM reg list](workstreams/01-core-jit.md#CJ-06) | 실행 재현 | P2 | [1.1.14](Release_Plan.md#v14) | — | 1.1.16 ARM/Thumb LDM/STM의 CPU별 전송·WB·CPSR와 JIT fallback 구현·로컬 회귀; 빈 PUSH/POP·ARM9 실측·절대 타이밍·native A64 후속 |
-| CJ-07 | [callback 중 event 취소](workstreams/01-core-jit.md#CJ-07) | 정적 후보 | P1 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
+| CJ-07 | [callback 중 event 취소](workstreams/01-core-jit.md#CJ-07) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.17 취소된 due event 실행 수정, 정상·재예약·교체·periodic·snapshot 6개 case 통과; IRQ/DMA/sleep 장치 경계는 CJ-08 후속 |
 | CJ-08 | [IRQ·DMA·sleep 경계](workstreams/01-core-jit.md#CJ-08) | 관찰/확장 | P2 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
 | CJ-09 | [savestate event 값 검증](workstreams/01-core-jit.md#CJ-09) | 정적 후보 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.03 구현·로컬 회귀; DSi HLE 실사용 후속 |
 | CJ-10 | [부분 load 실패 복원](workstreams/01-core-jit.md#CJ-10) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | FS-01 | 1.1.04 load·undo 복원·정지 구현, 합성 core/JIT 회귀; 카트·DSi·게임 수락 후속 |

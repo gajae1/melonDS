@@ -896,7 +896,8 @@ void NDS::RunSystem(u64 timestamp)
     for (int i = 0; i < Event_MAX; i++)
     {
         if (!mask) break;
-        if (mask & 0x1)
+        // Earlier callbacks may cancel events that were in the initial snapshot.
+        if ((mask & 0x1) && (SchedListMask & (1u << i)))
         {
             SchedEvent& evt = SchedList[i];
 

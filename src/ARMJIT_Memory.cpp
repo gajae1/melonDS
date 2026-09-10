@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <algorithm>
 #include <bit>
 
 #if defined(__SWITCH__)
@@ -473,7 +474,7 @@ void ARMJIT_Memory::Mapping::Unmap(int region, melonDS::NDS& nds) noexcept
 
 #ifndef __SWITCH__
     u32 dtcmEnd = dtcmStart + dtcmSize;
-    if (Num == 0
+    if (skipDTCM
         && dtcmEnd >= Addr
         && dtcmStart < Addr + Size)
     {
@@ -541,11 +542,12 @@ void ARMJIT_Memory::RemapDTCM(u32 newBase, u32 newSize) noexcept
     // by unmapping DTCM first and then map the holes
     u32 oldDTCMBase = NDS.ARM9.DTCMBase;
     u32 oldDTCMSize = ~NDS.ARM9.DTCMMask + 1;
-    u32 oldDTCMEnd = oldDTCMBase + NDS.ARM9.DTCMMask;
+    u64 oldDTCMEnd = u64(oldDTCMBase) + oldDTCMSize;
 
-    u32 newEnd = newBase + newSize;
+    u64 newEnd = u64(newBase) + newSize;
 
-    Log(LogLevel::Debug, "remapping DTCM %x %x %x %x\n", newBase, newEnd, oldDTCMBase, oldDTCMEnd);
+    Log(LogLevel::Debug, "remapping DTCM base=%x size=%x oldbase=%x oldsize=%x\n",
+        newBase, newSize, oldDTCMBase, oldDTCMSize);
     // unmap all regions containing the old or the current DTCM mapping
     for (int region = 0; region < memregions_Count; region++)
     {
@@ -557,7 +559,7 @@ void ARMJIT_Memory::RemapDTCM(u32 newBase, u32 newSize) noexcept
             Mapping& mapping = Mappings[region][i];
 
             u32 start = mapping.Addr;
-            u32 end = mapping.Addr + mapping.Size;
+            u64 end = u64(mapping.Addr) + mapping.Size;
 
             Log(LogLevel::Debug, "unmapping %d %x %x %x %x\n", region, mapping.Addr, mapping.Size, mapping.Num, mapping.LocalOffset);
 
@@ -646,6 +648,9 @@ bool ARMJIT_Memory::MapAtAddress(u32 addr) noexcept
     bool isMapped = GetMirrorLocation(region, num, addr, memoryOffset, mirrorStart, mirrorSize);
     if (!isMapped)
         return false;
+    // A sub-page DTCM view must use the slow path on larger-page hosts.
+    if (mirrorSize < PageSize)
+        return false;
 
     u8* states = num == 0 ? MappingStatus9 : MappingStatus7;
     //printf("mapping mirror %x, %x %x %d %d\n", mirrorStart, mirrorSize, memoryOffset, region, num);
@@ -654,8 +659,9 @@ bool ARMJIT_Memory::MapAtAddress(u32 addr) noexcept
     u32 dtcmStart = NDS.ARM9.DTCMBase;
     u32 dtcmSize = ~NDS.ARM9.DTCMMask + 1;
     u32 dtcmEnd = dtcmStart + dtcmSize;
+    bool skipDTCM = num == 0 && region != memregion_DTCM;
 #ifndef __SWITCH__
-    if (num == 0
+    if (skipDTCM
         && dtcmEnd >= mirrorStart
         && dtcmStart < mirrorStart + mirrorSize)
     {
@@ -693,7 +699,6 @@ bool ARMJIT_Memory::MapAtAddress(u32 addr) noexcept
     // this overcomplicated piece of code basically just finds whole pieces of code memory
     // which can be mapped/protected
     u32 offset = 0;
-    bool skipDTCM = num == 0 && region != memregion_DTCM;
     while (offset < mirrorSize)
     {
         if (skipDTCM && mirrorStart + offset == dtcmStart)
@@ -1042,8 +1047,9 @@ bool ARMJIT_Memory::GetMirrorLocation(int region, u32 num, u32 addr, u32& memory
     case memregion_DTCM:
         if (num == 0)
         {
-            mirrorStart = addr & ~(DTCMPhysicalSize - 1);
-            mirrorSize = DTCMPhysicalSize;
+            mirrorSize = std::min(DTCMPhysicalSize, ~NDS.ARM9.DTCMMask + 1);
+            mirrorStart = addr & ~(mirrorSize - 1);
+            memoryOffset = mirrorStart & (DTCMPhysicalSize - 1);
             return true;
         }
         return false;

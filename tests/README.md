@@ -275,3 +275,18 @@ previous DataCycles values check cost independence, without asserting physical
 silicon cycle counts. Empty PUSH/POP remain outside the supported oracle scope.
 The `core-.*-block-transfer` entries cover interpreter/JIT/fastmem; A64 source
 integration still requires native execution. See [1.1.16](../plans/releases/1.1.16.md).
+
+`CoreExecution`'s `dtcm-remap` group uses CP15 changes and cached ARM9 guest
+loads/stores to check DTCM move/disable, restored RAM mirrors, small bank offsets
+and physical aliases at the 4 GiB boundary. Windows fastmem additionally queries
+its own native views and reads them with ReadProcessMemory: guest values alone
+can conceal a fault that rewrites JIT memory access to a slow helper. It verifies
+unmapped old views, preserved ARM7 RAM and read-only compiled code after remap.
+Other OS views and native A64 execution remain separate acceptance requirements.
+
+`core-scheduler-execution` calls the real NDS scheduler with generated callbacks.
+It covers a due event canceled by an earlier slot, future/same-time replacement,
+periodic deadlines, newly active slots and unchanged ID order. The initial
+snapshot still determines eligible slots; each callback must also remain active.
+These six cases do not establish device IRQ/DMA/sleep or physical DS timing.
+See [1.1.17](../plans/releases/1.1.17.md).
