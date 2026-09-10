@@ -24,6 +24,7 @@
 #include <QStandardItemModel>
 #include <QItemSelection>
 #include <QSyntaxHighlighter>
+#include <memory>
 
 #include "ARCodeFile.h"
 
@@ -117,7 +118,7 @@ private:
     melonDS::u32 gameCode;
     melonDS::u32 gameChecksum;
 
-    melonDS::ARCodeFile* codeFile;
+    std::unique_ptr<melonDS::ARCodeFile> codeFile;
     ARCodeChecker* codeChecker;
 
     melonDS::ARDatabaseDAT* importDB;
@@ -125,6 +126,7 @@ private:
 
     bool updatingEnableChk;
 
+    bool saveChanges(QString& error);
     void populateCheatList();
     void populateCheatInfo();
     std::vector<melonDS::u32> convertCodeInput();

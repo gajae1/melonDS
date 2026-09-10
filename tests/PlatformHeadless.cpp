@@ -9,6 +9,9 @@ void SignalStop(StopReason, void*) {}
 FileHandle* OpenFile(const std::string&, FileMode) { return nullptr; }
 FileHandle* OpenLocalFile(const std::string&, FileMode) { return nullptr; }
 bool LocalFileExists(const std::string&) { return false; }
+#ifndef MELONDS_TEST_FILE_EXISTS
+bool FileExists(const std::string&) { return false; }
+#endif
 #ifndef MELONDS_TEST_MEMORY_FILES
 bool CloseFile(FileHandle*) { std::abort(); }
 bool IsEndOfFile(FileHandle*) { std::abort(); }

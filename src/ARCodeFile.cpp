@@ -18,6 +18,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cctype>
+#include <memory>
+#include <new>
+#include <stdexcept>
 #include "ARCodeFile.h"
 #include "ARDatabaseDAT.h"
 #include "Platform.h"
@@ -69,15 +73,21 @@ std::vector<ARCode> ARCodeFile::GetCodes() const noexcept
 
 bool ARCodeFile::Load()
 {
-    FileHandle* f = OpenFile(Filename, FileMode::ReadText);
-    if (!f) return true;
+    Error = true;
+    std::unique_ptr<FileHandle, decltype(&CloseFile)> f(OpenFile(Filename, FileMode::ReadText), CloseFile);
+    if (!f)
+    {
+        if (FileExists(Filename)) return false;
+        Error = false;
+        return true;
+    }
 
-    RootCat.Parent = nullptr;
-    RootCat.OnlyOneCodeEnabled = false;
-    RootCat.Children.clear();
+    // Keep the current tree (and its Parent pointers) until the full read and
+    // parse succeed. A failed reload must not publish a partial replacement.
+    ARCodeCat root {};
 
     bool isincat = false;
-    ARCodeCat* curcat = &RootCat;
+    ARCodeCat* curcat = &root;
 
     bool isincode = false;
     ARCode* curcode = nullptr;
@@ -85,10 +95,20 @@ bool ARCodeFile::Load()
     int lastentry = 0;
 
     char linebuf[1024];
-    while (!IsEndOfFile(f))
+    while (!IsEndOfFile(f.get()))
     {
-        if (!FileReadLine(linebuf, 1024, f))
-            break;
+        const u64 before = FilePosition(f.get());
+        if (before == UINT64_MAX) return false;
+        linebuf[0] = '\0';
+        if (!FileReadLine(linebuf, 1024, f.get()))
+        {
+            if (IsEndOfFile(f.get())) break;
+            return false;
+        }
+        // Some hosts convert a signed readLine error to bool true. Checking
+        // progress also prevents a stalled read from publishing an empty tree.
+        const u64 after = FilePosition(f.get());
+        if (after == UINT64_MAX || after <= before) return false;
 
         linebuf[1023] = '\0';
 
@@ -104,7 +124,7 @@ bool ARCodeFile::Load()
             isincode = false;
             isincat = true;
 
-            curcat = &RootCat;
+            curcat = &root;
             lastentry = 0;
         }
         else if (!strncasecmp(start, "CAT", 3))
@@ -112,24 +132,24 @@ bool ARCodeFile::Load()
             char catname[128];
             int ret, retchk;
             int onlyone;
+            int consumed = 0;
             if (start[3] == ' ' && (start[4] == '0' || start[4] == '1') && start[5] == ' ')
             {
                 retchk = 2;
-                ret = sscanf(start, "CAT %d %127[^\r\n]", &onlyone, catname);
+                ret = sscanf(start, "CAT %d %127[^\r\n]%n", &onlyone, catname, &consumed);
             }
             else
             {
                 // backwards compatibility
                 onlyone = 0;
                 retchk = 1;
-                ret = sscanf(start, "CAT %127[^\r\n]", catname);
+                ret = sscanf(start, "CAT %127[^\r\n]%n", catname, &consumed);
             }
             catname[127] = '\0';
 
-            if (ret < retchk)
+            if (ret < retchk || !std::strchr("\r\n", start[consumed]))
             {
                 Log(LogLevel::Error, "AR: malformed CAT line: %s\n", start);
-                CloseFile(f);
                 return false;
             }
 
@@ -137,14 +157,14 @@ bool ARCodeFile::Load()
             isincat = true;
 
             ARCodeCat cat = {
-                .Parent = &RootCat,
+                .Parent = &root,
                 .Name = catname,
                 .Description = "",
                 .OnlyOneCodeEnabled = onlyone!=0,
                 .Children = {}
             };
-            RootCat.Children.emplace_back(cat);
-            curcat = &std::get<ARCodeCat>(RootCat.Children.back());
+            root.Children.emplace_back(cat);
+            curcat = &std::get<ARCodeCat>(root.Children.back());
 
             lastentry = 1;
         }
@@ -152,20 +172,19 @@ bool ARCodeFile::Load()
         {
             int enable;
             char codename[128];
-            int ret = sscanf(start, "CODE %d %127[^\r\n]", &enable, codename);
+            int consumed = 0;
+            int ret = sscanf(start, "CODE %d %127[^\r\n]%n", &enable, codename, &consumed);
             codename[127] = '\0';
 
-            if (ret < 2)
+            if (ret < 2 || !std::strchr("\r\n", start[consumed]))
             {
                 Log(LogLevel::Error, "AR: malformed CODE line: %s\n", start);
-                CloseFile(f);
                 return false;
             }
 
             if (!isincat)
             {
                 Log(LogLevel::Error, "AR: encountered CODE line with no category started\n");
-                CloseFile(f);
                 return false;
             }
 
@@ -186,11 +205,17 @@ bool ARCodeFile::Load()
         else if (!strncasecmp(start, "DESC", 4))
         {
             char desc[256];
-            int ret = sscanf(start, "DESC %255[^\r\n]", desc);
+            int consumed = 0;
+            int ret = sscanf(start, "DESC %255[^\r\n]%n", desc, &consumed);
             desc[255] = '\0';
 
             if (ret < 1)
                 continue;
+            if (!std::strchr("\r\n", start[consumed]))
+            {
+                Log(LogLevel::Error, "AR: description exceeds the supported length\n");
+                return false;
+            }
 
             if (lastentry == 2)
                 curcode->Description = desc;
@@ -199,7 +224,6 @@ bool ARCodeFile::Load()
             else
             {
                 Log(LogLevel::Error, "AR: encountered DESC line not part of anything\n");
-                CloseFile(f);
                 return false;
             }
         }
@@ -211,14 +235,12 @@ bool ARCodeFile::Load()
             if (ret < 2)
             {
                 Log(LogLevel::Error, "AR: malformed data line: %s\n", start);
-                CloseFile(f);
                 return false;
             }
 
             if (!isincode)
             {
                 Log(LogLevel::Error, "AR: encountered data line with no code started\n");
-                CloseFile(f);
                 return false;
             }
 
@@ -227,69 +249,125 @@ bool ARCodeFile::Load()
         }
     }
 
-    FinalizeList();
+    if (!CloseFile(f.release())) return false;
 
-    CloseFile(f);
+    RootCat = std::move(root);
+    for (auto& item : RootCat.Children)
+    {
+        if (auto* cat = std::get_if<ARCodeCat>(&item))
+            cat->Parent = &RootCat;
+        else
+            std::get<ARCode>(item).Parent = &RootCat;
+    }
+    // std::list moves keep category nodes stable, so their child Parent
+    // pointers already refer to the final nodes.
+    FinalizeList();
+    Error = false;
     return true;
+}
+
+bool ARCodeFile::Serialize(std::string& output) const
+{
+    if (Error || !RootCat.Name.empty() || !RootCat.Description.empty() || RootCat.OnlyOneCodeEnabled)
+        return false;
+
+    const auto validText = [](const std::string& text, size_t max, bool allowEmpty)
+    {
+        if (text.empty()) return allowEmpty;
+        // sscanf's whitespace before the scanset would discard leading space.
+        return text.size() <= max && !std::isspace(static_cast<unsigned char>(text.front())) &&
+               text.find_first_of("\r\n") == std::string::npos && text.find('\0') == std::string::npos;
+    };
+
+    try
+    {
+        std::string text;
+        const auto appendCode = [&](const ARCode& code)
+        {
+            if (!validText(code.Name, 127, false) || !validText(code.Description, 255, true) ||
+                code.Code.size() % 2 != 0)
+                return false;
+
+            text += code.Enabled ? "CODE 1 " : "CODE 0 ";
+            text += code.Name;
+            text += '\n';
+            if (!code.Description.empty())
+                text += "DESC " + code.Description + '\n';
+            for (size_t i = 0; i < code.Code.size(); i += 2)
+            {
+                char pair[19];
+                std::snprintf(pair, sizeof(pair), "%08X %08X\n", code.Code[i], code.Code[i + 1]);
+                text += pair;
+            }
+            text += '\n';
+            return true;
+        };
+
+        bool isincat = true;
+        for (const auto& item : RootCat.Children)
+        {
+            if (const auto* cat = std::get_if<ARCodeCat>(&item))
+            {
+                if (!validText(cat->Name, 127, false) || !validText(cat->Description, 255, true))
+                    return false;
+
+                text += cat->OnlyOneCodeEnabled ? "CAT 1 " : "CAT 0 ";
+                text += cat->Name;
+                text += '\n';
+                if (!cat->Description.empty())
+                    text += "DESC " + cat->Description + '\n';
+                text += '\n';
+                isincat = true;
+
+                bool foundEnabled = false;
+                for (const auto& child : cat->Children)
+                {
+                    const auto* code = std::get_if<ARCode>(&child);
+                    if (!code) return false; // mch has no nested categories.
+                    if (cat->OnlyOneCodeEnabled && code->Enabled && foundEnabled)
+                        return false; // Loading would silently disable a code.
+                    foundEnabled |= code->Enabled;
+                    if (!appendCode(*code)) return false;
+                }
+            }
+            else
+            {
+                const auto* code = std::get_if<ARCode>(&item);
+                if (!code) return false;
+                if (isincat)
+                {
+                    text += "ROOT\n\n";
+                    isincat = false;
+                }
+                if (!appendCode(*code)) return false;
+            }
+        }
+
+        output.swap(text);
+        return true;
+    }
+    catch (const std::bad_alloc&)
+    {
+        return false;
+    }
+    catch (const std::length_error&)
+    {
+        return false;
+    }
 }
 
 bool ARCodeFile::Save()
 {
-    FileHandle* f = Platform::OpenFile(Filename, FileMode::WriteText);
+    std::string text;
+    if (!Serialize(text)) return false;
+
+    std::unique_ptr<FileHandle, decltype(&CloseFile)> f(OpenFile(Filename, FileMode::WriteText), CloseFile);
     if (!f) return false;
 
-    bool isincat = true;
-
-    for (auto& item : RootCat.Children)
-    {
-        if (std::holds_alternative<ARCodeCat>(item))
-        {
-            auto& cat = std::get<ARCodeCat>(item);
-
-            FileWriteFormatted(f, "CAT %d %s\n", cat.OnlyOneCodeEnabled, cat.Name.c_str());
-            if (!cat.Description.empty())
-                FileWriteFormatted(f, "DESC %s\n", cat.Description.c_str());
-            FileWriteFormatted(f, "\n");
-
-            isincat = true;
-
-            for (auto& childitem : cat.Children)
-            {
-                auto& code = std::get<ARCode>(childitem);
-
-                FileWriteFormatted(f, "CODE %d %s\n", code.Enabled, code.Name.c_str());
-                if (!code.Description.empty())
-                    FileWriteFormatted(f, "DESC %s\n", code.Description.c_str());
-
-                for (size_t i = 0; i < code.Code.size(); i+=2)
-                    FileWriteFormatted(f, "%08X %08X\n", code.Code[i], code.Code[i + 1]);
-
-                FileWriteFormatted(f, "\n");
-            }
-        }
-        else
-        {
-            auto& code = std::get<ARCode>(item);
-
-            if (isincat)
-            {
-                isincat = false;
-                FileWriteFormatted(f, "ROOT\n\n");
-            }
-
-            FileWriteFormatted(f, "CODE %d %s\n", code.Enabled, code.Name.c_str());
-            if (!code.Description.empty())
-                FileWriteFormatted(f, "DESC %s\n", code.Description.c_str());
-
-            for (size_t i = 0; i < code.Code.size(); i+=2)
-                FileWriteFormatted(f, "%08X %08X\n", code.Code[i], code.Code[i + 1]);
-
-            FileWriteFormatted(f, "\n");
-        }
-    }
-
-    CloseFile(f);
-    return true;
+    const bool written = FileWrite(text.data(), 1, text.size(), f.get()) == text.size();
+    const bool flushed = written && FileFlush(f.get());
+    const bool closed = CloseFile(f.release());
+    return written && flushed && closed;
 }
 
 void ARCodeFile::Import(ARDatabaseEntry& dbentry, ARCodeEnableMap& enablemap, bool clear)

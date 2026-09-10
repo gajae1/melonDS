@@ -32,6 +32,8 @@ ROM 교체·종료 증분은 `CartReplacement`, `FrontendClose`, `SaveManagerIO`
 ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 ```
 
+치트 저장은 `ARCodeFileIO`, `CheatSaveUI`와 `ar-code-file-|cheat-save-ui-`를 사용한다. 실제 mch parser·serializer와 Qt 파일 연산, 실제 편집 창·버튼·메시지 상자를 실행한다. 저장 완료 slot과 실행 목록 갱신 메서드는 현재 소스에서 추출하고 에뮬레이션의 pause/message acknowledgement 경계는 대역으로 제공한다. 생성 파일의 부분 쓰기·commit 실패 보존은 물리 전원 손실이나 실제 게임 메모리 적용의 수락 결과가 아니다. legacy 코어 Save는 쓰기 결과를 반환하며 원자적 파일 교체는 Qt 편집 경로의 QSaveFile이 담당한다.
+
 ## 진단 구성
 
 루트 [Sanitizers.cmake](../cmake/Sanitizers.cmake)의 `SANITIZE` 설정은 도구와 runtime이 지원하는 조합에서 사용한다. 작은 parser·buffer 경계는 기존 독립 테스트를 우선한다.

@@ -20,6 +20,8 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QSaveFile>
+#include <limits>
 
 #include "types.h"
 #include "Platform.h"
@@ -38,6 +40,19 @@ using Platform::LogLevel;
 
 CheatsDialog* CheatsDialog::currentDlg = nullptr;
 
+// Copying or swapping the root relocates it; each node must refer to its own
+// tree before editing or publishing the list.
+static void RebindCheatParents(ARCodeCat& cat, ARCodeCat* parent = nullptr) noexcept
+{
+    cat.Parent = parent;
+    for (auto& item : cat.Children)
+    {
+        if (auto* code = std::get_if<ARCode>(&item))
+            code->Parent = &cat;
+        else
+            RebindCheatParents(std::get<ARCodeCat>(item), &cat);
+    }
+}
 
 CheatsDialog::CheatsDialog(QWidget* parent) : QDialog(parent), ui(new Ui::CheatsDialog)
 {
@@ -57,7 +72,8 @@ CheatsDialog::CheatsDialog(QWidget* parent) : QDialog(parent), ui(new Ui::Cheats
     gameCode = rom->GetHeader().GameCodeAsU32();
     gameChecksum = ~CRC32(rom->GetROM(), 0x200, 0);
 
-    codeFile = emuInstance->getCheatFile();
+    codeFile = std::make_unique<ARCodeFile>(*emuInstance->getCheatFile());
+    RebindCheatParents(codeFile->RootCat);
 
     auto* model = new CheatListModel(ui->tvCodeList);
     ui->tvCodeList->setModel(model);
@@ -76,11 +92,56 @@ CheatsDialog::~CheatsDialog()
     delete ui;
 }
 
-void CheatsDialog::done(int r)
+bool CheatsDialog::saveChanges(QString& error)
 {
-    codeFile->Save();
+    auto* active = emuInstance->getCheatFile();
+    if (!active || active->GetFilename() != codeFile->GetFilename())
+    {
+        error = tr("The game has changed since this editor was opened.");
+        return false;
+    }
 
-    QDialog::done(r);
+    std::string contents;
+    if (!codeFile->Serialize(contents) || contents.size() > std::numeric_limits<qint64>::max())
+    {
+        error = tr("The cheat file could not be read completely, or the edits contain text or code data that cannot be saved.");
+        return false;
+    }
+
+    QSaveFile file(QString::fromStdString(codeFile->GetFilename()));
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(contents.data(), static_cast<qint64>(contents.size())) != static_cast<qint64>(contents.size()) ||
+        !file.commit())
+    {
+        error = file.errorString();
+        return false;
+    }
+
+    // Commit the file before publishing edits. Swapping the completed tree
+    // avoids allocating a replacement after the file has already been saved.
+    std::swap(active->RootCat, codeFile->RootCat);
+    RebindCheatParents(active->RootCat);
+    RebindCheatParents(codeFile->RootCat);
+    active->Error = false;
+    return true;
+}
+
+void CheatsDialog::done(int)
+{
+    QString error;
+    while (!saveChanges(error))
+    {
+        const auto choice = QMessageBox::warning(this, tr("Could not save cheats"),
+            tr("%1\n\nRetry saving, discard these edits, or cancel to keep editing.").arg(error),
+            QMessageBox::Retry | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (choice == QMessageBox::Retry) continue;
+        if (choice != QMessageBox::Discard) return;
+        QDialog::done(QDialog::Rejected);
+        closeDlg();
+        return;
+    }
+
+    QDialog::done(QDialog::Accepted);
     closeDlg();
 }
 
@@ -394,6 +455,18 @@ void CheatsDialog::on_btnSaveCode_clicked()
         auto tvmodel = (QStandardItemModel*)ui->tvCodeList->model();
         auto tvitem = tvmodel->itemFromIndex(index);
         tvitem->setText(ui->txtItemName->text());
+        if (cat->OnlyOneCodeEnabled)
+        {
+            // Match the file loader's first-enabled rule as soon as the
+            // category changes, so the model and saved/runtime lists agree.
+            for (int i = 0; i < tvitem->rowCount(); ++i)
+            {
+                auto* child = tvitem->child(i);
+                if (child->checkState() != Qt::Checked) continue;
+                onCheatEntryModified(child);
+                break;
+            }
+        }
     }
     else if (itemtype == 2)
     {

@@ -30,6 +30,7 @@ target_include_directories(FrontendInput PRIVATE
     "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/src/net" "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FrontendInput PRIVATE ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)
+target_compile_definitions(FrontendInput PRIVATE MELONDS_TEST_FILE_EXISTS)
 add_test(NAME qt-keyboard-mapping-input COMMAND FrontendInput)
 set_tests_properties(qt-keyboard-mapping-input PROPERTIES
     TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -414,6 +415,7 @@ add_executable(FirmwareProfile "${CMAKE_SOURCE_DIR}/tests/FirmwareProfile.cpp"
 target_include_directories(FirmwareProfile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_SOURCE_DIR}/src/net" "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FirmwareProfile PRIVATE core ${QT_LINK_LIBS} Threads::Threads)
+target_compile_definitions(FirmwareProfile PRIVATE MELONDS_TEST_FILE_EXISTS)
 add_test(NAME firmware-profile-direct-boot COMMAND FirmwareProfile)
 set_tests_properties(firmware-profile-direct-boot PROPERTIES TIMEOUT 30)
 
@@ -527,4 +529,59 @@ endif()
 foreach(case IN ITEMS controls header-index strings category codes entry-span partial io-read io-seek no-progress parents)
     add_test(NAME ar-database-${case} COMMAND ARDatabaseInput ${case})
     set_tests_properties(ar-database-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+set(cheat_file_methods)
+foreach(pair IN ITEMS "FileReadLine|bool FileReadLine(char* str, int count, FileHandle* file)"
+        "FileWrite|u64 FileWrite(const void* data, u64 size, u64 count, FileHandle* file)"
+        "FileWriteFormatted|u64 FileWriteFormatted(FileHandle* file, const char* fmt, ...)"
+        "FileFlush|bool FileFlush(FileHandle* file)"
+        "FileExists|bool FileExists(const std::string& name)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/cheat${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Platform.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Platform.cpp VERBATIM)
+    list(APPEND cheat_file_methods "${output}")
+endforeach()
+set(cheat_finished "${CMAKE_CURRENT_BINARY_DIR}/cheatFinishedCurrent.inc")
+set(cheat_enable "${CMAKE_CURRENT_BINARY_DIR}/cheatEnableCurrent.inc")
+add_custom_command(OUTPUT "${cheat_finished}" "${cheat_enable}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Window.cpp" "void MainWindow::onCheatsDialogFinished(int res)" "${cheat_finished}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp" "void EmuInstance::enableCheats(bool enable)" "${cheat_enable}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Window.cpp EmuInstance.cpp VERBATIM)
+add_executable(CheatSaveUI "${CMAKE_SOURCE_DIR}/tests/CheatSaveUI.cpp"
+    CheatsDialog.h CheatsDialog.ui CheatImportDialog.cpp CheatImportDialog.h CheatImportDialog.ui
+    "${CMAKE_SOURCE_DIR}/src/ARCodeFile.cpp" "${CMAKE_SOURCE_DIR}/src/ARDatabaseDAT.cpp" "${CMAKE_SOURCE_DIR}/src/CRC32.cpp"
+    ${ar_file_methods} ${cheat_file_methods} "${cheat_finished}" "${cheat_enable}")
+target_include_directories(CheatSaveUI PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+set_target_properties(CheatSaveUI PROPERTIES AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}")
+if (USE_QT6)
+    target_link_libraries(CheatSaveUI PRIVATE Qt6::Widgets)
+else()
+    target_link_libraries(CheatSaveUI PRIVATE Qt5::Widgets)
+endif()
+foreach(case IN ITEMS normal disabled open short commit retry discard changed invalid one-per-group)
+    add_test(NAME cheat-save-ui-${case} COMMAND CheatSaveUI ${case})
+    set_tests_properties(cheat-save-ui-${case} PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()
+
+add_executable(ARCodeFileIO "${CMAKE_SOURCE_DIR}/tests/ARCodeFileIO.cpp" "${CMAKE_SOURCE_DIR}/src/ARCodeFile.cpp"
+    ${ar_file_methods} ${cheat_file_methods})
+target_include_directories(ARCodeFileIO PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_definitions(ARCodeFileIO PRIVATE ARCODE_SERIALIZE_TESTS)
+if (USE_QT6)
+    target_link_libraries(ARCodeFileIO PRIVATE Qt6::Core)
+else()
+    target_link_libraries(ARCodeFileIO PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS controls preflight nested save-short save-error save-flush save-close
+        load-unreadable load-zero load-error load-stalled load-malformed load-length serialize)
+    add_test(NAME ar-code-file-${case} COMMAND ARCodeFileIO ${case})
+    set_tests_properties(ar-code-file-${case} PROPERTIES TIMEOUT 15)
 endforeach()

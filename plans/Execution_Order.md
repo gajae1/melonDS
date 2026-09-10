@@ -27,6 +27,8 @@
 
 [1.1.11 증분](releases/1.1.11.md)은 NP-15의 AUXSPI 부분 쓰기로 인한 CS 불일치와 NP-18의 작은 EEPROM page wrap/저장 통지를 재현·수정했다. 다음은 FS-15 치트 편집의 원자적 저장·오류 전달이다. 코어의 직렬화와 Qt 파일 commit을 분리하고 정상 roundtrip·쓰기 실패·편집 유지부터 검증한다. GBA EEPROM은 실제 DS ROM bus/DMA 소비자를 통한 read/write부터, BT는 command/IRQ/reply transport부터 독립 구현한다. 현재 부분 성공으로 이 기능들을 완료 처리하지 않는다.
 
+[1.1.12 증분](releases/1.1.12.md)은 FS-15 편집 사본·직렬화 사전 검사·Qt 파일 commit과 실패 복구·실행 목록 갱신을 연결한다. 다음은 NP-21의 D1/D2 조건 복원과 C5 수명을 생산 실행기·정상 코드·명세와 대조한다. 결함을 가정해 게스트 의미를 먼저 바꾸지 않는다. LAN/LocalMP 수명·GBA EEPROM·BT와 앞선 실제 게임·장치 수락은 남은 독립 과제로 유지한다.
+
 ## 작업 소유권
 
 EmuInstance.cpp를 건드리는 상태 로드·ROM 교체·Zstd 변경은 한 작성자가 순차 통합한다. 코어 NDS.cpp와 Config.cpp의 좁은 수정은 독립적으로 진행할 수 있다.

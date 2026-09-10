@@ -1865,6 +1865,8 @@ void MainWindow::onSetupCheats()
 
 void MainWindow::onCheatsDialogFinished(int res)
 {
+    if (res == QDialog::Accepted)
+        emuThread->enableCheats(localCfg.GetBool("EnableCheats"));
     emuThread->emuUnpause();
 }
 

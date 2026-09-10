@@ -68,6 +68,8 @@ public:
 
     bool Load();
     bool Save();
+    [[nodiscard]] bool Serialize(std::string& output) const;
+    const std::string& GetFilename() const noexcept { return Filename; }
 
     void Import(ARDatabaseEntry& dbentry, ARCodeEnableMap& enablemap, bool clear);
 
