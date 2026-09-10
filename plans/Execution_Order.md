@@ -33,6 +33,8 @@
 
 [1.1.14 증분](releases/1.1.14.md)은 입력 설정의 실제 사용 문제를 우선 처리한다. SDL 장치가 있으면 Joystick 화면을 자동으로 여는 동작을 제거하고 Keyboard·Joystick 탭, 실제 dialog 저장·실행 적용·새 프로세스 재로드를 검증한다. 이어 CJ-03/CJ-06을 진행한다. 책임 버전 1.1.14의 JIT 과제는 미착수 상태이며 UI 수정으로 완료 처리하지 않는다.
 
+[1.1.15 증분](releases/1.1.15.md)은 CJ-03의 실제 warmed ALU·shift·부분 flags를 보강하고 x64 ASR의 잘못된 호스트 피연산자와 Thumb 내부 사이클 누락을 재현·수정한다. 두 게임에서 일반 JIT/fastmem과 이전 코어 JIT의 최종 화면 digest는 일치한다. 인터프리터와의 기존 차이는 원인 미확정으로 유지한다. 다음은 CJ-06의 근거가 있는 ARM7 빈 목록 전송·PC·writeback부터 interpreter/decode/기존 fallback을 함께 연결한다. ARM9 호환 모델과 빈 PUSH/POP·DS 실기 타이밍을 ARM7 근거만으로 확정하지 않는다. CJ-03의 PC 복원·조건과 native A64도 남긴다.
+
 ## 작업 소유권
 
 EmuInstance.cpp를 건드리는 상태 로드·ROM 교체·Zstd 변경은 한 작성자가 순차 통합한다. 코어 NDS.cpp와 Config.cpp의 좁은 수정은 독립적으로 진행할 수 있다.

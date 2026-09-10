@@ -282,6 +282,8 @@ FS-15 편집 사본·직렬화·원자적 저장과 실패 복구는 [1.1.12 증
 4. shift 0/31/32/33/255·signed overflow·empty/list alias·조건 불성립·self-modify를 interpreter/일반 JIT/fastmem에서 비교한다.
 5. 후속 branch/IRQ·save/load·두 게임의 영향 구간을 확인해 배포한다. interpreter와 일치해도 실기 근거가 없는 cycle은 미확인으로 기록한다.
 
+[1.1.15 증분](releases/1.1.15.md)은 CJ-03의 x64 ASR 종료·Thumb 내부 사이클 누락을 수정하고 ARM9/ARM7 실제 guest ALU·shift·부분 flags와 두 게임의 전후 결과를 확인한다. CJ-03 전체와 CJ-06은 부분 진행이다. 릴리스 번호 1.1.15를 아래 메모리·CP15 책임 과제의 완료로 집계하지 않는다.
+
 <a id="v15"></a>
 
 ## 1.1.15 — 메모리·CP15·DMA·IRQ·타이머

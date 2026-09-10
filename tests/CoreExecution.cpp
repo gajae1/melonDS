@@ -13,6 +13,9 @@
 #endif
 using namespace melonDS;
 
+int TestALUExecution(NDSArgs&& args, bool jit);
+int TestThumbShiftTiming(NDSArgs&& args, bool jit);
+
 static int TestSchedulerSavestate(NDSArgs&& args)
 {
     struct SchedulerFixture : NDS
@@ -132,6 +135,10 @@ int main(int argc, char** argv) {
     NDSArgs args;
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
+    if (argc > 2 && std::strcmp(argv[2], "alu-shift") == 0)
+        return TestALUExecution(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "thumb-shift-timing") == 0)
+        return TestThumbShiftTiming(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
         return TestSchedulerSavestate(std::move(args));
     auto nds = std::make_unique<NDS>(std::move(args));

@@ -38,6 +38,8 @@ ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 
 입력 설정은 `InputConfigUI`와 `input-dialog-`에서 실제 Qt dialog·매핑 버튼·Config 파일 연산을 사용한다. 가상 SDL 컨트롤러 연결 여부, 명시적 탭 전환, 키 지정·취소·해제, OK 적용·이전 키 비활성화·새 프로세스 재로드를 검사한다. `FrontendInput`은 modifier·focus와 손상 설정 보존 검사를 유지한다. Qt 내부에 전달한 이벤트와 물리 장치·OS IME·게임 입력 지연은 별도 수락이다.
 
+ALU·shift는 `CoreExecution`과 `core-.*-(alu-shift|thumb-shift-timing)`을 사용한다. 실제 ARM9/ARM7 코어·scheduler에 생성 guest 명령을 실행하고 두 번째 진입으로 JIT 컴파일 때의 interpreter 실행과 구분한다. 경계값·carry/overflow·alias·부분 flags·RRX·PC 피연산자를 수기 기대값/확장 정수 연산과 대조한다. Thumb LSR/ASR의 같은 양수 입력 루프는 한 프레임의 반복 횟수로 내부 사이클 누락을 검출한다. 이 상대 비교는 DS 실기의 절대 타이밍 수락이 아니다. 게임 digest가 interpreter/JIT 사이에서 다르면 같은 입력의 이전 코어도 비교하고, 기존 차이를 새 수정의 회귀나 완전한 동등성으로 단정하지 않는다.
+
 ## 진단 구성
 
 루트 [Sanitizers.cmake](../cmake/Sanitizers.cmake)의 `SANITIZE` 설정은 도구와 runtime이 지원하는 조합에서 사용한다. 작은 parser·buffer 경계는 기존 독립 테스트를 우선한다.

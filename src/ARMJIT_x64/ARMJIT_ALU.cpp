@@ -575,7 +575,9 @@ OpArg Compiler::Comp_RegShiftImm(int op, int amount, OpArg rm, bool S, bool& car
         if (S)
         {
             if (amount == 0)
-                BT(32, rm, Imm8(31));
+                // ASR #32 leaves every result bit equal to the source sign.
+                // rm can be an immediate PC value, which BT cannot encode.
+                BT(32, R(RSCRATCH), Imm8(31));
             SETcc(CC_C, R(RSCRATCH2));
         }
         return R(RSCRATCH);
@@ -683,7 +685,7 @@ void Compiler::T_Comp_ALU()
 
     u32 op = (CurInstr.Instr >> 6) & 0xF;
 
-    if ((op >= 0x2 && op < 0x4) || op == 0x7)
+    if ((op >= 0x2 && op <= 0x4) || op == 0x7)
         Comp_AddCycles_CI(1); // shift by reg
     else
         Comp_AddCycles_C();

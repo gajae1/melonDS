@@ -252,3 +252,15 @@ controller reproduces the hidden keyboard page. Explicit tab selection, capture,
 OK/Cancel, modifiers, unbinding, live mapping replacement and a fresh-process
 reload are checked. Emulation and physical joystick state are supplied by a small
 host boundary; physical keyboard/IME delivery and game latency are separate gates.
+
+`CoreExecution` also accepts `alu-shift` and `thumb-shift-timing`. Generated ARM9
+and ARM7 programs run through the real core and scheduler, with a second entry
+after compilation. The ALU cases check shift counts 0/31/32/33/255/256, register
+aliases, partial flag overwrites, RRX, PC operands and ADC/SBC/RSC boundaries.
+Expected shifts are hand-calculated; carry and overflow arithmetic uses widened
+integers independently of the production flag helpers. The Thumb test compares
+LSR/ASR loop iterations per frame with the same positive input and fetches. It
+detects a missing internal cycle without claiming physical DS timing accuracy.
+The six `core-.*-(alu-shift|thumb-shift-timing)` entries run interpreter, JIT and
+fastmem paths when JIT is available. Native A64 and full PC/status restoration
+remain separate acceptance requirements.
