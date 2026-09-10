@@ -33,6 +33,7 @@ using Platform::FileLength;
 using Platform::CloseFile;
 
 enum class ImportFailure { None, Short, Error, Oversize };
+constexpr int renderer3D_Software = 0;
 static ImportFailure importFailure = ImportFailure::None;
 static unsigned openFiles = 0;
 static bool failAllocation = false;
@@ -101,6 +102,7 @@ public:
     bool callbacksDuringLoad = false;
     int loads = 0, undos = 0;
     unsigned resets = 0;
+    QMutex renderLock;
 
     EmuInstance() { console.audio = &audio; }
     void audioDisable() { audio = false; }
@@ -128,6 +130,7 @@ public:
     bool saveState(const std::string&) { std::abort(); }
     void initOpenGL(int) { std::abort(); }
     void deinitOpenGL(int) { std::abort(); }
+    void makeCurrentGL() { std::abort(); }
     void releaseGL() { std::abort(); }
     void ejectCart() { std::abort(); }
     bool loadGBAROM(const QStringList&, QString&, const AssetIdentity::Selection&) { std::abort(); }

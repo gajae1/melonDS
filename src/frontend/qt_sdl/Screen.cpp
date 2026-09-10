@@ -1106,7 +1106,9 @@ void ScreenPanelGL::osdDeleteItem(OSDItem* item)
 
 void ScreenPanelGL::drawScreen()
 {
-    if (!glContext) return;
+    // Deinit is acknowledged before the GUI replaces or removes the panel.
+    // Paused frames can still visit it before the ownership barrier is acquired.
+    if (!glContext || !glInited) return;
 
     auto emuThread = emuInstance->getEmuThread();
 

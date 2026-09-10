@@ -216,11 +216,16 @@ void EmuInstance::createWindow(int id)
     if (windowList[id])
         return;
 
-    MainWindow* win = new MainWindow(id, this, mainWindow ? mainWindow : topWindow);
-    if (!topWindow) topWindow = win;
-    if (!mainWindow) mainWindow = win;
-    windowList[id] = win;
-    numWindows++;
+    MainWindow* win;
+    {
+        // Include this worker even before the instance enters the global registry.
+        ScopedGLWorkers workers(emuThread);
+        win = new MainWindow(id, this, mainWindow ? mainWindow : topWindow);
+        if (!topWindow) topWindow = win;
+        if (!mainWindow) mainWindow = win;
+        windowList[id] = win;
+        numWindows++;
+    }
 
     emuThread->attachWindow(win);
 
@@ -245,13 +250,17 @@ void EmuInstance::deleteWindow(int id, bool close)
     if (win->hasOpenGL())
         emuThread->deinitContext(id);
 
-    emuThread->detachWindow(win);
+    {
+        ScopedGLWorkers workers(emuThread);
+        emuThread->detachWindow(win);
+        windowList[id] = nullptr;
+        numWindows--;
+        if (topWindow == win) topWindow = nullptr;
+        if (mainWindow == win) mainWindow = nullptr;
+    }
 
-    windowList[id] = nullptr;
-    numWindows--;
-
-    if (topWindow == win) topWindow = nullptr;
-    if (mainWindow == win) mainWindow = nullptr;
+    // close() may re-enter deletion or destroy the instance. Return loans first
+    // so its worker can still handle exit/deinit messages.
 
     if (close)
         win->close();

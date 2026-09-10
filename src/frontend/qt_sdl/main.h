@@ -54,6 +54,18 @@ extern QString emuDirectory;
 
 extern QElapsedTimer sysTimer;
 
+// GUI-only scope: stop every running worker before native context creation or
+// window publication. Nested scopes share loans; only the outermost returns them.
+// No worker message waits or instance destruction are allowed inside the scope.
+class ScopedGLWorkers
+{
+public:
+    explicit ScopedGLWorkers(EmuThread* extra = nullptr);
+    ~ScopedGLWorkers();
+    ScopedGLWorkers(const ScopedGLWorkers&) = delete;
+    ScopedGLWorkers& operator=(const ScopedGLWorkers&) = delete;
+};
+
 bool createEmuInstance();
 void deleteEmuInstance(int id);
 void deleteAllEmuInstances(int first = 0);

@@ -21,6 +21,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
+#include <vector>
 #include <optional>
 #include <string>
 
@@ -115,6 +117,48 @@ void NetInit()
 }
 
 
+static unsigned glWorkerScopeDepth = 0;
+static std::vector<EmuThread*> glWorkersHeld;
+
+ScopedGLWorkers::ScopedGLWorkers(EmuThread* extra)
+{
+    Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
+
+    // Collect and reserve before borrowing, so our container allocations cannot
+    // throw after acquiring a loan. Workers must stay alive until scope exit.
+    std::vector<EmuThread*> pending;
+    pending.reserve(kMaxEmuInstances + 1);
+    auto add = [&](EmuThread* thread)
+    {
+        if (!thread || !thread->isRunning()) return;
+        if (std::find(glWorkersHeld.begin(), glWorkersHeld.end(), thread) != glWorkersHeld.end()) return;
+        if (std::find(pending.begin(), pending.end(), thread) == pending.end())
+            pending.push_back(thread);
+    };
+    for (auto* instance : emuInstances)
+        if (instance) add(instance->getEmuThread());
+    add(extra);
+    glWorkersHeld.reserve(glWorkersHeld.size() + pending.size());
+
+    ++glWorkerScopeDepth;
+    for (auto* thread : pending)
+    {
+        thread->borrowGL();
+        glWorkersHeld.push_back(thread);
+    }
+}
+
+ScopedGLWorkers::~ScopedGLWorkers()
+{
+    Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
+    Q_ASSERT(glWorkerScopeDepth != 0);
+    if (--glWorkerScopeDepth != 0) return;
+
+    for (auto it = glWorkersHeld.rbegin(); it != glWorkersHeld.rend(); ++it)
+        (*it)->returnGL();
+    glWorkersHeld.clear();
+}
+
 bool createEmuInstance()
 {
     int id = -1;
@@ -167,6 +211,17 @@ int numEmuInstances()
 
 void broadcastInstanceCommand(int cmd, QVariant& param, int sourceinst)
 {
+    // Hotkeys run on workers. Do not wait synchronously on a peer which the
+    // GUI may already hold while acquiring the remaining GL worker loans.
+    if (QThread::currentThread() != QCoreApplication::instance()->thread())
+    {
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [cmd, param, sourceinst]() mutable
+        {
+            broadcastInstanceCommand(cmd, param, sourceinst);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
     for (int i = 0; i < kMaxEmuInstances; i++)
     {
         if (i == sourceinst) continue;

@@ -936,6 +936,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 void MainWindow::createScreenPanel()
 {
+    ScopedGLWorkers workers(emuThread);
     auto oldpanel = panel;
     panel = nullptr;
     if (oldpanel) delete oldpanel;
@@ -947,11 +948,6 @@ void MainWindow::createScreenPanel()
     {
         ScreenPanelGL* panelGL = new ScreenPanelGL(this);
         panelGL->show();
-
-        // make sure no GL context is in use by the emu thread
-        // otherwise we may fail to create a shared context
-        if (windowID != 0)
-            emuThread->borrowGL();
 
         // Check that creating the context hasn't failed
         if (panelGL->createContext() == false)
@@ -965,9 +961,6 @@ void MainWindow::createScreenPanel()
             delete panelGL;
             panelGL = nullptr;
         }
-
-        if (windowID != 0)
-            emuThread->returnGL();
 
         panel = panelGL;
     }
@@ -2438,10 +2431,13 @@ void MainWindow::onUpdateVideoSettings(bool glchange)
             }
         }
 
-        createScreenPanel();
-        for (auto child: childwins)
         {
-            child->createScreenPanel();
+            // Keep workers stopped throughout replacement and GL/WGL reloads.
+            // Nested panel creation shares the loans; init waits follow release.
+            ScopedGLWorkers workers(emuThread);
+            createScreenPanel();
+            for (auto child: childwins)
+                child->createScreenPanel();
         }
     }
 

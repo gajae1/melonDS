@@ -37,8 +37,8 @@
 | GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 정적 후보 | P1 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-09 | [2D/3D 정수 SIMD·구간 묶음](workstreams/02-renderers.md#GR-09) | 미측정 가설 | P2 | [1.1.27](Release_Plan.md#v27) | — | 미착수 |
 | GR-10 | [texture cache 비용·상주량](workstreams/02-renderers.md#GR-10) | 미측정 가설 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
-| GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.21 borrow 반환 lost-wake 수정·실제 Qt 두 순서 검증; deinit→paused 재접근·panel 수명·표시 실패·실제 surface 복구 후속 |
-| GR-12 | [다중 context 초기화 도달성](workstreams/02-renderers.md#GR-12) | 정적 후보 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.21 GUI 생성 경로에서 creator끼리 동시 진입 후보 반증; 새 인스턴스 GLAD 재로딩과 기존 worker 호출 중첩 도달성 확인, 실행 영향·정지 경계 후속 |
+| GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22 deinit 뒤 paused draw 차단·root renderer/capture 선행 정리·창 등록/교체/해제 접근 중단, 실제 WGL 교체 검증; 표시 실패·전체 Qt/실제 surface 복구 후속 |
+| GR-12 | [다중 context 초기화 도달성](workstreams/02-renderers.md#GR-12) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22 실제 생성 메서드·Qt worker에서 loader 중첩/조기 재개를 재현하고 GUI 범위 borrow로 차단; worker broadcast 교착 방지. driver lookup은 대역, 이종 GPU 함수표/전체 창 실행 후속 |
 | GR-13 | [software worker 공개·중단 수명](workstreams/02-renderers.md#GR-13) | 정적 후보 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-14 | [render·readback·present 비용 분해](workstreams/02-renderers.md#GR-14) | 미측정 가설 | P2 | [1.1.30](Release_Plan.md#v30) | — | 미착수 |
 | GR-15 | [Vulkan 전체 backend 신설](workstreams/02-renderers.md#GR-15) | 기능 부재 관찰·이득 미측정 | P3 | [1.1.32](Release_Plan.md#v32) | — | 미착수 |

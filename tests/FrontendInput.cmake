@@ -686,3 +686,133 @@ foreach(case IN ITEMS early waiting)
     add_test(NAME gl-borrow-${case} COMMAND GLBorrow ${case})
     set_tests_properties(gl-borrow-${case} PROPERTIES TIMEOUT 20)
 endforeach()
+
+if (MELONDS_TEST_GPU)
+    set(presentation_methods)
+    foreach(pair IN ITEMS "Init|initOpenGL" "Deinit|deinitOpenGL" "Draw|drawScreen")
+        string(REPLACE "|" ";" parts "${pair}")
+        list(GET parts 0 name)
+        list(GET parts 1 method)
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/presentation${name}.inc")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "void ScreenPanelGL::${method}()" "${output}"
+            DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
+        list(APPEND presentation_methods "${output}")
+    endforeach()
+    add_executable(GLPresentation "${CMAKE_SOURCE_DIR}/tests/GLPresentation.cpp"
+        "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+        ../glad/glad.c ${presentation_methods})
+    set(presentation_handler_script "${CMAKE_CURRENT_BINARY_DIR}/presentationHandler.py")
+    file(GENERATE OUTPUT "${presentation_handler_script}" CONTENT [=[
+from pathlib import Path
+import sys
+s = Path(sys.argv[1]).read_text(encoding="utf-8")
+a, b = "        case msg_DeInitGL:\n", "        case msg_BorrowGL:\n"
+assert s.count(a) == s.count(b) == 1
+body = s.split(a)[1].split(b)[0]
+assert body.count("{") == body.count("}")
+Path(sys.argv[2]).write_text(body, encoding="utf-8")
+]=])
+    set(presentation_handler "${CMAKE_CURRENT_BINARY_DIR}/presentationDeinitHandler.inc")
+    set(presentation_renderer "${CMAKE_CURRENT_BINARY_DIR}/presentationRenderer.inc")
+    add_custom_command(OUTPUT "${presentation_handler}" "${presentation_renderer}"
+        COMMAND "${Python3_EXECUTABLE}" "${presentation_handler_script}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "${presentation_handler}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::updateRenderer()" "${presentation_renderer}"
+        DEPENDS "${presentation_handler_script}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuThread.cpp VERBATIM)
+    target_sources(GLPresentation PRIVATE "${presentation_handler}" "${presentation_renderer}")
+    target_include_directories(GLPresentation PRIVATE "${CMAKE_SOURCE_DIR}/src"
+        "${CMAKE_SOURCE_DIR}/src/frontend" "${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(GLPresentation PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)
+    if (WIN32)
+        target_sources(GLPresentation PRIVATE ../graphics/gl/context.cpp ../graphics/gl/context_wgl.cpp ../glad/glad_wgl.c)
+        target_link_libraries(GLPresentation PRIVATE opengl32)
+        add_test(NAME gl-presentation-native-replace COMMAND GLPresentation native)
+        set_tests_properties(gl-presentation-native-replace PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
+            RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endif()
+    add_test(NAME gl-presentation-deinit COMMAND GLPresentation)
+    set_tests_properties(gl-presentation-deinit PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
+        RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    foreach(renderer IN ITEMS opengl compute)
+        add_test(NAME gl-presentation-retire-${renderer} COMMAND GLPresentation ${renderer})
+        set_tests_properties(gl-presentation-retire-${renderer} PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77
+            RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endforeach()
+endif()
+
+
+# GL/WGL loader boundary through current GUI creation methods, with real Qt loans.
+set(gl_loader_methods)
+foreach(pair IN ITEMS
+        "glLoaderCreateWindow|EmuInstance.cpp|void EmuInstance::createWindow(int id)"
+        "glLoaderBroadcast|main.cpp|void broadcastInstanceCommand(int cmd, QVariant& param, int sourceinst)"
+        "glLoaderCreatePanel|Window.cpp|void MainWindow::createScreenPanel()"
+        "glLoaderCreateContext|Screen.cpp|bool ScreenPanelGL::createContext()")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 source)
+    list(GET parts 2 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" "${source}" VERBATIM)
+    list(APPEND gl_loader_methods "${output}")
+endforeach()
+set(gl_loader_guard_extract [=[
+from pathlib import Path
+import re, sys
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+header = Path(sys.argv[2]).read_text(encoding="utf-8")
+registry = re.findall(r"const int kMaxEmuInstances = \d+;\nEmuInstance\* emuInstances\[kMaxEmuInstances\];", source)
+if len(registry) != 1:
+    raise SystemExit("GL loader registry extraction needs updating")
+result = registry[0] + "\n"
+anchor = "class ScopedGLWorkers\n{\n"
+if anchor in header:
+    if header.count(anchor) != 1:
+        raise SystemExit("Duplicate GL worker scope declaration")
+    start = header.index(anchor)
+    end = header.index("\n};", start) + 3
+    result += header[start:end] + "\n"
+    state = "static unsigned glWorkerScopeDepth = 0;\nstatic std::vector<EmuThread*> glWorkersHeld;"
+    if source.count(state) != 1:
+        raise SystemExit("GL worker scope state extraction needs updating")
+    result += state + "\n"
+    for signature in ("ScopedGLWorkers::ScopedGLWorkers(EmuThread* extra)", "ScopedGLWorkers::~ScopedGLWorkers()"):
+        needle = signature + "\n{\n"
+        if source.count(needle) != 1:
+            raise SystemExit("GL worker scope definition missing: " + signature)
+        start = source.index(needle)
+        end = source.index("\n}", start) + 2
+        body = source[start:end]
+        if body.count("{") != body.count("}"):
+            raise SystemExit("GL worker scope definition has unbalanced braces")
+        result += body + "\n"
+elif "ScopedGLWorkers::" in source:
+    raise SystemExit("GL worker scope source/header mismatch")
+Path(sys.argv[3]).write_text(result, encoding="utf-8")
+]=])
+set(gl_loader_guard_script "${CMAKE_CURRENT_BINARY_DIR}/glLoaderGuardExtract.py")
+file(GENERATE OUTPUT "${gl_loader_guard_script}" CONTENT "${gl_loader_guard_extract}")
+set(gl_loader_guard "${CMAKE_CURRENT_BINARY_DIR}/glLoaderGuard.inc")
+add_custom_command(OUTPUT "${gl_loader_guard}"
+    COMMAND "${Python3_EXECUTABLE}" "${gl_loader_guard_script}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/main.h" "${gl_loader_guard}"
+    DEPENDS "${gl_loader_guard_script}" main.cpp main.h VERBATIM)
+add_executable(GLLoaderBoundary "${CMAKE_SOURCE_DIR}/tests/GLLoaderBoundary.cpp"
+    ${gl_loader_methods} "${gl_loader_guard}" "${gl_borrow_handler}" "${gl_borrow_state}"
+    "${gl_borrow_request}" "${gl_borrow_return}")
+target_include_directories(GLLoaderBoundary PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+if (USE_QT6)
+    target_link_libraries(GLLoaderBoundary PRIVATE Qt6::Core)
+else()
+    target_link_libraries(GLLoaderBoundary PRIVATE Qt5::Core)
+endif()
+foreach(case IN ITEMS root replace shared unregistered failure idle broadcast)
+    add_test(NAME gl-loader-${case} COMMAND GLLoaderBoundary ${case})
+    set_tests_properties(gl-loader-${case} PROPERTIES TIMEOUT 20)
+endforeach()

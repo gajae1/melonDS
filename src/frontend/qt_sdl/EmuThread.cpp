@@ -633,6 +633,15 @@ void EmuThread::handleMessages()
             break;
 
         case msg_DeInitGL:
+            if (msg.param.value<int>() == 0 && useOpenGL && emuInstance->nds)
+            {
+                // Drain captures and retire core objects in the root context
+                // before the GUI destroys it or builds a new, unrelated one.
+                QMutexLocker lock(&emuInstance->renderLock);
+                emuInstance->makeCurrentGL();
+                videoRenderer = renderer3D_Software;
+                updateRenderer();
+            }
             emuInstance->deinitOpenGL(msg.param.value<int>());
             if (msg.param.value<int>() == 0)
                 useOpenGL = false;
