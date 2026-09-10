@@ -479,7 +479,7 @@ endif()
 foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existing-writable gba-existing-writable
         ds-console-failure console-retain ds-queued-failure ds-success ds-reset-success gba-success gba-queued
         ds-pending-failure gba-pending-failure ds-same-save read-short read-error read-oversize read-denied ds-import-partial
-        ds-asset-path gba-asset-path asset-reset asset-reset-failure)
+        ds-asset-path gba-asset-path asset-reset asset-reset-failure invalid-sd)
     add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
     set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
 endforeach()

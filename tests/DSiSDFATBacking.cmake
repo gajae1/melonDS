@@ -33,7 +33,11 @@ if (TARGET Qt6::Core)
             "IsEndOfFile|bool IsEndOfFile(FileHandle* file)"
             "FileSeek|bool FileSeek(FileHandle* file, s64 offset, FileSeekOrigin origin)"
             "FileRead|u64 FileRead(void* data, u64 size, u64 count, FileHandle* file)"
-            "FileWrite|u64 FileWrite(const void* data, u64 size, u64 count, FileHandle* file)")
+            "FileWrite|u64 FileWrite(const void* data, u64 size, u64 count, FileHandle* file)"
+            "FileReadLine|bool FileReadLine(char* str, int count, FileHandle* file)"
+            "FileWriteFormatted|u64 FileWriteFormatted(FileHandle* file, const char* fmt, ...)"
+            "FileLength|u64 FileLength(FileHandle* file)"
+            "FileFlush|bool FileFlush(FileHandle* file)")
         string(REPLACE "|" ";" parts "${entry}")
         list(GET parts 0 method)
         list(GET parts 1 signature)
@@ -55,6 +59,20 @@ if (TARGET Qt6::Core)
     foreach(case IN ITEMS seek-read seek-write normal sparse read-error write-error)
         add_test(NAME dsi-sd-fat-${case} COMMAND DSiSDFATBacking ${case})
         set_tests_properties(dsi-sd-fat-${case} PROPERTIES TIMEOUT 10)
+    endforeach()
+
+    # Full production lifecycle and FatFs over real files. Only the file-open
+    # adapter injects host I/O failures; mount/format/index code is unchanged.
+    add_executable(FATStorageLifecycle "${CMAKE_CURRENT_LIST_DIR}/FATStorageLifecycle.cpp"
+        "${dsifat_root}/src/FATStorage.cpp" "${dsifat_root}/src/FATIO.cpp"
+        "${dsifat_root}/src/fatfs/ff.c" "${dsifat_root}/src/fatfs/ffsystem.c"
+        "${dsifat_root}/src/fatfs/ffunicode.c" ${dsifat_platform_outputs})
+    target_include_directories(FATStorageLifecycle PRIVATE "${dsifat_root}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_features(FATStorageLifecycle PRIVATE cxx_std_26)
+    target_link_libraries(FATStorageLifecycle PRIVATE Qt6::Core)
+    foreach(case IN ITEMS normal empty mount-read-error mount-seek-error length-error malformed format-write-error)
+        add_test(NAME fat-storage-${case} COMMAND FATStorageLifecycle ${case})
+        set_tests_properties(fat-storage-${case} PROPERTIES TIMEOUT 15)
     endforeach()
 else()
     message(STATUS "Qt Core unavailable: DSiSDFATBacking real-file checks not registered")

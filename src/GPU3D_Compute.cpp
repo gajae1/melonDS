@@ -727,7 +727,7 @@ void ComputeRenderer3D::RenderFrame()
         to increase the batch size.
         Less variance between each Variant hah!
     */
-    u32 numVariants = 0, prevVariant, prevTexLayer;
+    u32 numVariants = 0, prevVariant = 0, prevTexLayer = 0;
     Variant variants[MaxVariants];
     u32 capLastVariant[16] = {0};
 
@@ -760,7 +760,7 @@ void ComputeRenderer3D::RenderFrame()
 
         if (!foundVariant)
         {
-            Variant variant;
+            Variant variant{};
             variant.BlendMode = polygon->IsShadowMask ? 4 : ((polygon->Attr >> 4) & 0x3);
             variant.Texture = 0;
             variant.Sampler = 0;

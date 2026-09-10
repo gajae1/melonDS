@@ -41,6 +41,7 @@ CartSD::CartSD(std::unique_ptr<u8[]>&& rom, u32 len, u32 chipid, ROMListEntry ro
     SD(std::move(sdcard))
 {
     LenientAddressing = true;
+    if (SD && !SD->IsValid()) SD.reset();
 
     sdcard = std::nullopt;
     // std::move on optionals usually results in an optional with a moved-from object

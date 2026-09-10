@@ -174,7 +174,24 @@ GR-11/12에서 확인한 실제 호출 경계를 진행한다. 창 교체/해제
 
 1.1.30은 실제 다자간 LAN 반례, 성공 load/undo의 host 오디오 이력, source A→DMA-first/warmed JIT의 기존 검증 공백을 세 블록으로 작성했다. LAN v1 호환·지원 상대끼리의 포트 교환·늦은 peer 준비 통지, 성공 복원과 실패 복귀의 PCM 정책을 구현했고 캡처는 제품 코드 변경 없이 생성 장면 검증을 보완했다. 원본/구버전 설정 이관과 LAN 역할 교환의 성공·실패를 구분한다. 개별 결과와 최종 통합 판정은 [릴리스 기록](releases/1.1.30.md)을 따른다.
 
-[1차 감사](Audit_2026-09-11.md)의 다음 후보는 DSP 단일-word FIFO, malformed state/파일의 보존 경계, GDB·LocalMP의 수신 경계, GL alpha/capture 및 Compute workload 한도다. 먼저 호출 가능한 최소 반례를 만든 뒤 필요한 소유 파일만 수정한다. 동일 소스 현상은 기존 ID에 합치며, 실기 값이 없는 임의 zero-fill·작업 생략·사이클 변경을 정확한 기본값으로 채택하지 않는다.
+[1.1.31 증분](releases/1.1.31.md)은 기존 FAT 이미지의 마운트 실패를 포맷으로 처리하던 경로, BTDMP의 한-word 빈 큐 접근, Compute layer·variant 초기화를 다룬다. FAT은 실제 생성 이미지/인덱스/폴더 보존과 같은 이미지 재시도를, DSP는 checked STL 반례와 실제 I2S 호출 경로를 확인한다. 부족 오른쪽 0은 기존 Teakra의 안전정책으로 명시하며 실기 정확성으로 간주하지 않는다. Compute는 전후 생성 출력이 같았고 관찰된 화면 오류나 속도 향상으로 기록하지 않는다.
+
+[1차 감사](Audit_2026-09-11.md)의 다음 후보는 malformed state의 section 경계, FAT export 중간 실패·ROM/GBA/firmware 길이, GDB·LocalMP의 수신 경계, GL alpha/capture 및 Compute workload 한도다. 먼저 호출 가능한 최소 반례를 만든 뒤 필요한 소유 파일만 수정한다. 동일 소스 현상은 기존 ID에 합치며, 실기 값이 없는 임의 zero-fill·작업 생략·사이클 변경을 정확한 기본값으로 채택하지 않는다. 후속 네트워크 보안 점검은 NP-01/02/03/07의 패킷 길이·송신자/peer·협상·수신 버퍼 경계를 포함하고 원본 v1 호환 대조를 유지한다.
+
+후속 항목은 아래 순서와 첫 산출물로 넘긴다. 하나의 제한된 수정·필요한 검증이 끝나면 다음 독립 블록을 시작하고, 외부 수락을 기다리는 항목은 근거와 재개 조건을 남긴다.
+
+| 순서·소유 블록 | 기존 ID | 다음에 만들 반례·대조 | 완료 또는 재개 조건 |
+|---|---|---|---|
+| 1. 상태 파일 | CJ-10/FS-01/02 | 누락된 NDSG와 짧은 section이 이웃 section payload를 읽는 생성 파일; 원본 14.0 정상 상태 대조 | 적용 전 거부/후반 실패 복구를 구분하고 RAM·기존 세션 보존; serializer 변경 시 원본 writer 이관을 다시 확인 |
+| 2. 폴더 export | FS-02/06 | FAT 파일 두 번째 블록의 읽기 실패·짧은 쓰기·교체 실패; 기존 host 파일과 index snapshot, 같은 NAND export 경로 | 실패 뒤 목적지·index 보존, 정상 export와 재시도; 기존 표준 저장/교체 기능을 먼저 평가 |
+| 3. 통신 입력 | NP-01/02/03/10/11 | LocalMP 수신 크기와 목적지 용량 불일치, GDB qCRC 주소 wrap·잘못된 hex | 경계 밖 쓰기·무한 대기 없이 오류 처리, 정상 패킷/명령·원본 v1 연결 대조 보존 |
+| 4. 그래픽 | GR-06/07/08 | Compute 실제 producer의 workload 초과·indirect 한도, GL alpha와 texture 끝의 capture 검색 | 작업을 버리지 않는 결과 보존과 실제 backend 픽셀 대조; 한도 미도달은 반증으로 기록 |
+| 5. JIT/ISA | CJ-06/16/18 | 기존 guest fixture를 이용한 빈 PUSH/POP·조건부 사이클·비정렬 메모리 비교 | interpreter/생성 코드 대조와 문헌 의미를 구분; ARM64 native·실기 타이밍은 해당 실행 환경에서 재개 |
+| 6. 배포 결속 | BV-01/05/18 | 다른 source revision의 EXE를 현재 소스와 묶으려는 입력 | 빌드 시 source 신원과 package 입력을 연결해 불일치 거부; 동일 EXE·문서만 변경한 경우의 정책도 명시 |
+
+[추가 참고 자료](Reference_Notes_2026-09-11.md)는 Qt/Dolphin의 저장 오류 처리, ENet의 소유권, QEMU/Dynarmic과 원 논문의 차등 검증, Khronos/parallel-rdp의 한도·가시성·작업 분할을 위 ID에 연결한다. 자료 수집 완료와 코드 적용·반례 해결을 구별한다.
+
+DSP 부족 출력·IRQ·채널 정렬, 실제 두 PC/구버전 혼합 LAN, 물리 오디오, Android·native A64·다른 OS·장기 게임 수락은 계속 열린 상태다. 실기 또는 해당 환경이 없다는 이유로 위 로컬 반례들을 함께 미루지 않는다.
 
 core/DSP·GPU·연결/저장 파일을 독립 소유로 묶고 공용 CMake·프런트엔드 load·release 연결은 한 담당자가 순차 통합한다. 정해진 파일/명령의 수집과 검증·확정된 구현은 경량 작업자에게, 설계·타이밍·원인 판정은 총괄 또는 고성능 작업자에게 맡긴다. 배정 모델과 중단 뒤 실제 재개 모델을 구분하며 배정만으로 코드 검토 완료를 세지 않는다. 실기·native A64·플랫폼 수락을 기다리는 동안 독립 로컬 작업을 계속한다.
 

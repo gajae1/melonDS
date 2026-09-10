@@ -34,10 +34,15 @@ public:
     ~CartSD() override;
 
     [[nodiscard]] const std::optional<FATStorage>& GetSDCard() const noexcept { return SD; }
-    void SetSDCard(FATStorage&& sdcard) noexcept { SD = std::move(sdcard); }
+    void SetSDCard(FATStorage&& sdcard) noexcept
+    {
+        SD = std::move(sdcard);
+        if (!SD->IsValid()) SD.reset();
+    }
     void SetSDCard(std::optional<FATStorage>&& sdcard) noexcept
     {
         SD = std::move(sdcard);
+        if (SD && !SD->IsValid()) SD.reset();
         sdcard = std::nullopt;
         // moving from an optional doesn't set it to nullopt,
         // it just leaves behind an optional with a moved-from value
@@ -52,7 +57,7 @@ public:
         SD = std::nullopt;
 
         if (args)
-            SD = FATStorage(std::move(*args));
+            SetSDCard(FATStorage(std::move(*args)));
 
         args = std::nullopt;
         // moving from an optional doesn't set it to nullopt,

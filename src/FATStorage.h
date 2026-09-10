@@ -66,6 +66,7 @@ public:
     u32 WriteSectors(u32 start, u32 num, const u8* data);
 
     [[nodiscard]] bool IsReadOnly() const noexcept { return ReadOnly; }
+    [[nodiscard]] bool IsValid() const noexcept { return File != nullptr; }
     u64 GetSectorCount() const;
 
 private:
@@ -74,7 +75,7 @@ private:
     std::optional<std::string> SourceDir;
     bool ReadOnly;
 
-    Platform::FileHandle* File;
+    Platform::FileHandle* File = nullptr;
     u64 FileSize;
 
     [[nodiscard]] ff_disk_read_cb FF_ReadStorage() const noexcept;

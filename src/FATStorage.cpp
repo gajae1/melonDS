@@ -48,7 +48,12 @@ FATStorage::FATStorage(FATStorageArgs&& args) noexcept :
     ReadOnly(args.ReadOnly),
     SourceDir(std::move(args.SourceDir))
 {
-    Load(FilePath, FileSize, SourceDir);
+    if (!Load(FilePath, FileSize, SourceDir))
+    {
+        if (File) CloseFile(File);
+        File = nullptr;
+        FileSize = 0;
+    }
 }
 
 FATStorage::FATStorage(FATStorage&& other) noexcept
@@ -63,6 +68,7 @@ FATStorage::FATStorage(FATStorage&& other) noexcept
     FileIndex = std::move(other.FileIndex);
 
     other.File = nullptr;
+    other.FileSize = 0;
 }
 
 FATStorage& FATStorage::operator=(FATStorage&& other) noexcept
@@ -85,6 +91,7 @@ FATStorage& FATStorage::operator=(FATStorage&& other) noexcept
         FileIndex = std::move(other.FileIndex);
 
         other.File = nullptr;
+        other.FileSize = 0;
         other.SourceDir = std::nullopt;
     }
 
@@ -1032,40 +1039,36 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
         return false;
 
     IndexPath = FilePath + ".idx";
-    if (isnew)
-    {
-        DirIndex.clear();
-        FileIndex.clear();
-        SaveIndex();
-    }
-    else
-    {
+    if (!isnew)
         LoadIndex();
 
-        if (FileSize == 0)
-        {
-            FileSize = FileLength(File);
-        }
-    }
+    const u64 physicalSize = FileLength(File);
+    if (FileSize == 0)
+        FileSize = physicalSize;
 
-    bool needformat = false;
+    // A new or genuinely empty image can be formatted. A failed size query
+    // also returns zero, so confirm EOF before treating it as an empty image.
+    bool needformat = physicalSize == 0;
     FATFS fs;
     FRESULT res;
 
-    if (FileSize == 0)
+    if (needformat)
     {
-        needformat = true;
+        u8 probe;
+        if (!FileSeek(File, 0, FileSeekOrigin::Start) ||
+            FileRead(&probe, 1, 1, File) != 0 || !IsEndOfFile(File))
+        {
+            Log(LogLevel::Error, "Failed to read SD image; refusing to format it\n");
+            return false;
+        }
     }
     else
     {
         ff_disk_open(FF_ReadStorage(), FF_WriteStorage(), (LBA_t)(FileSize>>9));
 
         res = f_mount(&fs, "0:", 1);
-        if (res != FR_OK)
-        {
-            needformat = true;
-        }
-        else if (size > 0 && size != FileSize)
+        // Mount errors on existing data must never authorize formatting.
+        if (res == FR_OK && size > 0 && size != FileSize)
         {
             needformat = true;
         }
@@ -1099,7 +1102,6 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
 
         DirIndex.clear();
         FileIndex.clear();
-        SaveIndex();
 
         FF_MKFS_PARM fsopt;
 
@@ -1125,19 +1127,25 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
 
     if (res == FR_OK)
     {
+        if (needformat)
+            SaveIndex();
         if (hasdir)
             ImportDirectory(*sourcedir);
     }
+    else
+        Log(LogLevel::Error, "Failed to mount or format SD image (FAT error %d)\n", res);
 
     f_unmount("0:");
 
     ff_disk_close();
 
-    return true;
+    return res == FR_OK;
 }
 
 bool FATStorage::Save()
 {
+    if (!File) return false;
+
     if (!SourceDir)
     { // If we're not syncing the SD card image to a host directory...
         return true; // Not an error.

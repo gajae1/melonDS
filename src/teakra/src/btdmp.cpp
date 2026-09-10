@@ -174,8 +174,13 @@ void Btdmp::SampleClock(std::int16_t output[2], std::int16_t input) {
     if (transmit_enable && (!(transmit_queue.empty()))) {
         output[0] = (s16)transmit_queue.front();
         transmit_queue.pop();
-        output[1] = (s16)transmit_queue.front();
-        transmit_queue.pop();
+        // Use Teakra's per-channel underrun fallback; the DSi hardware value
+        // for a missing right word still needs verification.
+        output[1] = 0;
+        if (!transmit_queue.empty()) {
+            output[1] = (s16)transmit_queue.front();
+            transmit_queue.pop();
+        }
 
         transmit_empty = transmit_queue.empty();
         transmit_full = false;

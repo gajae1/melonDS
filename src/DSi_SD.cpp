@@ -68,7 +68,7 @@ DSi_SDHost::DSi_SDHost(melonDS::DSi& dsi, std::optional<DSi_NAND::NANDImage>&& n
                            {MakeEventThunk(DSi_SDHost, FinishTX),
                            MakeEventThunk(DSi_SDHost, FinishRX)});
 
-    Ports[0] = sdcard ? std::make_unique<DSi_MMCStorage>(DSi, this, std::move(*sdcard)) : nullptr;
+    Ports[0] = sdcard && sdcard->IsValid() ? std::make_unique<DSi_MMCStorage>(DSi, this, std::move(*sdcard)) : nullptr;
     sdcard = std::nullopt; // to ensure that sdcard isn't left with a moved-from object
     Ports[1] = nand ? std::make_unique<DSi_MMCStorage>(DSi, this, std::move(*nand)): nullptr;
     nand = std::nullopt; // to ensure that nand isn't left with a moved-from object
@@ -165,6 +165,12 @@ void DSi_SDHost::SetSDCard(FATStorage&& sdcard) noexcept
 {
     if (Num != 0) return;
 
+    if (!sdcard.IsValid())
+    {
+        Ports[0] = nullptr;
+        return;
+    }
+
     if (!Ports[0])
     {
         Ports[0] = std::make_unique<DSi_MMCStorage>(DSi, this, std::move(sdcard));
@@ -179,7 +185,7 @@ void DSi_SDHost::SetSDCard(std::optional<FATStorage>&& sdcard) noexcept
 {
     if (Num != 0) return;
 
-    if (sdcard)
+    if (sdcard && sdcard->IsValid())
     {
         if (!Ports[0])
         {

@@ -28,7 +28,7 @@
 | CJ-20 | [입력·RTC·다중 인스턴스 시간 정책](workstreams/01-core-jit.md#CJ-20) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 1.1.30 성공 load/undo의 host 오디오 이력만 AD-05로 선반영; 입력·RTC·외부/다중 인스턴스 정책 후속 |
 | CJ-21 | [DSi 동일 조건 upstream 부팅 비교](workstreams/01-core-jit.md#CJ-21) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | AD-17 | 미착수 |
 | GR-01 | [배율 변경의 pending capture 보존](workstreams/02-renderers.md#GR-01) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 이전 크기에서 pending 캡처 보존·CPU-synced 참조 폐기; 두 GL의 1x/2x·CPU 읽기·후속 texture 재사용 검증; 진행 중 캡처·다른 driver 후속 |
-| GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capture 종류별 sampler unit 수정; 실제 128/256·S/T wrap·일반 texture 왕복의 binding/픽셀 검증; 다른 driver·비표준 capture·실기 후속 |
+| GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 sampler unit 수정; 1.1.31 첫 비텍스처 polygon의 layer·variant 초기화, 기존 생성 frame/capture 전후 동일; 다른 driver·비표준 capture·실기 후속 |
 | GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19~25 core·표시 실패 복구; [1.1.26](releases/1.1.26.md) 실제 설정창의 선택/활성 renderer·대기/실패·worker capability·Cancel/재시도; 실제 3.2-only 장치·binary cache 후속 |
 | GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 core handle·1.1.23 표시 부분 해제/OSD·1.1.24 current 실패 거부; 1.1.25 새 context 반환 실패 시 GUI 정리와 native 전환; 물리 context 상실·native 삭제 실패·다른 driver 후속 |
 | GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 부분 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.28 ARM9 읽기/쓰기·DMA의 과거/미래 줄·설정 변경; 1.1.30 source A DMA-first와 warmed JIT 추가 검증; subscanline latch·VCOUNT 변경·실기/게임 후속 |
@@ -63,14 +63,14 @@
 | AD-18 | [DSP modulo −1 실기 판정](workstreams/03-audio-dsi.md#AD-18) | 기존 실패 기록 | P1 | [1.1.21](Release_Plan.md#v21) | — | 미착수 |
 | AD-19 | [DSP retd·vtrshr 지연](workstreams/03-audio-dsi.md#AD-19) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
 | AD-20 | [DSP AHBM/DMA·FIFO/IRQ](workstreams/03-audio-dsi.md#AD-20) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
-| AD-21 | [HLE/LLE·I2S/mic clock](workstreams/03-audio-dsi.md#AD-21) | 미측정 가설 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
+| AD-21 | [HLE/LLE·I2S/mic clock](workstreams/03-audio-dsi.md#AD-21) | 부분 실행 재현 | P2 | [1.1.22](Release_Plan.md#v22) | — | 1.1.31 BTDMP 단일-word 빈 큐 접근 수정·실제 I2S/DSP 경로와 FIFO/IRQ 대조; 부족 오른쪽 0은 Teakra 선례의 안전정책, 실기 출력·IRQ·채널 정렬/HLE 비교 후속 |
 | AD-22 | [I2C ACK·BPTWL reset](workstreams/03-audio-dsi.md#AD-22) | 부분 실행 재현 | P2 | [1.1.23](Release_Plan.md#v23) | — | [1.1.28](releases/1.1.28.md) 주소 방향·STOP·완료 IRQ·정상 MCU/카메라와 14.1/14.2 상태 호환; 전송 지연·warm-reset retention·실기 앱 후속 |
 | AD-23 | [카메라 형식·sensor arbitration](workstreams/03-audio-dsi.md#AD-23) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
 | AD-24 | [AES block backend 실효성](workstreams/03-audio-dsi.md#AD-24) | 미측정 가설 | P3 | [1.1.29](Release_Plan.md#v29) | — | 미착수 |
 | AD-25 | [SPU 정수 보간·pan 가속](workstreams/03-audio-dsi.md#AD-25) | 미측정 가설 | P3 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-26 | [DSP opcode/상태 coverage](workstreams/03-audio-dsi.md#AD-26) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
 | FS-01 | [load/undo 실패의 세션 복원](workstreams/04-frontend-storage.md#FS-01) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.04 CJ-10과 공동 구현·회귀; 전체 게임·장치 수락 후속 |
-| FS-02 | [길이·전체 read·적용 전 검증](workstreams/04-frontend-storage.md#FS-02) | 실행 재현 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.04 상태·1.1.05 SRAM·1.1.06 ROM/import 구현·로컬 회귀 확인; 다른 부가 파일 후속 |
+| FS-02 | [길이·전체 read·적용 전 검증](workstreams/04-frontend-storage.md#FS-02) | 실행 재현 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.04 상태·1.1.05 SRAM·1.1.06 ROM/import; 1.1.31 기존 FAT 마운트/길이 오류의 재포맷 금지·파일/인덱스/폴더 보존·실패 SD 삽입 방지; export 중간 실패·다른 부가 파일 후속 |
 | FS-03 | [ROM 교체와 save 소유권](workstreams/04-frontend-storage.md#FS-03) | 실행 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.05 준비 실패 보존·queued 카트·save 연결 구현·로컬 회귀; 실제 게임·DSi 수락 후속 |
 | FS-04 | [손상 TOML 보존·오류 전파](workstreams/04-frontend-storage.md#FS-04) | 정적 후보 | P1 | [1.1.07](Release_Plan.md#v07) | — | 1.1.03 원본 보존·회귀; 상세 오류 UI 후속 |
 | FS-05 | [save worker/path/buffer 수명](workstreams/04-frontend-storage.md#FS-05) | 잠금 경계 재현 | P1 | [1.1.04](Release_Plan.md#v04) | — | 1.1.04 mutex 통일·worker/파일 회귀; 느린 I/O·장기 경쟁 수락 후속 |

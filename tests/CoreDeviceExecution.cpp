@@ -9,12 +9,183 @@
 #include "ARM.h"
 #include "DSi.h"
 #include "NDS.h"
+#include "teakra/src/btdmp.h"
 
 #include <cstdio>
 #include <memory>
 #include <utility>
 
 using namespace melonDS;
+
+// Exercises the active sample clock, including DSi I2S -> DSP -> Teakra.
+// A missing right word uses the upstream Teakra Tick fallback as an emulator
+// safety policy. This fixture is not evidence of the DSi hardware underrun value.
+int TestDSiBTDMP(NDSArgs&& args)
+{
+    unsigned failures = 0;
+    auto require = [&](bool ok, const char* detail) {
+        if (!ok)
+        {
+            ++failures;
+            std::fprintf(stderr, "btdmp: FAIL %s\n", detail);
+        }
+    };
+    Teakra::CoreTiming timing;
+    Teakra::Btdmp port(timing, 0);
+    unsigned irqs = 0;
+    port.SetInterruptHandler([&] { ++irqs; });
+    port.Reset();
+    port.SetTransmitEnable(1);
+    s16 output[2] = {-123, -456};
+
+    // Minimal counterexample: one ordinary Send, then exactly one active clock.
+    port.Send(0x1234);
+    std::puts("btdmp: one word queued; calling SampleClock once");
+    std::fflush(stdout);
+    port.SampleClock(output, 0);
+    std::printf("btdmp: single output=(%d,%d) empty=%u full=%u irqs=%u\n",
+                output[0], output[1], port.GetTransmitEmpty(), port.GetTransmitFull(), irqs);
+    require(output[0] == 0x1234 && output[1] == 0 && port.GetTransmitEmpty() &&
+            !port.GetTransmitFull() && irqs == 1, "single-word consumption / fallback / empty IRQ");
+    port.SampleClock(output, 0);
+    require(output[0] == 0 && output[1] == 0 && irqs == 1, "empty clock repeated the TX IRQ");
+
+    port.Reset();
+    irqs = 0;
+    port.Send(111);
+    port.Send(static_cast<u16>(-222));
+    port.SampleClock(output, 0);
+    require(output[0] == 0 && output[1] == 0 && !port.GetTransmitEmpty() && irqs == 0,
+            "disabled transmitter consumed queued words");
+    port.SetTransmitEnable(1);
+    port.Send(333);
+    port.SampleClock(output, 0);
+    require(output[0] == 111 && output[1] == -222 && !port.GetTransmitEmpty() && irqs == 0,
+            "normal pair / odd tail retention");
+    port.SampleClock(output, 0);
+    require(output[0] == 333 && output[1] == 0 && port.GetTransmitEmpty() && irqs == 1,
+            "odd tail consumption / empty IRQ");
+    port.Send(static_cast<u16>(-444));
+    port.Send(555);
+    port.SampleClock(output, 0);
+    require(output[0] == -444 && output[1] == 555 && port.GetTransmitEmpty() && irqs == 2,
+            "append after underrun lost stereo order / empty IRQ");
+
+    // The external I2S clock still owns consumption, regardless of DSP ticks.
+    port.Send(777);
+    port.Send(888);
+    port.SetTransmitPeriod(1);
+    port.SetTransmitClockConfig(0x1004);
+    timing.Tick();
+    timing.Skip(8192);
+    require(!port.GetTransmitEmpty() && irqs == 2, "DSP ticks consumed I2S-clocked words");
+    port.SampleClock(output, 0);
+    require(output[0] == 777 && output[1] == 888 && irqs == 3,
+            "clock configuration changed external sample consumption");
+
+    port.Reset();
+    irqs = 0;
+    port.SetTransmitEnable(1);
+    constexpr s16 words[] = {1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16};
+    for (s16 word : words) port.Send(static_cast<u16>(word));
+    port.Send(999); // The seventeenth word must not displace an existing sample.
+    require(port.GetTransmitFull() && !port.GetTransmitEmpty(), "16-word capacity");
+    for (unsigned i = 0; i < 8; ++i)
+    {
+        port.SampleClock(output, 0);
+        require(output[0] == words[2 * i] && output[1] == words[2 * i + 1] &&
+                !port.GetTransmitFull() && irqs == (i == 7 ? 1u : 0u),
+                "full FIFO order / full clear / final-pair IRQ");
+    }
+    require(port.GetTransmitEmpty(), "full FIFO did not drain");
+    port.Send(123);
+    port.SetTransmitFlush(1);
+    port.SampleClock(output, 0);
+    require(output[0] == 0 && output[1] == 0 && port.GetTransmitEmpty() &&
+            !port.GetTransmitFull() && irqs == 1, "flush retained a tail or raised TX IRQ");
+
+    // RX must still run on a TX underrun and retain its duplicated-mic contract.
+    port.Reset();
+    irqs = 0;
+    port.SetTransmitEnable(1);
+    port.SetReceiveEnable(1);
+    port.Send(321);
+    port.SampleClock(output, -37);
+    require(output[0] == 321 && output[1] == 0 && irqs == 1 &&
+            port.GetReceiveEmpty() && !port.GetReceiveFull(), "RX stopped during TX underrun");
+    require(port.Receive() == static_cast<u16>(-37) && port.Receive() == static_cast<u16>(-37) &&
+            !port.GetReceiveEmpty(), "duplicated mic sample / existing inverted empty bit");
+    for (int i = 0; i < 8; ++i) port.SampleClock(output, 50);
+    require(port.GetReceiveFull() && irqs == 2, "RX full IRQ with empty TX");
+    require(port.Receive() == 50 && !port.GetReceiveFull(), "RX full clear");
+    port.SampleClock(output, 75); // Fifteen words: room for just one copy.
+    require(port.GetReceiveFull() && irqs == 3, "RX capacity after one receive");
+    port.SampleClock(output, 99);
+    require(port.GetReceiveFull() && irqs == 4, "existing RX-full level IRQ");
+    port.SetReceiveEnable(0);
+    for (int i = 0; i < 15; ++i) require(port.Receive() == 50, "RX FIFO order / overrun");
+    require(port.Receive() == 75 && !port.GetReceiveEmpty(), "RX last available slot");
+    port.SampleClock(output, 99);
+    require(!port.GetReceiveEmpty() && irqs == 4, "disabled RX consumed input");
+    port.SetReceiveEnable(1);
+    port.SampleClock(output, 25);
+    port.SetReceiveFlush(1);
+    require(!port.GetReceiveEmpty() && !port.GetReceiveFull() && irqs == 4, "RX flush");
+    std::printf("btdmp: FIFO/IRQ/clock/flush/receive controls: %s\n", failures ? "FAIL" : "PASS");
+
+    DSiArgs dsiArgs;
+    static_cast<NDSArgs&>(dsiArgs) = std::move(args);
+    auto dsi = std::make_unique<DSi>(std::move(dsiArgs));
+    dsi->Reset();
+    dsi->SCFG_Clock9 |= 2;
+    dsi->DSP.SetRstLine(true);
+    auto writeMMIO = [&](u16 address, u16 value) {
+        dsi->DSP.Write16(0x04004308, 0x1000); // MMIO, no address increment.
+        dsi->DSP.Write16(0x04004304, address);
+        dsi->DSP.Write16(0x04004300, value);
+    };
+    auto readMMIO = [&](u16 address) {
+        dsi->DSP.Write16(0x04004304, address);
+        dsi->DSP.Write16(0x04004308, 0x1010); // One-word PDATA read.
+        const u16 value = dsi->DSP.Read16(0x04004300);
+        dsi->DSP.Write16(0x04004308, 0x1000);
+        return value;
+    };
+    for (u16 rate : {u16{0}, u16{0x2000}})
+    {
+        const unsigned before = failures;
+        dsi->I2S.WriteSndExCnt(0, 0xFFFF);
+        dsi->I2S.WriteSndExCnt(0x8000 | rate, 0xFFFF); // DSP-only mix, both I2S rates.
+        writeMMIO(0x2CA, 1);
+        writeMMIO(0x2BE, 1);
+        writeMMIO(0x202, 0xFFFF);
+        dsi->I2S.SampleClock(output);
+        require(output[0] == 0 && output[1] == 0 && readMMIO(0x200) == 0,
+                "I2S empty clock / IRQ");
+        writeMMIO(0x2C6, 0x2345);
+        require((readMMIO(0x2C2) & 0x18) == 0, "PDATA did not queue the single word");
+        dsi->I2S.SampleClock(output);
+        require(output[0] == 0x2345 && output[1] == 0 &&
+                (readMMIO(0x2C2) & 0x18) == 0x10 && readMMIO(0x200) == 0x0800,
+                "I2S -> DSP -> Teakra single word / TX empty / ICU request");
+        writeMMIO(0x202, 0x0800);
+        dsi->I2S.SampleClock(output);
+        require(readMMIO(0x200) == 0, "I2S empty clock repeated acknowledged IRQ");
+        writeMMIO(0x2C6, 0x8000);
+        writeMMIO(0x2C6, 0x7FFF);
+        dsi->I2S.WriteSndExCnt(0, 0xFFFF);
+        dsi->I2S.SampleClock(output);
+        require(output[0] == 0 && output[1] == 0 && !(readMMIO(0x2C2) & 0x10),
+                "disabled I2S drained the pair");
+        dsi->I2S.WriteSndExCnt(0x8000 | rate, 0xFFFF);
+        dsi->I2S.SampleClock(output);
+        require(output[0] == -32768 && output[1] == 32767 && readMMIO(0x200) == 0x0800,
+                "I2S normal signed stereo pair / IRQ after underrun");
+        require((dsi->I2S.ReadSndExCnt() & 0x2000) == rate, "I2S sample changed the rate");
+        std::printf("btdmp: I2S rate-bit=%04x: %s\n", rate, failures == before ? "PASS" : "FAIL");
+    }
+    return failures ? 1 : 0;
+}
 
 // GBATEK I2C ports/signals and devkitPro Calico's native MCU transactions:
 // https://problemkaputt.de/gbatek-dsi-i2c-i-o-ports.htm

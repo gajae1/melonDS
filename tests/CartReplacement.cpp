@@ -229,6 +229,31 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
     if (argc != 2) return 2;
     const string test = argv[1];
+    if (test == "invalid-sd")
+    {
+        // The headless Platform refuses file opens. Use the real failed
+        // FATStorage constructor and both core owners, without user images.
+        const FATStorageArgs missing{"generated-missing-sd.img", 8 * 1024 * 1024, false, std::nullopt};
+        NDSCart::CartSD cart(make_unique<u8[]>(0x20000), 0x20000, 0, {}, nullptr, FATStorage(missing));
+        bool passed = !cart.GetSDCard();
+        cart.SetSDCard(FATStorage(missing));
+        passed &= !cart.GetSDCard();
+        cart.SetSDCard(std::make_optional<FATStorage>(missing));
+        passed &= !cart.GetSDCard();
+        cart.SetSDCard(std::make_optional(missing));
+        passed &= !cart.GetSDCard();
+
+        DSiArgs args;
+        args.DSiSDCard.emplace(missing);
+        auto console = make_unique<DSi>(std::move(args));
+        passed &= !console->GetSDCard();
+        console->SetSDCard(FATStorage(missing));
+        passed &= !console->GetSDCard();
+        console->SetSDCard(std::make_optional<FATStorage>(missing));
+        passed &= !console->GetSDCard();
+        std::printf("failed SD image stays absent from cart and DSi slots: %s\n", passed ? "PASS" : "FAIL");
+        return passed ? 0 : 1;
+    }
     const bool gba = test.starts_with("gba-");
     const bool blocked = test.ends_with("pending-failure");
     const bool readInput = test.starts_with("read-");
