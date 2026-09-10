@@ -42,6 +42,7 @@ struct EmuThread
     int depth = 0, pauses = 0, unpauses = 0;
     bool broadcastUsed = false;
     bool deinitContext(int) { return true; }
+    bool emuIsRunning() { return depth == 0; }
     void initContext(int) {}
     void emuPause(bool broadcast = true)
     {
@@ -101,6 +102,8 @@ struct EmuInstance
     EmuThread thread;
     bool deleting = false, destroyed = false;
     int deletions = 0, enabledWrites = 0;
+    int keyReleases = 0;
+    void keyReleaseAll() { ++keyReleases; }
     std::array<MainWindow*, kMaxWindows> windows{};
     MainWindow* mainWindow = nullptr;
     std::unique_ptr<SaveManager> ndsSave, gbaSave, firmwareSave;
@@ -136,6 +139,7 @@ public:
     int getWindowID() { return windowID; }
     void saveEnabled(bool) { ++enabledWrites; }
     int enabledWrites = 0;
+    void onAppStateChanged(Qt::ApplicationState state);
 
 private:
     void closeEvent(QCloseEvent* event) override;
@@ -144,6 +148,9 @@ private:
     bool closeInProgress = false;
     bool closeApproved = false;
     bool hasOGL = false;
+    bool pauseOnLostFocus = true, pausedManually = false;
+    struct Panel { void releaseTouch() {} };
+    Panel* panel = nullptr;
     int windowID;
     EmuInstance* emuInstance;
     EmuThread* emuThread;
@@ -153,6 +160,7 @@ private:
 #include "closeSaveManagers.inc"
 #include "prepareClose.inc"
 #include "closeEvent.inc"
+#include "closeAppState.inc"
 
 int main(int argc, char** argv)
 {
@@ -161,6 +169,23 @@ int main(int argc, char** argv)
     app.setQuitOnLastWindowClosed(false);
     if (argc != 2) return 2;
     const std::string scenario = argv[1];
+    if (scenario == "app-state")
+    {
+        EmuInstance instance;
+        MainWindow window(0, &instance);
+        window.setAttribute(Qt::WA_DeleteOnClose, false);
+        window.onAppStateChanged(Qt::ApplicationInactive);
+        window.onAppStateChanged(Qt::ApplicationActive);
+        if (instance.keyReleases != 1 || instance.thread.unpauses != 1 || !window.close()) return 1;
+        const int pauses = instance.thread.pauses;
+        // Qt may deliver this notification after close, before deferred deletion.
+        window.onAppStateChanged(Qt::ApplicationInactive);
+        window.onAppStateChanged(Qt::ApplicationActive);
+        const bool passed = instance.destroyed && instance.keyReleases == 1 &&
+                            instance.thread.pauses == pauses && instance.thread.unpauses == 1;
+        std::printf("closed-window application-state delivery: %s\n", passed ? "PASS" : "FAIL");
+        return passed ? 0 : 1;
+    }
     const bool childCancel = scenario == "child-cancel";
     const bool secondary = scenario == "secondary";
     const bool clean = scenario == "clean";

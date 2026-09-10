@@ -134,7 +134,7 @@ public:
     bool deinitOpenGL(int) { std::abort(); }
     bool makeCurrentGL() { return currentAvailable; }
     bool preserveFrame() { std::abort(); }
-    void releaseGL() { std::abort(); }
+    int releaseGL() { std::abort(); }
     void ejectCart() { std::abort(); }
     bool loadGBAROM(const QStringList&, QString&, const AssetIdentity::Selection&) { std::abort(); }
     void loadGBAAddon(int, QString&) { std::abort(); }

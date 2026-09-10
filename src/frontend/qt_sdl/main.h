@@ -57,13 +57,18 @@ extern QElapsedTimer sysTimer;
 // GUI-only scope: stop every running worker before native context creation or
 // window publication. Nested scopes share loans; only the outermost returns them.
 // No worker message waits or instance destruction are allowed inside the scope.
+// Check success before touching windows. Instance-only removal uses allInstances=false.
 class ScopedGLWorkers
 {
 public:
-    explicit ScopedGLWorkers(EmuThread* extra = nullptr);
+    explicit ScopedGLWorkers(EmuThread* extra = nullptr, bool allInstances = true);
     ~ScopedGLWorkers();
     ScopedGLWorkers(const ScopedGLWorkers&) = delete;
     ScopedGLWorkers& operator=(const ScopedGLWorkers&) = delete;
+    explicit operator bool() const { return acquired; }
+
+private:
+    bool acquired = false;
 };
 
 bool createEmuInstance();

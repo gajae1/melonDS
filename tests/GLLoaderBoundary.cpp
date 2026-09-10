@@ -42,7 +42,7 @@ void Await(QSemaphore& gate)
 }
 struct Observation
 {
-    bool Recording = false, FailCreation = false;
+    bool Recording = false, FailCreation = false, FailCreatedRelease = false;
     EmuInstance* Publishing = nullptr;
     int PublishingWindow = -1;
     std::vector<EmuThread*> Readers;
@@ -50,7 +50,7 @@ struct Observation
     std::atomic<unsigned> Overlap{0}, Unpublished{0};
     std::atomic<unsigned> Broadcasts{0};
     std::atomic<bool> BroadcastOnGUI{false};
-    unsigned Roots = 0, Shared = 0, DoneCurrent = 0;
+    unsigned Roots = 0, Shared = 0, DoneCurrent = 0, SettingsUpdates = 0;
 } Observe;
 
 struct BoundedCondition
@@ -93,9 +93,10 @@ public:
     unsigned int preservedFrameNumber = 0;
     Configuration Config;
     EmuThread* getEmuThread() { return emuThread; }
+    bool usesOpenGL() const { return Config.GL || Config.Renderer != 0; }
     void createWindow(int id = -1);
     void doOnAllWindows(std::function<void(MainWindow*)> func, int exclude = -1);
-    void releaseGL();
+    int releaseGL();
     void handleCommand(int, QVariant&);
 };
 
@@ -105,7 +106,10 @@ public:
     enum MessageType { msg_BorrowGL };
     struct Message { MessageType type; };
     explicit EmuThread(EmuInstance& instance) : emuInstance(&instance) { instance.emuThread = this; }
-    void borrowGL();
+    bool borrowGL();
+    void reportGLFailure(int) { ++Failures; }
+    int msgResult = 0;
+    unsigned Failures = 0;
     void returnGL();
     void handleMessages();
     void attachWindow(MainWindow*) {}
@@ -133,6 +137,7 @@ public:
     }
     unsigned Releases = 0, Requests = 0, Returns = 0, Inits = 0;
     bool BroadcastBeforeWork = false;
+    bool FailRelease = false;
 #define QWaitCondition BoundedCondition
 #include "glBorrowState.inc"
 #undef QWaitCondition
@@ -191,7 +196,7 @@ private:
 #include "glBorrowRequest.inc"
 #include "glBorrowReturn.inc"
 
-void EmuInstance::releaseGL() { ++emuThread->Releases; }
+int EmuInstance::releaseGL() { ++emuThread->Releases; return emuThread->FailRelease ? 0 : -1; }
 void EmuInstance::handleCommand(int, QVariant&)
 {
     if (emuThread->Borrowed()) StopTest(1, "synchronous broadcast would wait on a borrowed peer");
@@ -221,7 +226,11 @@ public:
     struct Version { Profile profile; int major, minor; };
     static std::unique_ptr<Context> Create(const WindowInfo&, const std::array<Version, 2>&);
     std::unique_ptr<Context> CreateSharedContext(const WindowInfo&);
-    bool DoneCurrent() { if (Observe.Recording) ++Observe.DoneCurrent; return true; }
+    bool DoneCurrent()
+    {
+        if (Observe.Recording) ++Observe.DoneCurrent;
+        return !Observe.Recording || !Observe.FailCreatedRelease;
+    }
 };
 }
 
@@ -297,7 +306,14 @@ public:
 #include "glLoaderCreatePanel.inc"
 #undef connect
 #include "glLoaderCreateContext.inc"
+struct QueuedSettingsBoundary
+{
+    // QWidget/queued recovery is exercised by the separate whole-Qt driver.
+    template<class... Args> static void invokeMethod(Args&&...) { ++Observe.SettingsUpdates; }
+};
+#define QMetaObject QueuedSettingsBoundary
 #include "glLoaderCreateWindow.inc"
+#undef QMetaObject
 
 void EmuInstance::doOnAllWindows(std::function<void(MainWindow*)> func, int exclude)
 {
@@ -338,7 +354,9 @@ int main(int argc, char** argv)
     if (argc != 2) return 2;
     const std::string_view mode = argv[1];
     if (mode != "root" && mode != "replace" && mode != "shared" &&
-        mode != "unregistered" && mode != "failure" && mode != "idle" && mode != "broadcast") return 2;
+        mode != "unregistered" && mode != "failure" && mode != "idle" && mode != "broadcast" &&
+        mode != "release-failure" && mode != "release-nested" &&
+        mode != "release-created-root" && mode != "release-created-shared") return 2;
 
     EmuInstance first, second, constructing;
     EmuThread a(first), b(second), c(constructing);
@@ -351,11 +369,22 @@ int main(int argc, char** argv)
     if (mode != "idle") { a.Start(); b.Start(); }
     if (mode == "unregistered") emuInstances[0] = nullptr;
     Observe.FailCreation = mode == "failure";
+    Observe.FailCreatedRelease = mode == "release-created-root" || mode == "release-created-shared";
+    b.FailRelease = mode == "release-failure" || mode == "release-nested";
     Observe.Recording = true;
 
-    MainWindow* result;
-    const bool shared = mode == "shared" || mode == "unregistered";
-    if (shared)
+    MainWindow* result = nullptr;
+    bool outerRetained = true;
+    const bool shared = mode == "shared" || mode == "unregistered" || mode == "release-created-shared";
+    if (mode == "release-nested")
+    {
+        ScopedGLWorkers outer(&a, false);
+        if (!outer) StopTest(2, "normal outer loan failed");
+        constructing.createWindow(0);
+        result = constructing.mainWindow;
+        outerRetained = a.Borrowed() && !b.Borrowed();
+    }
+    else if (shared)
     {
         Observe.Publishing = &first;
         Observe.PublishingWindow = 1;
@@ -378,10 +407,30 @@ int main(int argc, char** argv)
         if (reader->isRunning()) reader->Drain();
     app.processEvents(); // Outside every loan: deliver queued worker broadcasts.
     bool passed = Observe.Overlap == 0 && Observe.Unpublished == 0 && result && result->panel;
-    passed &= result && result->hasOpenGL() == !Observe.FailCreation;
+    if (mode == "release-failure" || mode == "release-nested")
+    {
+        passed = !result && !constructing.numWindows && Observe.Roots == 0 && Observe.Shared == 0 &&
+                 !a.Borrowed() && !b.Borrowed() && a.Requests == 1 && b.Requests == 1 &&
+                 b.Failures == 1 && outerRetained;
+        std::printf("%s: published=%d loader-entries=%u partial-loan-returned=%d outer-retained=%d result=%s\n",
+                    argv[1], result != nullptr, Observe.Roots + Observe.Shared, !a.Borrowed(), outerRetained,
+                    passed ? "PASS" : "FAIL");
+        b.FailRelease = false;
+        constructing.createWindow(0);
+        passed &= constructing.numWindows == 1 && constructing.mainWindow &&
+                  constructing.mainWindow->hasOpenGL() && !a.Borrowed() && !b.Borrowed();
+        std::printf("retry after failed release: %s\n", passed ? "PASS" : "FAIL");
+        Observe.Recording = false;
+        for (auto* reader : Observe.Readers) if (reader->isRunning()) reader->Finish();
+        for (auto* instance : {&first, &second, &constructing})
+            for (auto* window : instance->windowList) delete window;
+        return passed ? 0 : 1;
+    }
+    passed &= result && result->hasOpenGL() == !(Observe.FailCreation || Observe.FailCreatedRelease);
     passed &= Observe.Roots == (shared ? 0u : 1u) && Observe.Shared == (shared ? 1u : 0u);
     passed &= Observe.DoneCurrent == (Observe.FailCreation ? 0u : 1u);
-    if (shared) passed &= a.Inits == 1;
+    passed &= Observe.SettingsUpdates == (Observe.FailCreation || Observe.FailCreatedRelease ? 1u : 0u);
+    if (shared) passed &= a.Inits == (Observe.FailCreatedRelease ? 0u : 1u);
     if (mode == "broadcast") passed &= Observe.Broadcasts == 1 && Observe.BroadcastOnGUI;
 
     std::printf("GLLoaderBoundary %s: loader_overlap=%u before_publication=%u roots=%u shared=%u "

@@ -365,6 +365,10 @@ endforeach()
 
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
         "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc" "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc"
+        "${CMAKE_CURRENT_BINARY_DIR}/closeAppState.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Window.cpp" "void MainWindow::onAppStateChanged(Qt::ApplicationState state)"
+        "${CMAKE_CURRENT_BINARY_DIR}/closeAppState.inc"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/Window.cpp" "void MainWindow::closeEvent(QCloseEvent* event)"
         "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
@@ -376,16 +380,18 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
         "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc"
     DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Window.cpp VERBATIM)
 add_executable(FrontendClose "${CMAKE_SOURCE_DIR}/tests/FrontendClose.cpp" "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
-    "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc" "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc")
+    "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc" "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/closeAppState.inc")
 # moc reads these includes while parsing the fixture's Q_OBJECT class. CMake
 # does not recognize .inc files as C++ sources, so order their generation first.
 set_property(TARGET FrontendClose PROPERTY AUTOGEN_TARGET_DEPENDS
     "${CMAKE_CURRENT_BINARY_DIR}/closeEvent.inc"
     "${CMAKE_CURRENT_BINARY_DIR}/prepareClose.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/closeAppState.inc"
     "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc")
 target_include_directories(FrontendClose PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FrontendClose PRIVATE ${QT_LINK_LIBS})
-foreach(case IN ITEMS cancel-ds cancel-gba cancel-firmware child-cancel clean secondary retry recovery recovery-cancel recovery-failure)
+foreach(case IN ITEMS cancel-ds cancel-gba cancel-firmware child-cancel clean secondary retry recovery recovery-cancel recovery-failure app-state)
     add_test(NAME frontend-close-${case} COMMAND FrontendClose ${case})
     set_tests_properties(frontend-close-${case} PROPERTIES TIMEOUT 10 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
@@ -687,7 +693,7 @@ add_custom_command(
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::handleMessages()" "${gl_borrow_raw}"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::borrowGL()" "${gl_borrow_request}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "bool EmuThread::borrowGL()" "${gl_borrow_request}"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::returnGL()" "${gl_borrow_return}"
     COMMAND "${Python3_EXECUTABLE}" "${gl_borrow_reduce_script}"
@@ -817,7 +823,7 @@ if anchor in header:
     if source.count(state) != 1:
         raise SystemExit("GL worker scope state extraction needs updating")
     result += state + "\n"
-    for signature in ("ScopedGLWorkers::ScopedGLWorkers(EmuThread* extra)", "ScopedGLWorkers::~ScopedGLWorkers()"):
+    for signature in ("ScopedGLWorkers::ScopedGLWorkers(EmuThread* extra, bool allInstances)", "ScopedGLWorkers::~ScopedGLWorkers()"):
         needle = signature + "\n{\n"
         if source.count(needle) != 1:
             raise SystemExit("GL worker scope definition missing: " + signature)
@@ -847,7 +853,8 @@ if (USE_QT6)
 else()
     target_link_libraries(GLLoaderBoundary PRIVATE Qt5::Core)
 endif()
-foreach(case IN ITEMS root replace shared unregistered failure idle broadcast)
+foreach(case IN ITEMS root replace shared unregistered failure idle broadcast release-failure release-nested
+        release-created-root release-created-shared)
     add_test(NAME gl-loader-${case} COMMAND GLLoaderBoundary ${case})
     set_tests_properties(gl-loader-${case} PROPERTIES TIMEOUT 20)
 endforeach()

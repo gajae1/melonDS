@@ -120,7 +120,7 @@ void NetInit()
 static unsigned glWorkerScopeDepth = 0;
 static std::vector<EmuThread*> glWorkersHeld;
 
-ScopedGLWorkers::ScopedGLWorkers(EmuThread* extra)
+ScopedGLWorkers::ScopedGLWorkers(EmuThread* extra, bool allInstances)
 {
     Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
 
@@ -135,17 +135,29 @@ ScopedGLWorkers::ScopedGLWorkers(EmuThread* extra)
         if (std::find(pending.begin(), pending.end(), thread) == pending.end())
             pending.push_back(thread);
     };
-    for (auto* instance : emuInstances)
-        if (instance) add(instance->getEmuThread());
+    if (allInstances)
+        for (auto* instance : emuInstances)
+            if (instance) add(instance->getEmuThread());
     add(extra);
     glWorkersHeld.reserve(glWorkersHeld.size() + pending.size());
 
     ++glWorkerScopeDepth;
+    const auto start = glWorkersHeld.size();
     for (auto* thread : pending)
     {
-        thread->borrowGL();
+        if (!thread->borrowGL())
+        {
+            // A failed nested scope returns only the loans it acquired.
+            while (glWorkersHeld.size() > start)
+            {
+                glWorkersHeld.back()->returnGL();
+                glWorkersHeld.pop_back();
+            }
+            return;
+        }
         glWorkersHeld.push_back(thread);
     }
+    acquired = true;
 }
 
 ScopedGLWorkers::~ScopedGLWorkers()
@@ -175,6 +187,11 @@ bool createEmuInstance()
         return false;
 
     auto inst = new EmuInstance(id);
+    if (!inst->getMainWindow())
+    {
+        delete inst;
+        return false;
+    }
     emuInstances[id] = inst;
 
     return true;

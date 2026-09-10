@@ -67,7 +67,7 @@ public:
     bool deinitOpenGL();
     void setGLSwapInterval(int intv);
     bool makeCurrentGL();
-    void releaseGL();
+    bool releaseGL();
 
     bool drawScreen();
 

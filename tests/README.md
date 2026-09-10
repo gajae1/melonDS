@@ -404,3 +404,13 @@ audio suspension, one error notification and successful recovery. Native failure
 are injected; physical context loss is not exercised. See
 [1.1.24](../plans/releases/1.1.24.md) for separate full Qt generated-guest runs
 covering root/secondary errors, close refusal, paused images, frame steps and keys.
+
+`gl-loader-release-failure|release-nested` checks failed release before GUI/loader
+entry, partial-loan cleanup, outer-loan retention and retry using real Qt waits.
+`gl-loader-release-created-root|release-created-shared` checks creation handoff
+failure and native fallback. Driver calls and the queued settings update are
+isolated; [1.1.25](../plans/releases/1.1.25.md) records the separate full Qt/WGL
+generated-guest run with three instances and four windows. Its injected failure
+deliberately retains current; this is stronger than documented WGL error behavior.
+`frontend-close-app-state` delivers inactive/active notifications after successful
+close, before widget destruction, while retaining normal open-window behavior.

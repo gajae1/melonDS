@@ -206,7 +206,7 @@ public:
     bool initOpenGL();
     bool deinitOpenGL();
     bool makeCurrentGL();
-    void releaseGL();
+    bool releaseGL();
 
     bool drawScreen() override;
 

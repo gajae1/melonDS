@@ -126,7 +126,7 @@ public:
     bool makeCurrentGL();
     bool preserveFrame();
     void discardPreservedFrame();
-    void releaseGL();
+    int releaseGL(); // -1 on success, otherwise the window that failed release.
 
     int drawScreen(); // -1 on success, otherwise the failing window.
 

@@ -960,6 +960,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
 void MainWindow::createScreenPanel()
 {
     ScopedGLWorkers workers(emuThread);
+    if (!workers) return;
     auto oldpanel = panel;
     panel = nullptr;
     if (oldpanel) delete oldpanel;
@@ -1050,12 +1051,12 @@ bool MainWindow::makeCurrentGL()
     return glpanel->makeCurrentGL();
 }
 
-void MainWindow::releaseGL()
+bool MainWindow::releaseGL()
 {
-    if (!hasOGL) return;
+    if (!hasOGL) return true;
 
     ScreenPanelGL* glpanel = static_cast<ScreenPanelGL*>(panel);
-    if (!glpanel) return;
+    if (!glpanel) return true;
     return glpanel->releaseGL();
 }
 
@@ -1185,6 +1186,9 @@ void MainWindow::onFocusOut()
 
 void MainWindow::onAppStateChanged(Qt::ApplicationState state)
 {
+    // The closed widget can receive app notifications before deferred deletion.
+    if (!emuInstance) return;
+
     if (state == Qt::ApplicationInactive)
     {
         emuInstance->keyReleaseAll();
@@ -2504,17 +2508,28 @@ bool MainWindow::applyVideoSettings(bool glchange, bool forceSoftware)
             }
             retired.append(window);
         }
-        if (forceSoftware)
-        {
-            globalCfg.SetBool("Screen.UseGL", false);
-            globalCfg.SetInt("3D.Renderer", renderer3D_Software);
-        }
-
+        bool replaced = false;
         {
             // Keep workers stopped throughout replacement and GL/WGL reloads.
             // Nested panel creation shares the loans; init waits follow release.
             ScopedGLWorkers workers(emuThread);
-            for (auto* window : windows) window->createScreenPanel();
+            if (workers)
+            {
+                if (forceSoftware)
+                {
+                    globalCfg.SetBool("Screen.UseGL", false);
+                    globalCfg.SetInt("3D.Renderer", renderer3D_Software);
+                }
+                for (auto* window : windows) window->createScreenPanel();
+                replaced = true;
+            }
+        }
+        if (!replaced)
+        {
+            for (auto* previous : retired)
+                previous->emuThread->initContext(previous->windowID);
+            for (auto* thread : threads) thread->emuUnpause(false);
+            return false;
         }
     }
 

@@ -50,6 +50,8 @@ DTCM은 `CoreExecution`의 `core-.*-dtcm-remap`에서 CP15 이동·해제와 실
 
 `gl-presentation-runtime-current|runtime-swap|retire-current`는 초기화 이후 실패 반환·재시도와 root 해제 거부를 검사한다. `gl-state-message-gate`는 실패 중 core 소비 차단·오디오 중단·오류 통지·복구를 검사한다. [1.1.24](releases/1.1.24.md)의 전체 Qt 생성 DS 검증은 실제 창·worker에 WGL 오류만 주입한 별도 근거이며 물리 surface 상실·실기 입력·상용 게임 수락과 구분한다.
 
+`gl-loader-release-`는 worker 반환 실패의 GUI 진입 거부·부분/중첩 소유권과 새 context 반환 실패를 검사한다. `frontend-close-app-state`는 닫힌 창에 앱 상태 알림을 전달한다. [1.1.25](releases/1.1.25.md)의 전체 Qt 세 인스턴스·네 창 검증에서 WGL 실패 wrapper는 current를 일부러 유지하므로 문서상 실제 WGL 오류·물리 장치 상실의 재현으로 집계하지 않는다.
+
 `gpu-.*-capture-readback`은 실제 source A 3D/B·혼합 캡처, 1x/2x, pending/CPU-synced 배율 전환과 guest ARM9 LDRH·후속 texture 재사용을 검사한다. 주색 끝값·정수 합으로 기존 중간 강도 양자화 차이를 분리하며 전체 색 정밀도 oracle로 사용하지 않는다. `gpu-gl-resource-`는 실제 생성/삭제에 위임하여 같은 context에서 정상 반복·첫 shader 오류 뒤 program/buffer/texture 생존과 대조 객체 보존을 확인한다. 미초기화 읽기의 원래 재현은 compiler별로 달라질 수 있고 이 검사는 context 상실·전체 Qt event loop 수락이 아니다.
 
 `core-.*-device-execution`은 실제 Timer0 MMIO·HALT·IRQ의 F 보존과 IME/IE/CPSR 마스크 다섯 조건을 생성 ARM9 guest로 검사한다. handler 시각은 최초 overflow 이전이 아님을 확인하며 절대 실기 latency를 추정하지 않는다.

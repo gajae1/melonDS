@@ -906,8 +906,7 @@ bool ScreenPanelGL::createContext()
     if (ourwin->getWindowID() != 0)
     {
         if (windowinfo.has_value())
-            if ((glContext = parentwin->getOGLContext()->CreateSharedContext(*windowinfo)))
-                glContext->DoneCurrent();
+            glContext = parentwin->getOGLContext()->CreateSharedContext(*windowinfo);
     }
     else
     {
@@ -915,10 +914,12 @@ bool ScreenPanelGL::createContext()
                 GL::Context::Version{GL::Context::Profile::Core, 4, 3},
                 GL::Context::Version{GL::Context::Profile::Core, 3, 2}};
         if (windowinfo.has_value())
-            if ((glContext = GL::Context::Create(*windowinfo, versionsToTry)))
-                glContext->DoneCurrent();
+            glContext = GL::Context::Create(*windowinfo, versionsToTry);
     }
 
+    // No worker or core owns this new context yet. Dispose of a failed handoff
+    // on its creating GUI thread and use the existing native fallback.
+    if (glContext && !glContext->DoneCurrent()) glContext.reset();
     return glContext != nullptr;
 }
 
@@ -1093,11 +1094,10 @@ bool ScreenPanelGL::makeCurrentGL()
     return glContext && glContext->MakeCurrent();
 }
 
-void ScreenPanelGL::releaseGL()
+bool ScreenPanelGL::releaseGL()
 {
-    if (!glContext) return;
-
-    glContext->DoneCurrent();
+    // A successful deinit already released this panel's worker ownership.
+    return !glOwned || !glContext || glContext->DoneCurrent();
 }
 
 void ScreenPanelGL::osdRenderItem(OSDItem* item)

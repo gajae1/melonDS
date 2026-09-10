@@ -146,7 +146,7 @@ public:
     void initContext(int win);
     bool deinitContext(int win);
     bool hasGLFailure() const { return glFailureWindow.load() >= 0; }
-    void borrowGL();
+    bool borrowGL();
     void returnGL();
     void updateVideoSettings() { videoSettingsDirty = true; }
     void updateVideoRenderer() { videoSettingsDirty = true; lastVideoRenderer = -1; }

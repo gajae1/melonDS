@@ -48,7 +48,7 @@ struct Probe
 struct ReleaseBoundary
 {
     Probe* Observation;
-    void releaseGL() { ++Observation->Releases; }
+    int releaseGL() { ++Observation->Releases; return -1; }
 };
 
 struct ObservedAcknowledgement
@@ -104,7 +104,9 @@ public:
         glBorrowCond.Observation = &probe;
     }
 
-    void borrowGL();
+    bool borrowGL();
+    void reportGLFailure(int) { FixtureFailure("unexpected release failure"); }
+    int msgResult = 0;
     void returnGL();
     void handleMessages();
 

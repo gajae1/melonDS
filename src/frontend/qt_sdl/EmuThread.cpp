@@ -682,11 +682,17 @@ void EmuThread::handleMessages()
             break;
 
         case msg_BorrowGL:
-            emuInstance->releaseGL();
+            msgResult = 0;
+            if (int failedWindow = emuInstance->releaseGL(); failedWindow >= 0)
+            {
+                reportGLFailure(failedWindow);
+                break;
+            }
             glBorrowMutex.lock();
             glBorrowed = true;
             glBorrowMutex.unlock();
             glborrow = true;
+            msgResult = 1;
             break;
 
         case msg_BootROM:
@@ -857,10 +863,11 @@ bool EmuThread::deinitContext(int win)
     return msgResult != 0;
 }
 
-void EmuThread::borrowGL()
+bool EmuThread::borrowGL()
 {
     sendMessage(msg_BorrowGL);
     waitMessage();
+    return msgResult != 0;
 }
 
 void EmuThread::returnGL()

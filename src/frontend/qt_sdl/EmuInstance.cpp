@@ -148,6 +148,7 @@ EmuInstance::EmuInstance(int inst) : deleting(false),
 
     if (inst == 0) topWindow = nullptr;
     createWindow();
+    if (!mainWindow) return;
 
     emuThread->start();
 
@@ -166,8 +167,11 @@ EmuInstance::~EmuInstance()
     deleting = true;
     deleteAllWindows();
 
-    emuThread->emuExit();
-    emuThread->wait();
+    if (emuThread->isRunning())
+    {
+        emuThread->emuExit();
+        emuThread->wait();
+    }
     delete emuThread;
     emuThread = nullptr;
 
@@ -216,10 +220,12 @@ void EmuInstance::createWindow(int id)
     if (windowList[id])
         return;
 
+    const bool requestedGL = usesOpenGL();
     MainWindow* win;
     {
         // Include this worker even before the instance enters the global registry.
         ScopedGLWorkers workers(emuThread);
+        if (!workers) return;
         win = new MainWindow(id, this, mainWindow ? mainWindow : topWindow);
         if (!topWindow) topWindow = win;
         if (!mainWindow) mainWindow = win;
@@ -232,6 +238,11 @@ void EmuInstance::createWindow(int id)
     // if creating a secondary window, we may need to initialize its OpenGL context here
     if (win->hasOpenGL() && (id != 0))
         emuThread->initContext(id);
+
+    // Creation fallback changes the global renderer preference. Apply it to
+    // existing windows after construction/publication and all worker loans end.
+    if (requestedGL && !win->hasOpenGL())
+        QMetaObject::invokeMethod(win, "onUpdateVideoSettings", Qt::QueuedConnection, Q_ARG(bool, true));
 
     bool enable = (numWindows < kMaxWindows);
     doOnAllWindows([=](MainWindow* win)
@@ -249,13 +260,24 @@ bool EmuInstance::deleteWindow(int id, bool close)
 
     if (win->hasOpenGL() && !emuThread->deinitContext(id)) return false;
 
+    bool removed = false;
     {
-        ScopedGLWorkers workers(emuThread);
-        emuThread->detachWindow(win);
-        windowList[id] = nullptr;
-        numWindows--;
-        if (topWindow == win) topWindow = nullptr;
-        if (mainWindow == win) mainWindow = nullptr;
+        // Deregistration does not reload GLAD or access other instances.
+        ScopedGLWorkers workers(emuThread, false);
+        if (workers)
+        {
+            emuThread->detachWindow(win);
+            windowList[id] = nullptr;
+            numWindows--;
+            if (topWindow == win) topWindow = nullptr;
+            if (mainWindow == win) mainWindow = nullptr;
+            removed = true;
+        }
+    }
+    if (!removed)
+    {
+        if (win->hasOpenGL()) emuThread->initContext(id);
+        return false;
     }
 
     // close() may re-enter deletion or destroy the instance. Return loans first
@@ -488,13 +510,13 @@ void EmuInstance::discardPreservedFrame()
         if (window) window->panel->setPreservedFrame({}, 0);
 }
 
-void EmuInstance::releaseGL()
+int EmuInstance::releaseGL()
 {
     for (int i = 0; i < kMaxWindows; i++)
     {
-        if (windowList[i])
-            windowList[i]->releaseGL();
+        if (windowList[i] && !windowList[i]->releaseGL()) return i;
     }
+    return -1;
 }
 
 
