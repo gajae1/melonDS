@@ -181,6 +181,7 @@ private:
 
     u8 CurDeviceID;
     DSi_I2CDevice* CurDevice;
+    bool LegacyTransaction = false;
 
     void GetCurDevice();
 };

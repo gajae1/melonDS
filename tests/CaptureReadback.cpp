@@ -2,6 +2,7 @@
 // Compile the production method with a recording GL boundary. This tests byte
 // ranges and dirty flags, NOT OpenGL drivers, shader output, or game timing.
 #include <array>
+#include <algorithm>
 #include <stdio.h>
 #include <string.h>
 #include "types.h"
@@ -32,8 +33,12 @@ class GLRenderer
 public:
     GPUFixture& GPU;
     int CaptureSyncFB = 0;
+    int CaptureLines = 0;
+    bool CaptureWriteThrough = false;
     explicit GLRenderer(GPUFixture& gpu) : GPU(gpu) {}
     void DownscaleCapture(int, int, int) {}
+    void FlushCapture(int) {}
+    void SyncCaptureLines(u32, u32, u32, int, int) {}
     void SyncVRAMCapture(u32 bank, u32 start, u32 len, bool complete);
 };
 

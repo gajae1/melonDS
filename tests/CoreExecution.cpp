@@ -20,6 +20,7 @@ int TestDTCMExecution(NDSArgs&& args, bool jit);
 int TestMPUExecution(NDSArgs&& args, bool jit);
 int TestDeviceExecution(NDSArgs&& args, bool jit);
 int TestDSiNDMAExecution(NDSArgs&& args);
+int TestDSiResetI2C(NDSArgs&& args);
 int TestSchedulerExecution(NDSArgs&& args);
 
 static int TestSchedulerSavestate(NDSArgs&& args)
@@ -157,6 +158,8 @@ int main(int argc, char** argv) {
         return TestSchedulerSavestate(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "dsi-ndma") == 0)
         return TestDSiNDMAExecution(std::move(args));
+    if (argc > 2 && std::strcmp(argv[2], "dsi-reset-i2c") == 0)
+        return TestDSiResetI2C(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "scheduler-execution") == 0)
         return TestSchedulerExecution(std::move(args));
     auto nds = std::make_unique<NDS>(std::move(args));

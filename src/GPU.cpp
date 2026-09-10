@@ -1602,7 +1602,8 @@ void GPU::CheckCaptureStart()
 void GPU::CheckCaptureEnd()
 {
     // mark this capture as complete
-    // TODO this will break if they change CaptureCnt during a capture
+    // A GL capture whose layout changes mid-frame is synchronized to RAM and
+    // invalidated before the next scanline uses the new destination/size.
     u32 dstbank = (CaptureCnt >> 16) & 0x3;
     u32 dstoff = (CaptureCnt >> 18) & 0x3;
     u32 size = (CaptureCnt >> 20) & 0x3;

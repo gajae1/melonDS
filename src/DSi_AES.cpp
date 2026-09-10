@@ -280,8 +280,6 @@ void DSi_AES::WriteCnt(u32 val)
 
         OutputMACDue = false;
 
-        if (AESMode == 0 && (!(val & (1<<20)))) Log(LogLevel::Debug, "AES: CCM-DECRYPT MAC FROM WRFIFO, TODO\n");
-
         if ((RemBlocks > 0) || (RemExtra > 0))
         {
             u8 key[16];
@@ -317,6 +315,9 @@ void DSi_AES::WriteCnt(u32 val)
             }
 
             DSi.CheckNDMAs(1, 0x2A);
+
+            // WRFIFO may already contain a complete request before start.
+            if (AESMode == 0 && !(Cnt & (1<<20))) Update();
         }
         else
         {
@@ -382,7 +383,9 @@ void DSi_AES::WriteInputFIFO(u32 val)
 
 void DSi_AES::CheckInputDMA()
 {
-    if (RemBlocks == 0 && RemExtra == 0) return;
+    if (!(Cnt & (1<<31))) return;
+    // FIFO-tag decryption still needs input after the payload counter expires.
+    if (RemBlocks == 0 && RemExtra == 0 && (AESMode != 0 || (Cnt & (1<<20)))) return;
 
     if (InputFIFO.Level() <= InputDMASize)
     {
@@ -404,6 +407,8 @@ void DSi_AES::CheckOutputDMA()
 
 void DSi_AES::Update()
 {
+    if (!(Cnt & (1<<31))) return;
+
     if (RemExtra > 0)
     {
         while (InputFIFO.Level() >= 4 && RemExtra > 0)
@@ -433,12 +438,38 @@ void DSi_AES::Update()
 
     if (RemBlocks == 0 && RemExtra == 0)
     {
-        if (AESMode == 0)
+        // The FIFO tag follows the payload as one 16-byte block. Keep partial
+        // tags and the unfinalized MAC in the existing savestate fields.
+        if (AESMode == 0 && !(Cnt & (1<<20)) && InputFIFO.Level() < 4) return;
+
+        if (AESMode < 2)
         {
             Ctx.Iv[13] = 0x00;
             Ctx.Iv[14] = 0x00;
             Ctx.Iv[15] = 0x00;
             AES_CTR_xcrypt_buffer(&Ctx, CurMAC, 16);
+
+            u32 maclen = ((Cnt >> 16) & 0x7) * 2 + 2;
+            if (maclen < 4) maclen = 4;
+            // GBATEK: all CCM tags occupy 16 bytes, with zero padding in the
+            // low little-endian bytes. Decryption must verify that padding too.
+            memset(&CurMAC[maclen], 0, 16 - maclen);
+        }
+
+        if (AESMode == 0)
+        {
+            u8 inputmac[16];
+            const u8* verifymac = MAC;
+            if (!(Cnt & (1<<20)))
+            {
+                // A FIFO-supplied tag does not overwrite the AES_MAC register.
+                for (int i = 0; i < 4; i++)
+                {
+                    u32 word = InputFIFO.Read();
+                    memcpy(&inputmac[i*4], &word, sizeof(word));
+                }
+                verifymac = inputmac;
+            }
 
             //printf("FINAL MAC: "); _printhexR(CurMAC, 16);
             //printf("INPUT MAC: "); _printhex(MAC, 16);
@@ -446,16 +477,11 @@ void DSi_AES::Update()
             Cnt |= (1<<21);
             for (int i = 0; i < 16; i++)
             {
-                if (CurMAC[15-i] != MAC[i]) Cnt &= ~(1<<21);
+                if (CurMAC[15-i] != verifymac[i]) Cnt &= ~(1<<21);
             }
         }
         else if (AESMode == 1)
         {
-            Ctx.Iv[13] = 0x00;
-            Ctx.Iv[14] = 0x00;
-            Ctx.Iv[15] = 0x00;
-            AES_CTR_xcrypt_buffer(&Ctx, CurMAC, 16);
-
             Bswap128(OutputMAC, CurMAC);
 
             if (OutputFIFO.Level() <= 12)

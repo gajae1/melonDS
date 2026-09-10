@@ -56,6 +56,8 @@ DTCM은 `CoreExecution`의 `core-.*-dtcm-remap`에서 CP15 이동·해제와 실
 
 [1.1.27](releases/1.1.27.md)의 `software-thread-`는 실제 rasterizer의 semaphore 경계와 전체 core 상태 왕복을, `core-dsi-ndma`는 실제 MMIO·GX FIFO 포화·명령/IRQ·snapshot을 검사한다. `wifi-state-`는 실제 SDIO CMD52·HTC/WMI event·IRQ와 생성 packet을 사용한다. worker의 host 순서, 수동 device callback, 짧은 DMA 관찰 slice를 guest 실행·물리 timing·장기 게임 결과로 집계하지 않는다.
 
+[1.1.28](releases/1.1.28.md)의 `gpu-*-capture-mid`는 실제 ARM9 프로그램·frame scheduler·DMA에서 캡처 도중의 읽기·쓰기를 확인한다. `dsi-aes-`는 공개 암호 벡터와 실제 MMIO·NDMA·전체 상태 복원을, `core-dsi-reset-i2c`는 controller/slave·IRQ·reset 경로와 구형 상태 호환을 확인한다. AES/I2C의 host 구동 장치 시험과 캡처의 실제 guest CPU 실행을 구별하며 물리 latency·게임 수락을 대신하지 않는다.
+
 `gpu-.*-capture-readback`은 실제 source A 3D/B·혼합 캡처, 1x/2x, pending/CPU-synced 배율 전환과 guest ARM9 LDRH·후속 texture 재사용을 검사한다. 주색 끝값·정수 합으로 기존 중간 강도 양자화 차이를 분리하며 전체 색 정밀도 oracle로 사용하지 않는다. `gpu-gl-resource-`는 실제 생성/삭제에 위임하여 같은 context에서 정상 반복·첫 shader 오류 뒤 program/buffer/texture 생존과 대조 객체 보존을 확인한다. 미초기화 읽기의 원래 재현은 compiler별로 달라질 수 있고 이 검사는 context 상실·전체 Qt event loop 수락이 아니다.
 
 `core-.*-device-execution`은 실제 Timer0 MMIO·HALT·IRQ의 F 보존과 IME/IE/CPSR 마스크 다섯 조건을 생성 ARM9 guest로 검사한다. handler 시각은 최초 overflow 이전이 아님을 확인하며 절대 실기 latency를 추정하지 않는다.

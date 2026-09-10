@@ -150,9 +150,19 @@ GR-11/12에서 확인한 실제 호출 경계를 진행한다. 창 교체/해제
 
 [1.1.27 구현 기록](releases/1.1.27.md)에 수정 전 반례와 최종 Windows 빌드·509/509 회귀·전체 Qt의 renderer 교체/재시도/종료를 기록했다. NDMA와 Wi-Fi는 격리된 작성자가 맡고 공유 연결부는 순차 통합했다. 새 제품 소스 파일은 없다. AD-15의 장치 완료 타이밍은 변경하지 않았으며 각 항목의 물리·실제 게임·장기 수락은 유지한다.
 
+## 실제 증분 1.1.28 — 캡처 중간 접근·태그·재설정
+
+| 블록 | 구현·소유 경계 | 확인한 결과 |
+|---|---|---|
+| 캡처: GR-05 | GPU_OpenGL·기존 GL/core capture fixture | 중간 CPU 읽기/쓰기·DMA·과거/미래 줄·source/목적지/크기 변경 |
+| AES: AD-14 | DSi_AES·단일 real-core fixture | FIFO/레지스터 태그·짧은 tag/padding·독립 암호 vector·FIFO/NDMA·복원 |
+| DSi reset/I2C: AD-17/22 | DSi·DSi_I2C·기존 CoreDeviceExecution | SCFG와 실제 클럭/카드 경로·방향/STOP/IRQ·이전 상태 호환 |
+
+[1.1.28 구현 기록](releases/1.1.28.md)에 수정 전 반례와 최종 Windows 빌드·517/517 회귀·전체 Qt 검증 범위를 기록했다. 기존 GPU·DMA·I2C·저장 도구를 재사용하며 새 제품 소스 파일은 없다. 실제 게임·물리 타이밍·부팅·NWRAM 등 미확정 조건은 완료로 보지 않는다.
+
 ## 다음 독립 블록
 
-다음 후보는 mid-capture 시점과 register latch(GR-05), AES CCM FIFO/tag 모드(AD-14), DSi boot/reset·SCFG/NWRAM과 I2C ACK/BPTWL reset(AD-17/22)이다. 관련 과제를 한 작성자에게 묶고 GPU, AES, DSi reset/I2C의 소유 파일을 먼저 고정한다. 기존 fixture와 공개 동작 근거로 결정적인 반례를 확인하며, 공유 scheduler·core 연결·CMake는 부모가 순차 통합한다. 물리 타이밍이 필요한 미확정 동작은 추측 구현하지 않고 미완료로 남긴다. 앞선 잔여 과제와 공개 전체 계획의 범위를 유지한다.
+다음 후보는 DSi title 교체 rollback(FS-16), LAN handshake·취소·UI 연결 수명(NP-02/FS-17), 입력 장치 identity·인스턴스 배정(FS-12)이다. 각각 NAND/title, LAN 연결, 입력 장치의 소유 파일을 먼저 고정하고 생성 자료·로컬 연결·기존 장치 fixture로 반례를 확인한다. 공유 frontend·core 연결·CMake는 부모가 순차 통합한다. 실제 매체·두 PC 게임·물리 hotplug 수락은 독립 gate로 남기고 앞선 잔여 과제와 공개 전체 계획을 유지한다.
 
 ## 작업 소유권
 

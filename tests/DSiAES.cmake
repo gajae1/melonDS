@@ -1,0 +1,10 @@
+# One real-core fixture; no private firmware, storage or external test data.
+if (TARGET core)
+    find_package(Threads REQUIRED)
+    add_executable(DSiAES DSiAES.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(DSiAES PRIVATE core Threads::Threads)
+    foreach(group IN ITEMS fifo controls snapshot-backpressure ndma)
+        add_test(NAME dsi-aes-${group} COMMAND DSiAES ${group})
+        set_tests_properties(dsi-aes-${group} PROPERTIES TIMEOUT 30)
+    endforeach()
+endif()

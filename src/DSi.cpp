@@ -155,6 +155,10 @@ void DSi::Reset()
     //ARM9.CP15Write(0x910, 0x0D00000A);
     //ARM9.CP15Write(0x911, 0x00000020);
     //ARM9.CP15Write(0x100, ARM9.CP15Read(0x100) | 0x00050000);
+    // SCFG_MC starts with the physical slots in their normal order. The base
+    // reset resets the slots themselves, but not these MMIO routing pointers.
+    NDSCartSlots[0] = &NDSCartSlot;
+    NDSCartSlots[1] = &NDSCartSlot2;
     NDS::Reset();
 
     // The SOUNDBIAS register does nothing on DSi
@@ -814,10 +818,12 @@ void DSi::SoftReset()
         SCFG_BIOS = 0x0101;
     }
 
-    SCFG_Clock9 = 0x0187; // CHECKME
+    SetScfgClock9(0x0187); // Keep the effective clock and scheduler time in sync.
     SCFG_Clock7 = 0x0187;
     SCFG_EXT[0] = 0x8307F100;
     SCFG_EXT[1] = 0x93FFFB06;
+    // Apply power/routing changes before replacing the reset register value.
+    SetScfgMC(0, 0xFFFF);
     SCFG_MC = 0x0010 | (NDSCartSlot.CartInserted() ? 0 : (1<<0));
     // TODO: is this actually reset?
     SCFG_RST = 0;

@@ -31,7 +31,7 @@
 | GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capture 종류별 sampler unit 수정; 실제 128/256·S/T wrap·일반 texture 왕복의 binding/픽셀 검증; 다른 driver·비표준 capture·실기 후속 |
 | GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19~25 core·표시 실패 복구; [1.1.26](releases/1.1.26.md) 실제 설정창의 선택/활성 renderer·대기/실패·worker capability·Cancel/재시도; 실제 3.2-only 장치·binary cache 후속 |
 | GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 core handle·1.1.23 표시 부분 해제/OSD·1.1.24 current 실패 거부; 1.1.25 새 context 반환 실패 시 GUI 정리와 native 전환; 물리 context 상실·native 삭제 실패·다른 driver 후속 |
-| GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 정적 후보 | P1 | [1.1.16](Release_Plan.md#v16) | — | 미착수 |
+| GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 부분 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | [1.1.28](releases/1.1.28.md) 실제 ARM9 읽기/쓰기·DMA의 과거/미래 줄 보존과 source/목적지/크기 변경; subscanline latch·VCOUNT 변경·실기/게임 후속 |
 | GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 관찰/확장 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 software/OpenGL/Compute 각 30조건의 실제 A/B·혼합·bank wrap→guest LDRH 및 128/256 재사용; DMA·모든 2D source A·실기 후속 |
 | GR-07 | [고배율 한도·할당 복구](workstreams/02-renderers.md#GR-07) | 실행 재현 | P2 | [1.1.17](Release_Plan.md#v17) | — | 1.1.21 texture/viewport·SSBO/texel 한도와 첫 할당 오류·software 복구·캡처 보존·재선택 검증; 실장치 OOM/context 복구·작은 VRAM·indirect 상한 후속 |
 | GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 정적 후보 | P1 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
@@ -56,15 +56,15 @@
 | AD-11 | [SD producer/FIFO/sector 길이](workstreams/03-audio-dsi.md#AD-11) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | [1.1.26](releases/1.1.26.md) 길이 불일치·sector 범위 거부, 홀수 byte/FIFO 패딩·정상 단/다중 block·IRQ 검증; SDIO 연속 전송·실기 후속 |
 | AD-12 | [SD backing I/O 실패 전파](workstreams/03-audio-dsi.md#AD-12) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | [1.1.26](releases/1.1.26.md) short/seek/read-only/매체 끝 오류의 완료 차단·CMD12/리셋 복구, 실제 Qt -1 오류와 sparse EOF 대조; 지속 저장·물리 오류/타이밍 후속 |
 | AD-13 | [NAND metadata exact read](workstreams/03-audio-dsi.md#AD-13) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | [1.1.26](releases/1.1.26.md) exact read·출력 보존·core/frontend/worker 실패 전파, 사전 실패의 세션 보존과 늦은 실패의 정지·재시도; footer·실제 NAND 부팅 후속 |
-| AD-14 | [AES CCM FIFO tag 모드](workstreams/03-audio-dsi.md#AD-14) | 관찰/확장 | P2 | [1.1.29](Release_Plan.md#v29) | — | 미착수 |
+| AD-14 | [AES CCM FIFO tag 모드](workstreams/03-audio-dsi.md#AD-14) | 부분 실행 재현 | P2 | [1.1.29](Release_Plan.md#v29) | — | [1.1.28](releases/1.1.28.md) FIFO 태그 소비/인증·짧은 tag/padding·분할/포화/NDMA·상태 복원; 완전 빈 요청·busy 제어 변경·실기 타이밍 후속 |
 | AD-15 | [AES/SD 완료 event 타이밍](workstreams/03-audio-dsi.md#AD-15) | 관찰/확장 | P2 | [1.1.20](Release_Plan.md#v20) | — | 1.1.27 후보 확인; AES 즉시 처리·SD 고정 지연은 유지, 실제 시작/준비/완료 trace 후속 |
 | AD-16 | [NDMA arbitration·subblock](workstreams/03-audio-dsi.md#AD-16) | 부분 실행 재현 | P2 | [1.1.20](Release_Plan.md#v20) | — | [1.1.27](releases/1.1.27.md) GX 포화 정지 누락·상태 flag 초기화 수정, 실제 명령/IRQ·경쟁 채널·전체 snapshot 복원; timer/subblock/round-robin·실기 후속 |
-| AD-17 | [DSi boot/reset·SCFG/NWRAM](workstreams/03-audio-dsi.md#AD-17) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
+| AD-17 | [DSi boot/reset·SCFG/NWRAM](workstreams/03-audio-dsi.md#AD-17) | 부분 실행 재현 | P2 | [1.1.18](Release_Plan.md#v18) | — | [1.1.28](releases/1.1.28.md) cold/warm reset의 SCFG 클럭·카드 MMIO 일치와 scheduler 시간/RAM 보존; 실제 NAND/firmware·NWRAM·mode 전환/초기값 후속 |
 | AD-18 | [DSP modulo −1 실기 판정](workstreams/03-audio-dsi.md#AD-18) | 기존 실패 기록 | P1 | [1.1.21](Release_Plan.md#v21) | — | 미착수 |
 | AD-19 | [DSP retd·vtrshr 지연](workstreams/03-audio-dsi.md#AD-19) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
 | AD-20 | [DSP AHBM/DMA·FIFO/IRQ](workstreams/03-audio-dsi.md#AD-20) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
 | AD-21 | [HLE/LLE·I2S/mic clock](workstreams/03-audio-dsi.md#AD-21) | 미측정 가설 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
-| AD-22 | [I2C ACK·BPTWL reset](workstreams/03-audio-dsi.md#AD-22) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
+| AD-22 | [I2C ACK·BPTWL reset](workstreams/03-audio-dsi.md#AD-22) | 부분 실행 재현 | P2 | [1.1.23](Release_Plan.md#v23) | — | [1.1.28](releases/1.1.28.md) 주소 방향·STOP·완료 IRQ·정상 MCU/카메라와 14.1/14.2 상태 호환; 전송 지연·warm-reset retention·실기 앱 후속 |
 | AD-23 | [카메라 형식·sensor arbitration](workstreams/03-audio-dsi.md#AD-23) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
 | AD-24 | [AES block backend 실효성](workstreams/03-audio-dsi.md#AD-24) | 미측정 가설 | P3 | [1.1.29](Release_Plan.md#v29) | — | 미착수 |
 | AD-25 | [SPU 정수 보간·pan 가속](workstreams/03-audio-dsi.md#AD-25) | 미측정 가설 | P3 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |

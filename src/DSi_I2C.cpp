@@ -472,6 +472,7 @@ void DSi_I2CHost::Reset()
 
     CurDeviceID = 0;
     CurDevice = nullptr;
+    LegacyTransaction = false;
 
     BPTWL->Reset();
     Camera0->Reset();
@@ -486,6 +487,13 @@ void DSi_I2CHost::DoSavestate(Savestate* file)
     file->Var8(&Data);
     file->Var8(&CurDeviceID);
 
+    if (file->IsAtLeastVersion(14, 2))
+        file->VarBool(&LegacyTransaction);
+    else if (!file->Saving)
+        // Older states lost both direction and STOP ownership. Keep their
+        // permissive data transfers until START/STOP, without guessing a phase.
+        LegacyTransaction = true;
+
     if (!file->Saving)
     {
         GetCurDevice();
@@ -498,11 +506,12 @@ void DSi_I2CHost::DoSavestate(Savestate* file)
 
 void DSi_I2CHost::GetCurDevice()
 {
-    switch (CurDeviceID)
+    switch (CurDeviceID & 0xFE)
     {
     case 0x4A: CurDevice = BPTWL; break;
     case 0x78: CurDevice = Camera0; break;
     case 0x7A: CurDevice = Camera1; break;
+    case 0x00: // no active transaction
     case 0xA0:
     case 0xE0: CurDevice = nullptr; break;
     default:
@@ -516,21 +525,27 @@ void DSi_I2CHost::WriteCnt(u8 val)
 {
     //printf("I2C: write CNT %02X, %02X, %08X\n", val, Data, NDS::GetPC(1));
 
-    // TODO: check ACK flag
     // TODO: transfer delay
-    // TODO: IRQ
-    // TODO: check read/write direction
 
     if (val & (1<<7))
     {
         bool islast = val & (1<<0);
 
-        if (val & (1<<5))
+        if ((val & 0x07) == 0x05 && CurDevice == BPTWL)
+        {
+            // BPTWL callers (including Calico) send C5 after the data byte.
+            // This STOP/flush must not transfer Data again, or replace the
+            // preceding ACK. The BPTWL's last-write path ends its register
+            // access without consuming a byte.
+            val = (val & ~0x18) | (Cnt & 0x10);
+            BPTWL->Write(Data, true);
+        }
+        else if (val & (1<<5))
         {
             // read
             val &= 0xF7;
 
-            if (CurDevice)
+            if (CurDevice && (LegacyTransaction || (CurDeviceID & 1)))
             {
                 Data = CurDevice->Read(islast);
             }
@@ -549,7 +564,10 @@ void DSi_I2CHost::WriteCnt(u8 val)
 
             if (val & (1<<1))
             {
-                CurDeviceID = Data & 0xFE;
+                LegacyTransaction = false;
+                // Keep the address direction until STOP or another START.
+                // It is also part of the existing serialized device byte.
+                CurDeviceID = Data;
                 //printf("I2C: %s start, device=%02X\n", (Data&0x01)?"read":"write", Device);
 
                 GetCurDevice();
@@ -566,7 +584,7 @@ void DSi_I2CHost::WriteCnt(u8 val)
             {
                 //printf("I2C write, device=%02X, cnt=%02X, data=%02X, last=%d\n", Device, val, Data, islast);
 
-                if (CurDevice)
+                if (CurDevice && (LegacyTransaction || !(CurDeviceID & 1)))
                 {
                     CurDevice->Write(Data, islast);
                 }
@@ -579,7 +597,18 @@ void DSi_I2CHost::WriteCnt(u8 val)
             if (ack) val |= (1<<4);
         }
 
+        if (islast)
+        {
+            CurDeviceID = 0;
+            CurDevice = nullptr;
+            LegacyTransaction = false;
+        }
+
         val &= 0x7F;
+        Cnt = val;
+        if (val & (1<<6))
+            DSi.SetIRQ2(IRQ2_DSi_I2C);
+        return;
     }
 
     Cnt = val;

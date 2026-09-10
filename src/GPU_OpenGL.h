@@ -141,12 +141,16 @@ private:
     bool NeedPartialRender;
     int LastLine;
     int LastCapLine;
+    int CaptureLines;
+    bool CaptureWriteThrough;
     int Aux0VRAMCap;
 
     bool SetScaleFactor(int scale);
 
     void RenderScreen(int ystart, int yend);
     void DoCapture(int ystart, int yend);
+    void FlushCapture(int line);
+    void SyncCaptureLines(u32 bank, u32 start, u32 size, int ystart, int yend);
     void DownscaleCapture(int width, int height, int layer);
 };
 

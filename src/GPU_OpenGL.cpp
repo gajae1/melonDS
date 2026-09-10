@@ -296,6 +296,8 @@ void GLRenderer::Reset()
     NeedPartialRender = false;
     LastLine = 0;
     LastCapLine = 0;
+    CaptureLines = 0;
+    CaptureWriteThrough = false;
     Aux0VRAMCap = -1;
 
     Rend2D_A->Reset();
@@ -433,6 +435,21 @@ void GLRenderer::DrawScanline(u32 line)
     u32 dispcnt_b_diff = DispCntB ^ GPU.GPU2D_B.DispCnt;
     u32 capturecnt_diff = CaptureCnt ^ GPU.CaptureCnt;
 
+    if (GPU.CaptureEnable && line > 0 && (capturecnt_diff & 0x003F0000))
+    {
+        // A different destination/size cannot share the original capture's
+        // metadata. Preserve the old prefix and any captures at the new target.
+        const u32 oldaddr = ((CaptureCnt >> 16) & 3) * 0x20000 +
+                            ((CaptureCnt >> 18) & 3) * 0x8000;
+        GPU.SyncVRAM_LCDC(oldaddr, true);
+        CaptureWriteThrough = true;
+        const u32 bank = (GPU.CaptureCnt >> 16) & 3;
+        const u32 start = (GPU.CaptureCnt >> 18) & 3;
+        const u32 blocks = std::max(1u, (GPU.CaptureCnt >> 20) & 3);
+        for (u32 i = 0; i < blocks; ++i)
+            GPU.SyncVRAM_LCDC(bank * 0x20000 + ((start + i) & 3) * 0x8000, true);
+    }
+
     bool need_render = false;
     bool need_capture = false;
 
@@ -542,6 +559,10 @@ void GLRenderer::DrawScanline(u32 line)
             adst[i] = GPU.DispFIFOBuffer[i];
         }
     }
+
+    CaptureLines = line + 1;
+    if (CaptureWriteThrough)
+        FlushCapture(CaptureLines);
 }
 
 void GLRenderer::DrawSprites(u32 line)
@@ -655,6 +676,8 @@ void GLRenderer::VBlank()
 
     LastLine = 0;
     LastCapLine = 0;
+    CaptureLines = 0;
+    CaptureWriteThrough = false;
 }
 
 void GLRenderer::VBlankEnd()
@@ -673,6 +696,8 @@ void GLRenderer::DoCapture(int ystart, int yend)
     u32 srcBblock = (dispcnt >> 18) & 0x3;
     u32 srcBoffset = (dispmode == 2) ? 0 : ((capcnt >> 26) & 0x3);
     u32 dstblock = (capcnt >> 16) & 0x3;
+    if (!(GPU.VRAMMap_LCDC & (1 << dstblock)))
+        return;
     u32 dstoffset = (capcnt >> 18) & 0x3;
     u32 capsize = (capcnt >> 20) & 0x3;
     u32 dstmode = (capcnt >> 29) & 0x3;
@@ -694,7 +719,7 @@ void GLRenderer::DoCapture(int ystart, int yend)
         dstheight = 64 * capsize;
     }
 
-    if (ystart >= dstheight)
+    if (ystart >= dstheight || ystart >= yend)
         return;
     if (yend > dstheight)
         yend = dstheight;
@@ -858,6 +883,58 @@ void GLRenderer::DoCapture(int ystart, int yend)
 
     glBindVertexArray(CaptureVtxArray);
     glDrawArrays(GL_TRIANGLES, 0, numvtx);
+
+    if (CaptureWriteThrough)
+        SyncCaptureLines(dstblock, (capcnt >> 18) & 3, capsize, ystart, yend);
+}
+
+void GLRenderer::FlushCapture(int line)
+{
+    // Finish only scanlines whose registers and inputs have already been
+    // sampled. Re-entering DrawScanline would sample guest state twice.
+    for (auto* renderer : {Rend2D_A.get(), Rend2D_B.get()})
+    {
+        auto* rend2D = static_cast<GLRenderer2D*>(renderer);
+        if (rend2D->LastLine >= line) continue;
+        rend2D->DoRenderSprites(line);
+        rend2D->RenderScreen(rend2D->LastLine, line);
+        rend2D->LastLine = line;
+    }
+    if (LastLine < line)
+    {
+        RenderScreen(LastLine, line);
+        LastLine = line;
+    }
+    if (GPU.CaptureEnable && LastCapLine < line)
+    {
+        DoCapture(LastCapLine, line);
+        LastCapLine = line;
+    }
+}
+
+void GLRenderer::SyncCaptureLines(u32 bank, u32 start, u32 size, int ystart, int yend)
+{
+    if (ystart >= yend) return;
+    const int width = size == 0 ? 128 : 256;
+    glDisable(GL_DITHER);
+    DownscaleCapture(width, size == 0 ? 128 : 256, size == 0 ? (bank << 2) | start : bank);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, CaptureSyncFB);
+
+    // Copy only newly captured rows: future rows and CPU writes to an earlier
+    // row must survive. 256-wide captures wrap within the destination bank.
+    while (ystart < yend)
+    {
+        const int row = size == 0 ? ystart : (start * 64 + ystart) & 255;
+        const int count = size == 0 ? yend - ystart : std::min(yend - ystart, 256 - row);
+        const u32 offset = size == 0 ? start * 0x8000 + row * 256 : row * 512;
+        const u32 length = count * width * 2;
+        glReadPixels(0, row, width, count, GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV,
+                     GPU.VRAM[bank] + offset);
+        for (u32 j = offset / VRAMDirtyGranularity;
+             j < (offset + length + VRAMDirtyGranularity - 1) / VRAMDirtyGranularity; ++j)
+            GPU.VRAMDirty[bank][j] = true;
+        ystart += count;
+    }
 }
 
 
@@ -898,7 +975,17 @@ void GLRenderer::DownscaleCapture(int width, int height, int layer)
 void GLRenderer::SyncVRAMCapture(u32 bank, u32 start, u32 len, bool complete)
 {
     if (!complete)
-        Log(LogLevel::Error, "GPU_OpenGL: !!! READING VRAM AS IT IS BEING CAPTURED TO\n");
+    {
+        // Once the CPU accesses a live capture, keep RAM current for the rest
+        // of this frame, including after a write invalidates its GPU metadata.
+        const bool wasWriteThrough = CaptureWriteThrough;
+        FlushCapture(CaptureLines);
+        CaptureWriteThrough = true;
+        if (!wasWriteThrough)
+            SyncCaptureLines(bank, start, len, 0,
+                             std::min(CaptureLines, len == 0 ? 128 : int(len * 64)));
+        return;
+    }
 
     u8* vram = GPU.VRAM[bank];
 
