@@ -272,6 +272,17 @@ void SPU::Stop()
     Platform::Mutex_Unlock(AudioLock);
 }
 
+void SPU::ResetOutputHistory()
+{
+    // Call on the emulation thread after a committed timeline change. A failed
+    // load/rollback must retain the old queue and resampler history instead.
+    Stop();
+    // Mix() adds deltas relative to the restored last sample. Rebase the empty
+    // resampler without changing that serialized sample or the guest clock.
+    blip_add_delta(BlipLeft, 0, OutputLastSamples[0]);
+    blip_add_delta(BlipRight, 0, OutputLastSamples[1]);
+}
+
 void SPU::DoSavestate(Savestate* file)
 {
     file->Section("SPU.");

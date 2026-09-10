@@ -53,7 +53,11 @@ const u32 kDiscoveryMagic = 0x444E414C; // LAND
 const u32 kLANMagic = 0x504E414C; // LANP
 const u32 kPacketMagic = 0x4946494E; // NIFI
 
+// Keep the v1 handshake, player layout and discovery usable by older builds.
+// New clients advertise this optional extension in ENet's connect user data;
+// old hosts ignore it. Extension packets are sent only to opted-in peers.
 const u32 kProtocolVersion = 1;
+const u32 kPortCapability = 0x32504E4C; // LNP2
 
 const u32 kLocalhost = 0x0100007F;
 
@@ -70,6 +74,8 @@ enum
     Cmd_PlayerList,         // 03 -- host->client -- broadcast updated player list
     Cmd_PlayerConnect,      // 04 -- both -- signal connected state (ready to receive MP frames)
     Cmd_PlayerDisconnect,   // 05 -- both -- signal disconnected state (not receiving MP frames)
+    Cmd_PortSupport,        // 06 -- host->client -- optional endpoint extension accepted
+    Cmd_PeerPorts,          // 07 -- host->client -- capable peers and observed UDP ports
 };
 
 const int kDiscoveryPort = 7063;
@@ -244,6 +250,9 @@ bool LAN::StartHost(const char* playername, int numplayers)
     strncpy(player->Name, playername, 31);
     player->Status = Player_Host;
     player->Address = kLocalhost;
+    PeerPorts[0] = kLANPort;
+    PortPeers = 1;
+    PortProtocol = EndpointsReceived = true;
     NumPlayers = 1;
     MaxPlayers = numplayers;
     memcpy(&MyPlayer, player, sizeof(Player));
@@ -273,7 +282,7 @@ bool LAN::StartClient(const char* playername, const char* host)
     addr.port = kLANPort;
     Host = enet_host_create(nullptr, 16, 2, 0, 0);
     if (!Host) return false;
-    ENetPeer* peer = enet_host_connect(Host, &addr, 2, 0);
+    ENetPeer* peer = enet_host_connect(Host, &addr, 2, kPortCapability);
     if (!peer)
     {
         EndSession();
@@ -310,6 +319,10 @@ void LAN::EndSession()
         Host = nullptr;
     }
     memset(RemotePeers, 0, sizeof(RemotePeers));
+    memset(PeerConnectTicks, 0, sizeof(PeerConnectTicks));
+    memset(PeerPorts, 0, sizeof(PeerPorts));
+    PortPeers = 0;
+    PortProtocol = EndpointsReceived = false;
     memset(Players, 0, sizeof(Players));
     MyPlayer = {};
     HostAddress = 0;
@@ -436,6 +449,21 @@ void LAN::HostUpdatePlayerList()
     memcpy(&cmd[2], Players, sizeof(Players));
     ENetPacket* pkt = enet_packet_create(cmd, 2+sizeof(Players), ENET_PACKET_FLAG_RELIABLE);
     if (pkt) enet_host_broadcast(Host, Chan_Cmd, pkt);
+    // The legacy list remains byte-for-byte v1. Ports travel separately and
+    // follow that list on the same reliable channel for extension clients.
+    u8 ports[35]{Cmd_PeerPorts, u8(PortPeers), u8(PortPeers >> 8)};
+    for (int id = 0; id < 16; ++id)
+    {
+        ports[3 + id * 2] = u8(PeerPorts[id]);
+        ports[4 + id * 2] = u8(PeerPorts[id] >> 8);
+    }
+    for (int id = 1; id < 16; ++id)
+    {
+        if (!(PortPeers & (1 << id)) || !RemotePeers[id]) continue;
+        auto* packet = enet_packet_create(ports, sizeof(ports), ENET_PACKET_FLAG_RELIABLE);
+        if (packet && enet_peer_send(RemotePeers[id], Chan_Cmd, packet) != 0)
+            enet_packet_destroy(packet);
+    }
 }
 
 void LAN::ClearPeer(int id)
@@ -456,6 +484,75 @@ void LAN::ClearPeer(int id)
     }
 }
 
+void LAN::SendLocalReady(ENetPeer* peer)
+{
+    if (MyPlayer.ID < 0 || !(ConnectedBitmask & (1 << MyPlayer.ID))) return;
+    const u8 cmd = Cmd_PlayerConnect;
+    auto* packet = enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE);
+    if (packet && enet_peer_send(peer, Chan_Cmd, packet) != 0)
+        enet_packet_destroy(packet);
+}
+
+void LAN::ConnectPeers()
+{
+    if (IsHost || !Host || !ClientInitReceived || MyPlayer.Status != Player_Client) return;
+    if (PortProtocol && !EndpointsReceived) return;
+    const u32 tick = static_cast<u32>(Platform::GetMSCount());
+    bool connected = true;
+    for (int id = 1; id < MaxPlayers; ++id)
+    {
+        if (id == MyPlayer.ID || Players[id].Status != Player_Client) continue;
+        // One direction avoids duplicate connections. A lower ID may receive
+        // the connect before its authoritative player list; retry after it has
+        // rejected that unknown endpoint, without spinning each frame.
+        const bool extendedPeer = PortProtocol && (PortPeers & (1 << id));
+        if ((!extendedPeer || id < MyPlayer.ID) && !RemotePeers[id] &&
+            (!PeerConnectTicks[id] || static_cast<u32>(tick - PeerConnectTicks[id]) >= 250))
+        {
+            PeerConnectTicks[id] = tick;
+            const u16 port = PortProtocol ? PeerPorts[id] : kLANPort;
+            ENetAddress address{Players[id].Address, port};
+            if (auto* peer = enet_host_connect(Host, &address, 2, 0))
+            {
+                RemotePeers[id] = peer;
+                peer->data = &Players[id];
+            }
+        }
+        if (extendedPeer && (!RemotePeers[id] || RemotePeers[id]->state != ENET_PEER_STATE_CONNECTED))
+            connected = false;
+    }
+    if (connected && Connection == ClientState::Connecting)
+        Connection = ClientState::Connected;
+}
+
+void LAN::ReadPeerPorts(const ENetEvent& event)
+{
+    if (!PortProtocol || !ClientInitReceived || MyPlayer.Status != Player_Client ||
+        event.peer != RemotePeers[0] || event.packet->dataLength != 35) return;
+    const auto* data = event.packet->data;
+    const u16 capable = u16(data[1]) | (u16(data[2]) << 8);
+    if (!(capable & 1) || !(capable & (1 << MyPlayer.ID)) || (capable >> MaxPlayers)) return;
+    u16 ports[16];
+    for (int id = 0; id < 16; ++id)
+    {
+        ports[id] = u16(data[3 + id * 2]) | (u16(data[4 + id * 2]) << 8);
+        if (Players[id].Status != Player_None && !ports[id]) return;
+    }
+    for (int id = 1; id < 16; ++id)
+    {
+        if (RemotePeers[id] && (PeerPorts[id] != ports[id] || ((PortPeers ^ capable) & (1 << id))))
+        {
+            enet_peer_disconnect_now(RemotePeers[id], 0);
+            ClearPeer(id);
+            PeerConnectTicks[id] = 0;
+        }
+    }
+    memcpy(PeerPorts, ports, sizeof(PeerPorts));
+    PortPeers = capable;
+    EndpointsReceived = true;
+    ConnectPeers();
+}
+
 bool LAN::ReadPlayerList(const ENetEvent& event)
 {
     if (event.peer != RemotePeers[0] || !ClientInitReceived ||
@@ -471,7 +568,7 @@ bool LAN::ReadPlayerList(const ENetEvent& event)
         int status;
         memcpy(&status, entry + offsetof(Player, Status), sizeof(status));
         if (status < Player_None || status > Player_Disconnected) return false;
-        // Validate enum bytes before evaluating them. The native v1 bool is
+        // Validate enum bytes before evaluating them. The native wire bool is
         // UI metadata, never trusted as a received bool object.
         memcpy(&next[i], entry, sizeof(Player));
         next[i].IsLocalPlayer = false;
@@ -486,14 +583,20 @@ bool LAN::ReadPlayerList(const ENetEvent& event)
 
     for (int i = 1; i < 16; ++i)
     {
-        if (next[i].Status != Player_None || !RemotePeers[i]) continue;
-        enet_peer_disconnect_now(RemotePeers[i], 0);
-        ClearPeer(i);
+        if (next[i].Status == Player_Client && next[i].Address == Players[i].Address) continue;
+        if (RemotePeers[i])
+        {
+            enet_peer_disconnect_now(RemotePeers[i], 0);
+            ClearPeer(i);
+        }
+        PeerPorts[i] = 0;
+        PeerConnectTicks[i] = 0;
     }
     memcpy(Players, next, sizeof(Players));
     NumPlayers = count;
     MyPlayer.Status = Player_Client;
-    Connection = ClientState::Connected;
+    EndpointsReceived = false;
+    ConnectPeers();
     return true;
 }
 
@@ -540,14 +643,30 @@ void LAN::ProcessHostEvent(ENetEvent& event)
                     break;
                 }
 
+                const bool portSupport = event.data == kPortCapability;
+                if (portSupport)
+                {
+                    const u8 accepted = Cmd_PortSupport;
+                    auto* response = enet_packet_create(&accepted, 1, ENET_PACKET_FLAG_RELIABLE);
+                    if (!response || enet_peer_send(event.peer, Chan_Cmd, response) != 0)
+                    {
+                        if (response) enet_packet_destroy(response);
+                        enet_peer_disconnect_now(event.peer, 0);
+                        break;
+                    }
+                    PortPeers |= (1 << id);
+                }
+
                 Players[id].ID = id;
                 Players[id].Status = Player_Connecting;
                 Players[id].Address = event.peer->address.host;
+                PeerPorts[id] = event.peer->address.port;
                 event.peer->data = &Players[id];
                 NumPlayers++;
 
 
                 RemotePeers[id] = event.peer;
+                SendLocalReady(event.peer);
             }
             else
             {
@@ -565,6 +684,8 @@ void LAN::ProcessHostEvent(ENetEvent& event)
 
             const int id = player->ID;
             ClearPeer(id);
+            PeerPorts[id] = 0;
+            PortPeers &= ~(1 << id);
             *player = {};
             NumPlayers--;
 
@@ -610,6 +731,7 @@ void LAN::ProcessHostEvent(ENetEvent& event)
                     player.IsLocalPlayer = false;
                     player.Ping = event.peer->roundTripTime;
                     player.Address = event.peer->address.host;
+                    PeerPorts[player.ID] = event.peer->address.port;
                     memcpy(hostside, &player, sizeof(Player));
 
 
@@ -660,7 +782,9 @@ void LAN::ProcessClientEvent(ENetEvent& event)
             {
                 if (i == MyPlayer.ID || Players[i].Status != Player_Client) continue;
                 if (RemotePeers[i] == event.peer ||
-                    (!RemotePeers[i] && Players[i].Address == event.peer->address.host))
+                    (!RemotePeers[i] && (!(PortPeers & (1 << i)) || i > MyPlayer.ID) &&
+                     Players[i].Address == event.peer->address.host &&
+                     (!PortProtocol || PeerPorts[i] == event.peer->address.port)))
                 {
                     playerid = i;
                     break;
@@ -668,11 +792,13 @@ void LAN::ProcessClientEvent(ENetEvent& event)
             }
             if (playerid < 0)
             {
-                enet_peer_disconnect(event.peer, 0);
+                enet_peer_disconnect_now(event.peer, 0);
                 break;
             }
             RemotePeers[playerid] = event.peer;
             event.peer->data = &Players[playerid];
+            SendLocalReady(event.peer);
+            ConnectPeers();
         }
         break;
     case ENET_EVENT_TYPE_DISCONNECT:
@@ -686,7 +812,8 @@ void LAN::ProcessClientEvent(ENetEvent& event)
             if (!player || player->ID < 0 || player->ID >= 16 ||
                 RemotePeers[player->ID] != event.peer || player != &Players[player->ID]) break;
             ClearPeer(player->ID);
-            player->Status = Player_Disconnected;
+            // Membership is authoritative on the lobby host. A transient mesh
+            // disconnect can be retried; host removal clears the slot and queue.
         }
         break;
     case ENET_EVENT_TYPE_RECEIVE:
@@ -734,18 +861,16 @@ void LAN::ProcessClientEvent(ENetEvent& event)
                 break;
             case Cmd_PlayerList:
                 {
-                    if (!ReadPlayerList(event)) break;
-                    for (int i = 1; i < 16; ++i)
-                    {
-                        if (i == MyPlayer.ID || Players[i].Status != Player_Client || RemotePeers[i]) continue;
-                        ENetAddress address{Players[i].Address, kLANPort};
-                        if (auto* peer = enet_host_connect(Host, &address, 2, 0))
-                        {
-                            RemotePeers[i] = peer;
-                            peer->data = &Players[i];
-                        }
-                    }
+                    ReadPlayerList(event);
                 }
+                break;
+            case Cmd_PortSupport:
+                if (packet->dataLength == 1 && event.peer == RemotePeers[0] &&
+                    ClientInitReceived && Connection == ClientState::Connecting)
+                    PortProtocol = true;
+                break;
+            case Cmd_PeerPorts:
+                ReadPeerPorts(event);
                 break;
             case Cmd_PlayerConnect:
             case Cmd_PlayerDisconnect:
@@ -914,6 +1039,7 @@ void LAN::Process()
 
     ProcessDiscovery();
     ProcessLAN(0);
+    ConnectPeers();
     if (Connection == ClientState::Connecting &&
         static_cast<u32>(Platform::GetMSCount() - ConnectionStartTick) >= 5000)
     {

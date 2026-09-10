@@ -227,10 +227,11 @@ int CheckCaptureReadback(const char* backend)
 
 namespace
 {
-bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool write, bool relocate = false)
+bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool write,
+                   bool relocate = false, bool warmed = false)
 {
     NDSArgs args;
-    args.JIT = std::nullopt;
+    args.JIT = warmed ? std::optional{JITArgs{}} : std::nullopt;
     Scene scene;
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
@@ -262,7 +263,6 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
     }
     nds->Start();
     nds->RunFrame();
-    scene.Submit(*nds);
     const int width = test.Size ? 256 : 128;
     const auto address = [&](int y) {
         return BankB + ((test.Offset * 0x8000 + (y * width + 64) * 2) & 0x1FFFF);
@@ -281,6 +281,7 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
 
     // A real ARM9 program polls VCOUNT and uses the normal VRAM bus. No host
     // callback, artificial GL flush, or direct framebuffer read resolves it.
+    constexpr u32 ReadCode = 0x02014000;
     std::vector<u32> program;
     std::vector<u16> expected;
     const auto waitLine = [&](unsigned line) {
@@ -288,7 +289,8 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
             0xE3510000 | line, 0x1AFFFFFC}); // LDR address; LDRH; CMP; BNE
     };
     const auto read = [&](unsigned index, u16 value) {
-        program.insert(program.end(), {0xE5980000 | (index * 4), 0xE1D010B0,
+        // BLX r7 gives the load its own block, even with branch optimization.
+        program.insert(program.end(), {0xE5980000 | (index * 4), warmed ? 0xE12FFF37u : 0xE1D010B0u,
             0xE5891000 | (static_cast<u32>(expected.size()) * 4)});
         expected.push_back(value);
     };
@@ -305,11 +307,10 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
         program.insert(program.end(), {0xE5980018, 0xE598101C, 0xE5801000});
     else
     {
-        if (test.Source == 1)
+        if (test.Source == 1 || warmed)
         {
             // Start an actual immediate ARM9 DMA from live capture VRAM before
             // the CPU itself reads it. Its destination is separate guest RAM.
-            nds->ARM9Write32(Results + 0x100, 0xFFFFFFFF);
             program.insert(program.end(), {0xE5980030, 0xE5981004, 0xE5801000,
                 0xE5981034, 0xE5801004, 0xE5981038, 0xE5801008});
             read(13, pixel(true));
@@ -345,15 +346,70 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
     program.insert(program.end(), {0xE3A0B001, 0xEAFFFFFE});
     for (unsigned i = 0; i < program.size(); ++i)
         nds->ARM9Write32(Code + i * 4, program[i]);
-    for (unsigned i = 0; i < expected.size(); ++i)
-        nds->ARM9Write32(Results + i * 4, 0xFFFFFFFF);
-    nds->ARM9.R[8] = Addresses;
-    nds->ARM9.R[9] = Results;
-    nds->ARM9.R[10] = Blue;
-    nds->ARM9.R[11] = 0;
-    nds->ARM9.JumpTo(Code);
+    if (warmed)
+    {
+        nds->ARM9Write32(ReadCode, 0xE1D010B0); // LDRH r1,[r0]
+        nds->ARM9Write32(ReadCode + 4, 0xE12FFF1E); // BX lr
+    }
+    const auto startGuest = [&] {
+        for (unsigned i = 0; i < expected.size(); ++i)
+            nds->ARM9Write32(Results + i * 4, 0xFFFFFFFF);
+        nds->ARM9Write32(Results + 0x100, 0xFFFFFFFF);
+        nds->ARM9.R[7] = ReadCode;
+        nds->ARM9.R[8] = Addresses;
+        nds->ARM9.R[9] = Results;
+        nds->ARM9.R[10] = Blue;
+        nds->ARM9.R[11] = 0;
+        nds->ARM9.JumpTo(Code);
+    };
+    unsigned warmErrors = 0;
+    bool fastmem = false;
+    bool compiled = false;
+    bool reused = false;
+#ifdef JIT_ENABLED
+    JitBlock* warmBlock = nullptr;
+    JitBlockEntry warmEntry = nullptr;
+    if (warmed)
+    {
+        // First run: capture disabled, so DMA and every CPU probe must see
+        // poison. Repeated calls compile and then execute the same load block.
+        // Its RAM load can use fastmem; VRAM uses the production slow path.
+        startGuest();
+        nds->RunFrame();
+        for (unsigned i = 0; i < expected.size(); ++i)
+        {
+            const u32 actual = nds->ARM9Read32(Results + i * 4);
+            if (actual != Poison)
+            {
+                std::fprintf(stderr, "capture warm result %u: %04x expected %04x\n", i, actual, Poison);
+                ++warmErrors;
+            }
+        }
+        const auto found = nds->JIT.JitBlocks9.find(ReadCode);
+        if (found != nds->JIT.JitBlocks9.end())
+        {
+            warmBlock = found->second;
+            warmEntry = warmBlock->EntryPoint;
+        }
+        fastmem = nds->JIT.FastMemoryEnabled();
+        compiled = warmEntry && nds->IsJITEnabled();
+        if (nds->ARM9.R[11] != 1 || !compiled || !fastmem) ++warmErrors;
+    }
+#endif
+    // Do not rewrite code or reset the JIT between the poison and capture runs.
+    // On the second run DMA is the first capture consumer, at scanline 32.
+    startGuest();
+    scene.Submit(*nds);
     nds->ARM9Write32(0x04000064, capture);
     nds->RunFrame();
+#ifdef JIT_ENABLED
+    if (warmed)
+    {
+        const auto found = nds->JIT.JitBlocks9.find(ReadCode);
+        reused = found != nds->JIT.JitBlocks9.end() && found->second == warmBlock &&
+                 found->second->EntryPoint == warmEntry;
+    }
+#endif
     unsigned errors = 0;
     for (unsigned i = 0; i < expected.size(); ++i)
     {
@@ -364,10 +420,18 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
             ++errors;
         }
     }
-    const bool passed = !errors && nds->ARM9.R[11] == 1 &&
+    const bool passed = !errors && (!warmed || (!warmErrors && compiled && reused)) && nds->ARM9.R[11] == 1 &&
         !(nds->GPU.CaptureCnt & (1u << 31)) && glGetError() == GL_NO_ERROR;
     std::printf("mid_capture=%s size=%d offset=%d source=%d scale=%d write=%d relocate=%d errors=%u finished=%u\n",
         backend, test.Size, test.Offset, test.Source, scale, write, relocate, errors, nds->ARM9.R[11]);
+    if (warmed)
+    {
+        std::printf("capture_jit=%s warm_reads=%zu warm_errors=%u fastmem=%d compiled=%d reused=%d results=",
+            backend, expected.size(), warmErrors, fastmem, compiled, reused);
+        for (unsigned i = 0; i < expected.size(); ++i)
+            std::printf("%s%04x", i ? "," : "", nds->ARM9Read32(Results + i * 4));
+        std::printf("\n");
+    }
     nds->GPU.GPU3D.RenderNumPolygons = 0;
     nds->GPU.GPU3D.RenderPolygonRAM[0] = nullptr;
     return passed;
@@ -388,4 +452,18 @@ int CheckMidCapture(const char* backend)
     for (bool write : {false, true})
         passed &= RunMidCapture(backend, cases[1], scale, write, true);
     return passed ? 0 : 1;
+}
+
+int CheckJitCapture(const char* backend)
+{
+    if (std::strcmp(backend, "software") && std::strcmp(backend, "opengl") && std::strcmp(backend, "compute")) return 2;
+#ifdef JIT_ENABLED
+    if (!ARMJIT_Memory::IsFastMemSupported()) return 77;
+    // Opaque red triangle on green clear color, captured from source A into B.
+    // At line 32: DMA sees red, while line 40 is still poison. At line 80:
+    // line 40 is red, line 64 is green, and line 120 is still poison.
+    return RunMidCapture(backend, {0, 1, 0, false}, 1, false, false, true) ? 0 : 1;
+#else
+    return 77;
+#endif
 }

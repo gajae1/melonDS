@@ -178,7 +178,7 @@ void ENET_CALLBACK PacketFreed(ENetPacket*) { ++FreedPackets; }
 
 ENetPacket* Packet(u32 type, u32 sender, size_t size, u32 declared = ~0u)
 {
-    // Protocol v1 wire data, including the existing 24-byte native header.
+    // MP frame data retains the existing 24-byte native v1 header.
     static_assert(sizeof(MPPacketHeader) == 24);
     MPPacketHeader header{0x4946494E, sender, type,
                           declared == ~0u ? static_cast<u32>(size) : declared,
@@ -372,6 +372,39 @@ bool HandshakeAndRejoin()
     return net.GetClientState() == LAN::ClientState::Idle && HostsDestroyed == destroyed + 2;
 }
 
+bool OptionalPortsAndLegacyRejoin()
+{
+    LAN net;
+    Tick = 1000;
+    if (!net.StartClient("Client", "127.0.0.1")) return false;
+    Control(Init());
+    const std::array<u8, 1> accepted{6};
+    Control(accepted);
+    PlayerList();
+    net.Process();
+    // A capable host promised endpoints. A legacy list alone is not completion.
+    if (net.GetClientState() != LAN::ClientState::Connecting) return false;
+    std::array<u8, 35> ports{7, 3, 0, 0x98, 0x1B, 0x40, 0x9C}; // 7064, 40000
+    ENetPeer stranger{};
+    Control(ports, &stranger);
+    auto invalid = ports;
+    invalid[5] = invalid[6] = 0;
+    Control(invalid);
+    Control(std::span(ports).first(ports.size() - 1));
+    net.Process();
+    if (net.GetClientState() != LAN::ClientState::Connecting) return false;
+    Control(ports);
+    net.Process();
+    if (net.GetClientState() != LAN::ClientState::Connected) return false;
+    net.EndSession();
+
+    if (!net.StartClient("Legacy host", "127.0.0.1")) return false;
+    Control(Init());
+    PlayerList(); // No extension acknowledgement from a legacy host.
+    net.Process();
+    return net.GetClientState() == LAN::ClientState::Connected;
+}
+
 bool HandshakeFailure(LAN::ClientState expected, bool timeout, u8 id = 1, u8 max = 2, u8 version = 1)
 {
     LAN net;
@@ -409,7 +442,8 @@ int main()
     Check("client-empty-control-releases-packet", EmptyControl(false));
     Check("control-flood-yields-to-cancellation", ControlFloodYields());
     Check("handshake-awaits-player-list-and-cancel-rejoin", HandshakeAndRejoin());
-    Check("handshake-version-mismatch", HandshakeFailure(LAN::ClientState::Incompatible, false, 1, 2, 2));
+    Check("optional-ports-validate-host-and-reset-for-legacy", OptionalPortsAndLegacyRejoin());
+    Check("handshake-rejects-unknown-protocol", HandshakeFailure(LAN::ClientState::Incompatible, false, 1, 2, 99));
     Check("handshake-rejects-host-id", HandshakeFailure(LAN::ClientState::Failed, false, 0));
     Check("handshake-rejects-invalid-capacity", HandshakeFailure(LAN::ClientState::Failed, false, 1, 0));
     Check("handshake-timeout-across-clock-wrap", HandshakeFailure(LAN::ClientState::TimedOut, true));

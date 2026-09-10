@@ -900,6 +900,10 @@ StateLoadResult EmuInstance::applyState(Savestate& state, bool undo)
         return StateLoadResult::RecoveryFailed;
     }
 
+    // Audio callbacks are paused by EmuThread for the entire load/undo. Drop
+    // host history only after success, so a recovered failure resumes intact.
+    audioResetOutput();
+
     // Publish undo only on success. Keep its serialized length and save mode
     // intact: Rewind() changes the cursor used by Length().
     if (undo) backupState.reset();

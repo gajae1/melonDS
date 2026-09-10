@@ -8,6 +8,8 @@
 | [버전별 계획](Release_Plan.md) | 1.1.03~1.1.44, 각 5페이즈, 선행 산출물과 수락 조건 |
 | [착수 순서](Execution_Order.md) | 첫 반례, 작업 경계, 중단·후속 조건 |
 | [검증 방법](Validation.md) | 로컬 빌드·회귀·측정과 증거 작성 기준 |
+| [2026-09-11 감사](Audit_2026-09-11.md) | 실제 읽기 범위·추가 반례 후보·upstream와 Android/macOS/Linux 이식 경계 |
+| [1.1.30 구현 기록](releases/1.1.30.md) | LAN 다자간 mesh·상태 로드 뒤 host 오디오·source A DMA/warmed JIT 검증 |
 | [1.1.29 구현 기록](releases/1.1.29.md) | LAN 연결·취소·재접속, 장치 identity·인스턴스 배정, DSi 타이틀 교체/복구 |
 | [1.1.28 구현 기록](releases/1.1.28.md) | 캡처 중간 CPU/DMA 접근·AES CCM 태그·DSi reset/I2C와 이전 상태 호환 |
 | [1.1.27 구현 기록](releases/1.1.27.md) | software 3D 저장/재설정 대기·GX FIFO의 NDMA 정지·DSi WMI 오류/연결 응답 |

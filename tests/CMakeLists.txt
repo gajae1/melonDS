@@ -228,6 +228,11 @@ if (MELONDS_TEST_GPU)
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endforeach()
     foreach(backend IN ITEMS software opengl compute)
+        if (ENABLE_JIT)
+            add_test(NAME gpu-${backend}-capture-jit COMMAND GLFrameReadback capture-jit ${backend})
+            set_tests_properties(gpu-${backend}-capture-jit
+                PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+        endif()
         add_test(NAME gpu-${backend}-capture-mid COMMAND GLFrameReadback capture-mid ${backend})
         set_tests_properties(gpu-${backend}-capture-mid
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)

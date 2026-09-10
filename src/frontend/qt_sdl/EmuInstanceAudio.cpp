@@ -536,6 +536,17 @@ void EmuInstance::audioUpdateSettings()
     if (micStarted) micOpen();
 }
 
+void EmuInstance::audioResetOutput()
+{
+    // The caller has paused the device; discard every host output history while
+    // retaining the user's output rate, volume and current filter cutoff.
+    nds->SPU.ResetOutputHistory();
+    const double cutoff = audioLowPass.Cutoff();
+    audioLowPass.Init(audioFreq);
+    audioLowPass.SetCutoffNow(cutoff);
+    audioOutputRamp.Reset();
+}
+
 void EmuInstance::audioEnable()
 {
     if (audioDevice)

@@ -231,6 +231,7 @@ public:
     void DoSavestate(Savestate* file);
 
     void Stop();
+    void ResetOutputHistory();
 
     void SetPowerCnt(u32 val);
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Real core + current frontend load/undo functions; no user ROM/BIOS or devices.
+// Real core + current frontend load/undo functions; no user ROM/BIOS or physical devices.
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -11,10 +13,14 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QTemporaryDir>
+#include <SDL2/SDL.h>
 #include "ARM.h"
 #include "NDS.h"
 #include "Platform.h"
 #include "StateLoadResult.h"
+#include "AudioLowPass.h"
+#include "AudioOutputRamp.h"
+#include "AudioDiagnostics.h"
 using namespace melonDS;
 
 enum class ReadFailure { None, Short, Error, Oversize };
@@ -84,11 +90,76 @@ struct StateReader
 {
     FixtureConsole* nds;
     std::unique_ptr<Savestate> backupState;
+    SDL_AudioDeviceID audioDevice = 0;
+    SDL_mutex* audioSyncLock = SDL_CreateMutex();
+    SDL_cond* audioSyncCond = SDL_CreateCond();
+    SDL_sem* captured = SDL_CreateSemaphore(0);
+    int audioFreq = 48000, audioBufSize = 128;
+    AudioLowPass audioLowPass;
+    AudioOutputRamp audioOutputRamp;
+    AudioDiagnostics audioDiagnostics;
+    std::atomic<int> audioLowPassCutoff{1000}, audioVolume{256};
+    bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
+    bool micStarted = false, received = false;
+    std::array<s16, 256> pcm{};
+    ~StateReader()
+    {
+        if (audioDevice) SDL_CloseAudioDevice(audioDevice);
+        SDL_DestroySemaphore(captured);
+        SDL_DestroyCond(audioSyncCond);
+        SDL_DestroyMutex(audioSyncLock);
+    }
+    void micOpen() { std::abort(); }
+    void micClose() { std::abort(); }
+    void audioEnable();
+    void audioDisable();
+    void audioResetOutput();
+    void audioReportDiagnostics();
+    static void audioCallback(void*, Uint8*, int);
+    bool openAudio()
+    {
+        SDL_AudioSpec wanted{}, obtained{};
+        wanted.freq = audioFreq; wanted.format = AUDIO_S16SYS;
+        wanted.channels = 2; wanted.samples = audioBufSize; wanted.userdata = this;
+        wanted.callback = [](void* data, Uint8* stream, int len) {
+            auto& self = *static_cast<StateReader*>(data);
+            // Consume exactly one callback per resume; further dummy-device
+            // requests stay silent until the main thread pauses it again.
+            if (!self.received)
+            {
+                if (len != sizeof(self.pcm)) std::abort();
+                audioCallback(data, stream, len);
+                std::memcpy(self.pcm.data(), stream, len);
+                self.received = true;
+                SDL_SemPost(self.captured);
+            }
+            std::memset(stream, 0, len); // Never submit probe PCM to a real device.
+        };
+        audioDevice = SDL_OpenAudioDevice(nullptr, 0, &wanted, &obtained, 0);
+        audioLowPass.Init(audioFreq);
+        audioLowPass.SetCutoffNow(audioLowPassCutoff);
+        audioOutputRamp.Init(audioFreq);
+        return audioDevice != 0;
+    }
+    std::array<s16, 256> nextCallback()
+    {
+        received = false;
+        audioEnable();
+        const int result = SDL_SemWaitTimeout(captured, 2000);
+        audioDisable();
+        if (result != 0) throw std::runtime_error("dummy audio callback timed out");
+        return pcm;
+    }
     StateLoadResult applyState(Savestate& state, bool undo);
     StateLoadResult loadState(const std::string& filename);
     StateLoadResult undoStateLoad();
 };
 #define EmuInstance StateReader
+#include "audioCallback.inc"
+#include "stateAudioEnable.inc"
+#include "stateAudioDisable.inc"
+#include "stateAudioReport.inc"
+#include "stateAudioReset.inc"
 #define OpenFile OpenStateFile
 #define CloseFile CloseStateFile
 #define FileLength StateFileLength
@@ -126,11 +197,100 @@ static void Prepare(NDS& nds, u32 increment)
     nds.RunFrame();
 }
 
+static int AudioHistory(const std::string& test)
+{
+    // Reuse the actual core/load/late-section fixture above and the actual SDL
+    // callback below. Only the backend is dummy; no sound device or mic is used.
+    SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return 2;
+    struct Observation
+    {
+        std::array<s16, 256> first{}, next{};
+        int queuedBefore = 0, queuedAfter = 0;
+        bool corePreserved = false;
+        StateLoadResult result = StateLoadResult::Failed;
+    };
+    const bool success = test == "audio-success" || test == "audio-rebase";
+    const auto observe = [&](bool load)
+    {
+        NDSArgs args; args.JIT.reset();
+        auto console = std::make_unique<FixtureConsole>(std::move(args));
+        auto& nds = *console;
+        StateReader reader{&nds};
+        if (!reader.openAudio()) throw std::runtime_error(SDL_GetError());
+        Prepare(nds, 3);
+        if (test == "audio-rebase")
+        {
+            nds.ARM7Write16(0x04000304, 1);
+            nds.ARM7Write16(0x04000504, 0x240);
+            nds.RunFrame();
+        }
+        auto target = Snapshot(nds);
+        Prepare(nds, 1);
+        nds.SPU.Stop();
+        nds.ARM7Write16(0x04000304, 1);
+        nds.ARM7Write16(0x04000504, 0x280);
+        nds.RunFrame();
+        reader.nextCallback(); // Prime real frontend filter history too.
+        const auto previous = Snapshot(nds);
+        nds.loadCalls = 0;
+        Observation observed;
+        observed.queuedBefore = nds.SPU.GetOutputSize();
+        if (load)
+        {
+            if (test == "audio-rollback") target[target.size() - 20] = 'X';
+            if (test == "audio-preflight") target[0] = 'X';
+            QTemporaryDir directory;
+            if (!directory.isValid()) throw std::runtime_error("temporary directory");
+            const QString name = directory.filePath("generated-audio.mln");
+            QFile file(name);
+            if (!file.open(QIODevice::WriteOnly) || file.write(reinterpret_cast<const char*>(target.data()), target.size()) != qint64(target.size()))
+                throw std::runtime_error("temporary state write");
+            file.close();
+            observed.result = reader.loadState(name.toStdString());
+        }
+        observed.corePreserved = Snapshot(nds) == (load && success ? target : previous);
+        observed.queuedAfter = nds.SPU.GetOutputSize();
+        observed.first = reader.nextCallback();
+        // Pass the old queue through real callbacks before checking newly
+        // produced audio, so a rollback also proves the pending blip history.
+        while (nds.SPU.GetOutputSize()) reader.nextCallback();
+        nds.RunFrame();
+        observed.next = reader.nextCallback(); // Includes the pending blip tail.
+        return observed;
+    };
+    const auto control = observe(false);
+    const auto loaded = observe(true);
+    const auto peak = [](const auto& pcm) {
+        int value = 0;
+        for (s16 sample : pcm) value = std::max(value, std::abs(int(sample)));
+        return value;
+    };
+    bool passed = loaded.corePreserved && loaded.queuedBefore > 128 && peak(control.first) > 100;
+    if (success)
+    {
+        passed &= loaded.result == StateLoadResult::Success && peak(loaded.first) == 0;
+        if (test == "audio-rebase")
+            passed &= *std::max_element(loaded.next.begin(), loaded.next.end()) > 500;
+        else passed &= peak(loaded.next) == 0;
+    }
+    else
+        passed &= loaded.result == StateLoadResult::Failed && loaded.queuedAfter == loaded.queuedBefore &&
+            loaded.first == control.first && loaded.next == control.next;
+    std::printf("%s: %s result=%d queue=%d->%d first_peak=%d next_peak=%d control_peak=%d "
+                "resume_equal=%d core_snapshot_equal=%d backend=dummy\n", test.c_str(), passed ? "PASS" : "FAIL",
+        int(loaded.result), loaded.queuedBefore, loaded.queuedAfter, peak(loaded.first), peak(loaded.next),
+        peak(control.first), loaded.first == control.first && loaded.next == control.next, loaded.corePreserved);
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    return passed ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
     if (argc != 3) return 2;
     const std::string test = argv[1];
+    if (test.starts_with("audio-")) return AudioHistory(test);
     const bool jit = std::strcmp(argv[2], "interpreter") != 0;
 #ifndef JIT_ENABLED
     if (jit) return 77;

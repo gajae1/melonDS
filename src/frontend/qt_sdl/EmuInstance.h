@@ -324,6 +324,7 @@ private:
 
     std::unique_ptr<melonDS::Savestate> backupState;
     StateLoadResult applyState(melonDS::Savestate& state, bool undo);
+    void audioResetOutput();
 
     std::unique_ptr<melonDS::ARCodeFile> cheatFile;
     bool cheatsOn;

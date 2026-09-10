@@ -130,6 +130,11 @@ private:
 
     ENetHost* Host;
     ENetPeer* RemotePeers[16];
+    u32 PeerConnectTicks[16]{};
+    u16 PeerPorts[16]{};
+    u16 PortPeers = 0;
+    bool PortProtocol = false;
+    bool EndpointsReceived = false;
 
     socket_t DiscoverySocket;
     u32 DiscoveryLastTick;
@@ -155,6 +160,9 @@ private:
     void HostUpdatePlayerList();
     void ClearPeer(int id);
     bool ReadPlayerList(const ENetEvent& event);
+    void ReadPeerPorts(const ENetEvent& event);
+    void ConnectPeers();
+    void SendLocalReady(ENetPeer* peer);
 
     void ProcessHostEvent(ENetEvent& event);
     void ProcessClientEvent(ENetEvent& event);

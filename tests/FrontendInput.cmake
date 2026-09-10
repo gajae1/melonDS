@@ -308,6 +308,26 @@ add_executable(SavestateLoad "${CMAKE_SOURCE_DIR}/tests/SavestateLoad.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/applyState.inc")
 target_include_directories(SavestateLoad PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(SavestateLoad PRIVATE core Threads::Threads)
+target_sources(SavestateLoad PRIVATE "${audio_callback}")
+foreach(pair IN ITEMS "stateAudioEnable|audioEnable" "stateAudioDisable|audioDisable"
+        "stateAudioReport|audioReportDiagnostics" "stateAudioReset|audioResetOutput")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 output_name)
+    list(GET parts 1 method)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${output_name}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceAudio.cpp"
+            "void EmuInstance::${method}()" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
+    target_sources(SavestateLoad PRIVATE "${output}")
+endforeach()
+target_link_libraries(SavestateLoad PRIVATE PkgConfig::SDL2)
+melonds_configure_audio_kernels(SavestateLoad)
+foreach(case IN ITEMS audio-success audio-rebase audio-rollback audio-preflight)
+    add_test(NAME savestate-load-${case} COMMAND SavestateLoad ${case} interpreter)
+    set_tests_properties(savestate-load-${case} PROPERTIES TIMEOUT 30)
+endforeach()
 if (USE_QT6)
     target_link_libraries(SavestateLoad PRIVATE Qt6::Core)
 else()

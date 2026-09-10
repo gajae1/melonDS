@@ -76,6 +76,8 @@ ASan/UBSan/TSan의 지원 조합 표와 추가 JIT 통합은 BV-11의 후속 과
 
 [1.1.29](releases/1.1.29.md)의 `lan-packet-validation`, `lan-loopback-session`, `lan-ui-session`은 packet 경계와 실제 loopback/Qt 연결·취소·재시도를 구분한다. `input-dialog-selection-`과 `frontend-joystick-`는 가상 장치·임시 설정·일부 serial/센서 대역을 사용한다. `dsi-title-`는 생성 NAND·실제 FatFs/암호/I/O와 통제한 실패 경계를 사용한다. 실제 매체·게임·실물 입력·다른 OS 결과로 확대하지 않는다. 같은 최종 소스의 전체 548/548 성공은 재사용한다.
 
+[1.1.30](releases/1.1.30.md)의 같은 LAN fixture는 실제 4명·늦은 참가/준비·클라이언트 command/reply·ID 재사용을 추가한다. `savestate-load-audio-`는 성공/실패 복귀 뒤 실제 SDL dummy callback과 새로 생성한 PCM을 대조한다. `gpu-*-capture-jit`는 source A의 DMA 첫 소비 뒤 동일 JIT 블록을 재사용하며, 캡처를 끈 poison 대조도 확인한다. native VRAM fastmem mapping·JIT-first·실기/물리 장치 검증으로 확대하지 않는다.
+
 한 변경 기록에 소스 기준·변경 ID·빌드 종류·compiler/의존성 버전·관련 옵션·실행 명령·입력 종류·기대 결과·실패/성공/skip·남은 범위를 적는다.
 재현 입력은 합성 자료를 우선하고 실제 게임·저장 파일은 공개 자료에 넣지 않는다. 공개 가능한 digest와 필요한 비식별 환경 정보만 사용한다.
 
@@ -85,3 +87,9 @@ compiler profile을 학습한 workload와 평가 workload를 분리한다. 소�
 
 패키지는 생성된 실행 파일·필요 DLL/plugin·라이선스만 선별한다. 원본 저장 데이터는 보존한다.
 독립 PATH에서 실행 파일의 `--help`와 필요한 frontend·plugin 경로를 확인한다. `--help` 성공은 실제 게임·장치 수락을 대신하지 않는다.
+
+## 구버전 이관·통신과 보안 후속
+
+호환성 변경은 같은 버전끼리의 성공만으로 완료하지 않는다. 원본/구버전 writer가 만든 일반 게임 저장·설정·중간 저장을 새 reader에 전달하고, LAN은 호스트 역할을 바꾼 연결·게임 패킷 왕복을 확인한다. 포맷 major가 다른 중간 저장을 헤더 수정만으로 허용하지 않으며, 업그레이드와 구버전으로 되돌리기의 지원 방향을 구분한다. [1.1.30 기록](releases/1.1.30.md)은 원본 소스의 설정 이관 성공 및 LAN 클라이언트 방향의 미통과를 함께 남긴다.
+
+후속 보안 점검은 기존 NP-01/02·CJ-10·FS-01/02에 연결한다. 패킷/파일 길이·peer 권한·처리량과 큐의 상한·불량 입력 뒤 복구를 생성 입력으로 확인한다. 통신 지연을 줄이기 위해 검증을 제거하지 않으며, 정상 입력의 처리 비용과 오류 입력의 자원 사용을 별도로 측정한다. 이 문단은 점검 계획이며 보안 감사 완료나 침투 시험 성공을 뜻하지 않는다.

@@ -24,15 +24,15 @@
 | CJ-16 | [A64 native fastmem·W^X·I-cache](workstreams/01-core-jit.md#CJ-16) | 관찰/확장 | P1 | [1.1.39](Release_Plan.md#v39) | — | 미착수 |
 | CJ-17 | [BMI BIC·shift 실효성](workstreams/01-core-jit.md#CJ-17) | 미측정 가설 | P3 | [1.1.25](Release_Plan.md#v25) | — | 미착수 |
 | CJ-18 | [짧은 block hash·cache 비용](workstreams/01-core-jit.md#CJ-18) | 미측정 가설 | P3 | [1.1.25](Release_Plan.md#v25) | — | 미착수 |
-| CJ-19 | [3D capture의 CPU/DMA 가시성](workstreams/01-core-jit.md#CJ-19) | 관찰/확장 | P2 | [1.1.16](Release_Plan.md#v16) | GR-06 | 1.1.20 완료된 source A/B·혼합 캡처의 실제 ARM9 LDRH 소비 검증; DMA·warmed JIT·캡처 중 시각 후속 |
-| CJ-20 | [입력·RTC·다중 인스턴스 시간 정책](workstreams/01-core-jit.md#CJ-20) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
+| CJ-19 | [3D capture의 CPU/DMA 가시성](workstreams/01-core-jit.md#CJ-19) | 부분 실행 검증 | P2 | [1.1.16](Release_Plan.md#v16) | GR-06 | 1.1.30 source A DMA-first→동일 warmed JIT load 블록의 과거/미래 줄 읽기·3 backend 검증; JIT-first·직접 VRAM fastmem·실기/게임 후속 |
+| CJ-20 | [입력·RTC·다중 인스턴스 시간 정책](workstreams/01-core-jit.md#CJ-20) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 1.1.30 성공 load/undo의 host 오디오 이력만 AD-05로 선반영; 입력·RTC·외부/다중 인스턴스 정책 후속 |
 | CJ-21 | [DSi 동일 조건 upstream 부팅 비교](workstreams/01-core-jit.md#CJ-21) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | AD-17 | 미착수 |
 | GR-01 | [배율 변경의 pending capture 보존](workstreams/02-renderers.md#GR-01) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 이전 크기에서 pending 캡처 보존·CPU-synced 참조 폐기; 두 GL의 1x/2x·CPU 읽기·후속 texture 재사용 검증; 진행 중 캡처·다른 driver 후속 |
 | GR-02 | [Compute capture sampler unit](workstreams/02-renderers.md#GR-02) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19 capture 종류별 sampler unit 수정; 실제 128/256·S/T wrap·일반 texture 왕복의 binding/픽셀 검증; 다른 driver·비표준 capture·실기 후속 |
 | GR-03 | [capability·shader 실패 전파](workstreams/02-renderers.md#GR-03) | 실행 재현 | P1 | [1.1.17](Release_Plan.md#v17) | — | 1.1.19~25 core·표시 실패 복구; [1.1.26](releases/1.1.26.md) 실제 설정창의 선택/활성 renderer·대기/실패·worker capability·Cancel/재시도; 실제 3.2-only 장치·binary cache 후속 |
 | GR-04 | [GL 객체 해제·실패 초기화](workstreams/02-renderers.md#GR-04) | 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 core handle·1.1.23 표시 부분 해제/OSD·1.1.24 current 실패 거부; 1.1.25 새 context 반환 실패 시 GUI 정리와 native 전환; 물리 context 상실·native 삭제 실패·다른 driver 후속 |
-| GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 부분 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | [1.1.28](releases/1.1.28.md) 실제 ARM9 읽기/쓰기·DMA의 과거/미래 줄 보존과 source/목적지/크기 변경; subscanline latch·VCOUNT 변경·실기/게임 후속 |
-| GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 관찰/확장 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 software/OpenGL/Compute 각 30조건의 실제 A/B·혼합·bank wrap→guest LDRH 및 128/256 재사용; DMA·모든 2D source A·실기 후속 |
+| GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 부분 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.28 ARM9 읽기/쓰기·DMA의 과거/미래 줄·설정 변경; 1.1.30 source A DMA-first와 warmed JIT 추가 검증; subscanline latch·VCOUNT 변경·실기/게임 후속 |
+| GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 부분 실행 검증 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 A/B·혼합·bank wrap→guest LDRH·128/256 재사용; 1.1.30 source A DMA-first/warmed JIT·3 backend 검증; JIT-first·모든 2D source A·실기 후속 |
 | GR-07 | [고배율 한도·할당 복구](workstreams/02-renderers.md#GR-07) | 실행 재현 | P2 | [1.1.17](Release_Plan.md#v17) | — | 1.1.21 texture/viewport·SSBO/texel 한도와 첫 할당 오류·software 복구·캡처 보존·재선택 검증; 실장치 OOM/context 복구·작은 VRAM·indirect 상한 후속 |
 | GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 정적 후보 | P1 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-09 | [2D/3D 정수 SIMD·구간 묶음](workstreams/02-renderers.md#GR-09) | 미측정 가설 | P2 | [1.1.27](Release_Plan.md#v27) | — | 미착수 |
@@ -47,7 +47,7 @@
 | AD-02 | [마이크 공유 count·장치 수명](workstreams/03-audio-dsi.md#AD-02) | 실행 재현 | P1 | [1.1.08](Release_Plan.md#v08) | — | 1.1.07 count 잠금·FPS 게시·열린 장치 재호출 보존 회귀; 실제 재연결·다중 인스턴스·TSan 후속 |
 | AD-03 | [최초 SPU bitdepth 정책](workstreams/03-audio-dsi.md#AD-03) | 정적 후보 | P1 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-04 | [underrun·지연·장치 복구](workstreams/03-audio-dsi.md#AD-04) | 합성·장치 공급 재현 | P2 | [1.1.08](Release_Plan.md#v08) | — | 1.1.18 callback 부족/복귀 완화·진단과 생산 프레임 기준 동기화; 사용자 틱 원인 동일성·장기 청취·장치 재연결·물리 지연은 후속 |
-| AD-05 | [load/reset 오디오 이력 정책](workstreams/03-audio-dsi.md#AD-05) | 정적 후보 | P2 | [1.1.08](Release_Plan.md#v08) | — | 미착수 |
+| AD-05 | [load/reset 오디오 이력 정책](workstreams/03-audio-dsi.md#AD-05) | 부분 실행 재현 | P2 | [1.1.08](Release_Plan.md#v08) | — | 1.1.30 성공 load/undo의 PCM/blip/filter/ramp 초기화·복원 신호 유지·실패 복귀 보존 구현; 실제 SDL dummy callback 검증, 물리 버퍼·청감·다른 frontend 후속 |
 | AD-06 | [SPU capture 소스·가산](workstreams/03-audio-dsi.md#AD-06) | 관찰/확장 | P2 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-07 | [one-shot hold 동작](workstreams/03-audio-dsi.md#AD-07) | 관찰/확장 | P2 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
 | AD-08 | [ADPCM loop·보간 oracle](workstreams/03-audio-dsi.md#AD-08) | 고정 timer 합성 비교 | P2 | [1.1.09](Release_Plan.md#v09) | — | 1.1.18 SpeexDSP Q3 독립 비교·제품 채택 보류; 실제 채널의 변속 history·capture·상대 지연·tick 비용과 ADPCM/실기 oracle 후속 |
@@ -85,13 +85,13 @@
 | FS-14 | [RTC 파일 읽기·원자 저장](workstreams/04-frontend-storage.md#FS-14) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.06 파일 경계·원자 쓰기 구현·로컬 회귀 확인; 독립 파일 정책·날짜/게임 수락 후속 |
 | FS-15 | [치트 편집 저장 실패](workstreams/04-frontend-storage.md#FS-15) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.12 편집 사본·직렬화 사전 검사·QSaveFile commit·재시도/유지/취소·실행 목록 갱신 회귀; 실제 게임 적용·전원 손실 수락 후속 |
 | FS-16 | [DSi title 교체 rollback](workstreams/04-frontend-storage.md#FS-16) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | 1.1.29 NAND staging/backup·기존 저장 보존·rollback/불확실한 복구/정리 실패 경고 구현·생성 NAND 회귀; 실제 title 부팅/매체·수동 복구 후속 |
-| FS-17 | [LAN/Netplay UI 연결 수명](workstreams/04-frontend-storage.md#FS-17) | 실행 재현/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 1.1.29 활성 LAN 비동기 연결·취소·부모 종료·재시도·host 소실/Local 복귀·공유 수명 구현·Qt/loopback 회귀; 두 PC/휴면·다자간 mesh·비활성 Netplay 후속 |
+| FS-17 | [LAN/Netplay UI 연결 수명](workstreams/04-frontend-storage.md#FS-17) | 실행 재현/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 1.1.29 비동기 연결·취소·종료·재시도·공유 수명; 1.1.30 실제 4명 mesh·늦은 참가·준비/재연결과 Qt 회귀; 두 PC 게임·휴면·비활성 Netplay 후속 |
 | FS-18 | [GDB UI/코어 종료 경계](workstreams/04-frontend-storage.md#FS-18) | 관찰/확장 | P2 | [1.1.10](Release_Plan.md#v10) | — | 미착수 |
 | FS-19 | [DS/DSi 설정·부팅 진단](workstreams/04-frontend-storage.md#FS-19) | 미측정 가설 | P2 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
 | FS-20 | [느린 ROM 준비·취소](workstreams/04-frontend-storage.md#FS-20) | 미측정 가설 | P2 | [1.1.07](Release_Plan.md#v07) | — | 미착수 |
 | FS-21 | [카메라 미리보기·hotplug 수명](workstreams/04-frontend-storage.md#FS-21) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
 | NP-01 | [LAN payload·AID·peer 검증](workstreams/05-connectivity-peripherals.md#NP-01) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.08 실제 ENet payload·type·sender/peer·AID 검증과 27개 생성 패킷 회귀; 빈 AID0 reply 보존, 두 PC 게임 수락 후속 |
-| NP-02 | [LAN handshake·취소·소유권](workstreams/05-connectivity-peripherals.md#NP-02) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.29 packet 단일 소유·세션 초기화/종료·목록 잠금·배정/버전 검사·비동기 완료/취소 구현·실제 loopback 회귀; 두 PC 게임·방화벽/다른 OS 후속 |
+| NP-02 | [LAN handshake·취소·소유권](workstreams/05-connectivity-peripherals.md#NP-02) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.29 소유·초기화/종료·잠금·검사·비동기 완료/취소; 1.1.30 v1 호환·선택 포트 교환·단방향 mesh·4명/ID 재사용; 1.1.29 양방향/원본 호스트 통과, 원본 클라이언트의 첫 UDP 유실·두 PC 게임/다른 OS 후속 |
 | NP-03 | [LocalMP FIFO 넘침·복구](workstreams/05-connectivity-peripherals.md#NP-03) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | [1.1.26](releases/1.1.26.md) 뒤처진 수신자 backlog 폐기·기록 경계/permit 동기화·종료/새 host·수신 중 reset; 실제 무선 게임·다중 그룹 후속 |
 | NP-04 | [LocalMP 그룹 격리](workstreams/05-connectivity-peripherals.md#NP-04) | 관찰/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
 | NP-05 | [PCap library 실패 중복 해제](workstreams/05-connectivity-peripherals.md#NP-05) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 누락 심볼 시 단일 unload·이동/소유권 회귀; 실제 DLL·POSIX 수락 후속 |
@@ -128,6 +128,6 @@
 | BV-15 | [Windows/Linux ARM64 native](workstreams/06-build-validation.md#BV-15) | 장치/조건부 | P1 | [1.1.40](Release_Plan.md#v40) | — | 미착수 |
 | BV-16 | [고급 ARM/Apple 조건부 gate](workstreams/06-build-validation.md#BV-16) | 장치/조건부 | P2 | [1.1.41](Release_Plan.md#v41) | — | 미착수 |
 | BV-17 | [장기 게임·실기 통합 수락](workstreams/06-build-validation.md#BV-17) | 관찰/확장 | P1 | [1.1.44](Release_Plan.md#v44) | — | 미착수 |
-| BV-18 | [upstream/provenance 유지](workstreams/06-build-validation.md#BV-18) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
+| BV-18 | [upstream/provenance 유지](workstreams/06-build-validation.md#BV-18) | 부분 대조 | P1 | [1.1.03](Release_Plan.md#v03) | — | [2026-09-11 감사](Audit_2026-09-11.md)의 최신 patch 표본·공식 issue·Android 고정 core/빌드/상태 형식 대조; 전체 upstream 및 native 실행 동등성 후속 |
 | BV-19 | [실험 기능 승격·복구 matrix](workstreams/06-build-validation.md#BV-19) | 관찰/확장 | P1 | [1.1.44](Release_Plan.md#v44) | — | 미착수 |
 | BV-20 | [SDL3 API·장치 전환](workstreams/06-build-validation.md#BV-20) | 신규 이행 | P2 | [1.1.37](Release_Plan.md#v37) | — | 미착수 |

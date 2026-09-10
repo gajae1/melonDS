@@ -19,6 +19,24 @@ u64 GetMSCount()
 
 using namespace melonDS;
 
+namespace melonDS
+{
+struct LANPacketTest
+{
+    static bool MeshReady(LAN& net, u16 mask)
+    {
+        if ((net.ConnectedBitmask & mask) != mask) return false;
+        for (int id = 0; id < 16; ++id)
+        {
+            if (!(mask & (1 << id)) || id == net.MyPlayer.ID) continue;
+            if (!net.RemotePeers[id] || net.RemotePeers[id]->state != ENET_PEER_STATE_CONNECTED)
+                return false;
+        }
+        return true;
+    }
+};
+}
+
 template<class Predicate>
 bool Pump(LAN& host, LAN& client, Predicate done)
 {
@@ -31,6 +49,81 @@ bool Pump(LAN& host, LAN& client, Predicate done)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
+}
+
+bool Mesh()
+{
+    LAN host, one, two, three;
+    std::array<LAN*, 4> nodes{&host, &one, &two, &three};
+    auto pump = [&](auto done)
+    {
+        const auto end = Platform::GetMSCount() + 2000;
+        while (Platform::GetMSCount() < end)
+        {
+            for (auto* node : nodes) node->Process();
+            if (done()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    };
+    auto join = [&](LAN& client, const char* name)
+    {
+        return client.StartClient(name, "127.0.0.1") && pump([&]
+        {
+            return client.GetClientState() == LAN::ClientState::Connected;
+        });
+    };
+    auto ready = [&](u16 mask)
+    {
+        return pump([&]
+        {
+            for (int id = 0; id < 4; ++id)
+                if ((mask & (1 << id)) && !LANPacketTest::MeshReady(*nodes[id], mask)) return false;
+            return true;
+        });
+    };
+    auto frame = [&](LAN& sender, LAN& receiver, u8 value)
+    {
+        std::array<u8, 40> input{}, output{};
+        input.fill(value);
+        constexpr u64 expectedStamp = 123456;
+        if (sender.SendCmd(0, input.data(), input.size(), expectedStamp) != int(input.size())) return false;
+        u64 stamp = 0;
+        return pump([&] { return receiver.RecvHostPacket(0, output.data(), &stamp) == int(output.size()); }) &&
+            input == output && stamp == expectedStamp;
+    };
+    if (!host.StartHost("Mesh host", 4)) return false;
+    host.EndDiscovery();
+    if (!join(one, "First")) return false;
+    host.Begin(0);
+    one.Begin(0);
+    if (!ready(0x3) || !join(two, "Second")) return false;
+    two.Begin(0);
+    // Existing participants already called Begin before the new mesh link exists.
+    if (!ready(0x7) || !frame(one, two, 0x53)) return false;
+    std::array<u8, 40> reply{};
+    reply.fill(0xA6);
+    std::array<u8, 15 * 1024> replies{};
+    if (two.SendReply(0, reply.data(), reply.size(), 123456, 3) != int(reply.size()) ||
+        !pump([&] { return one.RecvReplies(0, replies.data(), 123456, 1 << 3) == (1 << 3); }) ||
+        !std::equal(reply.begin(), reply.end(), replies.begin() + 2 * 1024)) return false;
+    if (!frame(two, one, 0x27) || !join(three, "Third")) return false;
+    three.Begin(0);
+    // Three clients share an IPv4 address but have different ENet endpoints.
+    if (!ready(0xF) || !frame(two, three, 0x39)) return false;
+    one.EndSession();
+    if (!pump([&] { return host.GetNumPlayers() == 3 && two.GetNumPlayers() == 3 && three.GetNumPlayers() == 3; }))
+        return false;
+    if (!join(one, "Replacement")) return false;
+    one.Begin(0);
+    if (!ready(0xF) || !frame(one, two, 0x71)) return false;
+    host.EndSession();
+    return pump([&]
+    {
+        return one.GetClientState() == LAN::ClientState::Disconnected &&
+            two.GetClientState() == LAN::ClientState::Disconnected &&
+            three.GetClientState() == LAN::ClientState::Disconnected;
+    });
 }
 
 int main()
@@ -94,5 +187,11 @@ int main()
     if (retained == MPInterface::Acquire()) return 9;
     retained.reset();
     MPInterface::Set(MPInterface_Dummy);
+    if (!Mesh())
+    {
+        std::fputs("FAIL client mesh, late readiness, reply routing or reused player slot\n", stderr);
+        return 10;
+    }
     std::puts("PASS real loopback handshake, MP frame, leave/rejoin, host loss, snapshots and interface lifetime");
+    std::puts("PASS four-participant mesh, late readiness, client replies and reused player slot");
 }
