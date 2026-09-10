@@ -8,6 +8,7 @@
 | [버전별 계획](Release_Plan.md) | 1.1.03~1.1.44, 각 5페이즈, 선행 산출물과 수락 조건 |
 | [착수 순서](Execution_Order.md) | 첫 반례, 작업 경계, 중단·후속 조건 |
 | [검증 방법](Validation.md) | 로컬 빌드·회귀·측정과 증거 작성 기준 |
+| [1.1.27 구현 기록](releases/1.1.27.md) | software 3D 저장/재설정 대기·GX FIFO의 NDMA 정지·DSi WMI 오류/연결 응답 |
 | [1.1.26 구현 기록](releases/1.1.26.md) | DSi 부팅 실패·SD 전송 경계·LocalMP 큐 복구와 그래픽 설정 상태 |
 | [1.1.25 구현 기록](releases/1.1.25.md) | context 반환 실패·다중 창 복구·생성 fallback 동기화와 종료 후 알림 충돌 |
 | [1.1.24 구현 기록](releases/1.1.24.md) | 실행 중 표시 오류·해제 거부·재시도와 일시정지 화면·입력 보존 |

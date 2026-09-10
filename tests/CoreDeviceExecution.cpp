@@ -7,6 +7,7 @@
 // https://problemkaputt.de/gbatek.htm#dsinterrupts
 #include "Args.h"
 #include "ARM.h"
+#include "DSi.h"
 #include "NDS.h"
 
 #include <cstdio>
@@ -201,5 +202,177 @@ int TestDeviceExecution(NDSArgs&& args, bool jit)
     }
 
     std::printf("Device execution: %u/5 cases passed\n", 5 - failures);
+    return failures ? 1 : 0;
+}
+
+// GBATEK: DSi NDMA fixed priority / logical and total lengths; GX FIFO packed
+// command overkill must pause DMA until the geometry engine makes room.
+// https://problemkaputt.de/gbatek.htm#dsinewdmandma
+// https://problemkaputt.de/gbatek.htm#ds3dgeometrycommands
+// Real MMIO, DMA, GPU and full savestates; no physical cycle-count oracle.
+int TestDSiNDMAExecution(NDSArgs&& args)
+{
+    DSiArgs dsiArgs;
+    static_cast<NDSArgs&>(dsiArgs) = std::move(args);
+    auto dsi = std::make_unique<DSi>(std::move(dsiArgs));
+    constexpr u32 Source = 0x02020000;
+    constexpr u32 Dest = 0x02021000;
+    constexpr u32 Enable = 1u << 31;
+    constexpr u32 Done0 = 1u << 28;
+    constexpr u32 Done1 = 1u << 29;
+    unsigned failures = 0;
+    const char* name = "";
+    auto require = [&](bool ok, const char* detail) {
+        if (!ok)
+        {
+            ++failures;
+            std::fprintf(stderr, "ndma/%s: FAIL %s (CNT=%08x IF9=%08x stop=%08x)\n",
+                         name, detail, dsi->NDMAs[0].Cnt, dsi->IF[0], dsi->CPUStop);
+        }
+    };
+    auto reset = [&] {
+        dsi->CurCPU = 0;
+        dsi->Reset();
+    };
+    auto write = [&](unsigned cpu, u32 addr, u32 value) {
+        if (cpu) dsi->ARM7Write32(addr, value);
+        else     dsi->ARM9Write32(addr, value);
+    };
+    auto setup = [&](unsigned cpu, unsigned channel, u32 src, u32 dst,
+                     u32 logical, u32 total, u32 control) {
+        const u32 reg = 0x04004104 + channel * 0x1C;
+        write(cpu, reg, src);
+        write(cpu, reg + 4, dst);
+        write(cpu, reg + 8, total);
+        write(cpu, reg + 12, logical);
+        write(cpu, reg + 16, 0); // No subblock interval / round-robin change.
+        write(cpu, reg + 24, Enable | (1u << 30) | control);
+    };
+    auto step = [&](unsigned cpu) {
+        dsi->CurCPU = cpu;
+        // A scheduler slice smaller than one transfer: examine word boundaries
+        // without asserting an undocumented DSi memory/bus duration.
+        if (cpu) dsi->ARM7Target = dsi->ARM7Timestamp + 1;
+        else     dsi->ARM9Target = dsi->ARM9Timestamp + 1;
+        dsi->RunNDMAs(cpu);
+    };
+
+    for (unsigned cpu : {0u, 1u})
+    {
+        name = cpu ? "arm7-start-count-priority" : "arm9-start-count-priority";
+        const unsigned before = failures;
+        reset();
+        for (unsigned i = 0; i < 8; ++i)
+            write(cpu, Source + i * 4, 0xA1000000 + i);
+
+        // Immediate transfer ignores TCNT. Lower priority channel is armed
+        // first, but must not overwrite the destination before channel 0 ends.
+        setup(cpu, 1, Source + 16, Dest, 1, 99, 0x10000000);
+        setup(cpu, 0, Source, Dest, 4, 1, 0x10000000 | (2u << 16));
+        for (unsigned i = 0; i < 4; ++i)
+        {
+            step(cpu);
+            require(dsi->ARM9Read32(Dest + i * 4) == 0xA1000000 + i,
+                    "higher priority word missing/overwritten");
+            require((dsi->IF[cpu] & (Done0 | Done1)) == (i == 3 ? Done0 : 0),
+                    "completion IRQ before final word / competing IRQ order");
+        }
+        require(!(dsi->NDMAs[cpu * 4].Cnt & Enable) &&
+                (dsi->NDMAs[cpu * 4 + 1].Cnt & Enable), "channel enable at completion");
+        step(cpu);
+        require(dsi->ARM9Read32(Dest) == 0xA1000004 &&
+                (dsi->IF[cpu] & (Done0 | Done1)) == (Done0 | Done1) &&
+                !dsi->NDMAsRunning(cpu), "lower priority completion");
+
+        // Existing VBlank startup with a final short logical block. The
+        // physical block is four words; only the last three words remain.
+        write(cpu, IFAddress, Done0 | Done1);
+        setup(cpu, 0, Source, Dest + 32, 4, 7, 0x06000000 | (2u << 16));
+        step(cpu);
+        require(!dsi->NDMAsRunning(cpu) && dsi->ARM9Read32(Dest + 32) == 0,
+                "timed channel started before request");
+        for (unsigned block = 0; block < 2; ++block)
+        {
+            dsi->CheckDMAs(cpu, cpu ? 0x11 : 0x01); // Existing VBlank caller mapping.
+            for (unsigned i = 0; i < (block ? 3u : 4u); ++i)
+                step(cpu);
+            require((dsi->IF[cpu] & Done0) == (block ? Done0 : 0),
+                    "logical block IRQ did not respect total length");
+            require(!dsi->NDMAsRunning(cpu), "logical block did not release CPU");
+        }
+        for (unsigned i = 0; i < 7; ++i)
+            require(dsi->ARM9Read32(Dest + 32 + i * 4) == 0xA1000000 + i,
+                    "timed transfer data");
+        require(dsi->ARM9Read32(Dest + 60) == 0 && !(dsi->NDMAs[cpu * 4].Cnt & Enable),
+                "final short block overran destination / remained enabled");
+        std::printf("ndma/%s: %s\n", name, failures == before ? "PASS" : "FAIL");
+    }
+
+    for (bool fifoMode : {false, true})
+    {
+        name = fifoMode ? "gx-subdivision-stall-snapshot" : "immediate-gx-stall-snapshot";
+        const unsigned before = failures;
+        reset();
+        dsi->ARM9Write16(0x04000304, 0x000F); // Geometry power, through real MMIO.
+        const u32 words = fifoMode ? 224 : 112;
+        for (u32 i = 0; i < words; ++i)
+            dsi->ARM9Write32(Source + i * 4, i + 1 == words ? 0x11 : 0x00151515);
+        // Three IDENTITY commands per word exceed the FIFO capacity. A final
+        // PUSH makes a dropped tail visible in GXSTAT's projection stack bit.
+        dsi->ARM9Write32(Source + 1024, 0xC001CAFE);
+        setup(0, 0, Source, 0x04000400, words, words,
+              (fifoMode ? 0x0A000000 : 0x10000000) | (2u << 10) | (4u << 16));
+        setup(0, 1, Source + 1024, Dest, 1, 1, 0x10000000);
+        dsi->ARM9Target = dsi->ARM9Timestamp + 1000000;
+        dsi->RunNDMAs(0);
+        require((dsi->CPUStop & CPUStop_GXStall) && dsi->NDMAs[0].IsRunning() &&
+                (dsi->NDMAs[0].Cnt & Enable) && !(dsi->IF[0] & Done0),
+                "FIFO full did not pause the active DMA before completion");
+        require(dsi->ARM9Read32(Dest) == 0 && !(dsi->IF[0] & Done1),
+                "competing ARM9 channel ran through GX stall");
+
+        Savestate saved;
+        if (!dsi->NDS::DoSavestate(&saved) || saved.Error)
+        {
+            require(false, "stalled full savestate failed");
+            return 2;
+        }
+        saved.Finish();
+        for (bool replay : {false, true})
+        {
+            if (replay)
+            {
+                reset();
+                Savestate load(saved.Buffer(), saved.Length(), false);
+                if (!dsi->NDS::DoSavestate(&load) || load.Error)
+                {
+                    require(false, "stalled full savestate load failed");
+                    return 2;
+                }
+            }
+            bool done = false;
+            u32 gxstat = 0;
+            for (unsigned slice = 0; slice < 4096 && !done; ++slice)
+            {
+                dsi->CurCPU = 0;
+                dsi->ARM9Timestamp += 32u << dsi->ARM9ClockShift;
+                dsi->GPU.GPU3D.Run();
+                dsi->ARM9Target = dsi->ARM9Timestamp + (32u << dsi->ARM9ClockShift);
+                dsi->RunNDMAs(0);
+                gxstat = dsi->ARM9Read32(0x04000600);
+                done = !(dsi->NDMAs[0].Cnt & Enable) && !dsi->NDMAsRunning(0) &&
+                       !(gxstat & (1u << 27)) && !(dsi->CPUStop & CPUStop_GXStall);
+            }
+            require(done, "bounded DMA/GPU drain did not finish");
+            require((gxstat & (1u << 13)) && !(gxstat & (1u << 15)),
+                    "final PUSH was lost/duplicated after FIFO overflow");
+            require((dsi->IF[0] & (Done0 | Done1)) == (Done0 | Done1) &&
+                    dsi->ARM9Read32(Dest) == 0xC001CAFE &&
+                    !(dsi->CPUStop & 0xF0), "completion IRQ / competing channel / CPU release");
+            std::printf("ndma/%s/%s: drained=%d GXSTAT=%08x IF=%08x\n", name,
+                        replay ? "replay" : "live", done, gxstat, dsi->IF[0]);
+        }
+        std::printf("ndma/%s: %s\n", name, failures == before ? "PASS" : "FAIL");
+    }
     return failures ? 1 : 0;
 }

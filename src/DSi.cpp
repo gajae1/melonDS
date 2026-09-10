@@ -1078,7 +1078,12 @@ void DSi::RunNDMAs(u32 cpu)
 
 void DSi::StallNDMAs()
 {
-    // TODO
+    // Packed GX commands can fill the FIFO even within a DMA burst. Stop the
+    // executing ARM9 channel at this word, as for the legacy DMA channels.
+    NDMAs[0].StallIfRunning();
+    NDMAs[1].StallIfRunning();
+    NDMAs[2].StallIfRunning();
+    NDMAs[3].StallIfRunning();
 }
 
 

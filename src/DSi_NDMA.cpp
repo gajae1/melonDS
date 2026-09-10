@@ -63,6 +63,9 @@ void DSi_NDMA::Reset()
 
     Running = false;
     InProgress = false;
+    Executing = false;
+    Stall = false;
+    IsGXFIFODMA = false;
 }
 
 void DSi_NDMA::DoSavestate(Savestate* file)

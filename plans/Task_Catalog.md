@@ -39,7 +39,7 @@
 | GR-10 | [texture cache 비용·상주량](workstreams/02-renderers.md#GR-10) | 미측정 가설 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22~24 초기화/실행 실패·해제 거부·paused 이미지/입력 복구; 1.1.25 반환 실패·전체 Qt 세 인스턴스/네 창의 상태 보존·native 전환·재선택; 물리 surface·이종 GPU/DPI·휴면 후속 |
 | GR-12 | [다중 context 초기화 도달성](workstreams/02-renderers.md#GR-12) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22 loader 중첩/조기 재개와 broadcast 교착 차단; 1.1.25 실패한 borrow의 GUI 진입 거부·부분 반환·중첩 외부 소유 보존·실제 Qt 다중 창 복구; 이종 GPU 함수표·다른 OS 후속 |
-| GR-13 | [software worker 공개·중단 수명](workstreams/02-renderers.md#GR-13) | 정적 후보 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
+| GR-13 | [software worker 공개·중단 수명](workstreams/02-renderers.md#GR-13) | 실행 재현 | P2 | [1.1.28](Release_Plan.md#v28) | — | [1.1.27](releases/1.1.27.md) 작업 제출/완료 대기·저장/reset/abort/모드 전환의 경쟁 수정, 실제 scanline·NDS 상태 왕복; aborted 픽셀 정확도·ARM·장기 게임 후속 |
 | GR-14 | [render·readback·present 비용 분해](workstreams/02-renderers.md#GR-14) | 미측정 가설 | P2 | [1.1.30](Release_Plan.md#v30) | — | 미착수 |
 | GR-15 | [Vulkan 전체 backend 신설](workstreams/02-renderers.md#GR-15) | 기능 부재 관찰·이득 미측정 | P3 | [1.1.32](Release_Plan.md#v32) | — | 미착수 |
 | GR-16 | [frame 종류·수명·반납 계약](workstreams/02-renderers.md#GR-16) | 관찰/확장 | P3 | [1.1.32](Release_Plan.md#v32) | — | 미착수 |
@@ -57,8 +57,8 @@
 | AD-12 | [SD backing I/O 실패 전파](workstreams/03-audio-dsi.md#AD-12) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | [1.1.26](releases/1.1.26.md) short/seek/read-only/매체 끝 오류의 완료 차단·CMD12/리셋 복구, 실제 Qt -1 오류와 sparse EOF 대조; 지속 저장·물리 오류/타이밍 후속 |
 | AD-13 | [NAND metadata exact read](workstreams/03-audio-dsi.md#AD-13) | 실행 재현 | P1 | [1.1.19](Release_Plan.md#v19) | — | [1.1.26](releases/1.1.26.md) exact read·출력 보존·core/frontend/worker 실패 전파, 사전 실패의 세션 보존과 늦은 실패의 정지·재시도; footer·실제 NAND 부팅 후속 |
 | AD-14 | [AES CCM FIFO tag 모드](workstreams/03-audio-dsi.md#AD-14) | 관찰/확장 | P2 | [1.1.29](Release_Plan.md#v29) | — | 미착수 |
-| AD-15 | [AES/SD 완료 event 타이밍](workstreams/03-audio-dsi.md#AD-15) | 관찰/확장 | P2 | [1.1.20](Release_Plan.md#v20) | — | 미착수 |
-| AD-16 | [NDMA arbitration·subblock](workstreams/03-audio-dsi.md#AD-16) | 관찰/확장 | P2 | [1.1.20](Release_Plan.md#v20) | — | 미착수 |
+| AD-15 | [AES/SD 완료 event 타이밍](workstreams/03-audio-dsi.md#AD-15) | 관찰/확장 | P2 | [1.1.20](Release_Plan.md#v20) | — | 1.1.27 후보 확인; AES 즉시 처리·SD 고정 지연은 유지, 실제 시작/준비/완료 trace 후속 |
+| AD-16 | [NDMA arbitration·subblock](workstreams/03-audio-dsi.md#AD-16) | 부분 실행 재현 | P2 | [1.1.20](Release_Plan.md#v20) | — | [1.1.27](releases/1.1.27.md) GX 포화 정지 누락·상태 flag 초기화 수정, 실제 명령/IRQ·경쟁 채널·전체 snapshot 복원; timer/subblock/round-robin·실기 후속 |
 | AD-17 | [DSi boot/reset·SCFG/NWRAM](workstreams/03-audio-dsi.md#AD-17) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | — | 미착수 |
 | AD-18 | [DSP modulo −1 실기 판정](workstreams/03-audio-dsi.md#AD-18) | 기존 실패 기록 | P1 | [1.1.21](Release_Plan.md#v21) | — | 미착수 |
 | AD-19 | [DSP retd·vtrshr 지연](workstreams/03-audio-dsi.md#AD-19) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
@@ -97,7 +97,7 @@
 | NP-05 | [PCap library 실패 중복 해제](workstreams/05-connectivity-peripherals.md#NP-05) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 누락 심볼 시 단일 unload·이동/소유권 회귀; 실제 DLL·POSIX 수락 후속 |
 | NP-06 | [PCap caplen/link type·I/O](workstreams/05-connectivity-peripherals.md#NP-06) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 완전한 Ethernet 캡처·datalink·I/O 오류와 open/열거 자원 회귀; 실제 어댑터·driver 실패 수락 후속 |
 | NP-07 | [Slirp IPv4/UDP/DNS 경계](workstreams/05-connectivity-peripherals.md#NP-07) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 IPv4/UDP 길이·옵션·DNS 단일 A/IN 질문 검증 후 조회; 생성 응답/보호 페이지 회귀, 실제 DS DNS 수락 후속 |
-| NP-08 | [DS/DSi Wi-Fi 실패 event](workstreams/05-connectivity-peripherals.md#NP-08) | 관찰/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
+| NP-08 | [DS/DSi Wi-Fi 실패 event](workstreams/05-connectivity-peripherals.md#NP-08) | 부분 실행 재현 | P2 | [1.1.12](Release_Plan.md#v12) | — | [1.1.27](releases/1.1.27.md) DSi CONNECT/scan 오류·기존 상태 보존·완전한 연결 본문과 IRQ/재연결; guest 자동 복구·DS retry/host 소실·실기 후속 |
 | NP-09 | [Netplay host/client 실제 게임](workstreams/05-connectivity-peripherals.md#NP-09) | 관찰/확장 | P2 | [1.1.31](Release_Plan.md#v31) | — | 미착수 |
 | NP-10 | [GDB packet/framing 용량](workstreams/05-connectivity-peripherals.md#NP-10) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 framing/escape/checksum·응답 용량·불량 패킷 뒤 회복 회귀; 정확히 찬 수신 버퍼의 NUL 제거는 정적 결함 수정 |
 | NP-11 | [GDB M/X 파싱·무부분쓰기](workstreams/05-connectivity-peripherals.md#NP-11) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 m/M/X 범위·정확한 본문 길이·escape를 전부 검증한 뒤 쓰기; 기존 MMIO 폭 보존, 실제 ARM debugger 수락 후속 |

@@ -19,6 +19,7 @@ int TestBlockTransferExecution(NDSArgs&& args, bool jit);
 int TestDTCMExecution(NDSArgs&& args, bool jit);
 int TestMPUExecution(NDSArgs&& args, bool jit);
 int TestDeviceExecution(NDSArgs&& args, bool jit);
+int TestDSiNDMAExecution(NDSArgs&& args);
 int TestSchedulerExecution(NDSArgs&& args);
 
 static int TestSchedulerSavestate(NDSArgs&& args)
@@ -154,6 +155,8 @@ int main(int argc, char** argv) {
         return TestDeviceExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
         return TestSchedulerSavestate(std::move(args));
+    if (argc > 2 && std::strcmp(argv[2], "dsi-ndma") == 0)
+        return TestDSiNDMAExecution(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "scheduler-execution") == 0)
         return TestSchedulerExecution(std::move(args));
     auto nds = std::make_unique<NDS>(std::move(args));

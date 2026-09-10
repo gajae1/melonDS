@@ -490,7 +490,7 @@ private:
 
     bool Enabled;
 
-    bool FrameIdentical;
+    bool FrameIdentical = false;
 
     u32 ScrolledLine[256];
 
@@ -499,7 +499,8 @@ private:
     bool Threaded = false;
     Platform::Thread* RenderThread;
     std::atomic_bool RenderThreadRunning;
-    std::atomic_bool RenderThreadRendering;
+    // Only the emulation owner accesses this; the worker signals completion.
+    bool RenderPending = false;
 
     // Used by the main thread to tell the render thread to start rendering a frame
     Platform::Semaphore* Sema_RenderStart;

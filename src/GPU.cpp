@@ -131,6 +131,8 @@ void GPU::ResetVRAMCache() noexcept
 
 void GPU::Reset() noexcept
 {
+    // Software rendering may still read latched registers, polygons and VRAM.
+    Rend->Finish3DRendering();
     ScreensEnabled = false;
     ScreenSwap = false;
 

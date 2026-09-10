@@ -1013,6 +1013,13 @@ void DSi_NWifi::WMI_Command()
                 Log(LogLevel::Debug, "WMI: start scan, forceFG=%d, legacy=%d, scanTime=%d, interval=%d, scanType=%d, chan=%d\n",
                        forcefg, legacy, scantime, forceinterval, scantype, nchannels);
 
+                if (scantype > 1) // WMI_LONG_SCAN / WMI_SHORT_SCAN
+                {
+                    u8 error[3] = {0x07, 0x00, 0x01}; // START_SCAN, INVALID_PARAM
+                    SendWMIEvent(1, 0x1005, error, sizeof(error)); // WMI_CMDERROR_EVENT
+                    break; // leave any pending scan intact
+                }
+
                 if (ScanTimer > 0)
                 {
                     Log(LogLevel::Debug, "!! CHECKME: START SCAN BUT WAS ALREADY SCANNING (%d)\n", ScanTimer);
@@ -1237,29 +1244,53 @@ void DSi_NWifi::WMI_ConnectToNetwork()
         (memcmp(bssid, WifiAP::APMac, 6)))
     {
         Log(LogLevel::Error, "WMI_Connect: bad parameters\n");
-        // TODO: send disconnect??
+        // Refuse the unsupported command without dropping an existing link.
+        // WMI_CMD_ERROR_EVENT: little-endian command ID, then INVALID_PARAM.
+        u8 error[3] = {0x01, 0x00, 0x01};
+        SendWMIEvent(1, 0x1005, error, sizeof(error));
         return;
     }
 
     Log(LogLevel::Debug, "WMI: connecting to network %s\n", ssid);
 
-    u8 reply[20];
+    // WMI_CONNECT_EVENT contains beacon IEs, the association request body,
+    // then the response body. These lengths exclude the 802.11 MAC header.
+    // Use the same open AP capabilities/rates as the scan beacon. The request
+    // and response retain their 4/6-byte fixed fields for guest IE parsers.
+    const u8 beaconIEs[] =
+    {
+        0x00, 0x07, 'm', 'e', 'l', 'o', 'n', 'A', 'P',
+        0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24,
+        0x03, 0x01, 0x06,
+    };
+    const u8 assocRequest[] =
+    {
+        0x21, 0x00, 0x80, 0x00, // capability, listen interval
+        0x00, 0x07, 'm', 'e', 'l', 'o', 'n', 'A', 'P',
+        0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24,
+    };
+    const u8 assocResponse[] =
+    {
+        0x21, 0x00, 0x00, 0x00, 0x01, 0xC0, // capability, success, AID 1
+        0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24,
+    };
+    u8 reply[19 + sizeof(beaconIEs) + sizeof(assocRequest) + sizeof(assocResponse)];
 
-    // hope this is right!
     *(u16*)&reply[0] = 2437; // channel
     memcpy(&reply[2], WifiAP::APMac, 6); // BSSID
     *(u16*)&reply[8] = 128; // listen interval
     *(u16*)&reply[10] = 128; // beacon interval
     *(u32*)&reply[12] = 0x01; // network type
 
-    reply[16] = 0x16; // beaconIeLen ???
-    reply[17] = 0x2F; // assocReqLen
-    reply[18] = 0x16; // assocRespLen
-    reply[19] = 0; // ?????
-
-    SendWMIEvent(1, 0x1002, reply, 20);
+    reply[16] = sizeof(beaconIEs);
+    reply[17] = sizeof(assocRequest);
+    reply[18] = sizeof(assocResponse);
+    memcpy(&reply[19], beaconIEs, sizeof(beaconIEs));
+    memcpy(&reply[19 + sizeof(beaconIEs)], assocRequest, sizeof(assocRequest));
+    memcpy(&reply[19 + sizeof(beaconIEs) + sizeof(assocRequest)], assocResponse, sizeof(assocResponse));
 
     ConnectionStatus = 1;
+    SendWMIEvent(1, 0x1002, reply, sizeof(reply));
 }
 
 void DSi_NWifi::WMI_SendPacket(u16 len)

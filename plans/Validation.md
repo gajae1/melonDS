@@ -54,6 +54,8 @@ DTCM은 `CoreExecution`의 `core-.*-dtcm-remap`에서 CP15 이동·해제와 실
 
 [1.1.26](releases/1.1.26.md)은 `video-settings-dialog-recovery`, `direct-boot-message-failure`, `dsi-boot26-`, `dsi-sd-`, `localmp-`를 추가했다. 부팅은 독립 암호 vector와 실제 core/FatFs의 합성 NAND, SD는 현재 controller와 실제 Qt 파일 I/O, LocalMP는 현재 구현과 결정적인 수신 순서를 사용한다. 기존 core·파일·Qt 시험 도구를 재사용하고 fixture 결과를 실제 게임·장치 수락으로 확대하지 않는다. 전체 Qt 조작은 modal 안내를 먼저 처리한 뒤 설정 변경·종료를 진행한다.
 
+[1.1.27](releases/1.1.27.md)의 `software-thread-`는 실제 rasterizer의 semaphore 경계와 전체 core 상태 왕복을, `core-dsi-ndma`는 실제 MMIO·GX FIFO 포화·명령/IRQ·snapshot을 검사한다. `wifi-state-`는 실제 SDIO CMD52·HTC/WMI event·IRQ와 생성 packet을 사용한다. worker의 host 순서, 수동 device callback, 짧은 DMA 관찰 slice를 guest 실행·물리 timing·장기 게임 결과로 집계하지 않는다.
+
 `gpu-.*-capture-readback`은 실제 source A 3D/B·혼합 캡처, 1x/2x, pending/CPU-synced 배율 전환과 guest ARM9 LDRH·후속 texture 재사용을 검사한다. 주색 끝값·정수 합으로 기존 중간 강도 양자화 차이를 분리하며 전체 색 정밀도 oracle로 사용하지 않는다. `gpu-gl-resource-`는 실제 생성/삭제에 위임하여 같은 context에서 정상 반복·첫 shader 오류 뒤 program/buffer/texture 생존과 대조 객체 보존을 확인한다. 미초기화 읽기의 원래 재현은 compiler별로 달라질 수 있고 이 검사는 context 상실·전체 Qt event loop 수락이 아니다.
 
 `core-.*-device-execution`은 실제 Timer0 MMIO·HALT·IRQ의 F 보존과 IME/IE/CPSR 마스크 다섯 조건을 생성 ARM9 guest로 검사한다. handler 시각은 최초 overflow 이전이 아님을 확인하며 절대 실기 latency를 추정하지 않는다.

@@ -140,9 +140,19 @@ GR-11/12에서 확인한 실제 호출 경계를 진행한다. 창 교체/해제
 
 [1.1.26 구현 기록](releases/1.1.26.md)에 반례·5페이즈·최종 빌드와 498/498 회귀·전체 Qt의 확인 범위를 기록했다. 세 구현 블록은 격리된 작업 공간에서 진행했고 공유 연결부는 순차 통합했다. 새 제품 소스 파일은 없다. 실제 게임·물리 장치·장기 수락과 전체 계획의 미착수 과제는 유지한다.
 
+## 실제 증분 1.1.27 — 렌더 대기·NDMA 정지·Wi-Fi 응답
+
+| 블록 | 구현·소유 경계 | 확인한 결과 |
+|---|---|---|
+| Software 3D: GR-13 | GPU3D_Soft·GPU reset·software thread fixture | 작업 시작 전 저장/재설정 경쟁·완료 이중 대기·abort/중단·재시작·실제 픽셀/상태 복원 |
+| DSi NDMA: AD-16 | DSi GX stall·DSi_NDMA·기존 core device fixture | 포화 FIFO 뒤 명령·완료 IRQ 보존·경쟁 채널·정상 즉시/VBlank 전송·저장/복원 |
+| DSi Wi-Fi: NP-08 | DSi_NWifi·SDIO/WMI fixture | 명령 거부·기존 연결/scan 보존·association 본문·IRQ/credit 순서·명시적 재연결 |
+
+[1.1.27 구현 기록](releases/1.1.27.md)에 수정 전 반례와 최종 Windows 빌드·509/509 회귀·전체 Qt의 renderer 교체/재시도/종료를 기록했다. NDMA와 Wi-Fi는 격리된 작성자가 맡고 공유 연결부는 순차 통합했다. 새 제품 소스 파일은 없다. AD-15의 장치 완료 타이밍은 변경하지 않았으며 각 항목의 물리·실제 게임·장기 수락은 유지한다.
+
 ## 다음 독립 블록
 
-다음 실제 증분도 관련 과제를 묶되 같은 파일은 한 작성자가 맡는다. 우선 후보는 software 3D worker 공개·중단(GR-13), DSi AES/SD 완료·NDMA 순서(AD-15/16), DS/DSi Wi-Fi 실패 event(NP-08)다. 각각 기존 renderer, DSi 장치, Wi-Fi 소유 범위를 먼저 고정하고 결정적인 반례와 정상 경로를 대조한다. 공유 scheduler·EmuThread·CMake 변경은 부모가 순차 통합한다. 아직 재현하지 않은 장치 타이밍을 추측 구현하거나 이 후보 선정을 완료 판정으로 취급하지 않는다.
+다음 후보는 mid-capture 시점과 register latch(GR-05), AES CCM FIFO/tag 모드(AD-14), DSi boot/reset·SCFG/NWRAM과 I2C ACK/BPTWL reset(AD-17/22)이다. 관련 과제를 한 작성자에게 묶고 GPU, AES, DSi reset/I2C의 소유 파일을 먼저 고정한다. 기존 fixture와 공개 동작 근거로 결정적인 반례를 확인하며, 공유 scheduler·core 연결·CMake는 부모가 순차 통합한다. 물리 타이밍이 필요한 미확정 동작은 추측 구현하지 않고 미완료로 남긴다. 앞선 잔여 과제와 공개 전체 계획의 범위를 유지한다.
 
 ## 작업 소유권
 
