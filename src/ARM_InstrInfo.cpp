@@ -411,6 +411,21 @@ Info Decode(bool thumb, u32 num, u32 instr, bool literaloptimizations)
             res.SrcRegs |= set;
         }
 
+        if ((res.Kind == tk_LDMIA || res.Kind == tk_STMIA) && !(instr & 0xFF))
+        {
+            // The opcode-specific interpreter fallback needs the complete CPSR.
+            res.ReadFlags |= flag_N | flag_Z | flag_C | flag_V;
+            if (num == 1)
+            {
+                if (res.Kind == tk_LDMIA)
+                    res.DstRegs |= 1 << 15;
+                else
+                    res.SrcRegs |= 1 << 15;
+            }
+            else
+                res.SpecialKind = special_NotSpecialAtAll; // ARM9: writeback only
+        }
+
         res.EndBlock |= res.Branches();
 
         if (res.Kind == tk_BCOND)
@@ -547,6 +562,26 @@ Info Decode(bool thumb, u32 num, u32 instr, bool literaloptimizations)
             u16 set = (instr & 0xFFFF);
             res.NotStrictlyNeeded |= set & ~(res.SrcRegs|res.DstRegs|(1<<15));
             res.SrcRegs |= set;
+        }
+
+        if ((res.Kind == ak_LDM || res.Kind == ak_STM) && !(instr & 0xFFFF))
+        {
+            // CanCompile(kind) cannot see the empty-list fallback selection.
+            res.ReadFlags |= flag_N | flag_Z | flag_C | flag_V;
+            if (num == 1)
+            {
+                if (res.Kind == ak_LDM)
+                {
+                    res.DstRegs |= 1 << 15;
+                    res.SpecialKind = special_LoadMem;
+                    if (instr & (1 << 22))
+                        res.WriteFlags |= flag_N | flag_Z | flag_C | flag_V;
+                }
+                else
+                    res.SrcRegs |= 1 << 15;
+            }
+            else
+                res.SpecialKind = special_NotSpecialAtAll; // ARM9: no data access
         }
 
         if ((instr >> 28) < 0xE)

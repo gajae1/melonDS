@@ -284,6 +284,8 @@ FS-15 편집 사본·직렬화·원자적 저장과 실패 복구는 [1.1.12 증
 
 [1.1.15 증분](releases/1.1.15.md)은 CJ-03의 x64 ASR 종료·Thumb 내부 사이클 누락을 수정하고 ARM9/ARM7 실제 guest ALU·shift·부분 flags와 두 게임의 전후 결과를 확인한다. CJ-03 전체와 CJ-06은 부분 진행이다. 릴리스 번호 1.1.15를 아래 메모리·CP15 책임 과제의 완료로 집계하지 않는다.
 
+[1.1.16 증분](releases/1.1.16.md)은 CJ-06의 ARM/Thumb LDM/STM 빈 목록에 CPU별 전송·writeback·상태 복원과 기존 JIT fallback을 연결한다. 일반 ARM7 STM PC값과 ARM/Thumb 전환의 branch-follow 오류도 수정한다. 빈 PUSH/POP·실기 타이밍·native A64 수락은 남긴다. 실제 1.1.16 배포를 아래 OpenGL 책임 과제의 완료로 집계하지 않는다.
+
 <a id="v15"></a>
 
 ## 1.1.15 — 메모리·CP15·DMA·IRQ·타이머

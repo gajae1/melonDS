@@ -40,6 +40,8 @@ ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 
 ALU·shift는 `CoreExecution`과 `core-.*-(alu-shift|thumb-shift-timing)`을 사용한다. 실제 ARM9/ARM7 코어·scheduler에 생성 guest 명령을 실행하고 두 번째 진입으로 JIT 컴파일 때의 interpreter 실행과 구분한다. 경계값·carry/overflow·alias·부분 flags·RRX·PC 피연산자를 수기 기대값/확장 정수 연산과 대조한다. Thumb LSR/ASR의 같은 양수 입력 루프는 한 프레임의 반복 횟수로 내부 사이클 누락을 검출한다. 이 상대 비교는 DS 실기의 절대 타이밍 수락이 아니다. 게임 digest가 interpreter/JIT 사이에서 다르면 같은 입력의 이전 코어도 비교하고, 기존 차이를 새 수정의 회귀나 완전한 동등성으로 단정하지 않는다.
 
+목록 전송은 `CoreExecution`의 `core-.*-block-transfer`에서 ARM9/ARM7 실제 guest 프로그램으로 검사한다. IA/IB/DA/DB·W=0/1·조건 결과가 바뀌는 warmed 진입, 정상 목록 대조·PC 저장값·Thumb 유지·SPSR/은행 SP 복원·같은 pipeline PC에서의 상태 변경을 포함한다. ARM9 비전송은 실제 CPU의 data bus 호출을 계수하고 이전 DataCycles를 바꿔 비용 독립성을 확인한다. CPU별 호환 모델의 회귀와 직접 DS 실리콘 측정은 구분한다. 빈 PUSH/POP은 원 oracle을 확보하기 전 기대값을 만들어 등록하지 않는다.
+
 ## 진단 구성
 
 루트 [Sanitizers.cmake](../cmake/Sanitizers.cmake)의 `SANITIZE` 설정은 도구와 runtime이 지원하는 조합에서 사용한다. 작은 parser·buffer 경계는 기존 독립 테스트를 우선한다.

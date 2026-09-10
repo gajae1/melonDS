@@ -475,7 +475,12 @@ void Compiler::LoadReg(int reg, X64Reg nativeReg)
     if (reg != 15)
         MOV(32, R(nativeReg), MDisp(RCPU, offsetof(ARM, R) + reg*4));
     else
-        MOV(32, R(nativeReg), Imm32(R15));
+    {
+        // Rn=PC is unpredictable; leave its existing base-address handling.
+        const bool storedPC = Num == 1 && !Thumb && CurInstr.Info.Kind == ARMInstrInfo::ak_STM
+            && CurInstr.A_Reg(16) != 15;
+        MOV(32, R(nativeReg), Imm32(R15 + (storedPC ? 4 : 0)));
+    }
 }
 
 void Compiler::SaveReg(int reg, X64Reg nativeReg)
@@ -725,6 +730,14 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
             ? T_Comp[CurInstr.Info.Kind]
             : A_Comp[CurInstr.Info.Kind];
 
+        const bool emptyTransfer = Thumb
+            ? (CurInstr.Info.Kind == ARMInstrInfo::tk_LDMIA || CurInstr.Info.Kind == ARMInstrInfo::tk_STMIA)
+                && !(CurInstr.Instr & 0xFF)
+            : (CurInstr.Info.Kind == ARMInstrInfo::ak_LDM || CurInstr.Info.Kind == ARMInstrInfo::ak_STM)
+                && !(CurInstr.Instr & 0xFFFF);
+        if (emptyTransfer)
+            comp = nullptr;
+
         bool isConditional = Thumb ? CurInstr.Info.Kind == ARMInstrInfo::tk_BCOND : CurInstr.Cond() < 0xE;
         if (comp == NULL || (CurInstr.BranchFlags & branch_FollowCondTaken) || (i == instrsCount - 1 && (!CurInstr.Info.Branches() || isConditional)))
         {
@@ -786,6 +799,9 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                     MOV(64, R(ABI_PARAM1), R(RCPU));
 
                     ABI_CallFunction(InterpretARM[CurInstr.Info.Kind]);
+                    // A followed conditional branch can return before the reload below.
+                    if (emptyTransfer)
+                        LoadCPSR();
                 }
                 else
                 {

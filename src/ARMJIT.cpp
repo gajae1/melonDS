@@ -748,7 +748,9 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
             JIT_DEBUGPRINT("merged BL\n");
         }
 
-        if (instrs[i].Info.Branches() && BranchOptimizations
+        // A state-changing branch can leave the numeric pipelined R15 unchanged.
+        // Never follow it while still decoding instructions in the old state.
+        if (instrs[i].Info.Branches() && BranchOptimizations && thumb == bool(cpu->CPSR & 0x20)
             && instrs[i].Info.Kind != (thumb ? ARMInstrInfo::tk_SVC : ARMInstrInfo::ak_SVC))
         {
             bool hasBranched = cpu->R[15] != r15;

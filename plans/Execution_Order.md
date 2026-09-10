@@ -35,6 +35,8 @@
 
 [1.1.15 증분](releases/1.1.15.md)은 CJ-03의 실제 warmed ALU·shift·부분 flags를 보강하고 x64 ASR의 잘못된 호스트 피연산자와 Thumb 내부 사이클 누락을 재현·수정한다. 두 게임에서 일반 JIT/fastmem과 이전 코어 JIT의 최종 화면 digest는 일치한다. 인터프리터와의 기존 차이는 원인 미확정으로 유지한다. 다음은 CJ-06의 근거가 있는 ARM7 빈 목록 전송·PC·writeback부터 interpreter/decode/기존 fallback을 함께 연결한다. ARM9 호환 모델과 빈 PUSH/POP·DS 실기 타이밍을 ARM7 근거만으로 확정하지 않는다. CJ-03의 PC 복원·조건과 native A64도 남긴다.
 
+[1.1.16 증분](releases/1.1.16.md)은 CJ-06의 ARM/Thumb LDM/STM 빈 목록을 CPU별로 처리하고, CJ-03의 일반 ARM7 STM PC값과 상태 전환 후 동일한 pipeline PC의 JIT 분기 누락을 수정한다. 빈 PUSH/POP의 원 실기 oracle은 확보하지 못했으므로 보류하며 기존 LR/PC 단독 경로와 구분한다. 다음은 CJ-05 DTCM remap 구간과 CJ-07 이벤트 취소의 실제 반례다. CJ-04 MPU·전체 CPU 명령·앞선 장치 수락도 유지하며, 원래 책임 버전과 실제 증분 릴리스 번호를 혼동하지 않는다.
+
 ## 작업 소유권
 
 EmuInstance.cpp를 건드리는 상태 로드·ROM 교체·Zstd 변경은 한 작성자가 순차 통합한다. 코어 NDS.cpp와 Config.cpp의 좁은 수정은 독립적으로 진행할 수 있다.

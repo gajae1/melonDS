@@ -264,3 +264,14 @@ detects a missing internal cycle without claiming physical DS timing accuracy.
 The six `core-.*-(alu-shift|thumb-shift-timing)` entries run interpreter, JIT and
 fastmem paths when JIT is available. Native A64 and full PC/status restoration
 remain separate acceptance requirements.
+
+`CoreExecution`'s `block-transfer` group runs real ARM9/ARM7 instructions twice
+through the core. It checks empty ARM LDM/STM and Thumb LDMIA/STMIA, all four ARM
+address modes, optional writeback, conditional outcomes changing on warmed entry,
+and nonempty controls. Ordinary STM PC values, ARM7 Thumb retention, SPSR/banked
+SP restoration and state changes with an unchanged numeric pipeline PC are
+included. An ARM9 subclass counts real data bus calls to prove no transfer; two
+previous DataCycles values check cost independence, without asserting physical
+silicon cycle counts. Empty PUSH/POP remain outside the supported oracle scope.
+The `core-.*-block-transfer` entries cover interpreter/JIT/fastmem; A64 source
+integration still requires native execution. See [1.1.16](../plans/releases/1.1.16.md).

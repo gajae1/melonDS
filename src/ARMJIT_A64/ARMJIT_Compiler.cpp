@@ -480,7 +480,12 @@ void Compiler::SaveCycles()
 void Compiler::LoadReg(int reg, ARM64Reg nativeReg)
 {
     if (reg == 15)
-        MOVI2R(nativeReg, R15);
+    {
+        // ARM7 STM stores A+12. Rn=PC is outside the defined base-register range.
+        const bool storedPC = Num == 1 && !Thumb && CurInstr.Info.Kind == ARMInstrInfo::ak_STM
+            && CurInstr.A_Reg(16) != 15;
+        MOVI2R(nativeReg, R15 + (storedPC ? 4 : 0));
+    }
     else
         LDR(INDEX_UNSIGNED, nativeReg, RCPU, offsetof(ARM, R) + reg*4);
 }
@@ -708,6 +713,14 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
             ? T_Comp[CurInstr.Info.Kind]
             : A_Comp[CurInstr.Info.Kind];
 
+        const bool emptyTransfer = Thumb
+            ? (CurInstr.Info.Kind == ARMInstrInfo::tk_LDMIA || CurInstr.Info.Kind == ARMInstrInfo::tk_STMIA)
+                && !(CurInstr.Instr & 0xFF)
+            : (CurInstr.Info.Kind == ARMInstrInfo::ak_LDM || CurInstr.Info.Kind == ARMInstrInfo::ak_STM)
+                && !(CurInstr.Instr & 0xFFFF);
+        if (emptyTransfer)
+            comp = nullptr;
+
         Exit = i == (instrsCount - 1) || (CurInstr.BranchFlags & branch_FollowCondNotTaken);
 
         //printf("%x instr %x regs: r%x w%x n%x flags: %x %x %x\n", R15, CurInstr.Instr, CurInstr.Info.SrcRegs, CurInstr.Info.DstRegs, CurInstr.Info.ReadFlags, CurInstr.Info.NotStrictlyNeeded, CurInstr.Info.WriteFlags, CurInstr.SetFlags);
@@ -722,7 +735,7 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                 MOVI2R(W0, CurInstr.Instr);
                 STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, CurInstr));
             }
-            if (Num == 0)
+            if (Num == 0 || emptyTransfer)
             {
                 MOVI2R(W0, (s32)CurInstr.CodeCycles);
                 STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, CodeCycles));
@@ -779,6 +792,12 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                 {
                     MOV(X0, RCPU);
                     QuickCallFunction(X1, InterpretARM[CurInstr.Info.Kind]);
+                    // A followed conditional branch can return before the reload below.
+                    if (emptyTransfer)
+                    {
+                        LoadCycles();
+                        LoadCPSR();
+                    }
                 }
                 else
                 {
@@ -794,7 +813,13 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                         FixupBranch skipNop = B();
                         SetJumpTarget(skipExecute);
 
-                        if (IrregularCycles)
+                        if (emptyTransfer)
+                        {
+                            // Charge only the untaken path, then preserve it for LoadCycles.
+                            Comp_AddCycles_C();
+                            SaveCycles();
+                        }
+                        else if (IrregularCycles)
                             Comp_AddCycles_C(true);
 
                         Comp_BranchSpecialBehaviour(false);

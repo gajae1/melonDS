@@ -391,8 +391,48 @@ void A_SWPB(ARM* cpu)
 
 
 
+static void A_EmptyBlockTransfer(ARM* cpu, bool load)
+{
+    const u32 rn = (cpu->CurInstr >> 16) & 0xF;
+    const u32 base = cpu->R[rn];
+    const bool up = cpu->CurInstr & (1 << 23);
+    const bool pre = cpu->CurInstr & (1 << 24);
+    const u32 writeback = up ? base + 0x40 : base - 0x40;
+
+    // ARM9 only updates the base. Do not charge stale DataCycles from an
+    // earlier instruction; the exact silicon timing of this invalid list is
+    // not specified by the ISA, so use a code-only compatibility cost.
+    if (cpu->Num == 0)
+    {
+        if (cpu->CurInstr & (1 << 21)) cpu->R[rn] = writeback;
+        cpu->AddCycles_C();
+        return;
+    }
+
+    // ARM7 transfers one PC word but computes its address / writeback as a
+    // sixteen-register list. This is not equivalent to replacing {} by {PC}.
+    const u32 address = (up ? base : writeback) + (pre == up ? 4 : 0);
+    u32 pc;
+    if (load) cpu->DataRead32(address, &pc);
+    else      cpu->DataWrite32(address, cpu->R[15] + 4);
+    if (cpu->CurInstr & (1 << 21)) cpu->R[rn] = writeback;
+    if (load)
+    {
+        cpu->JumpTo(pc & ~1u, cpu->CurInstr & (1 << 22));
+        cpu->AddCycles_CDI();
+    }
+    else
+        cpu->AddCycles_CD();
+}
+
 void A_LDM(ARM* cpu)
 {
+    if (!(cpu->CurInstr & 0xFFFF))
+    {
+        A_EmptyBlockTransfer(cpu, true);
+        return;
+    }
+
     u32 baseid = (cpu->CurInstr >> 16) & 0xF;
     u32 base = cpu->R[baseid];
     u32 wbbase;
@@ -469,6 +509,12 @@ void A_LDM(ARM* cpu)
 
 void A_STM(ARM* cpu)
 {
+    if (!(cpu->CurInstr & 0xFFFF))
+    {
+        A_EmptyBlockTransfer(cpu, false);
+        return;
+    }
+
     u32 baseid = (cpu->CurInstr >> 16) & 0xF;
     u32 base = cpu->R[baseid];
     u32 oldbase = base;
@@ -511,7 +557,11 @@ void A_STM(ARM* cpu)
                     first ? cpu->DataWrite32(base, base) : cpu->DataWrite32S(base, base); // checkme
             }
             else
-                first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]);
+            {
+                // ARM7 stores PC one pipeline stage later than its visible A+8.
+                const u32 value = cpu->R[i] + (i == 15 && cpu->Num == 1 ? 4 : 0);
+                first ? cpu->DataWrite32(base, value) : cpu->DataWrite32S(base, value);
+            }
 
             first = false;
 
@@ -754,6 +804,18 @@ void T_POP(ARM* cpu)
 void T_STMIA(ARM* cpu)
 {
     u32 base = cpu->R[(cpu->CurInstr >> 8) & 0x7];
+    if (!(cpu->CurInstr & 0xFF))
+    {
+        cpu->R[(cpu->CurInstr >> 8) & 0x7] = base + 0x40;
+        if (cpu->Num == 1)
+        {
+            cpu->DataWrite32(base, cpu->R[15] + 2);
+            cpu->AddCycles_CD();
+        }
+        else
+            cpu->AddCycles_C();
+        return;
+    }
     bool first = true;
 
     for (int i = 0; i < 8; i++)
@@ -775,6 +837,20 @@ void T_STMIA(ARM* cpu)
 void T_LDMIA(ARM* cpu)
 {
     u32 base = cpu->R[(cpu->CurInstr >> 8) & 0x7];
+    if (!(cpu->CurInstr & 0xFF))
+    {
+        cpu->R[(cpu->CurInstr >> 8) & 0x7] = base + 0x40;
+        if (cpu->Num == 1)
+        {
+            u32 pc;
+            cpu->DataRead32(base, &pc);
+            cpu->JumpTo(pc | 1u);
+            cpu->AddCycles_CDI();
+        }
+        else
+            cpu->AddCycles_C();
+        return;
+    }
     bool first = true;
 
     for (int i = 0; i < 8; i++)

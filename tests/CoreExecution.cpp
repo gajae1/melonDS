@@ -15,6 +15,7 @@ using namespace melonDS;
 
 int TestALUExecution(NDSArgs&& args, bool jit);
 int TestThumbShiftTiming(NDSArgs&& args, bool jit);
+int TestBlockTransferExecution(NDSArgs&& args, bool jit);
 
 static int TestSchedulerSavestate(NDSArgs&& args)
 {
@@ -139,6 +140,8 @@ int main(int argc, char** argv) {
         return TestALUExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "thumb-shift-timing") == 0)
         return TestThumbShiftTiming(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "block-transfer") == 0)
+        return TestBlockTransferExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
         return TestSchedulerSavestate(std::move(args));
     auto nds = std::make_unique<NDS>(std::move(args));
