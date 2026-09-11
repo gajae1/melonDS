@@ -113,11 +113,11 @@
 | NP-21 | [치트 literal/loop 실행 계약](workstreams/05-connectivity-peripherals.md#NP-21) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.09 입력·취소 보호에 이어 1.1.13 D1/D2 매 반복 조건 복원·D0 이전 조건 없는 종료 회귀; 실제 게임·C4·C5 수명·불성립 조건 안의 중첩 의미 후속 |
 | BV-01 | [기준 revision·검증 자료 색인](workstreams/06-build-validation.md#BV-01) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.03 공개 계획·증거 색인; 1.1.34 선택형 source ID와 실제 EXE/committed source 대조 |
 | BV-02 | [다자릿수 표시/숫자 버전](workstreams/06-build-validation.md#BV-02) | 부분 실행 검증 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.43 공통 버전 정책·09/10/99/100/0191/WORD 경계, RC 선행0의137 오해석→191 수정; 실제PE8조건·범위초과 거절; 다른toolchain 및 모든표시/정렬 수락 후속 |
-| BV-03 | [Windows DLL/plugin 의존 폐쇄](workstreams/06-build-validation.md#BV-03) | 관찰/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 부분 반영: import·독립 PATH 확인 |
-| BV-04 | [로컬 build profile](workstreams/06-build-validation.md#BV-04) | 관찰/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 부분 반영: 기존 로컬 명령 |
+| BV-03 | [Windows DLL/plugin 의존 폐쇄](workstreams/06-build-validation.md#BV-03) | 부분 실행 검증 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.44 기존 UCRT64 배포의 DLL64종 누락·잘못된 성공 재현; Qt 명시 목록+CMake 전이 import로 복사, 실제 PE129 누락0·clean PATH·배포 qwindows 로드; 다른 profile 후속 |
+| BV-04 | [로컬 build profile](workstreams/06-build-validation.md#BV-04) | 부분 실행 검증 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.44 UCRT64 x64 로컬 deploy CLI·기존 shell 진입점·새 출력만 생성·경로/hash manifest 연결; MSVC/static/다른 아키텍처 후속 |
 | BV-05 | [배포 allowlist·개인 자료 보존](workstreams/06-build-validation.md#BV-05) | 실행 재현/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 선별 배포; 1.1.34 소스 변경 후 오래된 EXE 거부·문서만 변경 재사용, 외부 DLL/재현 빌드 신원은 별도; 1.1.43 임의5파일 포함 재현→필수 경로/hash 목록만 압축·추가파일 제외/경고·입력/출력 경계·최종ZIP해시 대조; 신뢰된 deploy 입력으로 목록 생성 |
 | BV-06 | [C23/C++26 기능별 채택](workstreams/06-build-validation.md#BV-06) | 관찰/확장 | P2 | [1.1.36](Release_Plan.md#v36) | — | 미착수 |
-| BV-07 | [의존성·local patch·license](workstreams/06-build-validation.md#BV-07) | 관찰/확장 | P1 | [1.1.36](Release_Plan.md#v36) | — | 미착수 |
+| BV-07 | [의존성·local patch·license](workstreams/06-build-validation.md#BV-07) | 부분 실행 검증 | P1 | [1.1.36](Release_Plan.md#v36) | — | 1.1.44 설치 목록·ICU 위치·Qt 동일 source/version 고지와 누락19패키지의 원문40개를 버전/hash 입력으로 보존; 전체 toolchain/local patch·대응 소스/고지 완전성은 후속 |
 | BV-08 | [LTO/ThinLTO guard 판정](workstreams/06-build-validation.md#BV-08) | 제한 빌드·실행 대조 | P2 | [1.1.38](Release_Plan.md#v38) | — | 1.1.39 GCC16.2 core/Qt LTO 빌드; 1.1.40 ARM.cpp 제외 진단으로 cold 비용 축소·2장면 출력 일치, 반복 변동으로 기본 OFF 유지; 전체 Qt 실행/장기 workload·compiler별 판정 후속 |
 | BV-09 | [PGO train/holdout](workstreams/06-build-validation.md#BV-09) | 미측정 가설 | P2 | [1.1.38](Release_Plan.md#v38) | — | 미착수 |
 | BV-10 | [paired median/tail 측정](workstreams/06-build-validation.md#BV-10) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.38 state 재생·frame CSV·한 장면 paired 대조; GPU/장치 분리·holdout 대기 |

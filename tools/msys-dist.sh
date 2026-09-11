@@ -1,15 +1,22 @@
 #!/bin/bash
+set -euo pipefail
 
-if [[ ! -x melonDS.exe ]]; then
-	echo "Run this script from the directory you built melonDS."
-	exit 1
+if [[ ${MINGW_PREFIX:-} != /ucrt64 ]]; then
+    echo "Run this script in an MSYS2 UCRT64 shell." >&2
+    exit 1
 fi
 
-mkdir -p dist
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+python_bin=${PYTHON:-"$MINGW_PREFIX/bin/python.exe"}
+if [[ ! -x $python_bin ]]; then
+    echo "Set PYTHON to a native Windows Python 3.11+ executable, or install UCRT64 Python." >&2
+    exit 1
+fi
 
-for lib in $(ldd melonDS.exe | grep mingw | sed "s/.*=> //" | sed "s/(.*)//"); do
-	cp "${lib}" dist
-done
-
-cp melonDS.exe dist
-windeployqt dist
+# No arguments retains the build-directory entry point. Both outputs must be new.
+if (( $# == 0 )); then
+    set -- "$(cygpath -am .)" "$(cygpath -am dist)" \
+        --runtime-manifest "$(cygpath -am dist-manifest.json)"
+fi
+exec "$python_bin" "$(cygpath -am "$script_dir/deploy-windows.py")" "$@" \
+    --msys-prefix "$(cygpath -am "$MINGW_PREFIX")"

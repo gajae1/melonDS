@@ -138,8 +138,40 @@ cmake -S . -B build/windows-dev -DMELONDS_PACKAGE_IDENTITY=ON
 cmake --build build/windows-dev
 ```
 
-After validation, commit the source and deploy the matching EXE, DLLs and
-plugins to a runtime directory. The packager requires a clean working tree
+For the Windows x64 MSYS2 UCRT64 profile, deploy from the installed SDK with
+native Windows Python 3.11+, CMake, Qt's `windeployqt`, binutils and pacman:
+
+```sh
+python tools/deploy-windows.py build/windows-dev build/runtime --msys-prefix C:/msys64/ucrt64 --runtime-manifest build/runtime-manifest.json
+```
+
+Use the actual SDK prefix that supplied the build dependencies. Qt's dry-run
+file plan selects the plugins; CMake resolves their transitive DLL imports, and
+pacman's installed file lists select licenses for the owning packages. Missing
+or conflicting dependencies and missing package license files fail deployment.
+This profile does not deploy Qt translations, matching the previous runtime.
+It does not cover MSVC, static builds or other architectures.
+
+If an installed package omits license files, supply reviewed local notices with
+`--license-supplement PATH`. The JSON format is
+`{"schema":1,"packages":{"<package>":{"version":"<installed-version>","files":{"C:/notices/LICENSE":"<sha256>"}}}}`.
+Use exact `pacman -Q` versions and absolute paths with lowercase SHA-256 hashes.
+These files are copied under `third-party-licenses/<package>/`; mismatched
+versions/hashes, unselected packages and remaining missing notices are rejected.
+The tool does not download notices or determine whether supplied texts are legally
+complete. ICU's installed license and Qt Multimedia's matching split-package
+notices are selected from their package metadata directly.
+
+Both output paths must be new, with existing parent directories, and the manifest
+must be outside the runtime. A failed deployment retains its new partial directory
+for inspection without publishing a success manifest. Existing output is never
+overwritten. The runtime contains `<version>-melonDS.exe` and `run-melonDS.cmd`.
+From the build directory in an MSYS2 UCRT64 shell, `tools/msys-dist.sh` (using its
+path in the source checkout) creates `dist` and `dist-manifest.json`. It uses
+UCRT64 Python by default; `PYTHON` can name another native Windows Python.
+Arguments supplied to the wrapper are forwarded to the deployment CLI.
+
+After validation, commit the matching source. The packager requires a clean working tree
 and verifies the actual EXE's `--build-info` against the committed source
 before writing archives. An older or identity-disabled EXE is rejected.
 Root README/BUILD/CONTRIBUTING Markdown and Markdown under `plans/` are the
