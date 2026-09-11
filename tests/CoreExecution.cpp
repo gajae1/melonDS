@@ -131,6 +131,108 @@ static int TestSchedulerSavestate(NDSArgs&& args)
     return failures ? 1 : 0;
 }
 
+static int TestConditionalCycles(NDSArgs&& args, bool jit)
+{
+    if (args.JIT)
+    {
+        args.JIT->MaxBlockSize = 1;
+        args.JIT->BranchOptimizations = false;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    constexpr u32 code = 0x02008000, sentinel = 0x12345678;
+    const struct { u32 instr, result, cycles; } instructions[] = {
+        {0x00810312, 3, 2}, {0x10810312, 3, 2},
+        {0x00810002, 2, 1}, {0xE0810312, 3, 2},
+#if defined(__x86_64__)
+        // Nearest control for the x64 register-valued C+I helper (guest ARM7).
+        {0x00000291, 1, 2}, // MULEQ r0,r1,r2; r1=r2=1
+#endif
+    };
+    unsigned checked = 0, failures = 0;
+    for (bool arm7 : {false, true})
+    {
+        ARM& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        nds->ARM9.MemTimings[code >> 12][0] = 1;
+        for (unsigned i = 0; i < 4; ++i) nds->ARM7MemTimings[code >> 15][i] = 1;
+        for (unsigned i = 0; i < std::size(instructions); ++i)
+        {
+            const auto& test = instructions[i];
+            const u32 addr = code + i * 16, instr = test.instr;
+            nds->ARM9Write32(addr, instr);
+            nds->ARM9Write32(addr + 4, 0xEAFFFFFE);
+            for (bool z : {true, false})
+            for (unsigned run = 0; run < 2; ++run)
+            {
+                bool warm = true;
+#ifdef JIT_ENABLED
+                if (jit && run == 1)
+                    warm = (arm7 ? nds->JIT.JitBlocks7 : nds->JIT.JitBlocks9).contains(addr);
+#endif
+                cpu.R[0] = sentinel;
+                cpu.R[1] = cpu.R[2] = cpu.R[3] = 1;
+                const u32 cpsr = 0xDF | (z ? 1u << 30 : 0);
+                cpu.CPSR = cpsr;
+                cpu.JumpTo(addr);
+                cpu.Cycles = 0; // Exclude pipeline refill; measure this instruction only.
+                const u32 beforePC = cpu.R[15];
+                auto& timestamp = arm7 ? nds->ARM7Timestamp : nds->ARM9Timestamp;
+                auto& target = arm7 ? nds->ARM7Target : nds->ARM9Target;
+                timestamp = 0;
+                target = 1;
+#ifdef JIT_ENABLED
+                if (jit)
+                {
+                    if (run == 1)
+                    {
+                        // Dispatch exactly one already-cached block. A zero-cycle
+                        // defect must not run the following instruction to reach Target.
+                        if (!warm) return 2;
+                        ARM_Dispatch(&cpu, (arm7 ? nds->JIT.JitBlocks7 : nds->JIT.JitBlocks9).at(addr)->EntryPoint);
+                        timestamp = cpu.Cycles;
+                    }
+                    else if (arm7) nds->ARM7.Execute<CPUExecuteMode::JIT>();
+                    else nds->ARM9.Execute<CPUExecuteMode::JIT>();
+#if defined(__x86_64__)
+                    if (z && run == 0)
+                    {
+                        // First compilation is bounded to this one instruction.
+                        // Print actual native bytes for objdump; no instruction model.
+                        const auto* entry = reinterpret_cast<const u8*>(
+                            (arm7 ? nds->JIT.JitBlocks7 : nds->JIT.JitBlocks9).at(addr)->EntryPoint);
+                        const auto* end = nds->JIT.JITCompiler.GetCodePtr();
+                        if (end <= entry || end - entry > 1024) return 2;
+                        std::printf("native-block ARM%d guest=%08X bytes=", arm7 ? 7 : 9, instr);
+                        for (auto* p = entry; p != end; ++p) std::printf("%02X", *p);
+                        std::puts("");
+                    }
+#endif
+                }
+                else
+#endif
+                {
+                    if (arm7) nds->ARM7.Execute<CPUExecuteMode::Interpreter>();
+                    else nds->ARM9.Execute<CPUExecuteMode::Interpreter>();
+                }
+                const bool taken = instr >> 28 == 14 || (instr >> 28 == 0 ? z : !z);
+                const u32 result = taken ? test.result : sentinel;
+                const u32 cycles = taken ? test.cycles : 1;
+                const bool ok = warm && cpu.R[0] == result && timestamp == cycles &&
+                    cpu.R[15] == addr + 8 && cpu.CPSR == cpsr &&
+                    cpu.R[1] == 1 && cpu.R[2] == 1 && cpu.R[3] == 1;
+                ++checked;
+                failures += !ok;
+                std::printf("%s ARM%d %08X Z=%u run=%u warm=%d: %s r0=%08X cycles=%llu expected=%08X/%u pc=%08X->%08X\n",
+                    jit ? (run == 1 ? "dispatch" : "jit") : "interpreter", arm7 ? 7 : 9,
+                    instr, unsigned(z), run, warm, ok ? "PASS" : "FAIL", cpu.R[0],
+                    static_cast<unsigned long long>(timestamp), result, cycles, beforePC, cpu.R[15]);
+            }
+        }
+    }
+    std::printf("core conditional cycles: %u checks, %u failures\n", checked, failures);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     const bool jit = argc > 1 && std::strcmp(argv[1], "interpreter") != 0;
     const bool fast = argc > 1 && std::strcmp(argv[1], "fastmem") == 0;
@@ -143,6 +245,8 @@ int main(int argc, char** argv) {
     NDSArgs args;
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
+    if (argc > 2 && std::strcmp(argv[2], "conditional-cycles") == 0)
+        return TestConditionalCycles(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "alu-shift") == 0)
         return TestALUExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "thumb-shift-timing") == 0)

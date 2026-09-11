@@ -67,6 +67,7 @@ private:
 
         GLuint TexID;
         u32 TexRepeat;
+        int MinX, MinY, MaxX, MaxY;
     };
 
     //GLCompositor CurGLCompositor;
@@ -77,10 +78,12 @@ private:
 
     bool BuildRenderShader(bool wbuffer);
     void UseRenderShader(bool wbuffer);
+    void SetRenderMode(int mode);
     void SetupPolygon(RendererPolygon* rp, Polygon* polygon) const;
     u32* SetupVertex(const Polygon* poly, int vid, const Vertex* vtx, u32 vtxattr, u32 texlayer, u32* vptr) const;
     void BuildPolygons(RendererPolygon* polygons, int npolys, int captureinfo[16]);
     void SetupPolygonTexture(const RendererPolygon* poly) const;
+    void SnapshotBlendDestination(int first, int count) const;
     int RenderSinglePolygon(int i) const;
     int RenderPolygonBatch(int i) const;
     int RenderPolygonEdgeBatch(int i) const;
@@ -100,6 +103,7 @@ private:
 
     GLuint RenderShader[2] {};
     GLint RenderModeULoc = 0;
+    int CurrentRenderMode = RenderMode_Opaque;
     GLuint CurShaderID = -1;
 
     GLuint FinalPassEdgeShader {};
@@ -159,6 +163,7 @@ private:
     int ScreenW {}, ScreenH {};
 
     GLuint ColorBufferTex {}, DepthBufferTex {}, AttrBufferTex {};
+    GLuint BlendDestinationTex {};
 
     GLuint MainFramebuffer {};
 };

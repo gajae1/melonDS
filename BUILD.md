@@ -126,3 +126,26 @@ with a matching MSVC SDK/runtime environment.
 The current Qt6 recommended macOS deployment floor is **13.0**; do not expect
 new artifacts to retain the old macOS 10.15/11 minimum. See
 [the release record](plans/releases/1.1.07.md) for verified and unverified configurations.
+
+## Packaging a Windows release
+
+The optional `MELONDS_PACKAGE_IDENTITY=ON` setting requires Git and Python 3
+and embeds a source content ID in `melonDS.exe`. Enable it before building
+an executable for `tools/package-windows.py`:
+
+```sh
+cmake -S . -B build/windows-dev -DMELONDS_PACKAGE_IDENTITY=ON
+cmake --build build/windows-dev
+```
+
+After validation, commit the source and deploy the matching EXE, DLLs and
+plugins to a runtime directory. The packager requires a clean working tree
+and verifies the actual EXE's `--build-info` against the committed source
+before writing archives. An older or identity-disabled EXE is rejected.
+Root README/BUILD/CONTRIBUTING Markdown and Markdown under `plans/` are the
+only content-policy exclusions, so a documentation-only commit can reuse
+the same binary. Git's check-in filters normalize line endings.
+
+Ordinary builds default to identity OFF and do not gain a Git/Python
+requirement from this option. The source ID does not attest to the compiler,
+external libraries, reproducible builds, or signatures.

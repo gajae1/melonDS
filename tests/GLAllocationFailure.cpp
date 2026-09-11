@@ -44,7 +44,7 @@ struct EmuThread
 #include "computeUpdateRenderer.inc"
 
 enum class Fault { None, TextureLimit, ViewportLimit, StorageLimit, TexelLimit, Buffer, Texture, OOM, InvalidScale,
-                   CaptureTexture, ObjectDepth, ClassicDepth };
+                   CaptureTexture, ObjectDepth, ClassicDepth, ClassicBlend };
 Fault ActiveFault;
 bool Injected;
 GLenum PendingError;
@@ -109,7 +109,8 @@ void APIENTRY TexImage2D(GLenum target, GLint level, GLint format, GLsizei w, GL
     ++Allocations;
     if (Injected) ++AfterFailure;
     if (!Injected && ((ActiveFault == Fault::ObjectDepth && format == GL_DEPTH_COMPONENT16) ||
-                     (ActiveFault == Fault::ClassicDepth && format == GL_DEPTH24_STENCIL8)))
+                     (ActiveFault == Fault::ClassicDepth && format == GL_DEPTH24_STENCIL8) ||
+                     (ActiveFault == Fault::ClassicBlend && format == GL_RGBA8)))
     {
         Injected = true;
         w = -1; // real driver error, no storage mutation
@@ -222,6 +223,7 @@ int CheckGLAllocationFailure(const char* name)
     else if (!std::strcmp(name, "capture-fail")) fault = Fault::CaptureTexture;
     else if (!std::strcmp(name, "2d-fail")) fault = Fault::ObjectDepth;
     else if (!std::strcmp(name, "classic-fail")) fault = Fault::ClassicDepth;
+    else if (!std::strcmp(name, "classic-blend-fail")) fault = Fault::ClassicBlend;
     else return 2;
     if (!GLAD_GL_VERSION_4_3) return 77;
     ActiveFault = Fault::None; Injected = false; PendingError = 0;
@@ -229,7 +231,8 @@ int CheckGLAllocationFailure(const char* name)
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args)); nds->Reset();
     Instance instance{nds.get()}; EmuThread thread{&instance};
-    const int selectedRenderer = fault == Fault::ClassicDepth ? renderer3D_OpenGL : renderer3D_OpenGLCompute;
+    const int selectedRenderer = fault == Fault::ClassicDepth || fault == Fault::ClassicBlend
+        ? renderer3D_OpenGL : renderer3D_OpenGLCompute;
     thread.videoRenderer = selectedRenderer;
     thread.updateRenderer();
     if (!dynamic_cast<GLRenderer*>(&nds->GetRenderer()) || !Compile(nds->GetRenderer()) || !Frame(*nds, false)) return 2;
@@ -261,7 +264,8 @@ int CheckGLAllocationFailure(const char* name)
                         "active frontend renderer state did not recover");
         passed &= Check(!Sources && !Dispatches, "failed settings reached compiler/dispatch");
         const bool allocationFault = fault == Fault::Buffer || fault == Fault::Texture || fault == Fault::OOM ||
-            fault == Fault::CaptureTexture || fault == Fault::ObjectDepth || fault == Fault::ClassicDepth;
+            fault == Fault::CaptureTexture || fault == Fault::ObjectDepth || fault == Fault::ClassicDepth ||
+            fault == Fault::ClassicBlend;
         passed &= Check(allocationFault ? Injected : Allocations == 0, "fault not injected or preflight allocated");
         passed &= Check(!AfterFailure, "allocations continued after the first failure");
         // Baseline is invalid here; never compile or dispatch its broken storage.

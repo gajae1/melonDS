@@ -12,7 +12,11 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_identity
 
 
 def digest(path):
@@ -60,6 +64,19 @@ def main():
                                  capture_output=True, text=True, errors='replace', timeout=30)
     if help_result.returncode or 'Usage:' not in help_result.stdout + help_result.stderr:
         raise RuntimeError(f'Deployed EXE cannot start with a clean PATH: {help_result.returncode}')
+    try:
+        info_result = subprocess.run([str(exe), '--build-info'], cwd=runtime, env=env,
+                                     capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError('Deployed EXE --build-info timed out (pre-identity build?)') from exc
+    if info_result.returncode:
+        raise RuntimeError(f'Deployed EXE --build-info failed: {info_result.returncode}')
+    try:
+        build_info = source_identity.parse_build_info(info_result.stdout.decode('utf-8'))
+        verified_source_id = source_identity.verify_build_info(
+            build_info, root, expected_version=version)
+    except source_identity.SourceIdentityError as exc:
+        raise RuntimeError(f'Deployed EXE source identity rejected: {exc}') from exc
     output.mkdir(parents=True, exist_ok=True)
     runtime_zip = output / f'{version}-melonDS-windows-{args.arch}.zip'
     runtime_temp = runtime_zip.with_suffix('.zip.tmp')
@@ -88,6 +105,10 @@ def main():
     source_temp.replace(source_zip)
     report = {
         'version': version, 'source_commit': commit, 'exe_sha256': digest(exe),
+        'package_identity_schema': build_info['schema'],
+        'package_identity_source_id': verified_source_id,
+        'package_identity_version': build_info['version'],
+        'package_identity_docs_only_excludes': source_identity.DOC_EXCLUDED_POLICY,
         'runtime_zip': runtime_zip.name, 'runtime_bytes': runtime_zip.stat().st_size,
         'runtime_sha256': digest(runtime_zip), 'runtime_files': runtime_files,
         'source_zip': source_zip.name, 'source_bytes': source_zip.stat().st_size,

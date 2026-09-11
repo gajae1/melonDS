@@ -371,7 +371,10 @@ int main(int argc, char** argv)
     const bool allocationCase = argc == 3 && std::strcmp(argv[1], "gl-allocation") == 0;
     const bool workloadCase = argc == 3 && std::strcmp(argv[1], "compute-workload") == 0;
     const bool textureCase = argc == 3 && std::strcmp(argv[1], "gl-texture-boundaries") == 0;
-    const bool compute = (textureCase && std::strcmp(argv[2], "capture-compute") == 0) ||
+    const bool compute = (textureCase && (std::strcmp(argv[2], "capture-compute") == 0 ||
+                                         std::strcmp(argv[2], "alpha-compute") == 0 ||
+                                         std::strcmp(argv[2], "blend-compute") == 0 ||
+                                         std::strcmp(argv[2], "shading-compute") == 0)) ||
                          workloadCase || failureCase || allocationCase || ((captureCase || midCaptureCase || jitCaptureCase) && std::strcmp(argv[2], "compute") == 0) ||
                          (argc > 1 && std::strcmp(argv[1], "compute") == 0);
     if (SDL_Init(SDL_INIT_VIDEO)) return 77;

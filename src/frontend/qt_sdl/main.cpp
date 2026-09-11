@@ -53,6 +53,7 @@
 
 #include "main.h"
 #include "version.h"
+#include "package_identity.h"
 
 #include "Config.h"
 
@@ -394,6 +395,17 @@ int main(int argc, char** argv)
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 #endif
+
+    // Machine-readable build identity for packaging verification. Handled
+    // after Windows output setup but before the banner and any application,
+    // configuration or emulation state is touched.
+    if (argc == 2 && strcmp(argv[1], "--build-info") == 0)
+    {
+        printf("{\"schema\":%d,\"source_id\":\"%s\",\"version\":\"%s\"}\n",
+               MELONDS_PACKAGE_IDENTITY_SCHEMA, MELONDS_PACKAGE_IDENTITY_SOURCE_ID, MELONDS_VERSION);
+        fflush(stdout);
+        return 0;
+    }
 
     printf("melonDS " MELONDS_VERSION "\n");
     printf(MELONDS_URL "\n");

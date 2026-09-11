@@ -957,7 +957,7 @@ void LAN::ProcessLAN(int type)
         MPPacketHeader* header = (MPPacketHeader*)&enetpacket->data[0];
         u32 packettime = header->Magic;
 
-        if ((packettime > time_last) || (packettime < (time_last - 16)))
+        if (static_cast<u32>(time_last - packettime) > 16)
         {
             RXQueue.pop();
             enet_packet_destroy(enetpacket);

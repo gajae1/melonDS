@@ -275,6 +275,44 @@ bool ReceiveCapacity()
     return f.Net.RecvPacket(0, out.data() + 32, &stamp) == 40 && Copied(out, 0, 40);
 }
 
+bool QueuedFrameClockWrap()
+{
+    struct Case { u64 Received, Now; bool Accepted; };
+    constexpr Case cases[] = {
+        {0, 0, true}, {8, 8, true},
+        {1000, 1016, true}, {1000, 1017, false},
+        {0xFFFFFFF8, 0x100000000, true},
+        {0xFFFFFFF8, 0x100000008, true},
+        {0xFFFFFFF8, 0x100000009, false},
+        {1000, 999, false},
+    };
+    bool passed = true;
+    for (u32 type : {0u, 1u})
+    for (const auto& test : cases)
+    {
+        LANPacketTest f;
+        Tick = test.Received;
+        Inject(Packet(type, 1, 40), &f.Peers[1]);
+        f.Net.Process(); // Production receive stamps and queues the ENet packet.
+        if (f.Snapshot().Queued != 1 || FreedPackets != 0) return false;
+        Tick = test.Now;
+        Output out;
+        out.fill(Sentinel);
+        u64 stamp = 0;
+        const int count = type == 0 ? f.Net.RecvPacket(0, out.data() + 32, &stamp)
+                                   : f.Net.RecvHostPacket(0, out.data() + 32, &stamp);
+        const bool ok = count == (test.Accepted ? 40 : 0) &&
+            (test.Accepted ? Copied(out, 0, 40) && stamp == Timestamp
+                           : Unchanged(out) && stamp == 0) &&
+            FreedPackets == 1 && f.Snapshot().Queued == 0;
+        if (!ok) std::printf("queue-age type=%u received=%llu now=%llu accepted=%d count=%d\n",
+            type, static_cast<unsigned long long>(test.Received),
+            static_cast<unsigned long long>(test.Now), test.Accepted, count);
+        passed &= ok;
+    }
+    return passed;
+}
+
 bool Replies()
 {
     LANPacketTest f;
@@ -457,6 +495,7 @@ int main()
     Check("normal-ack-keeps-route", Frame(3, 44));
     Check("full-wifi-frame-preserves-v1-crop", Frame(1, 0x2000));
     Check("caller-capacity-preserves-next-datagram", ReceiveCapacity());
+    Check("queued-frame-host-clock-wrap-and-age16", QueuedFrameClockWrap());
     Check("blank-and-aid15-reply-preserve-v1-slot-crop", Replies());
     Check("blank-reply-completes-without-timeout", BlankReplyCompletes());
     Check("ready-notification-may-lag-other-channel", ReadyNotificationCanLag());

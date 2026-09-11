@@ -861,7 +861,8 @@ void Compiler::Comp_AddCycles_C(bool forceNonConstant)
         NDS.ARM7MemTimings[CurInstr.CodeCycles][Thumb ? 1 : 3]
         : ((R15 & 0x2) ? 0 : CurInstr.CodeCycles);
 
-    if ((!Thumb && CurInstr.Cond() < 0xE) || forceNonConstant)
+    // Regular C timing is shared by the executed and skipped paths.
+    if (forceNonConstant)
         ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm8(cycles));
     else
         ConstantCycles += cycles;
@@ -869,6 +870,8 @@ void Compiler::Comp_AddCycles_C(bool forceNonConstant)
 
 void Compiler::Comp_AddCycles_CI(u32 i)
 {
+    IrregularCycles = true;
+
     s32 cycles = (Num ?
         NDS.ARM7MemTimings[CurInstr.CodeCycles][Thumb ? 0 : 2]
         : ((R15 & 0x2) ? 0 : CurInstr.CodeCycles)) + i;
@@ -881,6 +884,8 @@ void Compiler::Comp_AddCycles_CI(u32 i)
 
 void Compiler::Comp_AddCycles_CI(Gen::X64Reg i, int add)
 {
+    IrregularCycles = true;
+
     s32 cycles = Num ?
         NDS.ARM7MemTimings[CurInstr.CodeCycles][Thumb ? 0 : 2]
         : ((R15 & 0x2) ? 0 : CurInstr.CodeCycles);

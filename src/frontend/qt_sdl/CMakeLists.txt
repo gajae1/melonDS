@@ -1,6 +1,7 @@
 include(CMakeDependentOption)
 
 include(FixInterfaceIncludes)
+include(PackageIdentity)
 
 set(SOURCES_QT_SDL
     main.cpp
@@ -100,6 +101,7 @@ add_compile_definitions(ARCHIVE_SUPPORT_ENABLED)
 
 add_executable(melonDS ${SOURCES_QT_SDL})
 melonds_configure_audio_kernels(melonDS)
+melonds_add_package_identity(melonDS)
 
 add_subdirectory("../../net"
     ${CMAKE_BINARY_DIR}/net)

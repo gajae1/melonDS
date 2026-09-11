@@ -3,6 +3,7 @@
 // This is bounded renderer evidence, not a game or physical-hardware oracle.
 #include "NDS.h"
 #include "GPU_OpenGL.h"
+#include "GPU_Soft.h"
 #include "GPU3D_TexcacheOpenGL.h"
 #include <array>
 #include <cstdio>
@@ -15,6 +16,17 @@ using namespace melonDS;
 constexpr u16 Red = 0x801F, Green = 0x83E0, Blue = 0xFC00;
 constexpr u32 Idle = 0x02000000, Code = 0x02010000;
 constexpr u32 Addresses = 0x02011000, Results = 0x02012000;
+
+class ShadingReference : public SoftRenderer
+{
+public:
+    using SoftRenderer::SoftRenderer;
+    u32 Pixel(int x, int y)
+    {
+        Finish3DRendering();
+        return Rend3D->GetLine(y)[x];
+    }
+};
 
 bool CheckDirtyWrap()
 {
@@ -104,7 +116,9 @@ std::unique_ptr<NDS> CreateNDS(const char* backend, int scale)
     args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
-    if (std::strcmp(backend, "software"))
+    if (!std::strcmp(backend, "software"))
+        nds->SetRenderer(std::make_unique<ShadingReference>(*nds));
+    else
     {
         nds->SetRenderer(std::make_unique<GLRenderer>(*nds, !std::strcmp(backend, "compute")));
         if (!dynamic_cast<GLRenderer*>(&nds->GetRenderer())) return nullptr;
@@ -130,7 +144,7 @@ std::unique_ptr<NDS> CreateNDS(const char* backend, int scale)
     return nds;
 }
 
-bool CaptureAndRead(NDS& nds, u16 first, u16 second)
+bool CaptureAndRead(NDS& nds, u16 first, u16 second, u16 background = Green)
 {
     nds.ARM9Write32(0x04000064, 0x81030000); // source A 3D -> bank D, 128x128
     nds.RunFrame();
@@ -151,7 +165,7 @@ bool CaptureAndRead(NDS& nds, u16 first, u16 second)
     nds.ARM9.R[4] = std::size(x);
     nds.ARM9.JumpTo(Code);
     nds.RunFrame();
-    const std::array<u16, 3> expected{first, second, Green};
+    const std::array<u16, 3> expected{first, second, background};
     for (unsigned i = 0; i < expected.size(); ++i)
     {
         const u32 actual = nds.ARM9Read32(Results + i * 4);
@@ -178,32 +192,192 @@ bool RunAlpha(const char* backend, int scale, bool wbuffer)
     nds->ARM9Write16(0x06880000, Red & 0x7FFF);
     nds->ARM9Write8(0x04000240, 0x83);
     nds->ARM9Write8(0x04000244, 0x83);
-    struct Case { unsigned Alpha, Reference; bool Enabled, Texture; u16 Expected; };
+    struct Case
+    {
+        unsigned Alpha, Reference;
+        bool Enabled, Texture;
+        u16 Expected;
+        bool Blend = false;
+        unsigned ClearAlpha = 31;
+    };
     constexpr Case cases[] = {
         {31, 0, true, false, Red},
         {31, 31, true, false, Green},
         {16, 15, true, false, Red},
         {16, 16, true, false, Green},
+        {16, 15, true, false, 0x81D0, true},
         {16, 31, false, false, Red},
+        {31, 15, true, true, 0x81D0, true},
         {31, 15, true, true, Red},
         {31, 16, true, true, Green},
         {31, 31, false, true, Red},
+        {16, 15, true, false, Red, true, 0},
     };
     bool passed = true;
     for (const auto& test : cases)
     {
-        nds->ARM9Write16(0x04000060, (test.Enabled ? 4 : 0) | (test.Texture ? 1 : 0));
+        nds->ARM9Write16(0x04000060,
+            (test.Enabled ? 4 : 0) | (test.Texture ? 1 : 0) | (test.Blend ? 8 : 0));
+        nds->ARM9Write32(0x04000350, (test.ClearAlpha << 16) | (Green & 0x7FFF));
         nds->ARM9Write8(0x04000340, test.Reference);
         nds->RunFrame(); // Latch through the real VBlank, including disabled alpha test.
         if (nds->GPU.GPU3D.RenderAlphaRef != (test.Enabled ? test.Reference : 0)) return false;
         scene.Set(test.Alpha, test.Texture ? 6u << 26 : 0, wbuffer, test.Texture);
         scene.Submit(*nds);
-        const bool ok = CaptureAndRead(*nds, test.Expected, test.Expected);
-        std::printf("alpha=%s scale=%d w=%d polygon=%u texture=%d ref=%u enabled=%d result=%s\n",
-            backend, scale, wbuffer, test.Alpha, test.Texture, test.Reference, test.Enabled, ok ? "pass" : "fail");
+        const bool ok = CaptureAndRead(*nds, test.Expected, test.Expected,
+            test.ClearAlpha ? Green : Green & 0x7FFF);
+        std::printf("alpha=%s scale=%d w=%d polygon=%u texture=%d ref=%u enabled=%d blend=%d clear_alpha=%u result=%s\n",
+            backend, scale, wbuffer, test.Alpha, test.Texture, test.Reference, test.Enabled,
+            test.Blend, test.ClearAlpha, ok ? "pass" : "fail");
         passed &= ok;
     }
     return passed;
+}
+
+bool RunBlend(const char* backend, int scale, bool wbuffer)
+{
+    Scene scene;
+    auto nds = CreateNDS(backend, scale);
+    if (!nds) return false;
+    // Overlap both triangles. Equal IDs reject the second translucent polygon;
+    // different IDs must blend with the first polygon's already rounded result.
+    for (int v = 0; v < 3; ++v)
+    {
+        scene.Vertices[1][v].FinalPosition[0] -= 56;
+        scene.Vertices[1][v].HiresPosition[0] -= 56 << 4;
+    }
+    bool passed = true;
+    for (bool sameID : {true, false})
+    {
+        nds->ARM9Write16(0x04000060, 8);
+        nds->RunFrame();
+        scene.Set(8, 0, wbuffer);
+        scene.Polygons[1].Attr = (16 << 16) | (3 << 6) | ((sameID ? 1 : 2) << 24);
+        for (auto& vertex : scene.Vertices[1])
+        {
+            vertex.FinalColor[0] = 0;
+            vertex.FinalColor[2] = 63 << 3;
+        }
+        scene.Submit(*nds);
+        const bool ok = CaptureAndRead(*nds, sameID ? 0x82C8 : 0xC143, Green);
+        std::printf("blend=%s scale=%d w=%d same_id=%d result=%s\n",
+            backend, scale, wbuffer, sameID, ok ? "pass" : "fail");
+        passed &= ok;
+    }
+    // A low-intensity rear plane distinguishes six-bit integer truncation from
+    // normalized GL rounding even when the red component happens to agree.
+    nds->ARM9Write32(0x04000350, (31u << 16) | (8 << 5));
+    nds->RunFrame();
+    scene.Set(16, 0, wbuffer);
+    scene.Polygons[1].Attr = scene.Polygons[0].Attr;
+    scene.Submit(*nds);
+    const bool low = CaptureAndRead(*nds, 0x8070, 0x8100, 0x8100);
+    std::printf("blend=%s scale=%d w=%d low_clear result=%s\n",
+        backend, scale, wbuffer, low ? "pass" : "fail");
+    passed &= low;
+    // Bitmap rear planes supply their own per-pixel alpha. Bank B supplies
+    // texture slot 3 (depth), C supplies slot 2 (color); D stays the capture sink.
+    nds->ARM9Write8(0x04000241, 0x80);
+    for (u32 i = 0; i < 0x20000; i += 2) nds->ARM9Write16(0x06820000 + i, 0x7FFF);
+    nds->ARM9Write8(0x04000241, 0x9B);
+    const struct { u16 color, expected; } bitmaps[] = {
+        {Green, 0x81D0}, {Green & 0x7FFF, Red}, {0x8100, 0x8070},
+    };
+    for (const auto& bitmap : bitmaps)
+    {
+        nds->ARM9Write8(0x04000242, 0x80);
+        for (u32 i = 0; i < 0x20000; i += 2) nds->ARM9Write16(0x06840000 + i, bitmap.color);
+        nds->ARM9Write8(0x04000242, 0x93);
+        nds->ARM9Write16(0x04000060, (1 << 14) | 8);
+        nds->RunFrame();
+        scene.Submit(*nds);
+        const bool ok = CaptureAndRead(*nds, bitmap.expected, bitmap.color, bitmap.color);
+        std::printf("blend=%s scale=%d w=%d bitmap=%04x result=%s\n",
+            backend, scale, wbuffer, bitmap.color, ok ? "pass" : "fail");
+        passed &= ok;
+    }
+    return passed;
+}
+
+// Direct six-bit shading evidence. Unlike the capture tests above, this reads
+// the GPU output explicitly: fifteen-bit guest capture cannot distinguish 30
+// from 31 in a six-bit channel. It is not evidence for capture synchronization.
+u32 ShadingPixel(NDS& nds, const char* backend, int scale, int x, int y)
+{
+    if (auto* soft = dynamic_cast<ShadingReference*>(&nds.GetRenderer())) return soft->Pixel(x, y);
+    GLint texture = 0;
+    if (!std::strcmp(backend, "compute"))
+    {
+        glGetIntegeri_v(GL_IMAGE_BINDING_NAME, 0, &texture);
+        glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    }
+    else
+        glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    std::vector<u32> pixels(256 * 192 * scale * scale);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    const u32 color = pixels[(y * scale) * (256 * scale) + x * scale];
+    return ((color >> 2) & 0x003F3F3F) | ((color >> 3) & 0x1F000000);
+}
+
+bool RunShading(const char* backend, int scale)
+{
+    Scene scene;
+    auto nds = CreateNDS(backend, scale);
+    if (!nds) return false;
+    bool passed = true;
+    // The same production shader handles polygon and texel alpha. Values just
+    // below and above the first nonzero modulated alpha catch promotion of zero.
+    const struct { unsigned polygon, texture; u32 expected; } alpha[] = {
+        {4, 4, 0x00003F00}, {4, 5, 0x00003F00}, {4, 6, 0x013F3F3F}, {31, 31, 0x1F3F3F3F},
+    };
+    for (const auto& test : alpha)
+    {
+        nds->ARM9Write8(0x04000240, 0x80);
+        for (u32 i = 0; i < 64; i += 2) nds->ARM9Write16(0x06800000 + i, test.texture * 0x0808);
+        nds->ARM9Write8(0x04000244, 0x80);
+        nds->ARM9Write16(0x06880000, 0x7FFF);
+        nds->ARM9Write8(0x04000240, 0x83);
+        nds->ARM9Write8(0x04000244, 0x83);
+        nds->ARM9Write32(0x04000350, Green & 0x7FFF);
+        nds->ARM9Write16(0x04000060, 1 | 8);
+        nds->RunFrame();
+        scene.Set(test.polygon, 6u << 26, false, true);
+        scene.Submit(*nds);
+        const u32 actual = ShadingPixel(*nds, backend, scale, 36, 24);
+        std::printf("shading=%s scale=%d alpha=%u*%u actual=%08x expected=%08x\n",
+            backend, scale, test.polygon, test.texture, actual, test.expected);
+        passed &= actual == test.expected;
+    }
+    const struct { unsigned density; u16 color; bool alphaOnly; u32 expected; } fog[] = {
+        {0, 0, false, 0x1F3F3F3F}, {64, 0, false, 0x1F1F1F1F},
+        {65, 0, false, 0x1F1F1F1F}, {126, 0, false, 0x1F000000},
+        {127, 8 << 5, false, 0x1F001100}, {65, 8 << 5, false, 0x1F1F271F},
+        {65, 0, true, 0x0F3F3F3F},
+    };
+    for (const auto& test : fog)
+    {
+        nds->ARM9Write16(0x04000060, (1 << 7) | (test.alphaOnly ? 1 << 6 : 0));
+        nds->ARM9Write32(0x04000350, (31u << 16) | 0xFFFF);
+        nds->ARM9Write32(0x04000358, (test.alphaOnly ? 0 : 31u << 16) | test.color);
+        for (unsigned i = 0; i < 32; ++i) nds->ARM9Write8(0x04000360 + i, test.density);
+        nds->RunFrame();
+        scene.Set(31, 0, false);
+        scene.Submit(*nds);
+        const u32 actual = ShadingPixel(*nds, backend, scale, 4, 24);
+        std::printf("shading=%s scale=%d fog=%u color=%04x alpha_only=%d actual=%08x expected=%08x\n",
+            backend, scale, test.density, test.color, test.alphaOnly, actual, test.expected);
+        passed &= actual == test.expected;
+        if (test.density == 65 && test.color == 0)
+        {
+            // The final fog texture also has to reach the ordinary capture
+            // consumer after exchanging the two GL color textures. The raw
+            // read above deliberately means this is not a synchronization test.
+            passed &= CaptureAndRead(*nds, Red, Red, test.alphaOnly ? 0xFFFF : 0xBDEF);
+        }
+    }
+    return passed && glGetError() == GL_NO_ERROR;
 }
 
 bool RunTextureEnd(const char* backend, int scale, int width, bool crossing)
@@ -256,16 +430,22 @@ int CheckGLTextureBoundaries(const char* name)
     if (!std::strcmp(name, "dirty-wrap")) return CheckDirtyWrap() ? 0 : 1;
     const char* backend;
     const bool alpha = std::strncmp(name, "alpha-", 6) == 0;
-    if (alpha) backend = name + 6;
+    const bool blend = std::strncmp(name, "blend-", 6) == 0;
+    const bool shading = std::strncmp(name, "shading-", 8) == 0;
+    if (alpha || blend) backend = name + 6;
+    else if (shading) backend = name + 8;
     else if (std::strncmp(name, "capture-", 8) == 0) backend = name + 8;
     else return 2;
     if (std::strcmp(backend, "software") && std::strcmp(backend, "opengl") && std::strcmp(backend, "compute")) return 2;
-    if (alpha && !std::strcmp(backend, "compute")) return 2;
     bool passed = true;
     for (int scale : {1, 2})
     {
         if (alpha)
             for (bool wbuffer : {false, true}) passed &= RunAlpha(backend, scale, wbuffer);
+        else if (blend)
+            for (bool wbuffer : {false, true}) passed &= RunBlend(backend, scale, wbuffer);
+        else if (shading)
+            passed &= RunShading(backend, scale);
         else
             for (int width : {128, 256})
                 for (bool crossing : {false, true}) passed &= RunTextureEnd(backend, scale, width, crossing);

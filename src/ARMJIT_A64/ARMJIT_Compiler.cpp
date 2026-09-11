@@ -813,14 +813,13 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                         FixupBranch skipNop = B();
                         SetJumpTarget(skipExecute);
 
-                        if (emptyTransfer)
+                        if (IrregularCycles)
                         {
-                            // Charge only the untaken path, then preserve it for LoadCycles.
-                            Comp_AddCycles_C();
-                            SaveCycles();
-                        }
-                        else if (IrregularCycles)
                             Comp_AddCycles_C(true);
+                            // The common fallback reload must preserve this untaken charge.
+                            if (comp == NULL)
+                                SaveCycles();
+                        }
 
                         Comp_BranchSpecialBehaviour(false);
 
@@ -873,9 +872,9 @@ void Compiler::Comp_AddCycles_C(bool forceNonConstant)
         : ((R15 & 0x2) ? 0 : CurInstr.CodeCycles);
 
     if (forceNonConstant)
-        ConstantCycles += cycles;
-    else
         ADD(RCycles, RCycles, cycles);
+    else
+        ConstantCycles += cycles;
 }
 
 void Compiler::Comp_AddCycles_CI(u32 numI)

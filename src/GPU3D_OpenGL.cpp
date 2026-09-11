@@ -78,6 +78,7 @@ bool GLRenderer3D::BuildRenderShader(bool wbuffer)
     glUniform1i(uni_id, 1);
     uni_id = glGetUniformLocation(prog, "Capture256Texture");
     glUniform1i(uni_id, 2);
+    glUniform1i(glGetUniformLocation(prog, "BlendDestination"), 3);
 
     RenderShader[(int)wbuffer] = prog;
 
@@ -93,6 +94,12 @@ void GLRenderer3D::UseRenderShader(bool wbuffer)
 
     RenderModeULoc = glGetUniformLocation(RenderShader[flags], "uRenderMode");
     glUniform1i(glGetUniformLocation(RenderShader[flags], "uAlphaRef"), GPU3D.RenderAlphaRef);
+}
+
+void GLRenderer3D::SetRenderMode(int mode)
+{
+    CurrentRenderMode = mode;
+    glUniform1i(RenderModeULoc, mode);
 }
 
 void SetupDefaultTexParams(GLuint tex)
@@ -194,6 +201,7 @@ bool GLRenderer3D::Init()
     glUniform1i(uni_id, 0);
     uni_id = glGetUniformLocation(FinalPassFogShader, "AttrBuffer");
     glUniform1i(uni_id, 1);
+    glUniform1i(glGetUniformLocation(FinalPassFogShader, "ColorBuffer"), 3);
 
 
     memset(&ShaderConfig, 0, sizeof(ShaderConfig));
@@ -267,6 +275,8 @@ bool GLRenderer3D::Init()
     // color buffers
     glGenTextures(1, &ColorBufferTex);
     SetupDefaultTexParams(ColorBufferTex);
+    glGenTextures(1, &BlendDestinationTex);
+    SetupDefaultTexParams(BlendDestinationTex);
 
     // depth/stencil buffer
     glGenTextures(1, &DepthBufferTex);
@@ -297,6 +307,7 @@ GLRenderer3D::~GLRenderer3D()
 
     glDeleteFramebuffers(1, &MainFramebuffer);
     glDeleteTextures(1, &ColorBufferTex);
+    glDeleteTextures(1, &BlendDestinationTex);
     glDeleteTextures(1, &DepthBufferTex);
     glDeleteTextures(1, &AttrBufferTex);
 
@@ -356,6 +367,10 @@ bool GLRenderer3D::SetRenderSettings(int scale, bool betterpolygons) noexcept
     glBindTexture(GL_TEXTURE_2D, ColorBufferTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ScreenW, ScreenH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     if (!OpenGL::CheckError("3D color storage")) return false;
+
+    glBindTexture(GL_TEXTURE_2D, BlendDestinationTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, ScreenW, ScreenH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (!OpenGL::CheckError("3D blend destination storage")) return false;
 
     glBindTexture(GL_TEXTURE_2D, DepthBufferTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, ScreenW, ScreenH, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
@@ -759,6 +774,21 @@ void GLRenderer3D::BuildPolygons(GLRenderer3D::RendererPolygon* polygons, int np
         IndexBuffer[eidx++] = vidx_cur;
         IndexBuffer[eidx++] = vidx_first;
         rp->NumEdgeIndices += 2;
+
+        // Bound the actual packed positions submitted to GL, including generated
+        // center vertices. One pixel of padding covers line/edge rasterization.
+        rp->MinX = ScreenW;
+        rp->MinY = ScreenH;
+        rp->MaxX = rp->MaxY = 0;
+        for (u32 v = vidx_first; v < vidx; ++v)
+        {
+            const int x = VertexBuffer[v * 7] & 0xFFFF;
+            const int y = VertexBuffer[v * 7] >> 16;
+            rp->MinX = std::min(rp->MinX, std::max(0, x - 1));
+            rp->MinY = std::min(rp->MinY, std::max(0, y - 1));
+            rp->MaxX = std::max(rp->MaxX, std::min(ScreenW, x + 2));
+            rp->MaxY = std::max(rp->MaxY, std::min(ScreenH, y + 2));
+        }
     }
 
     NumVertices = vidx;
@@ -799,10 +829,37 @@ void GLRenderer3D::SetupPolygonTexture(const RendererPolygon* poly) const
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, repeatT);
 }
 
+void GLRenderer3D::SnapshotBlendDestination(int first, int count) const
+{
+    if (CurrentRenderMode != RenderMode_Translucent) return;
+
+    int left = ScreenW, top = ScreenH, right = 0, bottom = 0;
+    for (int i = first; i < first + count; ++i)
+    {
+        const auto& poly = PolygonList[i];
+        left = std::min(left, poly.MinX);
+        top = std::min(top, poly.MinY);
+        right = std::max(right, poly.MaxX);
+        bottom = std::max(bottom, poly.MaxY);
+    }
+    if (right <= left || bottom <= top) return;
+
+    // Separate storage avoids texture/framebuffer feedback on baseline GL3.2.
+    // A translucent batch shares its polygon ID, so stencil rejects subsequent
+    // fragments at an already written pixel; one snapshot serves the whole batch.
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, BlendDestinationTex);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, MainFramebuffer);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, left, top, left, top, right - left, bottom - top);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+}
+
 int GLRenderer3D::RenderSinglePolygon(int i) const
 {
     const RendererPolygon* rp = &PolygonList[i];
 
+    SnapshotBlendDestination(i, 1);
     SetupPolygonTexture(rp);
     glDrawElements(rp->PrimType, rp->NumIndices, GL_UNSIGNED_SHORT, (void*)(uintptr_t)(rp->IndicesOffset * 2));
 
@@ -831,6 +888,7 @@ int GLRenderer3D::RenderPolygonBatch(int i) const
         numindices += cur_rp->NumIndices;
     }
 
+    SnapshotBlendDestination(i, numpolys);
     SetupPolygonTexture(rp);
     glDrawElements(primtype, numindices, GL_UNSIGNED_SHORT, (void*)(uintptr_t)(rp->IndicesOffset * 2));
     return numpolys;
@@ -890,7 +948,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
     // pass 1: opaque pixels
 
-    glUniform1i(RenderModeULoc, RenderMode_Opaque);
+    SetRenderMode(RenderMode_Opaque);
     glLineWidth(1.0);
 
     glColorMaski(1, GL_TRUE, GL_TRUE, fogenable, GL_FALSE);
@@ -961,10 +1019,9 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
     glEnable(GL_BLEND);
     glBlendEquationSeparate(GL_FUNC_ADD, GL_MAX);
 
-    if (GPU3D.RenderDispCnt & (1<<3))
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE);
-    else
-        glBlendFuncSeparate(GL_ONE, GL_ZERO, GL_ONE, GL_ONE);
+    // Translucent RGB is composed in the shader with DS integer arithmetic.
+    // GL_MAX remains valid for alpha and attribute-buffer writes are unchanged.
+    glBlendFuncSeparate(GL_ONE, GL_ZERO, GL_ONE, GL_ONE);
 
     glLineWidth(1.0);
 
@@ -985,7 +1042,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                 {
                     // draw actual shadow mask
 
-                    glUniform1i(RenderModeULoc, RenderMode_ShadowMask);
+                    SetRenderMode(RenderMode_ShadowMask);
 
                     glDisable(GL_BLEND);
                     glColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -1015,7 +1072,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
                     if (needopaque)
                     {
-                        glUniform1i(RenderModeULoc, RenderMode_Opaque);
+                        SetRenderMode(RenderMode_Opaque);
 
                         glDisable(GL_BLEND);
                         glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -1031,7 +1088,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                         RenderSinglePolygon(i);
                     }
 
-                    glUniform1i(RenderModeULoc, RenderMode_Translucent);
+                    SetRenderMode(RenderMode_Translucent);
 
                     GLboolean transfog;
                     if (!(polyattr & (1<<15))) transfog = fogenable;
@@ -1099,7 +1156,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
                 // draw actual shadow mask
 
-                glUniform1i(RenderModeULoc, RenderMode_ShadowMask);
+                SetRenderMode(RenderMode_ShadowMask);
 
                 glDisable(GL_BLEND);
                 glColorMaski(0, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -1127,7 +1184,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
                 if (needopaque)
                 {
-                    glUniform1i(RenderModeULoc, RenderMode_Opaque);
+                    SetRenderMode(RenderMode_Opaque);
 
                     glDisable(GL_BLEND);
                     glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -1143,7 +1200,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                     RenderSinglePolygon(i);
                 }
 
-                glUniform1i(RenderModeULoc, RenderMode_Translucent);
+                SetRenderMode(RenderMode_Translucent);
 
                 GLboolean transfog;
                 if (!(polyattr & (1<<15))) transfog = fogenable;
@@ -1238,26 +1295,19 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
         if (GPU3D.RenderDispCnt & (1<<7))
         {
-            // fog
+            // Fog is the final full-screen pass. Write into the spare color
+            // texture and exchange roles, avoiding a full-frame copy and
+            // texture/framebuffer feedback while composing six-bit integers.
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, ColorBufferTex);
+            glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, BlendDestinationTex, 0);
+            glDisable(GL_BLEND);
 
             glUseProgram(FinalPassFogShader);
 
-            if (GPU3D.RenderDispCnt & (1<<6))
-                glBlendFuncSeparate(GL_ZERO, GL_ONE, GL_CONSTANT_COLOR, GL_ONE_MINUS_SRC_ALPHA);
-            else
-                glBlendFuncSeparate(GL_CONSTANT_COLOR, GL_ONE_MINUS_SRC_ALPHA, GL_CONSTANT_COLOR, GL_ONE_MINUS_SRC_ALPHA);
-
-            {
-                u32 c = GPU3D.RenderFogColor;
-                u32 r = c & 0x1F;
-                u32 g = (c >> 5) & 0x1F;
-                u32 b = (c >> 10) & 0x1F;
-                u32 a = (c >> 16) & 0x1F;
-
-                glBlendColor((float)r/31.0, (float)g/31.0, (float)b/31.0, (float)a/31.0);
-            }
-
             glDrawArrays(GL_TRIANGLES, 0, 2*3);
+            std::swap(ColorBufferTex, BlendDestinationTex);
+            Parent.OutputTex3D = ColorBufferTex;
         }
     }
 }
@@ -1367,7 +1417,7 @@ void GLRenderer3D::RenderFrame()
     for (int i = 0; i < 34; i++)
     {
         u8 d = GPU3D.RenderFogDensityTable[i];
-        ShaderConfig.uFogDensity[i][0] = (float)d / 127.0;
+        ShaderConfig.uFogDensity[i][0] = d;
     }
 
     ShaderConfig.uFogOffset = GPU3D.RenderFogOffset;

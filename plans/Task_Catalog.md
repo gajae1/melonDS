@@ -7,7 +7,7 @@
 | ID | 작업·상세 계약 | 관찰 근거 | 우선 | 기본 버전 | 공동 대표 | 처리 상태 |
 |---|---|---|---|---|---|---|
 | CJ-01 | [A64 MUL 가변 사이클](workstreams/01-core-jit.md#CJ-01) | 정적 후보 | P1 | [1.1.39](Release_Plan.md#v39) | — | 미착수 |
-| CJ-02 | [A64 조건부 사이클 누적](workstreams/01-core-jit.md#CJ-02) | 정적 후보 | P1 | [1.1.39](Release_Plan.md#v39) | — | 미착수 |
+| CJ-02 | [A64 조건부 사이클 누적](workstreams/01-core-jit.md#CJ-02) | 부분 실행 재현 | P1 | [1.1.39](Release_Plan.md#v39) | — | 1.1.34 A64 production emitter의 taken/untaken·normal·fallback 누적 수정, 생성 코드28/28과 x64 실제 cached dispatch 포함40/40; x64 건너뛴 명령의 1사이클 누락도 수정, 최종 Windows 통합631/631, native A64·실기 타이밍은 후속 |
 | CJ-03 | [warmed ALU·shift·부분 flags](workstreams/01-core-jit.md#CJ-03) | 실행 재현/확장 | P1 | [1.1.14](Release_Plan.md#v14) | — | 1.1.15 ASR·ALU 회귀, 1.1.16 ARM7 STM PC값·동일 pipeline PC의 ARM/Thumb 복원 수정; 전체 명령/조건·native A64·실기 후속 |
 | CJ-04 | [MPU 실행·data 권한 경계](workstreams/01-core-jit.md#CJ-04) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.18 warmed 정적 분기의 실행 권한 취소·예외 상태 수정; 같은 페이지 변경·data abort·Thumb·겹친 region·실기/native A64 후속 |
 | CJ-05 | [DTCM remap 구간](workstreams/01-core-jit.md#CJ-05) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.17 DTCM 자체 view·이전 RAM 구간·작은 bank offset 수정과 Windows 실제 view/guest 회귀; 다른 OS·native A64·resize/save-load·MPU 후속 |
@@ -34,7 +34,7 @@
 | GR-05 | [mid-capture 시점·register latch](workstreams/02-renderers.md#GR-05) | 부분 실행 재현 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.28 ARM9 읽기/쓰기·DMA의 과거/미래 줄·설정 변경; 1.1.30 source A DMA-first와 warmed JIT 추가 검증; subscanline latch·VCOUNT 변경·실기/게임 후속 |
 | GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 부분 실행 검증 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 A/B·혼합·bank wrap→guest LDRH·128/256 재사용; 1.1.30 source A DMA-first/warmed JIT·3 backend 검증; 1.1.33 direct-color texture 끝·RAM fallback·dirty word wrap·guest 재사용 대조; JIT-first·모든 2D source A·실기 후속 |
 | GR-07 | [고배율 한도·할당 복구](workstreams/02-renderers.md#GR-07) | 실행 재현 | P2 | [1.1.17](Release_Plan.md#v17) | — | 1.1.21 texture/viewport·SSBO/texel 한도와 첫 할당 오류·software 복구·캡처 보존·재선택 검증; 1.1.33 producer 용량·indirect 상한의 순서 보존 분할·중간 합성 상태 유지; 실장치 OOM/context 복구·작은 VRAM·게임/driver 후속 |
-| GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 부분 실행 재현 | P1 | [1.1.28](Release_Plan.md#v28) | — | 1.1.33 classic alpha ref/texel alpha·Compute 분할 전후 중간 상태/픽셀 대조; Compute blend-off 반투명 차이·실기 후속 |
+| GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 부분 실행 재현 | P1 | [1.1.28](Release_Plan.md#v28) | — | 1.1.33 classic alpha ref/texel alpha·Compute 분할 전후 중간 상태/픽셀 대조; 1.1.34 Compute blend-off와 classic GL 정수 합성·modulate alpha·fog 수정; 세 렌더러 각각 alpha44·겹침/bitmap24·6비트shading22조합 통과, 추가 GPU 복사 비용·다른 장치·실기 후속 |
 | GR-09 | [2D/3D 정수 SIMD·구간 묶음](workstreams/02-renderers.md#GR-09) | 미측정 가설 | P2 | [1.1.27](Release_Plan.md#v27) | — | 미착수 |
 | GR-10 | [texture cache 비용·상주량](workstreams/02-renderers.md#GR-10) | 미측정 가설 | P2 | [1.1.28](Release_Plan.md#v28) | — | 미착수 |
 | GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22~24 초기화/실행 실패·해제 거부·paused 이미지/입력 복구; 1.1.25 반환 실패·전체 Qt 세 인스턴스/네 창의 상태 보존·native 전환·재선택; 물리 surface·이종 GPU/DPI·휴면 후속 |
@@ -92,7 +92,7 @@
 | FS-21 | [카메라 미리보기·hotplug 수명](workstreams/04-frontend-storage.md#FS-21) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
 | NP-01 | [LAN payload·AID·peer 검증](workstreams/05-connectivity-peripherals.md#NP-01) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.08 ENet payload·type·sender/peer·AID 검증; 1.1.32 caller capacity와 기존 2048/1024 crop·큰 v1 프레임·빈 AID0 대조; 두 PC 게임 후속 |
 | NP-02 | [LAN handshake·취소·소유권](workstreams/05-connectivity-peripherals.md#NP-02) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.29 소유·초기화/종료·잠금·검사·비동기 완료/취소; 1.1.30 v1 호환·선택 포트 교환·단방향 mesh·4명/ID 재사용; 1.1.29 양방향/원본 호스트 통과, 원본 클라이언트의 첫 UDP 유실·두 PC 게임/다른 OS 후속 |
-| NP-03 | [LocalMP FIFO 넘침·복구](workstreams/05-connectivity-peripherals.md#NP-03) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.26 backlog/기록/permit·수명 복구; 1.1.32 수신 용량·reply 슬롯·잘못된 instance/길이/AID 보호, 최대 2376 전송 유지; 1.1.33 timestamp 0~31 unsigned 경계·age32/33 큐 대조; 실제 무선·다중 그룹 후속 |
+| NP-03 | [LocalMP FIFO 넘침·복구](workstreams/05-connectivity-peripherals.md#NP-03) | 실행 재현 | P1 | [1.1.12](Release_Plan.md#v12) | — | 1.1.26 backlog/기록/permit·수명 복구; 1.1.32 수신 용량·reply 슬롯·잘못된 instance/길이/AID 보호, 최대 2376 전송 유지; 1.1.33 guest timestamp 경계; 1.1.34 host queue16ms low32/wrap 경과 대조; 실제 무선·다중 그룹 후속 |
 | NP-04 | [LocalMP 그룹 격리](workstreams/05-connectivity-peripherals.md#NP-04) | 관찰/확장 | P2 | [1.1.12](Release_Plan.md#v12) | — | 미착수 |
 | NP-05 | [PCap library 실패 중복 해제](workstreams/05-connectivity-peripherals.md#NP-05) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 누락 심볼 시 단일 unload·이동/소유권 회귀; 실제 DLL·POSIX 수락 후속 |
 | NP-06 | [PCap caplen/link type·I/O](workstreams/05-connectivity-peripherals.md#NP-06) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 완전한 Ethernet 캡처·datalink·I/O 오류와 open/열거 자원 회귀; 실제 어댑터·driver 실패 수락 후속 |
@@ -111,11 +111,11 @@
 | NP-19 | [RTC 달력·IRQ·host 시계](workstreams/05-connectivity-peripherals.md#NP-19) | 부분 실행 재현 | P2 | [1.1.13](Release_Plan.md#v13) | — | 1.1.10 직렬 edge·분 carry·통신 Reset 수정, 달력/시간모드/BCD/IRQ·배터리 State 보존 회귀; host/DST·실기 초기값·게임 후속 |
 | NP-20 | [치트 DB 길이·read 오류](workstreams/05-connectivity-peripherals.md#NP-20) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.09 header/index/string/code·read/seek 오류 검증, 완전한 entry만 반환·부모 포인터 보존·빈 선택 import 차단; 실제 DB 선택 후속 |
 | NP-21 | [치트 literal/loop 실행 계약](workstreams/05-connectivity-peripherals.md#NP-21) | 실행 재현 | P1 | [1.1.13](Release_Plan.md#v13) | — | 1.1.09 입력·취소 보호에 이어 1.1.13 D1/D2 매 반복 조건 복원·D0 이전 조건 없는 종료 회귀; 실제 게임·C4·C5 수명·불성립 조건 안의 중첩 의미 후속 |
-| BV-01 | [기준 revision·검증 자료 색인](workstreams/06-build-validation.md#BV-01) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.03 부분 반영: 공개 계획·증거 색인 |
+| BV-01 | [기준 revision·검증 자료 색인](workstreams/06-build-validation.md#BV-01) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.03 공개 계획·증거 색인; 1.1.34 선택형 source ID와 실제 EXE/committed source 대조 |
 | BV-02 | [다자릿수 표시/숫자 버전](workstreams/06-build-validation.md#BV-02) | 관찰/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 미착수 |
 | BV-03 | [Windows DLL/plugin 의존 폐쇄](workstreams/06-build-validation.md#BV-03) | 관찰/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 부분 반영: import·독립 PATH 확인 |
 | BV-04 | [로컬 build profile](workstreams/06-build-validation.md#BV-04) | 관찰/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 부분 반영: 기존 로컬 명령 |
-| BV-05 | [배포 allowlist·개인 자료 보존](workstreams/06-build-validation.md#BV-05) | 정적 후보 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 부분 반영: 선별한 배포 파일 |
+| BV-05 | [배포 allowlist·개인 자료 보존](workstreams/06-build-validation.md#BV-05) | 정적 후보 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 선별 배포; 1.1.34 소스 변경 후 오래된 EXE 거부·문서만 변경 재사용, 외부 DLL/재현 빌드 신원은 별도 |
 | BV-06 | [C23/C++26 기능별 채택](workstreams/06-build-validation.md#BV-06) | 관찰/확장 | P2 | [1.1.36](Release_Plan.md#v36) | — | 미착수 |
 | BV-07 | [의존성·local patch·license](workstreams/06-build-validation.md#BV-07) | 관찰/확장 | P1 | [1.1.36](Release_Plan.md#v36) | — | 미착수 |
 | BV-08 | [LTO/ThinLTO guard 판정](workstreams/06-build-validation.md#BV-08) | 미측정 가설 | P2 | [1.1.38](Release_Plan.md#v38) | — | 미착수 |

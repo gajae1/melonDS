@@ -3,6 +3,7 @@
 uniform usampler2DArray CurTexture;
 uniform sampler2DArray Capture128Texture;
 uniform sampler2DArray Capture256Texture;
+uniform sampler2D BlendDestination;
 
 layout(std140) uniform uConfig
 {
@@ -77,6 +78,9 @@ vec4 FinalColor()
         {
             // modulate
             col = vcol * tcol;
+            uint textureAlpha = uint(floor(tcol.a * 31.0 + 0.5));
+            uint polygonAlpha = uint(floor(vcol.a * 31.0 + 0.5));
+            col.a = float(((textureAlpha + 1u) * (polygonAlpha + 1u) - 1u) >> 5u) / 31.0;
         }
     }
 
@@ -122,7 +126,19 @@ void main()
             oAttr.a = 1;
         }
 
-        oColor = col;
+        if (uRenderMode == 1)
+        {
+            vec4 destination = texelFetch(BlendDestination, ivec2(gl_FragCoord.xy), 0);
+            uvec3 src = uvec3(round(clamp(col.rgb, 0.0, 1.0) * 255.0)) >> 2u;
+            uvec3 dst = uvec3(round(destination.rgb * 255.0)) >> 2u;
+            uint srcAlpha = uint(round(col.a * 31.0));
+            uint dstAlpha = uint(round(destination.a * 31.0));
+            if (dstAlpha != 0u && (uDispCnt & (1 << 3)) != 0)
+                src = (src * (srcAlpha + 1u) + dst * (31u - srcAlpha)) >> 5u;
+            oColor = vec4(vec3(src * 4u) / 255.0, float(max(srcAlpha, dstAlpha)) / 31.0);
+        }
+        else
+            oColor = col;
     }
 
 #ifdef WBuffer

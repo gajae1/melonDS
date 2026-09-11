@@ -11,6 +11,7 @@
 | [2026-09-11 감사](Audit_2026-09-11.md) | 실제 읽기 범위·추가 반례 후보·upstream와 Android/macOS/Linux 이식 경계 |
 | [추가 참고 자료](Reference_Notes_2026-09-11.md) | 파일 보존·통신·JIT·GPU의 다른 구현/논문과 다음 검증 조건 |
 | [최적화 조사와 실험 후보](Optimization_Research_2026-09-11.md) | 멀티코어·C/C++·컴파일러·JIT·GPU·자동 네트워크의 코드 근거와 다음 실험 |
+| [1.1.34 구현 기록](releases/1.1.34.md) | 알파·안개 정밀도·조건부 JIT 사이클·LAN 시각 wrap·배포 소스 식별 |
 | [1.1.33 구현 기록](releases/1.1.33.md) | Compute 작업량 분할·그래픽·reply timestamp 경계 |
 | [1.1.32 구현 기록](releases/1.1.32.md) | 상태 section·FAT/NAND 내보내기 보존·LocalMP 수신 용량·GDB qCRC |
 | [1.1.31 구현 기록](releases/1.1.31.md) | SD 이미지 마운트 실패의 보존·DSP 홀수 FIFO·Compute 초기화 |

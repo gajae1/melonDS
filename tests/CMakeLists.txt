@@ -25,6 +25,9 @@ foreach(case roundtrip invalid-length truncated-header zero-length-skip oversize
 endforeach()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME package-source-identity
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/PackageIdentity.py")
+set_tests_properties(package-source-identity PROPERTIES TIMEOUT 120)
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/CaptureMethod.inc"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
@@ -224,7 +227,7 @@ if (MELONDS_TEST_GPU)
     add_test(NAME gpu-compute-frame-capture COMMAND GLFrameReadback compute)
     set_tests_properties(gpu-opengl-frame-capture gpu-compute-frame-capture
         PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
-    foreach(case IN ITEMS alpha-software alpha-opengl capture-software capture-opengl capture-compute dirty-wrap)
+    foreach(case IN ITEMS alpha-software alpha-opengl alpha-compute blend-software blend-opengl blend-compute shading-software shading-opengl shading-compute capture-software capture-opengl capture-compute dirty-wrap)
         add_test(NAME gpu-gl-texture-${case} COMMAND GLFrameReadback gl-texture-boundaries ${case})
         set_tests_properties(gpu-gl-texture-${case}
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
@@ -257,7 +260,7 @@ if (MELONDS_TEST_GPU)
         set_tests_properties(gpu-gl-resource-${resource}
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endforeach()
-    foreach(allocation IN ITEMS control texture-limit viewport-limit ssbo-limit texel-limit buffer-fail texture-fail oom invalid-scale capture-fail 2d-fail classic-fail)
+    foreach(allocation IN ITEMS control texture-limit viewport-limit ssbo-limit texel-limit buffer-fail texture-fail oom invalid-scale capture-fail 2d-fail classic-fail classic-blend-fail)
         add_test(NAME gpu-gl-allocation-${allocation} COMMAND GLFrameReadback gl-allocation ${allocation})
         set_tests_properties(gpu-gl-allocation-${allocation}
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
@@ -299,6 +302,51 @@ add_executable(ARM64JitArithmetic ARM64JitArithmetic.cpp ../src/jit/Arm64Emitter
     "${CMAKE_CURRENT_BINARY_DIR}/ARM64JitFlags.inc")
 target_include_directories(ARM64JitArithmetic PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME arm64-jit-arithmetic-encoding COMMAND ARM64JitArithmetic)
+
+if (TARGET core AND ENABLE_JIT)
+    # Keep CompileBlock, its branch/cycle helpers, and the ADD emitter as current
+    # production definitions. The small ISA model also calls the real fallback.
+    set(arm64_block_definitions
+        "CompileBlock|ARMJIT_Compiler.cpp|JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[], int instrsCount, bool hasMemInstr)"
+        "BranchSpecial|ARMJIT_Compiler.cpp|void Compiler::Comp_BranchSpecialBehaviour(bool taken)"
+        "Condition|ARMJIT_Compiler.cpp|FixupBranch Compiler::CheckCondition(u32 cond)"
+        "CyclesC|ARMJIT_Compiler.cpp|void Compiler::Comp_AddCycles_C(bool forceNonConstant)"
+        "CyclesCI|ARMJIT_Compiler.cpp|void Compiler::Comp_AddCycles_CI(u32 numI)"
+        "LoadCycles|ARMJIT_Compiler.cpp|void Compiler::LoadCycles()"
+        "SaveCycles|ARMJIT_Compiler.cpp|void Compiler::SaveCycles()"
+        "LoadCPSR|ARMJIT_Compiler.cpp|void Compiler::LoadCPSR()"
+        "SaveCPSR|ARMJIT_Compiler.cpp|void Compiler::SaveCPSR(bool markClean)"
+        "LoadReg|ARMJIT_Compiler.cpp|void Compiler::LoadReg(int reg, ARM64Reg nativeReg)"
+        "SaveReg|ARMJIT_Compiler.cpp|void Compiler::SaveReg(int reg, ARM64Reg nativeReg)"
+        "TriOp|ARMJIT_ALU.cpp|void Compiler::A_Comp_ALUTriOp()"
+        "GetOp2|ARMJIT_ALU.cpp|void Compiler::A_Comp_GetOp2(bool S, Op2& op2)"
+        "ShiftReg|ARMJIT_ALU.cpp|void Compiler::Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs)"
+        "ShiftImm|ARMJIT_ALU.cpp|void Compiler::Comp_RegShiftImm(int op, int amount, bool S, Op2& op2, ARM64Reg tmp)")
+    foreach(definition IN LISTS arm64_block_definitions)
+        string(REPLACE "|" ";" fields "${definition}")
+        list(GET fields 0 name)
+        list(GET fields 1 file)
+        list(GET fields 2 signature)
+        set(source "${CMAKE_CURRENT_SOURCE_DIR}/../src/ARMJIT_A64/${file}")
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/ARM64Jit${name}.inc")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+                "${source}" "${signature}" "${output}"
+            DEPENDS ExtractFunction.py "${source}" VERBATIM)
+        target_sources(ARM64JitArithmetic PRIVATE "${output}")
+    endforeach()
+    target_sources(ARM64JitArithmetic PRIVATE PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(ARM64JitArithmetic PRIVATE core Threads::Threads)
+    target_compile_definitions(ARM64JitArithmetic PRIVATE ARM64_JIT_BLOCK_TEST)
+    # The extracted backend uses the same ARM member offsets as core.
+    target_compile_options(ARM64JitArithmetic PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-invalid-offsetof>)
+    add_test(NAME arm64-jit-conditional-cycles COMMAND ARM64JitArithmetic conditional-cycles)
+    set_tests_properties(arm64-jit-conditional-cycles PROPERTIES TIMEOUT 30)
+    add_test(NAME core-interpreter-conditional-cycles COMMAND CoreExecution interpreter conditional-cycles)
+    set_tests_properties(core-interpreter-conditional-cycles PROPERTIES TIMEOUT 30)
+    add_test(NAME core-jit-conditional-cycles COMMAND CoreExecution jit conditional-cycles)
+    set_tests_properties(core-jit-conditional-cycles PROPERTIES TIMEOUT 30)
+endif()
 
 if (TARGET core)
     add_executable(CartSPI CartSPI.cpp PlatformSync.cpp PlatformHeadless.cpp)

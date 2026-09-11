@@ -1301,7 +1301,7 @@ void PlotTranslucent(inout uint color, inout uint depth, inout uint attr, bool i
         uint dstA = color & 0x1F000000U;
 
         uint alpha = (srcA >> 24) + 1;
-        if (dstA != 0)
+        if (dstA != 0 && (DispCnt & (1U << 3)) != 0)
         {
             srcRB = ((srcRB * alpha) + (dstRB * (32-alpha))) >> 5;
             srcG = ((srcG * alpha) + (dstG * (32-alpha))) >> 5;
