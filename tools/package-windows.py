@@ -108,6 +108,7 @@ def main():
         'package_identity_schema': build_info['schema'],
         'package_identity_source_id': verified_source_id,
         'package_identity_version': build_info['version'],
+        'package_identity_normalization': 'Git check-in filters; core.autocrlf=input; committed HEAD attributes',
         'package_identity_docs_only_excludes': source_identity.DOC_EXCLUDED_POLICY,
         'runtime_zip': runtime_zip.name, 'runtime_bytes': runtime_zip.stat().st_size,
         'runtime_sha256': digest(runtime_zip), 'runtime_files': runtime_files,

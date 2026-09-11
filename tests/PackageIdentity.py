@@ -101,7 +101,8 @@ def scenario(work):
     def git(*args):
         return run(['git', *args], repo, env=git_env)
 
-    (repo / '.gitattributes').write_text('* text=auto\n', encoding='utf-8', newline='\n')
+    (repo / '.gitattributes').write_text('* text=auto\nlegacy.txt -text\n', encoding='utf-8', newline='\n')
+    (repo / 'legacy.txt').write_bytes(b'historical source A\r\n')
     (repo / 'source.txt').write_text('identity source A\n', encoding='utf-8', newline='\n')
     (repo / 'my file.txt').write_text('spaced path\n', encoding='utf-8', newline='\n')
     (repo / '데이터.txt').write_text('데이터\n', encoding='utf-8', newline='\n')
@@ -111,6 +112,12 @@ def scenario(work):
         encoding='utf-8', newline='\n')
     git('add', '-A')
     git('commit', '--quiet', '-m', 'source A')
+    # Older repositories can contain CRLF blobs committed before a text policy.
+    # Changing attributes does not retroactively normalize those stored blobs.
+    (repo / '.gitattributes').write_text('* text=auto\n', encoding='utf-8', newline='\n')
+    git('add', '--', '.gitattributes')
+    git('commit', '--quiet', '-m', 'enable text normalization without rewriting history')
+    check(b'\r\n' in git('show', 'HEAD:legacy.txt').stdout, 'legacy fixture must retain committed CRLF')
 
     def configure(identity='ON'):
         run(['cmake', '-S', str(repo), '-B', str(build), *pick_generator(),
@@ -212,6 +219,23 @@ def scenario(work):
     build_project()
     check(exe_info()['source_id'] == source_identity.committed_source_identity(repo),
           'CRLF rewrite must keep the binary identity stable')
+
+    # A real edit to an old CRLF blob still changes the identity and verifies
+    # only after committing; historical EOL handling must not hide data changes.
+    (repo / 'legacy.txt').write_bytes(b'historical source B\r\n')
+    build_project()
+    legacy_info = exe_info()
+    expect_rejected(legacy_info, 'edited historical CRLF blob before commit')
+    git('add', '--', 'legacy.txt')
+    git('commit', '--quiet', '-m', 'edit historical CRLF blob')
+    check(source_identity.verify_build_info(legacy_info, repo, expected_version='9.9.90')
+          == legacy_info['source_id'], 'edited historical CRLF blob must verify after commit')
+    # A HEAD identity must use HEAD attributes even while working attributes differ.
+    committed = source_identity.committed_source_identity(repo)
+    (repo / '.gitattributes').write_text('* -text\n', encoding='utf-8', newline='\n')
+    check(source_identity.committed_source_identity(repo) == committed,
+          'working attributes must not redefine the committed identity')
+    (repo / '.gitattributes').write_text('* text=auto\n', encoding='utf-8', newline='\n')
 
     # Default OFF: empty identity, no Python/Git requirement at build time,
     # and the empty identity never passes packaging verification.

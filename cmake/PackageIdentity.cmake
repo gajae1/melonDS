@@ -29,8 +29,8 @@ function(melonds_add_package_identity target)
         return()
     endif()
 
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    find_package(Git REQUIRED)
+    find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
+    find_package(Git 2.43 REQUIRED)
 
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" rev-parse --is-inside-work-tree

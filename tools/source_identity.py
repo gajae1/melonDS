@@ -4,11 +4,12 @@
 
 Identity schema 1 is a SHA-256 digest over a fixed schema prefix and, for
 every included file in deterministic order, the relative path (UTF-8,
-forward slashes), a NUL byte, the Git blob OID of the current content, and
-a NUL byte. Working-tree identity hashes actual file content through Git's
-own check-in filters (hash-object without -w), so line-ending normalization
-always matches what Git would commit. Committed identity reads the HEAD
-tree (ls-tree) with the same documentation-exclusion policy, so
+forward slashes), a NUL byte, the Git blob OID of normalized content, and
+a NUL byte. Both identities use Git's check-in filters (without -w) with
+core.autocrlf=input, independent of the host's autocrlf setting. Committed
+blobs are normalized using HEAD attributes, including historical CRLF
+content that was never renormalized in the index. The same documentation
+exclusions apply to the working tree and HEAD, so
 documentation-only commits keep the same identity and a source ZIP made
 from 'git archive HEAD' can be bound to the built binary.
 """
@@ -22,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SCHEMA = 1
@@ -50,7 +52,7 @@ def is_documentation_path(rel: str) -> bool:
 
 def _git(repo: Path, args: list[str], input_bytes: bytes | None = None) -> bytes:
     result = subprocess.run(
-        ["git", "-C", str(repo), *args],
+        ["git", "-c", "core.autocrlf=input", "-C", str(repo), *args],
         input=input_bytes,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -143,7 +145,7 @@ def working_source_files(repo: str | os.PathLike) -> list[str]:
     return sorted(paths, key=_sort_key)
 
 
-def _hash_working_blobs(repo: Path, rel_paths: list[str]) -> dict[str, str]:
+def _hash_working_blobs(repo: Path, rel_paths: list[str], git_options: tuple[str, ...] = ()) -> dict[str, str]:
     """Hash files through Git's own check-in filters (no -w).
 
     --stdin-paths is line-delimited (git has no NUL mode for it), so every
@@ -154,7 +156,7 @@ def _hash_working_blobs(repo: Path, rel_paths: list[str]) -> dict[str, str]:
         return {}
     oids: dict[str, str] = {}
     payload = b"".join(_c_quoted_path(rel) + b"\n" for rel in rel_paths)
-    out = _git(repo, ["hash-object", "--stdin-paths"], payload)
+    out = _git(repo, [*git_options, "hash-object", "--stdin-paths"], payload)
     lines = out.decode("ascii").split("\n")
     if len(lines) != len(rel_paths) + 1 or lines[-1] != "":
         raise SourceIdentityError("hash-object returned an unexpected OID stream")
@@ -204,7 +206,42 @@ def working_source_identity(repo: str | os.PathLike) -> str:
 
 
 def committed_source_identity(repo: str | os.PathLike) -> str:
-    return _digest(committed_source_entries(repo))
+    repo = _resolve_repo(repo)
+    entries = committed_source_entries(repo)
+    if not entries:
+        return _digest([])
+    # A historical CRLF blob can remain in HEAD after text attributes change.
+    # Hash its actual content through the same Git conversion as the build;
+    # comparing a normalized working OID to the raw stored OID is insufficient.
+    contents = _git(repo, ["cat-file", "--batch"],
+                    b"".join(oid.encode("ascii") + b"\n" for _, oid in entries))
+    git_dir = _git(repo, ["rev-parse", "--absolute-git-dir"]).decode("utf-8", "surrogateescape").strip()
+    with tempfile.TemporaryDirectory(prefix="melonds-identity-head-") as directory:
+        snapshot = Path(directory).resolve()
+        offset = 0
+        for rel, oid in entries:
+            end = contents.find(b"\n", offset)
+            header = contents[offset:end].split()
+            if end < 0 or len(header) != 3 or header[:2] != [oid.encode("ascii"), b"blob"]:
+                raise SourceIdentityError(f"Unexpected cat-file header for {rel}")
+            size = int(header[2])
+            offset = end + 1
+            end = offset + size
+            if size < 0 or contents[end:end+1] != b"\n":
+                raise SourceIdentityError(f"Truncated HEAD blob for {rel}")
+            target = snapshot / rel
+            if not target.resolve().is_relative_to(snapshot):
+                raise SourceIdentityError(f"HEAD path escapes its temporary snapshot: {rel}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents[offset:end])
+            offset = end + 1
+        if offset != len(contents):
+            raise SourceIdentityError("Unexpected trailing cat-file data")
+        # This uses existing Git metadata read-only, without a new worktree,
+        # index changes or object writes. Only owned temporary input files exist.
+        oids = _hash_working_blobs(snapshot, [rel for rel, _ in entries], (
+            "--git-dir=" + git_dir, "--work-tree=" + str(snapshot), "--attr-source=HEAD"))
+        return _digest([(rel, oids[rel]) for rel, _ in entries])
 
 
 HEADER_TEMPLATE = """/* Generated by tools/source_identity.py or cmake/PackageIdentity.cmake.

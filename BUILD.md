@@ -129,7 +129,7 @@ new artifacts to retain the old macOS 10.15/11 minimum. See
 
 ## Packaging a Windows release
 
-The optional `MELONDS_PACKAGE_IDENTITY=ON` setting requires Git and Python 3
+The optional `MELONDS_PACKAGE_IDENTITY=ON` setting requires Git 2.43+ and Python 3.11+
 and embeds a source content ID in `melonDS.exe`. Enable it before building
 an executable for `tools/package-windows.py`:
 
@@ -144,7 +144,9 @@ and verifies the actual EXE's `--build-info` against the committed source
 before writing archives. An older or identity-disabled EXE is rejected.
 Root README/BUILD/CONTRIBUTING Markdown and Markdown under `plans/` are the
 only content-policy exclusions, so a documentation-only commit can reuse
-the same binary. Git's check-in filters normalize line endings.
+the same binary. Both sides use Git's check-in filters with
+`core.autocrlf=input`; committed blobs use the attributes from HEAD. This
+also handles historical CRLF blobs that were never renormalized in the index.
 
 Ordinary builds default to identity OFF and do not gain a Git/Python
 requirement from this option. The source ID does not attest to the compiler,
