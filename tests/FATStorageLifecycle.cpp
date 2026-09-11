@@ -222,6 +222,195 @@ static void TestExport(const std::string& scenario, const QString& path, const Q
     std::printf("PASS: %s\n", scenario.c_str());
 }
 
+static bool DirectoryAlias(const QString& target, const QString& alias)
+{
+    std::error_code err;
+#ifdef _WIN32
+    // MinGW's create_directory_symlink can be unavailable even when Windows
+    // permits ordinary, unprivileged symbolic links. No junction emulation.
+    if (!CreateSymbolicLinkW(reinterpret_cast<LPCWSTR>(alias.utf16()), reinterpret_cast<LPCWSTR>(target.utf16()),
+        SYMBOLIC_LINK_FLAG_DIRECTORY | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE))
+        err = std::error_code(GetLastError(), std::system_category());
+#else
+    std::filesystem::create_directory_symlink(PathFromUTF8(target.toStdString()), PathFromUTF8(alias.toStdString()), err);
+#endif
+    if (err)
+    {
+        std::printf("SKIP: native directory symlink unavailable, error=%d\n", err.value());
+        return false;
+    }
+    std::printf("alias_qt_symlink=%d alias_qt_directory=%d alias_std_symlink=%d\n",
+        QFileInfo(alias).isSymLink(), QFileInfo(alias).isDir(),
+        std::filesystem::is_symlink(std::filesystem::symlink_status(PathFromUTF8(alias.toStdString()))));
+    Require(QFileInfo(alias).isSymLink() && QFileInfo(alias).isDir(), "fixture is a real directory symlink");
+    return true;
+}
+
+static void TestDeletion(const std::string& mode, const QString& path, const QString& source)
+{
+    using namespace ExportTest;
+    const bool directory = mode.starts_with("dir-");
+    const bool denied = mode.ends_with("denied");
+    const bool readonly = mode.starts_with("readonly-");
+    const bool linked = mode == "dir-symlink";
+    const bool edit = mode.ends_with("edit");
+    const bool type = mode.ends_with("type");
+    const bool added = mode == "dir-new";
+    const bool indexFailure = mode == "index-commit";
+    const bool conflict = edit || type || added || denied || linked;
+    const QString target = source + (directory ? "/TREE" : "/KEEP.BIN");
+    const QString item = directory && !denied ? target + "/NEST/ITEM.BIN" : target;
+    const QString index = path + ".idx";
+    const auto original = Payload(8193), control = Payload(257);
+    const QString external = QFileInfo(path).dir().filePath("external");
+    const QString alias = QFileInfo(path).dir().filePath("replacement-link");
+    if (linked)
+    {
+        Check(QDir().mkdir(external), "generated external symlink target");
+        Put(external + "/ITEM.BIN", original);
+        if (!DirectoryAlias(external, alias)) std::exit(77);
+    }
+    Put(source + "/ALIVE.BIN", control);
+    if (directory)
+    {
+        Check(QDir().mkdir(target), "generated deletion directory");
+        if (!denied)
+        {
+            Check(QDir().mkdir(target + "/NEST"), "generated nested deletion directory");
+            Put(item, original);
+        }
+    }
+    else Put(item, original);
+    const auto itemPath = PathFromUTF8(item.toStdString());
+    if (readonly)
+        std::filesystem::permissions(itemPath,
+            std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write,
+            std::filesystem::perm_options::remove);
+    const auto originalPerms = std::filesystem::status(itemPath).permissions();
+    Check(!readonly || (originalPerms & std::filesystem::perms::owner_write) == std::filesystem::perms::none,
+        "host fixture starts read-only");
+    QByteArray indexBefore, imageBefore;
+    auto expected = original;
+    std::filesystem::file_time_type hostTime;
+    ReplacementLock lock;
+    const auto guestMissing = [&](FATStorage& storage, bool remove)
+    {
+        ff_disk_open([&](BYTE* data, LBA_t start, UINT count) { return storage.ReadSectors(start, count, data); },
+            [&](const BYTE* data, LBA_t start, UINT count) { return storage.WriteSectors(start, count, data); }, storage.GetSectorCount());
+        FATFS volume;
+        Check(f_mount(&volume, "0:", 1) == FR_OK, "guest deletion mount");
+        if (remove && directory && !denied)
+        {
+            Check(f_unlink("0:/TREE/NEST/ITEM.BIN") == FR_OK, "guest deletes nested file");
+            Check(f_unlink("0:/TREE/NEST") == FR_OK, "guest deletes nested directory");
+        }
+        const char* guest = directory ? "0:/TREE" : "0:/KEEP.BIN";
+        if (remove && readonly)
+        {
+            FF_FILINFO info;
+            Check(f_stat(guest, &info) == FR_OK && (info.fattrib & AM_RDO), "host read-only imported as guest AM_RDO");
+            Check(f_chmod(guest, 0, AM_RDO) == FR_OK, "guest clears read-only before deletion");
+        }
+        if (remove) Check(f_unlink(guest) == FR_OK, "real FatFs guest deletion");
+        FF_FILINFO info;
+        Check(f_stat(guest, &info) == FR_NO_FILE, "guest deletion stays absent");
+        Check(f_unmount("0:") == FR_OK, "guest deletion unmount");
+        ff_disk_close();
+    };
+    {
+        FATStorage storage(path.toStdString(), Capacity, false, source.toStdString());
+        Check(storage.IsValid(), "deletion seed valid");
+        indexBefore = ExportTest::Bytes(index);
+        if (!denied) hostTime = std::filesystem::last_write_time(PathFromUTF8(item.toStdString()));
+        guestMissing(storage, true);
+        imageBefore = ExportTest::Bytes(path);
+        if (edit)
+        {
+            expected[41] ^= 0x5A;
+            Put(item, expected);
+            std::filesystem::last_write_time(PathFromUTF8(item.toStdString()), hostTime);
+        }
+        if (added) Put(target + "/NEST/NEW.BIN", control);
+        if (linked)
+        {
+            Check(QFile::remove(item) && QDir().rmdir(target + "/NEST"), "remove generated descendant before symlink replacement");
+            std::filesystem::rename(PathFromUTF8(alias.toStdString()), PathFromUTF8((target + "/NEST").toStdString()));
+        }
+        if (type)
+        {
+            Check(QFile::remove(item), "remove generated file for host kind replacement");
+            if (directory)
+            {
+                Check(QDir().rmdir(target + "/NEST") && QDir().rmdir(target), "remove generated empty directories");
+                Put(target, control);
+            }
+            else Check(QDir().mkdir(target), "replace generated host file with directory");
+        }
+        if (denied) lock.Lock(target);
+        Reset(indexFailure ? Fault::IndexCommit : Fault::None);
+    } // Real destructor -> Save -> ExportChanges.
+    active = false;
+    const auto preserved = [&]
+    {
+        if (readonly && std::filesystem::status(itemPath).permissions() != originalPerms) return false;
+        if (linked) return QFileInfo(target + "/NEST").isSymLink() &&
+            ExportTest::Bytes(external + "/ITEM.BIN") == original;
+        if (type) return directory ? ExportTest::Bytes(target) == control : QFileInfo(target).isDir();
+        if (denied && directory) return QFileInfo(target).isDir();
+        return ExportTest::Bytes(item) == expected && (!added || ExportTest::Bytes(target + "/NEST/NEW.BIN") == control);
+    };
+    std::printf("delete=%s host_exists=%d index_unchanged=%d owner_errors=%u\n", mode.c_str(),
+        QFileInfo::exists(target), ExportTest::Bytes(index) == indexBefore, errors);
+    if (conflict || indexFailure)
+    {
+        Check(!conflict || (QFileInfo::exists(target) && preserved()), "failed deletion preserves host content and kind");
+        if (readonly) std::printf("read_only_permissions_preserved=%d\n", std::filesystem::status(itemPath).permissions() == originalPerms);
+        Check(ExportTest::Bytes(index) == indexBefore, "failed deletion/index commit preserves exact index");
+        Check(errors > 0, "destructor reports failed deletion sync");
+        Check(ExportTest::Bytes(path) == imageBefore, "failed deletion leaves guest image intact");
+        if (conflict)
+        {
+            FATStorage retry(path.toStdString(), Capacity, false, source.toStdString());
+            Check(!retry.IsValid(), "unresolved deletion refuses host import");
+            Check(preserved() && ExportTest::Bytes(index) == indexBefore && ExportTest::Bytes(path) == imageBefore,
+                "unresolved retry preserves host image and index");
+        }
+        lock.Unlock();
+        if (linked)
+        {
+            Check(std::filesystem::remove(PathFromUTF8((target + "/NEST").toStdString())) && QDir().mkdir(target + "/NEST"),
+                "remove generated symlink without following its target");
+            Put(item, original);
+            Check(ExportTest::Bytes(external + "/ITEM.BIN") == original, "external symlink target unchanged");
+        }
+        if (added) Check(QFile::remove(target + "/NEST/NEW.BIN"), "resolve generated new-file conflict");
+        if (type)
+        {
+            if (directory)
+                Check(QFile::remove(target) && QDir().mkdir(target) && QDir().mkdir(target + "/NEST"), "restore generated directory kind");
+            else Check(QDir().rmdir(target), "remove generated empty replacement directory");
+        }
+        if (edit || type)
+        {
+            Put(item, original);
+            std::filesystem::last_write_time(PathFromUTF8(item.toStdString()), hostTime);
+        }
+        Reset();
+        {
+            FATStorage retry(path.toStdString(), Capacity, false, source.toStdString());
+            Check(retry.IsValid(), "resolved deletion retry opens");
+            Check(!QFileInfo::exists(target), "retry applies pending deletion before host import");
+            guestMissing(retry, false);
+        }
+        active = false;
+    }
+    Check(!QFileInfo::exists(target), "unchanged host deletion is applied");
+    const auto indexAfter = ExportTest::Bytes(index);
+    Check(!indexAfter.contains(directory ? " TREE" : " KEEP.BIN"), "successful deletion removes index records");
+    Check(ExportTest::Bytes(source + "/ALIVE.BIN") == control && openImages == 0, "unrelated host bytes and image lifetime preserved");
+    std::printf("PASS: delete-%s\n", mode.c_str());
+}
+
 static void TestReconciliation(const std::string& mode, const QString& path, const QString& source)
 {
     using namespace ExportTest;
@@ -310,6 +499,19 @@ int main(int argc, char** argv)
     QByteArray payload(8193, '\0');
     for (qsizetype i = 0; i < payload.size(); ++i) payload[i] = char((i * 17 + i / 512 + 9) & 255);
     WriteBytes(hostFile, payload);
+
+    if (scenario.starts_with("delete-"))
+    {
+        if (scenario == "delete-root-alias")
+        {
+            const QString alias = temp.filePath("source-alias");
+            if (!DirectoryAlias(source, alias)) return 77;
+            TestDeletion("root-alias", path, alias);
+            Require(std::filesystem::remove(PathFromUTF8(alias.toStdString())), "remove generated root alias only");
+        }
+        else TestDeletion(scenario.substr(7), path, source);
+        return 0;
+    }
 
     if (scenario.starts_with("sync-"))
     {

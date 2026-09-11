@@ -115,7 +115,8 @@ public:
     {
 #ifdef _WIN32
         handle = CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
         Check(handle != INVALID_HANDLE_VALUE, "hold destination without delete sharing");
 #else
         Check(false, "native replacement lock requires Windows");

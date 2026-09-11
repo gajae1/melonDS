@@ -90,8 +90,9 @@ private:
     bool ExportFile(const std::string& path, std::filesystem::path out, std::string& hash);
     bool FileNeedsExport(const std::string& path, const FF_FILINFO& info, bool& needed) const;
     bool CheckPendingExports(const std::string& path, const std::string& outbase, int level, bool& pending);
+    bool CheckPendingDeletions(const std::string& outbase, bool& pending);
     bool ExportDirectory(const std::string& path, const std::string& outbase, int level);
-    bool DeleteHostDirectory(const std::string& path, const std::string& outbase, int level);
+    bool DeleteHostDirectory(const std::string& path, const std::string& outbase);
     bool ExportChanges(const std::string& outbase);
 
     bool CanFitFile(u32 len);

@@ -21,6 +21,15 @@
 #include <inttypes.h>
 #include <vector>
 #include <algorithm>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "FATIO.h"
 #include "FATStorage.h"
@@ -693,76 +702,112 @@ bool FATStorage::ExportDirectory(const std::string& path, const std::string& out
     return complete;
 }
 
-bool FATStorage::DeleteHostDirectory(const std::string& path, const std::string& outbase, int level)
+// Follow the explicitly selected root, but not a descendant replaced by a
+// link or non-directory. Missing paths are already-deleted destinations.
+static bool HostDeletionStatus(const std::string& outbase, const std::string& path, fs::file_status& status)
 {
-    if (level >= 32) return false;
-
-    fs::path dirpath = melonDS::PathFromUTF8(outbase + "/" + path);
-    if (!fs::is_directory(dirpath))
-        return true; // already deleted? oh well
-
-    std::vector<std::string> filedeletelist;
-    std::vector<std::string> dirdeletelist;
-
-    int outlen = outbase.length();
-    for (auto& entry : fs::directory_iterator(dirpath))
+    fs::path host = melonDS::PathFromUTF8(outbase);
+    std::error_code err;
+    status = fs::status(host, err);
+    if (err || !fs::is_directory(status)) return false;
+    const auto relative = melonDS::PathFromUTF8(path);
+    for (auto part = relative.begin(); part != relative.end(); ++part)
     {
-        std::string fullpath = entry.path().string();
-        std::string innerpath = fullpath.substr(outlen);
-        if (innerpath[0] == '/' || innerpath[0] == '\\')
-            innerpath = innerpath.substr(1);
-
-        int ilen = innerpath.length();
-        for (int i = 0; i < ilen; i++)
+        host /= *part;
+#ifdef _WIN32
+        // MinGW's symlink_status can follow directory symlinks. Inspect the
+        // reparse attribute before it can lead deletion outside the root.
+        const DWORD attributes = GetFileAttributesW(host.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES)
         {
-            if (innerpath[i] == '\\')
-                innerpath[i] = '/';
+            const DWORD error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) return false;
         }
-
-        if (entry.is_directory())
-        {
-            dirdeletelist.push_back(innerpath);
-        }
-        else
-        {
-            filedeletelist.push_back(innerpath);
-        }
+        else if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) return false;
+#endif
+        status = fs::symlink_status(host, err);
+        if (status.type() == fs::file_type::not_found &&
+            (!err || err == std::errc::no_such_file_or_directory)) return true;
+        if (err || fs::is_symlink(status)) return false;
+        if (std::next(part) != relative.end() && !fs::is_directory(status)) return false;
     }
+    return true;
+}
 
-    for (const auto& key : filedeletelist)
+static bool RemoveHostEntry(const fs::path& path, fs::perms original)
+{
+    const auto required = fs::perms::owner_read | fs::perms::owner_write;
+    const bool relax = (original & required) != required;
+    std::error_code err;
+    if (relax)
     {
-        fs::path fullpath = melonDS::PathFromUTF8(outbase + "/" + key);
+        // A guest may clear AM_RDO and then delete a formerly read-only file.
+        fs::permissions(path, required, fs::perm_options::add, err);
+        if (err) return false;
+    }
+    fs::remove(path, err);
+    if (!err) return true;
+    if (relax)
+    {
+        fs::permissions(path, original, fs::perm_options::replace, err);
+        if (err) Log(LogLevel::Error, "Failed to restore host permissions after SD sync deletion failure: %s\n",
+            UTF8ToString(path.u8string()).c_str());
+    }
+    return false;
+}
+
+bool FATStorage::CheckPendingDeletions(const std::string& outbase, bool& pending)
+{
+    const auto check = [&](const std::string& path, bool directory)
+    {
+        FF_FILINFO info;
+        const FRESULT res = f_stat(("0:/" + path).c_str(), &info);
+        if (res == FR_OK && bool(info.fattrib & AM_DIR) == directory) return true;
+        if (res != FR_OK && res != FR_NO_FILE && res != FR_NO_PATH) return false;
+        pending = true;
+
+        fs::file_status status;
+        if (!HostDeletionStatus(outbase, path, status)) return false;
+        if (!fs::exists(status)) return true;
+        const auto host = melonDS::PathFromUTF8(outbase + "/" + path);
+        if (!directory)
+        {
+            std::string hash;
+            return fs::is_regular_file(status) && HostFileHash(host, hash) &&
+                hash == FileIndex.at(path).HostHash;
+        }
+        if (!fs::is_directory(status)) return false;
+        // Every indexed descendant is checked separately. Reject new host
+        // children before removing any of the deleted directory's contents.
         std::error_code err;
-        fs::permissions(fullpath,
-                        fs::perms::owner_read | fs::perms::owner_write,
-                        fs::perm_options::add,
-                        err);
-        if (!fs::remove(fullpath))
-            return false;
+        fs::directory_iterator entry(host, err), end;
+        while (!err && entry != end)
+        {
+            const auto child = path + "/" + UTF8ToString(entry->path().filename().u8string());
+            if (!FileIndex.count(child) && !DirIndex.count(child)) return false;
+            entry.increment(err);
+        }
+        return !err;
+    };
+    for (const auto& [path, entry] : FileIndex)
+        if (!check(path, false)) return false;
+    for (const auto& [path, entry] : DirIndex)
+        if (!check(path, true)) return false;
+    return true;
+}
 
-        FileIndex.erase(key);
-    }
-
-    for (const auto& key : dirdeletelist)
+bool FATStorage::DeleteHostDirectory(const std::string& path, const std::string& outbase)
+{
+    fs::file_status status;
+    if (!HostDeletionStatus(outbase, path, status)) return false;
+    if (fs::exists(status))
     {
-        if (!DeleteHostDirectory(key, outbase, level+1))
-            return false;
+        if (!fs::is_directory(status)) return false;
+        // Indexed children have already been removed. Never recursively
+        // remove an unindexed file that appeared after the preflight.
+        if (!RemoveHostEntry(melonDS::PathFromUTF8(outbase + "/" + path), status.permissions())) return false;
     }
-
-    {
-        fs::path fullpath = melonDS::PathFromUTF8(outbase + "/" + path);
-
-        std::error_code err;
-        fs::permissions(fullpath,
-                        fs::perms::owner_read | fs::perms::owner_write,
-                        fs::perm_options::add,
-                        err);
-        if (!fs::remove(fullpath))
-            return false;
-
-        DirIndex.erase(path);
-    }
-
+    DirIndex.erase(path);
     return true;
 }
 
@@ -775,6 +820,9 @@ bool FATStorage::ExportChanges(const std::string& outbase)
     // * index and copy directories and files that exist in the volume but not in
     //   the index
 
+    bool pending = false;
+    if (!CheckPendingDeletions(outbase, pending)) return false;
+    bool complete = true;
     std::vector<std::string> deletelist;
 
     for (const auto& [key, val] : FileIndex)
@@ -797,15 +845,15 @@ bool FATStorage::ExportChanges(const std::string& outbase)
 
     for (const auto& key : deletelist)
     {
-        fs::path fullpath = melonDS::PathFromUTF8(outbase + "/" + key);
-
-        std::error_code err;
-        fs::permissions(fullpath,
-                        fs::perms::owner_read | fs::perms::owner_write,
-                        fs::perm_options::add,
-                        err);
-        fs::remove(fullpath);
-
+        fs::file_status status;
+        if (!HostDeletionStatus(outbase, key, status) ||
+            (fs::exists(status) && !fs::is_regular_file(status)))
+        { complete = false; continue; }
+        if (fs::exists(status))
+        {
+            if (!RemoveHostEntry(melonDS::PathFromUTF8(outbase + "/" + key), status.permissions()))
+            { complete = false; continue; }
+        }
         FileIndex.erase(key);
     }
 
@@ -829,12 +877,12 @@ bool FATStorage::ExportChanges(const std::string& outbase)
         }
     }
 
-    for (const auto& key : deletelist)
-    {
-        DeleteHostDirectory(key, outbase, 0);
-    }
+    // Map order puts ancestors before descendants; remove empty directories
+    // in reverse order, retaining every failed entry for the next sync.
+    for (auto entry = deletelist.rbegin(); entry != deletelist.rend(); ++entry)
+        if (!DeleteHostDirectory(*entry, outbase)) complete = false;
 
-    return ExportDirectory("", outbase, 0);
+    return ExportDirectory("", outbase, 0) && complete;
 }
 
 
@@ -1265,10 +1313,11 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
             // Preflight every pending guest export before host-import cleanup
             // can remove unindexed guest files. Host-only edits still import.
             bool pending = false;
-            synced = loadedIndex && CheckPendingExports("", *sourcedir, 0, pending);
+            synced = loadedIndex && CheckPendingDeletions(*sourcedir, pending) &&
+                CheckPendingExports("", *sourcedir, 0, pending);
             if (synced && pending)
             {
-                const bool exported = ExportDirectory("", *sourcedir, 0);
+                const bool exported = ExportChanges(*sourcedir);
                 const bool indexed = SaveIndex();
                 synced = exported && indexed;
             }
