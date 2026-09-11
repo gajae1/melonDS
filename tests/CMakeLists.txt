@@ -25,6 +25,17 @@ foreach(case roundtrip invalid-length truncated-header zero-length-skip oversize
 endforeach()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/FirmwareCRC16.inc"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/SPI.cpp" "u16 CRC16(const u8* data, u32 len, u32 start)"
+        "${CMAKE_CURRENT_BINARY_DIR}/FirmwareCRC16.inc"
+    DEPENDS ExtractFunction.py ../src/SPI.cpp VERBATIM)
+add_executable(FirmwareFileIO FirmwareFileIO.cpp ../src/SPI_Firmware.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/FirmwareCRC16.inc")
+target_include_directories(FirmwareFileIO PRIVATE ../src "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME firmware-file-input COMMAND FirmwareFileIO)
+set_tests_properties(firmware-file-input PROPERTIES TIMEOUT 10)
+
 add_test(NAME package-source-identity
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/PackageIdentity.py")
 set_tests_properties(package-source-identity PROPERTIES TIMEOUT 120)

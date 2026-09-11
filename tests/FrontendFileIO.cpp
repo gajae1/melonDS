@@ -9,6 +9,7 @@
 #include <new>
 #include <string>
 #include <utility>
+#include <vector>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -35,17 +36,23 @@ void* operator new[](std::size_t size)
 void operator delete[](void* data) noexcept { std::free(data); }
 void operator delete[](void* data, std::size_t) noexcept { std::free(data); }
 
-enum class Failure { None, Short, Error, Oversize, WrappedLength, Write, Commit };
+enum class Failure { None, Short, Error, Oversize, WrappedLength, Write, Commit, Unwritable };
 static Failure failure = Failure::None;
 static unsigned openFiles = 0;
+static unsigned openAttempts = 0;
+static unsigned readCalls = 0;
+static std::vector<FileHandle*> openHandles;
+static string failurePath;
 static string localPath;
 namespace melonDS::Platform
 {
 FileHandle* OpenFixtureFile(const string& path, FileMode mode)
 {
+    ++openAttempts;
     auto file = make_unique<QFile>(QString::fromStdString(path));
     if (!file->open(mode == FileMode::Read ? QIODevice::ReadOnly : QIODevice::WriteOnly)) return nullptr;
     ++openFiles;
+    openHandles.push_back(reinterpret_cast<FileHandle*>(file.get()));
     return reinterpret_cast<FileHandle*>(file.release());
 }
 string FixtureLocalPath(const string& name) { return localPath + "/" + name; }
@@ -53,6 +60,7 @@ FileHandle* OpenFixtureLocalFile(const string& name, FileMode mode)
 { return OpenFixtureFile(FixtureLocalPath(name), mode); }
 bool CloseFixtureFile(FileHandle* file)
 {
+    std::erase(openHandles, file);
     delete reinterpret_cast<QFile*>(file);
     --openFiles;
     return true;
@@ -60,12 +68,15 @@ bool CloseFixtureFile(FileHandle* file)
 u64 FixtureFileLength(FileHandle* file)
 {
     if (failure == Failure::Oversize) return 0x40000001;
-    if (failure == Failure::WrappedLength) return (u64(1) << 32) + 32;
+    if (failure == Failure::WrappedLength && (failurePath.empty() ||
+        reinterpret_cast<QFile*>(file)->fileName() == QString::fromStdString(FixtureLocalPath(failurePath))))
+        return (u64(1) << 32) + reinterpret_cast<QFile*>(file)->size();
     return reinterpret_cast<QFile*>(file)->size();
 }
 void RewindFixtureFile(FileHandle* file) { reinterpret_cast<QFile*>(file)->seek(0); }
 u64 ReadFixtureFile(void* data, u64 size, u64 count, FileHandle* file)
 {
+    ++readCalls;
     if (!size || !count) return 0;
     if (failure == Failure::Error) return u64(-1);
     auto n = reinterpret_cast<QFile*>(file)->read(static_cast<char*>(data),
@@ -77,6 +88,11 @@ u64 WriteFixtureFile(const void* data, u64 size, u64 count, FileHandle* file)
     const auto n = reinterpret_cast<QFile*>(file)->write(static_cast<const char*>(data),
         failure == Failure::Write ? 1 : size * count);
     return n > 0 ? n / size : n;
+}
+bool CheckFixtureFileWritable(const string& path)
+{
+    return failure != Failure::Unwritable &&
+        QFileInfo(QString::fromStdString(FixtureLocalPath(path))).isWritable();
 }
 }
 class FixtureSaveFile : public QSaveFile
@@ -90,11 +106,27 @@ public:
 struct FileLoader
 {
     NDS* nds;
+    struct FixtureConfig
+    {
+        bool externalDS = true;
+        bool externalDSi = true;
+        bool GetBool(const string& key) const
+        { return key == "Emu.ExternalBIOSEnable" ? externalDS : externalDSi; }
+        string GetString(const string& key) const { return key; }
+    } globalCfg;
     static int lastSep(const string& path);
     bool loadROMData(const QStringList&, unique_ptr<u8[]>&, u32&, string&, string&) noexcept;
     u32 decompressROM(const u8*, u32, unique_ptr<u8[]>&);
     void loadRTCData();
     void saveRTCData();
+    QString verifyDSBIOS();
+    QString verifyDSiBIOS();
+    QString verifyDSFirmware();
+    QString verifyDSiFirmware();
+    unique_ptr<ARM9BIOSImage> loadARM9BIOS() noexcept;
+    unique_ptr<ARM7BIOSImage> loadARM7BIOS() noexcept;
+    unique_ptr<DSiBIOSImage> loadDSiARM9BIOS() noexcept;
+    unique_ptr<DSiBIOSImage> loadDSiARM7BIOS() noexcept;
 };
 #define EmuInstance FileLoader
 #define OpenFile OpenFixtureFile
@@ -106,11 +138,21 @@ struct FileLoader
 #define FileWrite WriteFixtureFile
 #define FileRewind RewindFixtureFile
 #define QSaveFile FixtureSaveFile
+#define CheckFileWritable CheckFixtureFileWritable
 #include "fileLastSep.inc"
 #include "decompressROM.inc"
 #include "fileLoadROMData.inc"
 #include "fileLoadRTC.inc"
 #include "fileSaveRTC.inc"
+#include "fileVerifyDSBIOS.inc"
+#include "fileVerifyDSiBIOS.inc"
+#include "fileVerifyDSFirmware.inc"
+#include "fileVerifyDSiFirmware.inc"
+#include "fileLoadARM9BIOS.inc"
+#include "fileLoadARM7BIOS.inc"
+#include "fileLoadDSiARM9BIOS.inc"
+#include "fileLoadDSiARM7BIOS.inc"
+#undef CheckFileWritable
 #undef QSaveFile
 #undef FileRewind
 #undef FileWrite
@@ -172,8 +214,9 @@ int main(int argc, char** argv)
     core.Reset();
     FileLoader loader{&core};
     unsigned failures = 0;
+    string context = scenario;
     const auto check = [&](bool ok, const char* message) {
-        if (!ok) { ++failures; std::fprintf(stderr, "%s\n", message); }
+        if (!ok) { ++failures; std::fprintf(stderr, "%s: %s\n", context.c_str(), message); }
     };
     if (scenario.starts_with("rom-"))
     {
@@ -266,6 +309,97 @@ int main(int argc, char** argv)
             RTC::StateData after{};
             core.RTC.GetState(after);
             check(!std::memcmp(&original, &after, sizeof(after)), "Failed RTC read partially applied state");
+        }
+    }
+    else if (scenario == "bios-boundaries")
+    {
+        for (const auto& [name, size] : {std::pair{"DS.BIOS9Path", ARM9BIOSSize},
+             {"DS.BIOS7Path", ARM7BIOSSize}, {"DSi.BIOS9Path", DSiBIOSSize}, {"DSi.BIOS7Path", DSiBIOSSize}})
+            if (!WriteFixtureBytes(directory.filePath(name), QByteArray(size, '\x5A'))) return 2;
+
+        const auto exercise = [&](const char* name, auto load, auto verify, const auto& builtin, bool& external) {
+            const QString path = directory.filePath(name);
+            QByteArray payload(builtin.size(), '\0');
+            for (qsizetype i = 0; i < payload.size(); ++i) payload[i] = char(i * 37 + 11);
+            failurePath = name;
+            for (const string mode : {"normal", "short", "error", "truncated", "oversize", "wrapped", "missing"})
+            {
+                context = string(name) + "/" + mode;
+                failure = mode == "short" ? Failure::Short : mode == "error" ? Failure::Error :
+                          mode == "wrapped" ? Failure::WrappedLength : Failure::None;
+                QByteArray input = payload;
+                if (mode == "truncated") input.chop(1);
+                if (mode == "oversize") input.append('x');
+                if (mode == "missing") { if (!QFile::remove(path)) return false; }
+                else if (!WriteFixtureBytes(path, input)) return false;
+                const auto readsBefore = readCalls;
+                const auto bios = (loader.*load)();
+                check(bool(bios) == (mode == "normal"), "BIOS load returned the wrong result");
+                if (bios && mode == "normal")
+                    check(bios->size() == payload.size() && !std::memcmp(bios->data(), payload.constData(), payload.size()),
+                          "Valid BIOS bytes changed");
+                const bool sizeValid = mode == "normal" || mode == "short" || mode == "error";
+                check(readCalls - readsBefore == (sizeValid ? 1u : 0u), "BIOS read occurred before exact size validation");
+                check((loader.*verify)().isEmpty() == sizeValid, "BIOS verifier accepted invalid size or rejected valid size");
+                check(openFiles == 0, "BIOS load/verify leaked a handle");
+            }
+            context = string(name) + "/builtin";
+            external = false;
+            failure = Failure::Error;
+            const auto opensBefore = openAttempts;
+            const auto readsBefore = readCalls;
+            const auto bios = (loader.*load)();
+            check(bios && *bios == builtin, "Built-in BIOS bytes changed");
+            check(openAttempts == opensBefore && readCalls == readsBefore, "Built-in BIOS selection attempted file I/O");
+            external = true;
+            failure = Failure::None;
+            failurePath.clear();
+            return WriteFixtureBytes(path, payload);
+        };
+        if (!exercise("DS.BIOS9Path", &FileLoader::loadARM9BIOS, &FileLoader::verifyDSBIOS,
+                      FreeBIOSGetNtrArm9(), loader.globalCfg.externalDS) ||
+            !exercise("DS.BIOS7Path", &FileLoader::loadARM7BIOS, &FileLoader::verifyDSBIOS,
+                      FreeBIOSGetNtrArm7(), loader.globalCfg.externalDS) ||
+            !exercise("DSi.BIOS9Path", &FileLoader::loadDSiARM9BIOS, &FileLoader::verifyDSiBIOS,
+                      FreeBIOSGetTwlArm9(), loader.globalCfg.externalDSi) ||
+            !exercise("DSi.BIOS7Path", &FileLoader::loadDSiARM7BIOS, &FileLoader::verifyDSiBIOS,
+                      FreeBIOSGetTwlArm7(), loader.globalCfg.externalDSi)) return 2;
+    }
+    else if (scenario == "firmware-verify")
+    {
+        for (const bool dsi : {false, true})
+        {
+            const char* name = dsi ? "DSi.FirmwarePath" : "DS.FirmwarePath";
+            const QString path = directory.filePath(name);
+            const auto verify = dsi ? &FileLoader::verifyDSiFirmware : &FileLoader::verifyDSFirmware;
+            for (const int size : {0x20000, 0x40000, 0x80000})
+            {
+                context = string(name) + "/size-" + std::to_string(size);
+                if (!WriteFixtureBytes(path, QByteArray(size, '\x5A'))) return 2;
+                check((loader.*verify)().isEmpty() == (!dsi || size == 0x20000), "Firmware size policy changed");
+                check(openFiles == 0, "Firmware size verification leaked a handle");
+            }
+            const QByteArray payload(0x20000, '\x5A');
+            for (const string mode : {"truncated", "oversize", "wrapped", "unwritable", "missing"})
+            {
+                context = string(name) + "/" + mode;
+                failure = mode == "wrapped" ? Failure::WrappedLength : mode == "unwritable" ? Failure::Unwritable : Failure::None;
+                QByteArray input = payload;
+                if (mode == "truncated") input.chop(1);
+                if (mode == "oversize") input.append('x');
+                if (mode == "missing") { if (!QFile::remove(path)) return 2; }
+                else if (!WriteFixtureBytes(path, input)) return 2;
+                const auto readsBefore = readCalls;
+                const QString error = (loader.*verify)();
+                check(!error.isEmpty(), "Firmware verification accepted invalid input");
+                if (mode == "unwritable") check(error.contains("unable to be written"), "Write refusal reported the wrong error");
+                check(readCalls == readsBefore, "Firmware verification read or consumed input");
+                check(openFiles == 0, "Firmware refusal leaked a handle");
+                if (mode != "missing") check(ReadFixtureBytes(path) == input, "Firmware verifier modified input bytes");
+                // Release baseline leaks only after recording the failed assertion.
+                while (!openHandles.empty()) CloseFixtureFile(openHandles.back());
+            }
+            failure = Failure::None;
         }
     }
     else return 2;

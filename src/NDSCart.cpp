@@ -380,6 +380,9 @@ bool ValidateROM(u32 romlen, NDSHeader& header)
 
 std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, void* userdata, std::optional<NDSCartArgs>&& args)
 {
+    // Reject unsupported lengths before allocating or reading a copy.
+    if (romdata == nullptr || romlen < 0x1000 || romlen > 512*1024*1024)
+        return nullptr;
     return ParseROM(CopyToUnique(romdata, romlen), romlen, userdata, std::move(args));
 }
 
@@ -403,16 +406,17 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
         return nullptr;
     }
 
-    auto [cartrom, cartromsize] = PadToPowerOf2(std::move(romdata), romlen);
-
     NDSHeader header {};
-    memcpy(&header, cartrom.get(), sizeof(header));
+    memcpy(&header, romdata.get(), sizeof(header));
 
-    if (!ValidateROM(cartromsize, header))
+    // Padding must not make missing executable bytes appear to be present.
+    if (!ValidateROM(romlen, header))
     {
         Log(LogLevel::Error, "NDSCart: ROM header verification failed\n");
         return nullptr;
     }
+
+    auto [cartrom, cartromsize] = PadToPowerOf2(std::move(romdata), romlen);
 
     bool dsi = header.IsDSi();
     bool badDSiDump = false;

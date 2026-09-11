@@ -236,6 +236,25 @@ foreach(method IN ITEMS LastSep LoadROMData LoadRTC SaveRTC)
         DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
     list(APPEND file_methods "${output}")
 endforeach()
+foreach(pair IN ITEMS
+        "VerifyDSBIOS|QString EmuInstance::verifyDSBIOS()"
+        "VerifyDSiBIOS|QString EmuInstance::verifyDSiBIOS()"
+        "VerifyDSFirmware|QString EmuInstance::verifyDSFirmware()"
+        "VerifyDSiFirmware|QString EmuInstance::verifyDSiFirmware()"
+        "LoadARM9BIOS|std::unique_ptr<ARM9BIOSImage> EmuInstance::loadARM9BIOS() noexcept"
+        "LoadARM7BIOS|std::unique_ptr<ARM7BIOSImage> EmuInstance::loadARM7BIOS() noexcept"
+        "LoadDSiARM9BIOS|std::unique_ptr<DSiBIOSImage> EmuInstance::loadDSiARM9BIOS() noexcept"
+        "LoadDSiARM7BIOS|std::unique_ptr<DSiBIOSImage> EmuInstance::loadDSiARM7BIOS() noexcept")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/file${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
+    list(APPEND file_methods "${output}")
+endforeach()
 add_executable(FrontendFileIO "${CMAKE_SOURCE_DIR}/tests/FrontendFileIO.cpp" ArchiveUtil.cpp
     "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
     ${file_methods} "${rom_decompressor}")
@@ -248,7 +267,8 @@ else()
 endif()
 foreach(case IN ITEMS rom-normal rom-relative rom-zstd rom-zstd-invalid rom-empty rom-missing
         rom-short rom-error rom-oversize rom-wrapped rom-allocation rom-archive rom-archive-relative rom-archive-missing
-        rtc-roundtrip rtc-truncated rtc-oversize rtc-short rtc-error rtc-missing rtc-write rtc-commit)
+        rtc-roundtrip rtc-truncated rtc-oversize rtc-short rtc-error rtc-missing rtc-write rtc-commit
+        bios-boundaries firmware-verify)
     add_test(NAME frontend-file-${case} COMMAND FrontendFileIO ${case})
     set_tests_properties(frontend-file-${case} PROPERTIES TIMEOUT 15)
 endforeach()

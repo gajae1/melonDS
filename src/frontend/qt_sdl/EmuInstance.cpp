@@ -597,7 +597,7 @@ bool EmuInstance::flushSaveData(QString& errorstr)
 QString EmuInstance::verifyDSBIOS()
 {
     FileHandle* f;
-    long len;
+    u64 len;
 
     f = Platform::OpenLocalFile(globalCfg.GetString("DS.BIOS9Path"), FileMode::Read);
     if (!f) return "DS ARM9 BIOS was not found or could not be accessed. Check your emu settings.";
@@ -629,7 +629,7 @@ QString EmuInstance::verifyDSBIOS()
 QString EmuInstance::verifyDSiBIOS()
 {
     FileHandle* f;
-    long len;
+    u64 len;
 
     // TODO: check the first 32 bytes
 
@@ -663,7 +663,7 @@ QString EmuInstance::verifyDSiBIOS()
 QString EmuInstance::verifyDSFirmware()
 {
     FileHandle* f;
-    long len;
+    u64 len;
 
     std::string fwpath = globalCfg.GetString("DS.FirmwarePath");
 
@@ -671,7 +671,10 @@ QString EmuInstance::verifyDSFirmware()
     if (!f) return "DS firmware was not found or could not be accessed. Check your emu settings.";
 
     if (!Platform::CheckFileWritable(fwpath))
+    {
+        CloseFile(f);
         return "DS firmware is unable to be written to.\nPlease check file/folder write permissions.";
+    }
 
     len = FileLength(f);
     if (len == 0x20000)
@@ -695,7 +698,7 @@ QString EmuInstance::verifyDSFirmware()
 QString EmuInstance::verifyDSiFirmware()
 {
     FileHandle* f;
-    long len;
+    u64 len;
 
     std::string fwpath = globalCfg.GetString("DSi.FirmwarePath");
 
@@ -703,7 +706,10 @@ QString EmuInstance::verifyDSiFirmware()
     if (!f) return "DSi firmware was not found or could not be accessed. Check your emu settings.";
 
     if (!Platform::CheckFileWritable(fwpath))
+    {
+        CloseFile(f);
         return "DSi firmware is unable to be written to.\nPlease check file/folder write permissions.";
+    }
 
     len = FileLength(f);
     if (len != 0x20000)
@@ -979,9 +985,20 @@ std::unique_ptr<ARM9BIOSImage> EmuInstance::loadARM9BIOS() noexcept
     if (FileHandle* f = OpenLocalFile(path, Read))
     {
         std::unique_ptr<ARM9BIOSImage> bios = std::make_unique<ARM9BIOSImage>();
+        if (FileLength(f) != bios->size())
+        {
+            CloseFile(f);
+            Log(Error, "Invalid ARM9 BIOS size: %s\n", path.c_str());
+            return nullptr;
+        }
         FileRewind(f);
-        FileRead(bios->data(), bios->size(), 1, f);
+        const bool readOK = FileRead(bios->data(), bios->size(), 1, f) == 1;
         CloseFile(f);
+        if (!readOK)
+        {
+            Log(Error, "Failed to read ARM9 BIOS from %s\n", path.c_str());
+            return nullptr;
+        }
         Log(Info, "ARM9 BIOS loaded from %s\n", path.c_str());
         return bios;
     }
@@ -1002,8 +1019,19 @@ std::unique_ptr<ARM7BIOSImage> EmuInstance::loadARM7BIOS() noexcept
     if (FileHandle* f = OpenLocalFile(path, Read))
     {
         std::unique_ptr<ARM7BIOSImage> bios = std::make_unique<ARM7BIOSImage>();
-        FileRead(bios->data(), bios->size(), 1, f);
+        if (FileLength(f) != bios->size())
+        {
+            CloseFile(f);
+            Log(Error, "Invalid ARM7 BIOS size: %s\n", path.c_str());
+            return nullptr;
+        }
+        const bool readOK = FileRead(bios->data(), bios->size(), 1, f) == 1;
         CloseFile(f);
+        if (!readOK)
+        {
+            Log(Error, "Failed to read ARM7 BIOS from %s\n", path.c_str());
+            return nullptr;
+        }
         Log(Info, "ARM7 BIOS loaded from %s\n", path.c_str());
         return bios;
     }
@@ -1024,8 +1052,19 @@ std::unique_ptr<DSiBIOSImage> EmuInstance::loadDSiARM9BIOS() noexcept
     if (FileHandle* f = OpenLocalFile(path, Read))
     {
         std::unique_ptr<DSiBIOSImage> bios = std::make_unique<DSiBIOSImage>();
-        FileRead(bios->data(), bios->size(), 1, f);
+        if (FileLength(f) != bios->size())
+        {
+            CloseFile(f);
+            Log(Error, "Invalid ARM9i BIOS size: %s\n", path.c_str());
+            return nullptr;
+        }
+        const bool readOK = FileRead(bios->data(), bios->size(), 1, f) == 1;
         CloseFile(f);
+        if (!readOK)
+        {
+            Log(Error, "Failed to read ARM9i BIOS from %s\n", path.c_str());
+            return nullptr;
+        }
 
         Log(Info, "ARM9i BIOS loaded from %s\n", path.c_str());
         return bios;
@@ -1047,8 +1086,19 @@ std::unique_ptr<DSiBIOSImage> EmuInstance::loadDSiARM7BIOS() noexcept
     if (FileHandle* f = OpenLocalFile(path, Read))
     {
         std::unique_ptr<DSiBIOSImage> bios = std::make_unique<DSiBIOSImage>();
-        FileRead(bios->data(), bios->size(), 1, f);
+        if (FileLength(f) != bios->size())
+        {
+            CloseFile(f);
+            Log(Error, "Invalid ARM7i BIOS size: %s\n", path.c_str());
+            return nullptr;
+        }
+        const bool readOK = FileRead(bios->data(), bios->size(), 1, f) == 1;
         CloseFile(f);
+        if (!readOK)
+        {
+            Log(Error, "Failed to read ARM7i BIOS from %s\n", path.c_str());
+            return nullptr;
+        }
 
         Log(Info, "ARM7i BIOS loaded from %s\n", path.c_str());
         return bios;

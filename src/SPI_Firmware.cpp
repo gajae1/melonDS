@@ -258,16 +258,20 @@ Firmware::Firmware(Platform::FileHandle* file) : FirmwareBuffer(nullptr), Firmwa
 {
     if (file)
     {
-        u64 length = Platform::FileLength(file);
-        if (length > 0)
+        const u64 length = Platform::FileLength(file);
+        if (length > 0x80000)
         {
-            FirmwareBufferLength = FixFirmwareLength(length);
+            Log(LogLevel::Error, "Firmware file is larger than 512 KiB\n");
+        }
+        else if (length > 0)
+        {
+            FirmwareBufferLength = FixFirmwareLength(static_cast<u32>(length));
             FirmwareBuffer = new u8[FirmwareBufferLength];
             FirmwareMask = FirmwareBufferLength - 1;
 
             memset(FirmwareBuffer, 0, FirmwareBufferLength);
             Platform::FileRewind(file);
-            if (!Platform::FileRead(FirmwareBuffer, length, 1, file))
+            if (Platform::FileRead(FirmwareBuffer, length, 1, file) != 1)
             {
                 delete[] FirmwareBuffer;
                 FirmwareBuffer = nullptr;
