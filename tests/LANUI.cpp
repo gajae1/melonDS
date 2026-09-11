@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Actual LAN dialogs, Qt event loop/DNS and ENet, with a minimal parent/config.
-// No emulator, user settings, dumps or external host are used. LANLoopback also
-// covers real MP frames and concurrent snapshots independently of the GUI.
+// No emulator, user settings, dumps or external host are used. A generated MP
+// frame exercises the lobby statistics; LANLoopback also covers concurrent snapshots.
 #include <QtWidgets>
 #include <QtNetwork>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <stdexcept>
@@ -141,6 +142,61 @@ int main(int argc, char** argv)
         Require(Config::Saves == 1 && MPInterface::GetType() == MPInterface_LAN, "successful retry did not persist once");
         QPointer<LANDialog> lobby = window.findChild<LANDialog*>();
         Require(!lobby.isNull(), "connected lobby missing");
+
+        auto client = std::static_pointer_cast<LAN>(MPInterface::Acquire());
+        auto* receiveSummary = lobby->findChild<QLabel*>("receiveSummary");
+        auto* waitSummary = lobby->findChild<QLabel*>("waitSummary");
+        auto* replySummary = lobby->findChild<QLabel*>("replySummary");
+        Require(receiveSummary && waitSummary && replySummary, "receive statistics labels missing");
+        for (auto* label : {receiveSummary, waitSummary, replySummary})
+            Require(label->textFormat() == Qt::PlainText && label->wordWrap(),
+                    "receive statistics must be wrapped plain text");
+        if (client->GetReceiveStats().WaitSamples == 0)
+            Require(waitSummary->text() == "Receive wait: no samples yet", "initial wait summary missing");
+
+        host.Begin(0);
+        client->Begin(0);
+        // Let reliable player-ready messages settle before the MP channel frame.
+        Pump([&] { client->Process(); return false; }, 150, &host);
+        const auto beforeReceive = client->GetReceiveStats();
+        std::array<u8, 40> command{}, received{};
+        for (size_t i = 0; i < command.size(); ++i) command[i] = static_cast<u8>(0x30 + i);
+        constexpr u64 timestamp = 123456;
+        u64 receivedTimestamp = 0;
+        Require(host.SendCmd(0, command.data(), command.size(), timestamp) == int(command.size()),
+                "generated statistics command send failed");
+        Require(Pump([&] {
+            return client->RecvHostPacket(0, received.data(), &receivedTimestamp, received.size())
+                == int(received.size());
+        }, 2000, &host), "generated statistics command receive failed");
+        Require(received == command && receivedTimestamp == timestamp,
+                "statistics command payload or timestamp changed");
+        const auto stats = client->GetReceiveStats();
+        Require(stats.ReceivedPackets > beforeReceive.ReceivedPackets && stats.WaitSamples > 0,
+                "real receive did not produce packet and wait observations");
+        Require(QMetaObject::invokeMethod(lobby, "doUpdatePlayerList"), "lobby update slot missing");
+        const auto receiveMatch = QRegularExpression("Received packets: ([0-9]+)").match(receiveSummary->text());
+        Require(receiveMatch.hasMatch() && receiveMatch.captured(1).toULongLong() == stats.ReceivedPackets,
+                "lobby packet count differs from real receive statistics");
+        const auto waitMatch = QRegularExpression(
+            "^Receive wait: mean ([0-9]+\\.[0-9]) ms \\| Maximum: ([0-9]+) ms \\| Samples: ([0-9]+)$")
+            .match(waitSummary->text());
+        Require(waitMatch.hasMatch() && waitMatch.captured(1).toDouble() >= 0.0 &&
+                waitMatch.captured(2).toULongLong() == stats.MaxWaitMS &&
+                waitMatch.captured(3).toULongLong() == stats.WaitSamples,
+                "lobby measured wait summary is invalid");
+        std::printf("PASS generated MP command: bytes=40 timestamp=exact\n%s\n%s\n%s\n",
+                    qPrintable(receiveSummary->text()), qPrintable(waitSummary->text()), qPrintable(replySummary->text()));
+
+        const QString screenshotPath = qEnvironmentVariable("MELONDS_LAN_UI_SCREENSHOT");
+        if (!screenshotPath.isEmpty())
+        {
+            lobby->ensurePolished();
+            lobby->layout()->activate();
+            QCoreApplication::processEvents();
+            Require(lobby->grab().save(screenshotPath), "lobby screenshot save failed");
+        }
+
         host.EndSession();
         Require(Pump([&] { return lobby.isNull(); }, 2500), "host loss did not close lobby");
         Require(MPInterface::GetType() == MPInterface_Local, "host loss did not restore Local");

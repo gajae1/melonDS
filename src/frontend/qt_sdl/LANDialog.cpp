@@ -351,6 +351,7 @@ LANDialog::LANDialog(QWidget* parent) : QDialog(parent), ui(new Ui::LANDialog)
     model->setHorizontalHeaderLabels(header);
 
     timerID = startTimer(1000);
+    doUpdatePlayerList();
 }
 
 LANDialog::~LANDialog()
@@ -404,6 +405,25 @@ void LANDialog::timerEvent(QTimerEvent *event)
 
 void LANDialog::doUpdatePlayerList()
 {
+    const auto stats = session->GetReceiveStats();
+    ui->receiveSummary->setText(tr("Received packets: %1 | Queued: %2 | Peak queued: %3 | "
+                                   "Expired: %4 | Rejected: %5 | Service errors: %6")
+        .arg(stats.ReceivedPackets).arg(stats.QueuedPackets).arg(stats.PeakQueuedPackets)
+        .arg(stats.ExpiredPackets).arg(stats.RejectedPackets).arg(stats.ServiceErrors));
+    if (stats.WaitSamples == 0)
+        ui->waitSummary->setText(tr("Receive wait: no samples yet"));
+    else
+        ui->waitSummary->setText(tr("Receive wait: mean %1 ms | Maximum: %2 ms | Samples: %3")
+            .arg(static_cast<double>(stats.WaitTimeMS) / stats.WaitSamples, 0, 'f', 1)
+            .arg(stats.MaxWaitMS).arg(stats.WaitSamples));
+    QString replies = tr("Reply progress: %1 | Duplicate replies: %2 | "
+                         "Partial reply returns: %3 | Work limit returns: %4")
+        .arg(stats.NewPeerReplies).arg(stats.DuplicateReplies)
+        .arg(stats.PartialReplyReturns).arg(stats.WorkLimitReturns);
+    if (stats.ClockRegressions != 0)
+        replies += tr(" | Clock regressions: %1").arg(stats.ClockRegressions);
+    ui->replySummary->setText(replies);
+
     auto playerlist = session->GetPlayerList();
     auto maxplayers = session->GetMaxPlayers();
 

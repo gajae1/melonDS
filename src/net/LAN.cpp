@@ -233,6 +233,7 @@ bool LAN::StartHost(const char* playername, int numplayers)
     if (!Inited) return false;
     if (numplayers < 2 || numplayers > 16) return false;
     EndSession();
+    Stats = {};
 
     ENetAddress addr;
     addr.host = ENET_HOST_ANY;
@@ -275,6 +276,7 @@ bool LAN::StartClient(const char* playername, const char* host)
 {
     std::lock_guard lock(SessionMutex);
     EndSession();
+    Stats = {};
     if (!Inited) return false;
 
     ENetAddress addr{};
@@ -342,6 +344,14 @@ LAN::ClientState LAN::GetClientState()
 {
     std::lock_guard lock(SessionMutex);
     return Connection;
+}
+
+LAN::ReceiveStats LAN::GetReceiveStats()
+{
+    std::lock_guard lock(SessionMutex);
+    auto result = Stats;
+    result.QueuedPackets = RXQueue.size();
+    return result;
 }
 
 int LAN::GetNumPlayers()
@@ -960,6 +970,7 @@ void LAN::ProcessLAN(int type, u32 timeout)
 
         if (static_cast<u32>(time_last - packettime) > 16)
         {
+            ++Stats.ExpiredPackets;
             RXQueue.pop();
             enet_packet_destroy(enetpacket);
         }
@@ -985,12 +996,34 @@ void LAN::ProcessLAN(int type, u32 timeout)
 
     ENetEvent event;
     // A stream of control packets must yield to UI cancellation/frame work.
-    for (unsigned received = 0; received < 64 && enet_host_service(Host, &event, timeout) > 0; ++received)
+    for (unsigned received = 0; received < 64; ++received)
     {
+        const u64 waitStarted = timeout ? Platform::GetMSCount() : 0;
+        const int result = enet_host_service(Host, &event, timeout);
+        if (timeout)
+        {
+            const u64 waitEnded = Platform::GetMSCount();
+            if (waitEnded >= waitStarted)
+            {
+                const u64 waited = waitEnded - waitStarted;
+                ++Stats.WaitSamples;
+                Stats.RequestedWaitMS += timeout;
+                Stats.WaitTimeMS += waited;
+                Stats.MaxWaitMS = std::max(Stats.MaxWaitMS, waited);
+            }
+            else
+                ++Stats.ClockRegressions;
+        }
+        if (result <= 0)
+        {
+            if (result < 0) ++Stats.ServiceErrors;
+            return;
+        }
         if (event.type == ENET_EVENT_TYPE_RECEIVE && event.channelID == Chan_MP)
         {
             if (!ValidateMPPacket(event))
             {
+                ++Stats.RejectedPackets;
                 enet_packet_destroy(event.packet);
             }
             else
@@ -1001,6 +1034,8 @@ void LAN::ProcessLAN(int type, u32 timeout)
 
                 event.packet->userData = event.peer;
                 RXQueue.push(event.packet);
+                ++Stats.ReceivedPackets;
+                Stats.PeakQueuedPackets = std::max<u64>(Stats.PeakQueuedPackets, RXQueue.size());
 
                 // return now -- if we are receiving MP frames, if we keep going
                 // we'll consume too many even if we have no timeout set
@@ -1032,6 +1067,7 @@ void LAN::ProcessLAN(int type, u32 timeout)
             time_last = time;
         }
     }
+    ++Stats.WorkLimitReturns;
 }
 
 void LAN::Process()
@@ -1210,8 +1246,14 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
 {
     std::lock_guard lock(SessionMutex);
     if (!Host || Connection != ClientState::Connected) return 0;
+    ++Stats.ReplyCalls;
 
     u16 ret = 0;
+    auto partialResult = [&]
+    {
+        if (ret) ++Stats.PartialReplyReturns;
+        return ret;
+    };
     u16 myinstmask = 1 << MyPlayer.ID;
 
     if ((myinstmask & ConnectedBitmask) == ConnectedBitmask)
@@ -1225,12 +1267,12 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
     for (unsigned received = 0; received < 64; ++received)
     {
         const u64 elapsed = Platform::GetMSCount() - started;
-        if (received && timeout && elapsed >= timeout) return ret;
+        if (received && timeout && elapsed >= timeout) return partialResult();
         ProcessLAN(2, elapsed < timeout ? timeout - static_cast<u32>(elapsed) : 0);
         if (RXQueue.empty())
         {
             // no more replies available
-            return ret;
+            return partialResult();
         }
 
         ENetPacket* enetpacket = RXQueue.front();
@@ -1258,9 +1300,12 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
             const u16 sender = 1 << header->SenderID;
             if (!(myinstmask & sender))
             {
+                ++Stats.NewPeerReplies;
                 myinstmask |= sender;
                 started = Platform::GetMSCount();
             }
+            else
+                ++Stats.DuplicateReplies;
             if (((myinstmask & ConnectedBitmask) == ConnectedBitmask) ||
                 ((ret & aidmask) == aidmask))
             {
@@ -1272,7 +1317,8 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
 
         enet_packet_destroy(enetpacket);
     }
-    return ret;
+    ++Stats.WorkLimitReturns;
+    return partialResult();
 }
 
 }

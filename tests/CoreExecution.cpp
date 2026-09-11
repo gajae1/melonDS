@@ -131,6 +131,103 @@ static int TestSchedulerSavestate(NDSArgs&& args)
     return failures ? 1 : 0;
 }
 
+static int TestThumbPushTiming(NDSArgs&& args, bool jit)
+{
+    if (args.JIT)
+    {
+        args.JIT->MaxBlockSize = 1;
+        args.JIT->BranchOptimizations = false;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    NDS::Current = nds.get();
+    // These are existing melonDS memory-model costs, not measured DS timings.
+    // Main RAM defaults: N16=8, S16=1, N32=9. Private WRAM: all 1.
+    // Same-main-RAM code/data accesses serialize; separate regions retain the
+    // existing overlap model. Vary N/S independently to catch using S for PUSH.
+    const struct { const char* name; u32 code, stack, n16, s16, cycles; } cases[] = {
+        {"default-main-main", 0x02008000, 0x02012040, 0, 0, 17},
+        {"c4-main-main",      0x02008000, 0x02012040, 4, 4, 13},
+        {"n4-s1-main-main",   0x02008000, 0x02012040, 4, 1, 13},
+        {"default-main-wram", 0x02008000, 0x03802040, 0, 0,  8},
+        {"default-wram-main", 0x03808000, 0x02012040, 0, 0,  9},
+    };
+    constexpr u32 lr = 0x12345678, guard = 0x89ABCDEF, cpsr = 0xA00000FF;
+    unsigned checked = 0, failures = 0;
+    for (const auto& test : cases)
+    {
+        nds->Reset(); // Restore default timings and discard differently timed blocks.
+        nds->CurCPU = 1;
+        auto& cpu = nds->ARM7;
+        if (test.n16)
+        {
+            auto& timing = nds->ARM7MemTimings[test.code >> 15];
+            timing[0] = timing[2] = test.n16;
+            timing[1] = timing[3] = test.s16;
+        }
+        std::printf("push-timing %s: code N16=%u S16=%u data N32=%u expected-model=%u\n",
+            test.name, nds->ARM7MemTimings[test.code >> 15][0],
+            nds->ARM7MemTimings[test.code >> 15][1],
+            nds->ARM7MemTimings[(test.stack - 4) >> 15][2], test.cycles);
+        for (u32 halfword : {0u, 2u})
+        {
+            const u32 addr = test.code + halfword * 8 + halfword;
+            nds->ARM7Write16(addr, 0xB500); // PUSH {LR}, one nonempty stack transfer.
+            nds->ARM7Write16(addr + 2, 0xE7FE);
+            for (unsigned run = 0; run < (jit ? 2u : 1u); ++run)
+            {
+                cpu.R[13] = test.stack;
+                cpu.R[14] = lr;
+                for (int offset : {-8, -4, 0}) nds->ARM7Write32(test.stack + offset, guard);
+                cpu.CPSR = cpsr;
+                cpu.JumpTo(addr | 1);
+                cpu.Cycles = 0;
+                cpu.DataCycles = 37;
+                nds->ARM7Timestamp = 0;
+                nds->ARM7Target = 1;
+#ifdef JIT_ENABLED
+                if (jit)
+                {
+                    if (run)
+                    {
+                        if (!nds->JIT.JitBlocks7.contains(addr | 1)) return 2;
+                        ARM_Dispatch(&cpu, nds->JIT.JitBlocks7.at(addr | 1)->EntryPoint);
+                        nds->ARM7Timestamp = cpu.Cycles;
+                    }
+                    else cpu.Execute<CPUExecuteMode::JIT>();
+#if defined(__x86_64__)
+                    if (!run && !halfword)
+                    {
+                        const auto* entry = reinterpret_cast<const u8*>(nds->JIT.JitBlocks7.at(addr | 1)->EntryPoint);
+                        const auto* end = nds->JIT.JITCompiler.GetCodePtr();
+                        if (end <= entry || end - entry > 1024) return 2;
+                        std::printf("native-push %s bytes=", test.name);
+                        for (auto* p = entry; p != end; ++p) std::printf("%02X", *p);
+                        std::puts("");
+                    }
+#endif
+                }
+                else
+#endif
+                    cpu.Execute<CPUExecuteMode::Interpreter>();
+                const bool ok = nds->ARM7Timestamp == test.cycles &&
+                    cpu.R[13] == test.stack - 4 && cpu.R[14] == lr &&
+                    cpu.R[15] == addr + 4 && cpu.CPSR == cpsr &&
+                    nds->ARM7Read32(test.stack - 4) == lr &&
+                    nds->ARM7Read32(test.stack - 8) == guard && nds->ARM7Read32(test.stack) == guard;
+                ++checked;
+                failures += !ok;
+                std::printf("%s %s halfword=%u run=%u: %s cycles=%llu expected-model=%u sp=%08X pc=%08X stored=%08X\n",
+                    jit ? (run ? "dispatch" : "jit-cold") : "interpreter", test.name,
+                    halfword, run, ok ? "PASS" : "FAIL",
+                    static_cast<unsigned long long>(nds->ARM7Timestamp), test.cycles,
+                    cpu.R[13], cpu.R[15], nds->ARM7Read32(test.stack - 4));
+            }
+        }
+    }
+    std::printf("ARM7 Thumb PUSH timing: %u checks, %u failures\n", checked, failures);
+    return failures ? 1 : 0;
+}
+
 static int TestThumbStack(NDSArgs&& args, bool jit)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -384,6 +481,8 @@ int main(int argc, char** argv) {
     NDSArgs args;
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
+    if (argc > 2 && std::strcmp(argv[2], "thumb-push-timing") == 0)
+        return TestThumbPushTiming(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "thumb-stack") == 0)
         return TestThumbStack(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "conditional-cycles") == 0)

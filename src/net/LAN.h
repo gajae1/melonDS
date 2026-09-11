@@ -96,6 +96,30 @@ public:
     enum class ClientState { Idle, Connecting, Connected, Failed, Incompatible, TimedOut, Disconnected };
     ClientState GetClientState();
 
+    // Host-side observations only. Fixed-size session totals, reset by a new
+    // StartHost/StartClient attempt and retained after EndSession for inspection.
+    // Waiting includes scheduling delays; it is not peer RTT or packet loss.
+    struct ReceiveStats
+    {
+        u64 ReceivedPackets = 0;
+        u64 RejectedPackets = 0;
+        u64 ExpiredPackets = 0;
+        u64 QueuedPackets = 0;
+        u64 PeakQueuedPackets = 0;
+        u64 WaitSamples = 0;
+        u64 RequestedWaitMS = 0;
+        u64 WaitTimeMS = 0;
+        u64 MaxWaitMS = 0;
+        u64 ClockRegressions = 0;
+        u64 ServiceErrors = 0;
+        u64 ReplyCalls = 0;
+        u64 NewPeerReplies = 0;
+        u64 DuplicateReplies = 0;
+        u64 PartialReplyReturns = 0;
+        u64 WorkLimitReturns = 0;
+    };
+    ReceiveStats GetReceiveStats();
+
     std::map<u32, DiscoveryData> GetDiscoveryList();
     std::vector<Player> GetPlayerList();
     int GetNumPlayers();
@@ -152,6 +176,7 @@ private:
     int LastHostID;
     ENetPeer* LastHostPeer;
     std::queue<ENetPacket*> RXQueue;
+    ReceiveStats Stats;
 
     u32 FrameCount;
 

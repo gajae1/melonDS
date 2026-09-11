@@ -23,6 +23,7 @@ melonDS::u64 Tick = 1000;
 std::deque<melonDS::u64> ServiceTicks;
 std::vector<enet_uint32> ServiceTimeouts;
 bool TimedDelivery = false;
+int ForcedServiceResult = 0;
 ENetPeer ClientPeer{};
 unsigned HostsCreated = 0, HostsDestroyed = 0;
 
@@ -51,6 +52,12 @@ void DisconnectPeer(ENetPeer* peer, enet_uint32) { peer->state = ENET_PEER_STATE
 int InjectHostService(ENetHost*, ENetEvent* event, enet_uint32 timeout)
 {
     ServiceTimeouts.push_back(timeout);
+    if (ForcedServiceResult)
+    {
+        const int result = ForcedServiceResult;
+        ForcedServiceResult = 0;
+        return result;
+    }
     if (Events.empty()) return 0;
     if (!ServiceTicks.empty())
     {
@@ -153,6 +160,7 @@ struct LANPacketTest
         ServiceTicks.clear();
         ServiceTimeouts.clear();
         TimedDelivery = false;
+        ForcedServiceResult = 0;
         SentPeer = nullptr;
         SentPacket.clear();
     }
@@ -169,6 +177,7 @@ struct LANPacketTest
         ServiceTicks.clear();
         ServiceTimeouts.clear();
         TimedDelivery = false;
+        ForcedServiceResult = 0;
         Net.Active = false;
         Net.Host = nullptr;
     }
@@ -579,12 +588,120 @@ bool HandshakeAndRejoin()
     net.Process();
     if (FreedPackets != 3 || net.GetClientState() != LAN::ClientState::Connected ||
         net.GetPlayerList().size() != 2) return false;
+    net.SetRecvTimeout(37);
+    Inject(Packet(0, 0, 40), &ClientPeer);
+    net.Process();
+    const auto received = net.GetReceiveStats();
+    if (received.ReceivedPackets != 1 || received.QueuedPackets != 1 ||
+        received.PeakQueuedPackets != 1 || net.GetRecvTimeout() != 37) return false;
     net.EndSession();
     if (HostsDestroyed != destroyed + 1 || !net.GetPlayerList().empty() ||
         net.GetNumPlayers() || net.GetMaxPlayers()) return false;
+    if (net.GetReceiveStats().ReceivedPackets != 1 || net.GetReceiveStats().QueuedPackets != 0)
+        return false; // End retains totals, but frees the queued packet.
     if (!net.StartClient("Again", "127.0.0.1")) return false;
+    if (net.GetReceiveStats().ReceivedPackets || net.GetReceiveStats().PeakQueuedPackets ||
+        net.GetRecvTimeout() != 37) return false;
     net.EndSession(); // Cancel before the first packet.
     return net.GetClientState() == LAN::ClientState::Idle && HostsDestroyed == destroyed + 2;
+}
+
+bool ReceiveObservations()
+{
+    LANPacketTest f;
+    Inject(Packet(0, 1, 40), &f.Peers[1]);
+    f.Net.Process();
+    const auto before = f.Snapshot();
+    const auto queued = f.Net.GetReceiveStats();
+    if (queued.ReceivedPackets != 1 || queued.QueuedPackets != 1 || queued.PeakQueuedPackets != 1 ||
+        queued.WaitSamples || !(f.Snapshot() == before)) return false;
+    Tick += 17;
+    f.Net.Process();
+    auto* invalid = Packet(0, 1, 40);
+    invalid->data[0] = 0;
+    Inject(invalid, &f.Peers[1]);
+    f.Net.Process();
+    const auto expired = f.Net.GetReceiveStats();
+    if (expired.ExpiredPackets != 1 || expired.RejectedPackets != 1 ||
+        expired.ReceivedPackets != 1 || expired.QueuedPackets || expired.WaitSamples) return false;
+    for (int i = 0; i < 2; ++i)
+    {
+        Inject(Packet(0, 1, 40), &f.Peers[1]);
+        f.Net.Process();
+    }
+    Output out;
+    out.fill(Sentinel);
+    u64 stamp = 0;
+    if (f.Net.RecvPacket(0, out.data() + 32, &stamp) != 40 ||
+        !Copied(out, 0, 40) || stamp != Timestamp) return false;
+    const auto left = f.Net.GetReceiveStats();
+    return left.ReceivedPackets == 3 && left.QueuedPackets == 1 && left.PeakQueuedPackets == 2 &&
+        left.ExpiredPackets == 1 && left.RejectedPackets == 1 && !left.WaitSamples;
+}
+
+bool WaitAndReplyObservations()
+{
+    LANPacketTest f;
+    TimedDelivery = true;
+    Inject(Packet(2 | (1u << 16), 1, 40), &f.Peers[1]);
+    Inject(Packet(2 | (1u << 16), 1, 40), &f.Peers[1]);
+    Inject(Packet(2 | (2u << 16), 2, 40), &f.Peers[2]);
+    ServiceTicks = {Tick + 20, Tick + 24, Tick + 40};
+    Output out;
+    out.fill(Sentinel);
+    if (f.Net.RecvReplies(0, out.data() + 32, Timestamp, 0x6) != 0x6) return false;
+    auto stats = f.Net.GetReceiveStats();
+    if (stats.ReplyCalls != 1 || stats.NewPeerReplies != 2 || stats.DuplicateReplies != 1 ||
+        stats.PartialReplyReturns || stats.WaitSamples != 3 || stats.RequestedWaitMS != 71 ||
+        stats.WaitTimeMS != 40 || stats.MaxWaitMS != 20 || stats.ReceivedPackets != 3) return false;
+    Inject(Packet(2 | (1u << 16), 1, 40), &f.Peers[1]);
+    Inject(Packet(0, 2, 40), &f.Peers[2]);
+    ServiceTicks = {Tick + 5, Tick + 35};
+    out.fill(Sentinel);
+    if (f.Net.RecvReplies(0, out.data() + 32, Timestamp, 0x6) != 0x2 ||
+        !Copied(out, 0, 40)) return false;
+    stats = f.Net.GetReceiveStats();
+    return stats.ReplyCalls == 2 && stats.NewPeerReplies == 3 && stats.DuplicateReplies == 1 &&
+        stats.PartialReplyReturns == 1 && stats.WaitSamples == 5 && stats.RequestedWaitMS == 121 &&
+        stats.WaitTimeMS == 70 && stats.MaxWaitMS == 25 && stats.ReceivedPackets == 4 &&
+        f.Net.GetRecvTimeout() == 25 && Events.size() == 1;
+}
+
+bool ServiceObservationBoundaries()
+{
+    {
+        LANPacketTest f;
+        ForcedServiceResult = -1;
+        Output out;
+        out.fill(Sentinel);
+        u64 stamp = 0;
+        if (f.Net.RecvHostPacket(0, out.data() + 32, &stamp) || !Unchanged(out) || stamp) return false;
+        const auto stats = f.Net.GetReceiveStats();
+        if (stats.ServiceErrors != 1 || stats.WaitSamples != 1 || stats.WaitTimeMS ||
+            stats.RequestedWaitMS != 25 || stats.ReceivedPackets || stats.ClockRegressions) return false;
+    }
+    {
+        LANPacketTest f;
+        Control({}, &f.Peers[1]);
+        ServiceTicks = {Tick - 1};
+        Output out;
+        out.fill(Sentinel);
+        if (f.Net.RecvHostPacket(0, out.data() + 32, nullptr) || !Unchanged(out)) return false;
+        const auto stats = f.Net.GetReceiveStats();
+        if (stats.ClockRegressions != 1 || stats.WaitSamples || stats.WaitTimeMS ||
+            stats.RequestedWaitMS || stats.MaxWaitMS) return false;
+    }
+    {
+        LANPacketTest f;
+        for (int i = 0; i < 100; ++i) Inject(Packet(0, 1, 40), &f.Peers[1]);
+        Output out;
+        out.fill(Sentinel);
+        if (f.Net.RecvReplies(0, out.data() + 32, Timestamp, 0x2) || !Unchanged(out)) return false;
+        const auto stats = f.Net.GetReceiveStats();
+        if (stats.WorkLimitReturns != 1 || stats.ReceivedPackets != 64 || stats.ReplyCalls != 1 ||
+            stats.PartialReplyReturns || stats.NewPeerReplies || stats.DuplicateReplies) return false;
+    }
+    return true;
 }
 
 bool OptionalPortsAndLegacyRejoin()
@@ -658,6 +775,9 @@ int main()
     Check("reply-duplicate-does-not-extend-slow-peer-wait", ReplyProgressKeepsSlowPeer(true));
     Check("reply-flood-yields-and-resumes", ReplyFloodYields());
     Check("nonpositive-timeout-polls-without-unsigned-wait", NonpositiveWait());
+    Check("receive-observation-does-not-consume-or-tune", ReceiveObservations());
+    Check("wait-and-reply-progress-observation", WaitAndReplyObservations());
+    Check("service-error-clock-and-work-limit-observation", ServiceObservationBoundaries());
     Check("blank-and-aid15-reply-preserve-v1-slot-crop", Replies());
     Check("blank-reply-completes-without-timeout", BlankReplyCompletes());
     Check("ready-notification-may-lag-other-channel", ReadyNotificationCanLag());

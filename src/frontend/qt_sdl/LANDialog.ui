@@ -44,6 +44,48 @@
    <item>
     <widget class="QTreeView" name="tvPlayerList"/>
    </item>
+   <item>
+    <widget class="QGroupBox" name="receiveStatistics">
+     <property name="title">
+      <string>Receive statistics</string>
+     </property>
+     <property name="toolTip">
+      <string>Session totals reset on a new connection. Receive wait is time spent on this computer, including scheduling, not peer ping. Expired and rejected frames are local discards, not a measured network loss rate. Reply progress counts each sender's first contributing reply within a reply collection. Observation does not tune settings.</string>
+     </property>
+     <layout class="QVBoxLayout" name="receiveStatisticsLayout">
+      <item>
+       <widget class="QLabel" name="receiveSummary">
+        <property name="textFormat">
+         <enum>Qt::TextFormat::PlainText</enum>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="waitSummary">
+        <property name="textFormat">
+         <enum>Qt::TextFormat::PlainText</enum>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="replySummary">
+        <property name="textFormat">
+         <enum>Qt::TextFormat::PlainText</enum>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
   </layout>
  </widget>
  <resources/>
