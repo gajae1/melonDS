@@ -42,6 +42,11 @@ set_tests_properties(package-source-identity PROPERTIES TIMEOUT 120)
 add_test(NAME package-version-boundaries
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/PackageVersion.py")
 set_tests_properties(package-version-boundaries PROPERTIES TIMEOUT 120)
+if(Python3_VERSION VERSION_GREATER_EQUAL 3.12)
+    add_test(NAME libarchive-overlay-preservation
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/LibarchiveOverlay.py")
+    set_tests_properties(libarchive-overlay-preservation PROPERTIES TIMEOUT 30)
+endif()
 if(WIN32 AND MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 8
         AND CMAKE_C_COMPILER MATCHES "/ucrt64/bin/")
     get_filename_component(_melonds_ucrt_bin "${CMAKE_C_COMPILER}" DIRECTORY)

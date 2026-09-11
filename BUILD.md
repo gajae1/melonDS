@@ -201,3 +201,13 @@ python tools/package-windows.py build/windows-dev build/runtime --runtime-manife
 Ordinary builds default to identity OFF and do not gain a Git/Python
 requirement from this option. The source ID does not attest to the compiler,
 external libraries, reproducible builds, or signatures.
+
+To verify the maintained libarchive overlay, run
+`python tools/prepare-libarchive-overlay.py` with Python 3.12+ and Git.
+This explicit maintenance command downloads the pinned registry files and release,
+verifies their hashes, applies the inherited patches in a temporary directory,
+and reports differences from the checked-in overlay without changing it.
+Matching content returns zero; differences or failed verification return nonzero.
+Use `--output NEW_DIRECTORY` to create a verified candidate for review; its parent
+must exist and the output must not exist. Review local changes before replacing
+the maintained overlay. Normal configuration does not run this command.
