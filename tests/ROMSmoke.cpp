@@ -5,6 +5,7 @@
 #include "frontend/glad/glad.h"
 #include "NDS.h"
 #include "DSi.h"
+#include "Savestate.h"
 #include "GPU_OpenGL.h"
 #include "UTF8.h"
 #include <fstream>
@@ -61,8 +62,13 @@ static std::vector<melonDS::u8> Read(const char* name)
 int main(int argc, char** argv)
 {
     using namespace melonDS;
-    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\n"); return 2; }
+    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES\n"); return 2; }
     const bool dsi = argc >= 6;
+    const bool builtinDS = std::getenv("MELONDS_SMOKE_BUILTIN_DS") != nullptr;
+    if (dsi && builtinDS) {
+        std::fprintf(stderr, "MELONDS_SMOKE_BUILTIN_DS is not supported in DSi mode\n");
+        return 2;
+    }
     const bool menu = std::strcmp(argv[1], "-") == 0;
     const bool launchCart = argc == 7 && std::strcmp(argv[6], "firmware-cart") == 0;
     const bool firmwareBoot = menu || launchCart || (argc == 7 && std::strcmp(argv[6], "firmware") == 0);
@@ -94,16 +100,25 @@ int main(int argc, char** argv)
         // Diagnostic overrides used to separate guest boot failures from JIT behavior.
         if (std::getenv("MELONDS_SMOKE_INTERPRETER")) args.JIT.reset();
         else if (std::getenv("MELONDS_SMOKE_NO_FASTMEM")) args.JIT->FastMemory = false;
-        const auto bios7 = Read("bios7.bin"), bios9 = Read("bios9.bin"), firmware = Read("firmware.bin");
-        if (!dsi && bios7.size() == args.ARM7BIOS->size() && bios9.size() == args.ARM9BIOS->size()) {
-            std::memcpy(args.ARM7BIOS->data(), bios7.data(), args.ARM7BIOS->size());
-            std::memcpy(args.ARM9BIOS->data(), bios9.data(), args.ARM9BIOS->size());
-            std::puts("bios=external-DS");
-        } else if (!dsi) {
-            // DSi 64KiB images are not DS 16KiB/4KiB images. Do not truncate them.
-            std::fprintf(stderr,"DS BIOS size mismatch; using built-in FreeBIOS for DS direct boot\n");
+        std::vector<u8> bios7, bios9;
+        if (builtinDS) {
+            bios7.assign(args.ARM7BIOS->begin(), args.ARM7BIOS->end());
+            bios9.assign(args.ARM9BIOS->begin(), args.ARM9BIOS->end());
+            std::puts("bios=built-in-DS");
+        } else {
+            bios7 = Read("bios7.bin");
+            bios9 = Read("bios9.bin");
+            const auto firmware = Read("firmware.bin");
+            if (!dsi && bios7.size() == args.ARM7BIOS->size() && bios9.size() == args.ARM9BIOS->size()) {
+                std::memcpy(args.ARM7BIOS->data(), bios7.data(), args.ARM7BIOS->size());
+                std::memcpy(args.ARM9BIOS->data(), bios9.data(), args.ARM9BIOS->size());
+                std::puts("bios=external-DS");
+            } else if (!dsi) {
+                // DSi 64KiB images are not DS 16KiB/4KiB images. Do not truncate them.
+                std::fprintf(stderr,"DS BIOS size mismatch; using built-in FreeBIOS for DS direct boot\n");
+            }
+            args.Firmware = Firmware(firmware.data(), static_cast<u32>(firmware.size()));
         }
-        args.Firmware = Firmware(firmware.data(), static_cast<u32>(firmware.size()));
         if (dsi && std::filesystem::exists("biosnds7.bin") && std::filesystem::exists("biosnds9.bin")) {
             const auto ntr7 = Read("biosnds7.bin"), ntr9 = Read("biosnds9.bin");
             if (ntr7.size() != ARM7BIOSSize || ntr9.size() != ARM9BIOSSize) return 11;
@@ -163,6 +178,24 @@ int main(int argc, char** argv)
         SmokeAudio audio{nds.get()};
         if (!audio.Open()) { std::fprintf(stderr, "audio probe init failed: %s\n", SDL_GetError()); return 77; }
         nds->Start();
+        if (const char* statePath = std::getenv("MELONDS_SMOKE_STATE")) {
+            try {
+                auto data = Read(statePath);
+                NDS::Current = nds.get();
+                Savestate state(data.data(), static_cast<u32>(data.size()), false);
+                if (state.Error || !nds->DoSavestate(&state) || state.Error) {
+                    std::fprintf(stderr, "savestate load failed\n");
+                    return 15;
+                }
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "savestate load failed: %s\n", error.what());
+                return 15;
+            }
+        }
+        // RunFrame wall time only; audio delivery and the final GL wait are outside it.
+        const char* frameTimesPath = std::getenv("MELONDS_SMOKE_FRAME_TIMES");
+        std::vector<std::chrono::nanoseconds::rep> frameTimes;
+        if (frameTimesPath) frameTimes.reserve(frames);
         const auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < frames; ++i) {
             if (nextInput < inputs.size() && inputs[nextInput].first == i) {
@@ -179,13 +212,33 @@ int main(int argc, char** argv)
             }
             if (launchCart && i == 2400) nds->SetKeyMask(0xFFF & ~1u);
             if (launchCart && i == 2402) nds->SetKeyMask(0xFFF);
+            std::chrono::steady_clock::time_point frameStart;
+            if (frameTimesPath) frameStart = std::chrono::steady_clock::now();
             const int lines = nds->RunFrame();
+            if (frameTimesPath) {
+                frameTimes.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - frameStart).count());
+            }
             if (!nds->IsRunning()) { std::fprintf(stderr,"stopped frame=%d\n",i); return 6; }
             audio.AfterFrame(lines);
         }
         audio.Report();
         if (!software) glFinish();
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+        if (frameTimesPath) {
+            try {
+                std::ofstream csv;
+                csv.exceptions(std::ios::failbit | std::ios::badbit);
+                csv.open(PathFromUTF8(frameTimesPath));
+                csv << "frame,elapsed_ns\n";
+                for (size_t i = 0; i < frameTimes.size(); ++i)
+                    csv << i << ',' << frameTimes[i] << '\n';
+                csv.close();
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "frame times CSV failed: %s\n", error.what());
+                return 16;
+            }
+        }
         void *top = nullptr, *bottom = nullptr;
         nds->GetRenderer().GetFramebuffers(&top,&bottom);
         std::vector<u32> pixels(256*384);

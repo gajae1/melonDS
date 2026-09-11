@@ -23,7 +23,7 @@
 | CJ-15 | [SMC·alias·remap 재진입](workstreams/01-core-jit.md#CJ-15) | 관찰/확장 | P1 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
 | CJ-16 | [A64 native fastmem·W^X·I-cache](workstreams/01-core-jit.md#CJ-16) | 관찰/확장 | P1 | [1.1.39](Release_Plan.md#v39) | — | 미착수 |
 | CJ-17 | [BMI BIC·shift 실효성](workstreams/01-core-jit.md#CJ-17) | 미측정 가설 | P3 | [1.1.25](Release_Plan.md#v25) | — | 미착수 |
-| CJ-18 | [짧은 block hash·cache 비용](workstreams/01-core-jit.md#CJ-18) | 미측정 가설 | P3 | [1.1.25](Release_Plan.md#v25) | — | 미착수 |
+| CJ-18 | [짧은 block hash·cache 비용](workstreams/01-core-jit.md#CJ-18) | 제한 장면 계측 | P3 | [1.1.25](Release_Plan.md#v25) | — | 1.1.38 compile/hash 측정·고정 임시 배열; reset/reuse·holdout 대기 |
 | CJ-19 | [3D capture의 CPU/DMA 가시성](workstreams/01-core-jit.md#CJ-19) | 부분 실행 검증 | P2 | [1.1.16](Release_Plan.md#v16) | GR-06 | 1.1.30 source A DMA-first→동일 warmed JIT load 블록의 과거/미래 줄 읽기·3 backend 검증; JIT-first·직접 VRAM fastmem·실기/게임 후속 |
 | CJ-20 | [입력·RTC·다중 인스턴스 시간 정책](workstreams/01-core-jit.md#CJ-20) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 1.1.30 성공 load/undo의 host 오디오 이력만 AD-05로 선반영; 입력·RTC·외부/다중 인스턴스 정책 후속 |
 | CJ-21 | [DSi 동일 조건 upstream 부팅 비교](workstreams/01-core-jit.md#CJ-21) | 관찰/확장 | P2 | [1.1.18](Release_Plan.md#v18) | AD-17 | 미착수 |
@@ -120,7 +120,7 @@
 | BV-07 | [의존성·local patch·license](workstreams/06-build-validation.md#BV-07) | 관찰/확장 | P1 | [1.1.36](Release_Plan.md#v36) | — | 미착수 |
 | BV-08 | [LTO/ThinLTO guard 판정](workstreams/06-build-validation.md#BV-08) | 미측정 가설 | P2 | [1.1.38](Release_Plan.md#v38) | — | 미착수 |
 | BV-09 | [PGO train/holdout](workstreams/06-build-validation.md#BV-09) | 미측정 가설 | P2 | [1.1.38](Release_Plan.md#v38) | — | 미착수 |
-| BV-10 | [paired median/tail 측정](workstreams/06-build-validation.md#BV-10) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
+| BV-10 | [paired median/tail 측정](workstreams/06-build-validation.md#BV-10) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.38 state 재생·frame CSV·한 장면 paired 대조; GPU/장치 분리·holdout 대기 |
 | BV-11 | [sanitizer·JIT fault 구분](workstreams/06-build-validation.md#BV-11) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
 | BV-12 | [CPU/OS feature·fallback](workstreams/06-build-validation.md#BV-12) | 관찰/확장 | P1 | [1.1.26](Release_Plan.md#v26) | — | 미착수 |
 | BV-13 | [분리 symbol·진단자료](workstreams/06-build-validation.md#BV-13) | 관찰/확장 | P2 | [1.1.43](Release_Plan.md#v43) | — | 미착수 |
