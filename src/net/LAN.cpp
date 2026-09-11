@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <cstddef>
+#include <algorithm>
 
 #ifdef __WIN32__
     #include <winsock2.h>
@@ -941,11 +942,11 @@ bool LAN::ValidateMPPacket(const ENetEvent& event) const
 // 0 = per-frame processing of events and eventual misc. frame
 // 1 = checking if a misc. frame has arrived
 // 2 = waiting for a MP frame
-void LAN::ProcessLAN(int type)
+void LAN::ProcessLAN(int type, u32 timeout)
 {
     if (!Host) return;
 
-    u32 time_last = (u32)Platform::GetMSCount();
+    u64 time_last = Platform::GetMSCount();
 
     // see if we have queued packets already, get rid of the stale ones
     // any incoming packet should be consumed by the core quickly, so if
@@ -980,8 +981,7 @@ void LAN::ProcessLAN(int type)
         }
     }
 
-    int timeout = (type == 2) ? GetRecvTimeout() : 0;
-    time_last = (u32)Platform::GetMSCount();
+    time_last = Platform::GetMSCount();
 
     ENetEvent event;
     // A stream of control packets must yield to UI cancellation/frame work.
@@ -1023,10 +1023,12 @@ void LAN::ProcessLAN(int type)
 
         if (type == 2)
         {
-            u32 time = (u32)Platform::GetMSCount();
-            if (time < time_last) return;
-            timeout -= (int)(time - time_last);
-            if (timeout <= 0) return;
+            const u64 time = Platform::GetMSCount();
+            const u64 elapsed = time - time_last;
+            // Keep the full host clock: low32 wrap is ordinary elapsed time,
+            // while expiry or a backwards jump must never enlarge the wait.
+            if (elapsed >= timeout) return;
+            timeout -= static_cast<u32>(elapsed);
             time_last = time;
         }
     }
@@ -1136,7 +1138,7 @@ int LAN::RecvPacketGeneric(u8* packet, bool block, u64* timestamp, u32 capacity)
     std::lock_guard lock(SessionMutex);
     if (!Host || Connection != ClientState::Connected) return 0;
 
-    ProcessLAN(block ? 2 : 1);
+    ProcessLAN(block ? 2 : 1, block ? std::max(GetRecvTimeout(), 0) : 0);
     if (RXQueue.empty()) return 0;
 
     ENetPacket* enetpacket = RXQueue.front();
@@ -1215,9 +1217,16 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
     if ((myinstmask & ConnectedBitmask) == ConnectedBitmask)
         return 0;
 
-    for (;;)
+    const u32 timeout = std::max(GetRecvTimeout(), 0);
+    u64 started = Platform::GetMSCount();
+    // Keep the existing inactivity wait when a new peer replies, but do not
+    // renew it for duplicates or unrelated traffic. Also yield under a stream
+    // of already available packets, leaving the rest for the next call.
+    for (unsigned received = 0; received < 64; ++received)
     {
-        ProcessLAN(2);
+        const u64 elapsed = Platform::GetMSCount() - started;
+        if (received && timeout && elapsed >= timeout) return ret;
+        ProcessLAN(2, elapsed < timeout ? timeout - static_cast<u32>(elapsed) : 0);
         if (RXQueue.empty())
         {
             // no more replies available
@@ -1246,7 +1255,12 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
                 ret |= (1<<aid);
             }
 
-            myinstmask |= (1<<header->SenderID);
+            const u16 sender = 1 << header->SenderID;
+            if (!(myinstmask & sender))
+            {
+                myinstmask |= sender;
+                started = Platform::GetMSCount();
+            }
             if (((myinstmask & ConnectedBitmask) == ConnectedBitmask) ||
                 ((ret & aidmask) == aidmask))
             {
@@ -1258,6 +1272,7 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
 
         enet_packet_destroy(enetpacket);
     }
+    return ret;
 }
 
 }

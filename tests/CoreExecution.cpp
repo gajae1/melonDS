@@ -131,6 +131,145 @@ static int TestSchedulerSavestate(NDSArgs&& args)
     return failures ? 1 : 0;
 }
 
+static int TestThumbStack(NDSArgs&& args, bool jit)
+{
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    if (args.JIT)
+    {
+        args.JIT->MaxBlockSize = 1;
+        args.JIT->BranchOptimizations = false;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    // RunFrame normally selects the instance used by JIT memory helpers.
+    NDS::Current = nds.get();
+    constexpr u32 code = 0x02008000, stack = 0x02012040, targetPC = 0x02009000;
+    constexpr u32 sentinel = 0x12345678, cpsr = 0xA00000FF;
+    const struct { const char* name; u16 instr; u32 target; } cases[] = {
+        {"empty-push", 0xB400, 0}, {"empty-pop", 0xBC00, targetPC | 1},
+        {"lr-only", 0xB500, 0},
+        {"pc-only-thumb", 0xBD00, targetPC | 1},
+        {"pc-only-even", 0xBD00, targetPC},
+    };
+    // ARM DDI 0100I A7.1.49/50 explicitly make an empty 9-bit list
+    // UNPREDICTABLE. Record raw empty-list observations without asserting
+    // SP, PC, memory or timing. Only the defined LR/PC-only controls can PASS.
+    unsigned checked = 0, failures = 0, observed = 0;
+    for (bool arm7 : {false, true})
+    {
+        nds->CurCPU = arm7 ? 1 : 0;
+        ARM& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        nds->ARM9.MemTimings[code >> 12][0] = 4;
+        nds->ARM9.MemTimings[targetPC >> 12][0] = 4;
+        for (unsigned i = 0; i < 4; ++i) nds->ARM7MemTimings[code >> 15][i] = 4;
+        nds->ARM9Write32(targetPC, 0xEAFFFFFE);
+        for (unsigned i = 0; i < std::size(cases); ++i)
+        {
+            const auto& test = cases[i];
+            const u32 addr = code + i * 16;
+            nds->ARM9Write16(addr, test.instr);
+            nds->ARM9Write16(addr + 2, 0xE7FE);
+            for (s32 previousData : {1, 37})
+            for (unsigned run = 0; run < (jit ? 2u : 1u); ++run)
+            {
+                const bool cached = jit && (run != 0 || previousData != 1);
+                for (unsigned r = 0; r < 15; ++r) cpu.R[r] = sentinel + r;
+                cpu.R[13] = stack;
+                for (u32 p = stack - 64; p <= stack + 4; p += 4)
+                    nds->ARM9Write32(p, p == stack && test.target ? test.target : sentinel);
+                cpu.CPSR = cpsr;
+                cpu.JumpTo(addr | 1);
+                cpu.Cycles = 0; // Exclude initial pipeline refill.
+                cpu.DataCycles = previousData;
+                cpu.DataRegion = stack;
+                auto& timestamp = arm7 ? nds->ARM7Timestamp : nds->ARM9Timestamp;
+                auto& target = arm7 ? nds->ARM7Target : nds->ARM9Target;
+                timestamp = 0;
+                target = 1;
+#ifdef JIT_ENABLED
+                if (jit)
+                {
+                    auto& blocks = arm7 ? nds->JIT.JitBlocks7 : nds->JIT.JitBlocks9;
+                    if (cached)
+                    {
+                        if (!blocks.contains(addr | 1)) return 2;
+                        // Exactly one warmed native block, even if it costs zero.
+                        ARM_Dispatch(&cpu, blocks.at(addr | 1)->EntryPoint);
+                        timestamp = cpu.Cycles;
+                    }
+                    else if (arm7) nds->ARM7.Execute<CPUExecuteMode::JIT>();
+                    else nds->ARM9.Execute<CPUExecuteMode::JIT>();
+#if defined(__x86_64__)
+                    if (previousData == 1 && run == 0 && i < 2)
+                    {
+                        if (!blocks.contains(addr | 1)) return 2;
+                        const auto* entry = reinterpret_cast<const u8*>(blocks.at(addr | 1)->EntryPoint);
+                        const auto* end = nds->JIT.JITCompiler.GetCodePtr();
+                        if (end <= entry || end - entry > 1024) return 2;
+                        std::printf("native-stack ARM%d guest=%04X bytes=", arm7 ? 7 : 9, test.instr);
+                        for (auto* p = entry; p != end; ++p) std::printf("%02X", *p);
+                        std::puts("");
+                    }
+#endif
+                }
+                else
+#endif
+                {
+                    if (arm7) nds->ARM7.Execute<CPUExecuteMode::Interpreter>();
+                    else nds->ARM9.Execute<CPUExecuteMode::Interpreter>();
+                }
+                if (i < 2)
+                {
+                    ++observed;
+                    std::printf("OBSERVATION %s ARM%d %s opcode=%04X previousD=%d run=%u cycles=%llu sp=%08X pc=%08X cpsr=%08X",
+                        jit ? (cached ? "dispatch" : "jit-cold") : "interpreter", arm7 ? 7 : 9,
+                        test.name, test.instr, previousData, run,
+                        static_cast<unsigned long long>(timestamp), cpu.R[13], cpu.R[15], cpu.CPSR);
+                    for (unsigned r = 0; r < 15; ++r)
+                        if (r != 13 && cpu.R[r] != sentinel + r)
+                            std::printf(" r%u=%08X", r, cpu.R[r]);
+                    unsigned writes = 0;
+                    for (u32 p = stack - 64; p <= stack + 4; p += 4)
+                    {
+                        const u32 initial = p == stack && test.target ? test.target : sentinel;
+                        const u32 value = nds->ARM9Read32(p);
+                        if (value != initial)
+                        {
+                            ++writes;
+                            std::printf(" mem[%08X]=%08X", p, value);
+                        }
+                    }
+                    std::printf(" changed-stack-words=%u (no silicon oracle)\n", writes);
+                    continue;
+                }
+                const bool pushLR = test.instr == 0xB500;
+                const bool toARM = test.target && !arm7 && !(test.target & 1);
+                const u32 expectedPC = test.target ? targetPC + (toARM ? 4 : 2) : addr + 4;
+                const u32 expectedSP = pushLR ? stack - 4 : test.target ? stack + 4 : stack;
+                bool ok = cpu.R[13] == expectedSP && cpu.R[15] == expectedPC &&
+                    cpu.CPSR == (cpsr & ~(toARM ? 0x20u : 0u)) && timestamp > 0;
+                for (unsigned r = 0; r < 15; ++r)
+                    if (r != 13) ok &= cpu.R[r] == sentinel + r;
+                for (u32 p = stack - 64; p <= stack + 4; p += 4)
+                {
+                    const u32 expected = pushLR && p == stack - 4 ? sentinel + 14 :
+                        p == stack && test.target ? test.target : sentinel;
+                    ok &= nds->ARM9Read32(p) == expected;
+                }
+                ++checked;
+                failures += !ok;
+                std::printf("%s ARM%d %s opcode=%04X previousD=%d run=%u: %s cycles=%llu sp=%08X pc=%08X cpsr=%08X\n",
+                    jit ? (cached ? "dispatch" : "jit-cold") : "interpreter", arm7 ? 7 : 9,
+                    test.name, test.instr, previousData, run, ok ? "PASS" : "FAIL",
+                    static_cast<unsigned long long>(timestamp), cpu.R[13], cpu.R[15], cpu.CPSR);
+            }
+        }
+    }
+    std::printf("thumb stack: %u defined LR-PC checks, %u failures; %u empty-list observations (unverified)\n",
+        checked, failures, observed);
+    return failures ? 1 : 0;
+}
+
 static int TestConditionalCycles(NDSArgs&& args, bool jit)
 {
     if (args.JIT)
@@ -245,6 +384,8 @@ int main(int argc, char** argv) {
     NDSArgs args;
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
+    if (argc > 2 && std::strcmp(argv[2], "thumb-stack") == 0)
+        return TestThumbStack(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "conditional-cycles") == 0)
         return TestConditionalCycles(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "alu-shift") == 0)

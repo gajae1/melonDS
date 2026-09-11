@@ -168,7 +168,7 @@ private:
     void ProcessClientEvent(ENetEvent& event);
     void ProcessEvent(ENetEvent& event);
     bool ValidateMPPacket(const ENetEvent& event) const;
-    void ProcessLAN(int type);
+    void ProcessLAN(int type, u32 timeout = 0);
 
     int SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp);
     int RecvPacketGeneric(u8* packet, bool block, u64* timestamp, u32 capacity);
