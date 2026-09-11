@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>466</width>
-    <height>202</height>
+    <height>235</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -50,6 +50,16 @@
       <string>Network</string>
      </property>
      <layout class="QGridLayout" name="gridLayout">
+      <item row="1" column="0" colspan="3">
+       <widget class="QCheckBox" name="cbAutomaticTimeout">
+        <property name="text">
+         <string>Automatically adjust LAN receive waits</string>
+        </property>
+        <property name="toolTip">
+         <string>Use recent connection measurements to adjust LAN waits up to 100 ms. The configured timeout remains the minimum and fallback. Zero keeps immediate polling; values of 100 ms or more stay fixed. Turn this off to use the configured timeout exactly.</string>
+        </property>
+       </widget>
+      </item>
       <item row="0" column="1">
        <widget class="QSpinBox" name="sbReceiveTimeout">
         <property name="sizePolicy">
@@ -109,6 +119,7 @@
   <tabstop>rbAudioOneOnly</tabstop>
   <tabstop>rbAudioActiveOnly</tabstop>
   <tabstop>sbReceiveTimeout</tabstop>
+  <tabstop>cbAutomaticTimeout</tabstop>
  </tabstops>
  <resources/>
  <connections>

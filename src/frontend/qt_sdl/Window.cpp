@@ -69,6 +69,7 @@
 #include "version.h"
 #include "Savestate.h"
 #include "MPInterface.h"
+#include "LAN.h"
 #include "LANDialog.h"
 
 //#include "main_shaders.h"
@@ -2150,7 +2151,10 @@ void MainWindow::onMPSettingsFinished(int res)
 {
     emuInstance->mpAudioMode = globalCfg.GetInt("MP.AudioMode");
     emuInstance->updateAudioMuteByWindowFocus();
-    MPInterface::Acquire()->SetRecvTimeout(globalCfg.GetInt("MP.RecvTimeout"));
+    const auto interface = MPInterface::Acquire();
+    interface->SetRecvTimeout(globalCfg.GetInt("MP.RecvTimeout"));
+    if (auto* lan = dynamic_cast<LAN*>(interface.get()))
+        lan->SetAutomaticReceiveTimeout(globalCfg.GetBool("MP.AutoRecvTimeout"));
 
     emuThread->emuUnpause();
 }

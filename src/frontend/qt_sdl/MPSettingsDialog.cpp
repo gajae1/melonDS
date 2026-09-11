@@ -50,6 +50,13 @@ MPSettingsDialog::MPSettingsDialog(QWidget* parent) : QDialog(parent), ui(new Ui
     grpAudioMode->button(cfg.GetInt("MP.AudioMode"))->setChecked(true);
 
     ui->sbReceiveTimeout->setValue(cfg.GetInt("MP.RecvTimeout"));
+    ui->cbAutomaticTimeout->setChecked(cfg.GetBool("MP.AutoRecvTimeout"));
+    const auto updateTimeoutLabel = [this](bool automatic)
+    {
+        ui->label->setText(automatic ? tr("Minimum receive timeout:") : tr("Data reception timeout:"));
+    };
+    connect(ui->cbAutomaticTimeout, &QCheckBox::toggled, this, updateTimeoutLabel);
+    updateTimeoutLabel(ui->cbAutomaticTimeout->isChecked());
 }
 
 MPSettingsDialog::~MPSettingsDialog()
@@ -71,6 +78,7 @@ void MPSettingsDialog::done(int r)
         auto& cfg = emuInstance->getGlobalConfig();
         cfg.SetInt("MP.AudioMode", grpAudioMode->checkedId());
         cfg.SetInt("MP.RecvTimeout", ui->sbReceiveTimeout->value());
+        cfg.SetBool("MP.AutoRecvTimeout", ui->cbAutomaticTimeout->isChecked());
 
         Config::Save();
     }

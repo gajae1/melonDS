@@ -94,6 +94,8 @@ void CaptureBroadcast(ENetHost*, enet_uint8 channel, ENetPacket* packet)
 void NoFlush(ENetHost*) {}
 }
 
+enet_uint32 NetworkTime() { return static_cast<enet_uint32>(Tick + 200000); }
+#define enet_time_get NetworkTime
 #define enet_host_service InjectHostService
 #define enet_peer_send CapturePeerSend
 #define enet_host_broadcast CaptureBroadcast
@@ -104,6 +106,7 @@ void NoFlush(ENetHost*) {}
 #define enet_peer_disconnect DisconnectPeer
 #define enet_peer_disconnect_now DisconnectPeer
 #include "../src/net/LAN.cpp"
+#undef enet_time_get
 #undef enet_host_service
 #undef enet_peer_send
 #undef enet_host_broadcast
@@ -577,6 +580,158 @@ bool NonpositiveWait()
     return true;
 }
 
+void WarmTiming(LANPacketTest& f, u32 rtt, u32 variance, int polls = 16, bool distinct = true, u16 ready = 0x7)
+{
+    f.ReadyPlayers(ready);
+    for (int i = 0; i < polls; ++i)
+    {
+        Tick += 500;
+        for (int id : {1,2,15})
+        {
+            f.Peers[id].roundTripTime = rtt;
+            f.Peers[id].roundTripTimeVariance = variance;
+            if (distinct || !f.Peers[id].lastReceiveTime) f.Peers[id].lastReceiveTime = NetworkTime();
+        }
+        f.Net.Process();
+    }
+}
+
+bool MeasuredTimeout(bool slow)
+{
+    LANPacketTest f;
+    WarmTiming(f, slow ? 40 : 1, slow ? 2 : 0);
+    TimedDelivery = true;
+    const auto start = Tick;
+    Inject(Packet(1, 1, 40), &f.Peers[1]);
+    ServiceTicks = {Tick + (slow ? 40 : 24)};
+    Output out; out.fill(Sentinel);
+    u64 stamp = 0;
+    const auto result = f.Net.RecvHostPacket(0, out.data() + 32, &stamp);
+    std::printf("measured-timeout slow=%d received=%d elapsed=%llu\n", slow, result, static_cast<unsigned long long>(Tick-start));
+    return result == 40 && stamp == Timestamp && Copied(out,0,40);
+}
+
+bool TimingFallbacks()
+{
+    for (int mode = 0; mode < 5; ++mode)
+    {
+        LANPacketTest f;
+        WarmTiming(f,40,2,mode == 0 ? 1 : 16,mode != 1);
+        if (mode == 2) Tick += 4000; // suspended producer
+        if (mode == 3) f.ReadyPlayers(0x8007); // newly ready, unmeasured participant
+        if (mode == 4) f.Peers[1].packetLoss = ENET_PEER_PACKET_LOSS_SCALE / 2;
+        Tick += 250; f.Net.Process();
+        TimedDelivery = true;
+        const auto start = Tick;
+        Inject(Packet(1,1,40),&f.Peers[1]); ServiceTicks={Tick+40};
+        Output out; out.fill(Sentinel);
+        if (f.Net.RecvHostPacket(0,out.data()+32,nullptr) || Tick-start != 25 || !Unchanged(out)) return false;
+    }
+    return true;
+}
+
+bool MissingRepliesRestoreBaseline()
+{
+    LANPacketTest f;
+    WarmTiming(f,40,2);
+    TimedDelivery=true;
+    Output out; out.fill(Sentinel);
+    for (int i=0; i<3; ++i)
+        if (f.Net.RecvReplies(0,out.data()+32,Timestamp,0x2) || !Unchanged(out)) return false;
+    const auto start=Tick;
+    Inject(Packet(2|(1u<<16),1,40),&f.Peers[1]); ServiceTicks={Tick+40};
+    return f.Net.RecvReplies(0,out.data()+32,Timestamp,0x2)==0 && Tick-start==25 && Unchanged(out);
+}
+
+void ReplyAt(LANPacketTest& f, u64 arrival, u32 sender, u32 aid, u64 stamp, u8 value);
+
+bool PauseWhileTransportContinues()
+{
+    LANPacketTest f;
+    WarmTiming(f,40,2);
+    Output out; out.fill(Sentinel);
+    Inject(Packet(1,1,40),&f.Peers[1]);
+    if (f.Net.RecvHostPacket(0,out.data()+32,nullptr)!=40) return false;
+    // EmuThread keeps calling Process while the guest is paused. ACKs remain
+    // fresh, but no guest receive activity occurs during this interval.
+    WarmTiming(f,40,2,8);
+    TimedDelivery=true;
+    const auto start=Tick;
+    out.fill(Sentinel);
+    Inject(Packet(1,1,40),&f.Peers[1]); ServiceTicks={Tick+40};
+    return f.Net.RecvHostPacket(0,out.data()+32,nullptr)==0 && Tick-start==25 && Unchanged(out);
+}
+
+bool WorkLimitIsNotAnEmptyWait()
+{
+    LANPacketTest f;
+    WarmTiming(f,80,30,24,true,0x8007);
+    TimedDelivery=true;
+    Output out;
+    for (int attempt=0;attempt<3;++attempt)
+    {
+        const auto start=Tick;
+        ReplyAt(f,start+60,1,1,Timestamp,0x11);
+        ReplyAt(f,start+120,2,2,Timestamp,0x22);
+        for (int i=0;i<62;++i) ReplyAt(f,start+121+i,1,1,Timestamp,0x11);
+        out.fill(Sentinel);
+        if (f.Net.RecvReplies(0,out.data()+32,Timestamp,0xE)!=0x6 || !Events.empty()) return false;
+    }
+    const auto stats=f.Net.GetReceiveStats();
+    out.fill(Sentinel);
+    Inject(Packet(1,1,40),&f.Peers[1]); ServiceTicks={Tick+95};
+    return stats.WorkLimitReturns==3 && f.Net.RecvHostPacket(0,out.data()+32,nullptr)==40 && Copied(out,0,40);
+}
+
+bool FixedWaitAndSlowestPeer()
+{
+    for (int configured : {25,37})
+    {
+        LANPacketTest f;
+        WarmTiming(f,80,30,24);
+        f.Net.SetRecvTimeout(configured);
+        f.Net.SetAutomaticReceiveTimeout(false);
+        TimedDelivery=true;
+        const auto start=Tick;
+        Inject(Packet(1,1,40),&f.Peers[1]); ServiceTicks={Tick+configured+1};
+        Output out; out.fill(Sentinel);
+        if (f.Net.RecvHostPacket(0,out.data()+32,nullptr) || Tick-start!=configured || !Unchanged(out) ||
+            f.Net.GetReceiveStats().EffectiveTimeoutMS!=configured || f.Net.GetAutomaticReceiveTimeout()) return false;
+    }
+    LANPacketTest f;
+    for (int i=0;i<16;++i)
+    {
+        Tick+=500;
+        f.Peers[1].roundTripTime=1; f.Peers[1].roundTripTimeVariance=0;
+        f.Peers[2].roundTripTime=60; f.Peers[2].roundTripTimeVariance=2;
+        f.Peers[1].lastReceiveTime=f.Peers[2].lastReceiveTime=NetworkTime();
+        f.Net.Process();
+    }
+    TimedDelivery=true;
+    Inject(Packet(2|(1u<<16),1,40),&f.Peers[1]);
+    Inject(Packet(2|(2u<<16),2,40),&f.Peers[2]);
+    ServiceTicks={Tick+5,Tick+65};
+    Output out; out.fill(Sentinel);
+    if (f.Net.RecvReplies(0,out.data()+32,Timestamp,0x6)!=0x6 || f.Net.GetRecvTimeout()!=25) return false;
+    for (size_t i=0;i<out.size();++i)
+    {
+        const bool written=(i>=32 && i<72)||(i>=1056 && i<1096);
+        if (out[i]!=(written?0x3C:Sentinel)) return false;
+    }
+    return true;
+}
+
+bool AdaptiveWaitCap()
+{
+    LANPacketTest f;
+    WarmTiming(f,80,30,24);
+    TimedDelivery=true;
+    const auto start=Tick;
+    Inject(Packet(1,1,40),&f.Peers[1]); ServiceTicks={Tick+150};
+    Output out; out.fill(Sentinel);
+    return f.Net.RecvHostPacket(0,out.data()+32,nullptr)==0 && Tick-start<=100 && Unchanged(out) && Events.size()==1;
+}
+
 bool LongWaitKeepsDeadline()
 {
     for (int timeout : {80, 2000})
@@ -917,6 +1072,14 @@ int main()
     Check("reply-flood-yields-and-resumes", ReplyFloodYields());
     Check("nonpositive-timeout-polls-without-unsigned-wait", NonpositiveWait());
     Check("long-wait-keeps-deadline-and-late-datagram", LongWaitKeepsDeadline());
+    Check("measured-slow-link-receives-before-adapted-deadline", MeasuredTimeout(true));
+    Check("fast-link-keeps-normal-deadline", MeasuredTimeout(false));
+    Check("untrained-stale-loss-join-pause-fallback", TimingFallbacks());
+    Check("missing-replies-restore-configured-wait", MissingRepliesRestoreBaseline());
+    Check("automatic-wait-is-bounded", AdaptiveWaitCap());
+    Check("fixed-override-and-slowest-peer-preserved", FixedWaitAndSlowestPeer());
+    Check("guest-pause-resets-despite-transport-keepalive", PauseWhileTransportContinues());
+    Check("work-limit-return-is-not-an-empty-timeout", WorkLimitIsNotAnEmptyWait());
     Check("reordered-replies-preserve-current-payload-and-peer-progress", ReorderedReplies());
     Check("missing-peer-waits-and-late-reply-survives-expiry", MissingAndLateReply());
     Check("burst-after-frame-pause-expires-only-oldest", BurstAfterFramePause());

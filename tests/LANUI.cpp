@@ -152,7 +152,14 @@ int main(int argc, char** argv)
             Require(label->textFormat() == Qt::PlainText && label->wordWrap(),
                     "receive statistics must be wrapped plain text");
         if (client->GetReceiveStats().WaitSamples == 0)
-            Require(waitSummary->text() == "Receive wait: no samples yet", "initial wait summary missing");
+            Require(waitSummary->text() == "Receive wait: no samples yet | Timeout: 25 ms (automatic)",
+                    "initial wait summary or default policy missing");
+        client->SetAutomaticReceiveTimeout(false);
+        client->SetRecvTimeout(37);
+        Require(QMetaObject::invokeMethod(lobby, "doUpdatePlayerList") &&
+                waitSummary->text().contains("Timeout: 37 ms (fixed)"), "fixed timeout policy is not visible");
+        client->SetRecvTimeout(25);
+        client->SetAutomaticReceiveTimeout(true);
 
         host.Begin(0);
         client->Begin(0);
@@ -179,11 +186,13 @@ int main(int argc, char** argv)
         Require(receiveMatch.hasMatch() && receiveMatch.captured(1).toULongLong() == stats.ReceivedPackets,
                 "lobby packet count differs from real receive statistics");
         const auto waitMatch = QRegularExpression(
-            "^Receive wait: mean ([0-9]+\\.[0-9]) ms \\| Maximum: ([0-9]+) ms \\| Samples: ([0-9]+)$")
+            "^Receive wait: mean ([0-9]+\\.[0-9]) ms \\| Maximum: ([0-9]+) ms \\| Samples: ([0-9]+)"
+            " \\| Timeout: ([0-9]+) ms \\(automatic\\)$")
             .match(waitSummary->text());
         Require(waitMatch.hasMatch() && waitMatch.captured(1).toDouble() >= 0.0 &&
                 waitMatch.captured(2).toULongLong() == stats.MaxWaitMS &&
-                waitMatch.captured(3).toULongLong() == stats.WaitSamples,
+                waitMatch.captured(3).toULongLong() == stats.WaitSamples &&
+                waitMatch.captured(4).toUInt() == stats.EffectiveTimeoutMS,
                 "lobby measured wait summary is invalid");
         std::printf("PASS generated MP command: bytes=40 timestamp=exact\n%s\n%s\n%s\n",
                     qPrintable(receiveSummary->text()), qPrintable(waitSummary->text()), qPrintable(replySummary->text()));

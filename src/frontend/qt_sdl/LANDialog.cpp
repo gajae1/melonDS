@@ -419,6 +419,9 @@ void LANDialog::doUpdatePlayerList()
         ui->waitSummary->setText(tr("Receive wait: mean %1 ms | Maximum: %2 ms | Samples: %3")
             .arg(static_cast<double>(stats.WaitTimeMS) / stats.WaitSamples, 0, 'f', 1)
             .arg(stats.MaxWaitMS).arg(stats.WaitSamples));
+    ui->waitSummary->setText(ui->waitSummary->text() + tr(" | Timeout: %1 ms (%2)")
+        .arg(stats.EffectiveTimeoutMS)
+        .arg(session->GetAutomaticReceiveTimeout() ? tr("automatic") : tr("fixed")));
     QString replies = tr("Reply progress: %1 | Duplicate replies: %2 | "
                          "Partial reply returns: %3 | Work limit returns: %4")
         .arg(stats.NewPeerReplies).arg(stats.DuplicateReplies)

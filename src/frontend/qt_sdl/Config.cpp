@@ -613,7 +613,13 @@ bool Table::GetBool(const std::string& path)
 {
     toml::value& tval = ResolvePath(path);
     if (!tval.is_boolean())
-        tval = FindDefault(path, false, DefaultBools);
+    {
+        // Preserve a pre-existing custom timeout as a fixed setting on upgrade.
+        // Fresh/default configurations can adapt; an explicit choice persists.
+        tval = path == "MP.AutoRecvTimeout" && PathPrefix.empty()
+            ? GetInt("MP.RecvTimeout") == 25
+            : FindDefault(path, false, DefaultBools);
+    }
 
     return tval.as_boolean();
 }

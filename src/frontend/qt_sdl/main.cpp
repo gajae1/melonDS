@@ -61,6 +61,7 @@
 #include "ArchiveUtil.h"
 #include "CameraManager.h"
 #include "MPInterface.h"
+#include "LAN.h"
 #include "Net.h"
 
 #include "CLI.h"
@@ -300,7 +301,11 @@ void setMPInterface(MPInterfaceType type)
 
     // set receive timeout
     // TODO: different settings per interface?
-    MPInterface::Acquire()->SetRecvTimeout(Config::GetGlobalTable().GetInt("MP.RecvTimeout"));
+    const auto interface = MPInterface::Acquire();
+    auto cfg = Config::GetGlobalTable();
+    interface->SetRecvTimeout(cfg.GetInt("MP.RecvTimeout"));
+    if (auto* lan = dynamic_cast<LAN*>(interface.get()))
+        lan->SetAutomaticReceiveTimeout(cfg.GetBool("MP.AutoRecvTimeout"));
 
     // update UI appropriately
     for (int i = 0; i < kMaxEmuInstances; i++)

@@ -335,6 +335,8 @@ void LAN::EndSession()
     LastHostID = -1;
     LastHostPeer = nullptr;
     FrameCount = 0;
+    Timing = {};
+    HadReceiveActivity = false;
     IsHost = false;
     ClientInitReceived = false;
     Connection = ClientState::Idle;
@@ -352,6 +354,9 @@ LAN::ReceiveStats LAN::GetReceiveStats()
 {
     std::lock_guard lock(SessionMutex);
     auto result = Stats;
+    const u32 configured = std::max(GetRecvTimeout(), 0);
+    result.EffectiveTimeoutMS = AutomaticReceive.load() && Timing.Configured == configured && Timing.Timeout
+        ? Timing.Timeout : configured;
     result.QueuedPackets = RXQueue.size();
     if (!RXQueue.empty())
     {
@@ -486,6 +491,8 @@ void LAN::HostUpdatePlayerList()
 
 void LAN::ClearPeer(int id)
 {
+    Timing = {};
+    HadReceiveActivity = false;
     auto* peer = RemotePeers[id];
     if (peer) peer->data = nullptr;
     RemotePeers[id] = nullptr;
@@ -1033,7 +1040,7 @@ void LAN::ProcessLAN(int type, u32 timeout)
         }
         if (result <= 0)
         {
-            if (result < 0) ++Stats.ServiceErrors;
+            if (result < 0) { ++Stats.ServiceErrors; Timing = {}; }
             if (result == 0 && timeout > wait)
             {
                 const u64 time = Platform::GetMSCount();
@@ -1108,6 +1115,7 @@ void LAN::Process()
     ProcessDiscovery();
     ProcessLAN(0);
     ConnectPeers();
+    ReceiveTimeout();
     if (Connection == ClientState::Connecting &&
         static_cast<u32>(Platform::GetMSCount() - ConnectionStartTick) >= 5000)
     {
@@ -1139,6 +1147,8 @@ void LAN::Begin(int inst)
     std::lock_guard lock(SessionMutex);
     if (!Host || Connection != ClientState::Connected) return;
 
+    Timing = {};
+    HadReceiveActivity = false;
     ConnectedBitmask |= (1 << MyPlayer.ID);
     LastHostID = -1;
     LastHostPeer = nullptr;
@@ -1153,6 +1163,8 @@ void LAN::End(int inst)
     std::lock_guard lock(SessionMutex);
     if (!Host || Connection != ClientState::Connected) return;
 
+    Timing = {};
+    HadReceiveActivity = false;
     ConnectedBitmask &= ~(1 << MyPlayer.ID);
 
     u8 cmd = Cmd_PlayerDisconnect;
@@ -1199,14 +1211,106 @@ int LAN::SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp)
     return len;
 }
 
+// Only the host transport wait changes. ENet's ACK clock is separate from
+// Platform's scheduling clock; neither changes guest timestamps or queue age.
+u32 LAN::ReceiveTimeout(bool receiving)
+{
+    const u32 baseline = std::max(GetRecvTimeout(), 0);
+    const u16 peers = MyPlayer.ID >= 0 && MyPlayer.ID < 16
+        ? ConnectedBitmask & ~(1u << MyPlayer.ID) : 0;
+    if (!AutomaticReceive.load() || !baseline || baseline >= 100 || !peers ||
+        !Host || Connection != ClientState::Connected)
+    {
+        Timing = {};
+        HadReceiveActivity = false;
+        return baseline;
+    }
+    const u64 now = Platform::GetMSCount();
+    // The frontend still services ENet while emulation is paused. Transport
+    // ACKs alone must not keep an old guest receive epoch trained indefinitely.
+    if (HadReceiveActivity && (now < LastReceiveActivity || now - LastReceiveActivity > 3000))
+    {
+        Timing = {};
+        if (!receiving) return baseline;
+    }
+    if (receiving)
+    {
+        LastReceiveActivity = now;
+        HadReceiveActivity = true;
+    }
+    if (Timing.Peers != peers || Timing.Configured != baseline || now < Timing.Poll || now - Timing.Poll > 3000)
+    {
+        Timing = {};
+        Timing.Peers = peers;
+        Timing.Configured = Timing.Timeout = baseline;
+        Timing.Poll = Timing.Changed = now;
+    }
+    if (now - Timing.Poll < 250) return Timing.Timeout;
+    Timing.Poll = now;
+
+    const u32 networkNow = enet_time_get();
+    u32 target = baseline;
+    bool trained = true;
+    for (int id = 0; id < 16; ++id)
+    {
+        if (!(peers & (1u << id))) continue;
+        const auto* peer = RemotePeers[id];
+        // packetLoss is ENet's smoothed reliable-command loss, not the loss
+        // rate of unsequenced MP frames. Actual receive timeouts are separate.
+        if (!peer || peer->state != ENET_PEER_STATE_CONNECTED || !peer->lastReceiveTime ||
+            static_cast<u32>(networkNow - peer->lastReceiveTime) > 2000 ||
+            !peer->roundTripTime || peer->roundTripTime > 250 || peer->roundTripTimeVariance > 250 ||
+            peer->packetLoss >= ENET_PEER_PACKET_LOSS_SCALE / 4)
+        {
+            Timing = {};
+            return baseline;
+        }
+        // Repeated reads of one ACK do not manufacture confidence. Retain a
+        // bounded count per participant, including the slowest ready peer.
+        if (Timing.Acks[id] != peer->lastReceiveTime)
+        {
+            Timing.Acks[id] = peer->lastReceiveTime;
+            Timing.Samples[id] = std::min<unsigned>(Timing.Samples[id] + 1, 4);
+        }
+        trained &= Timing.Samples[id] >= 4;
+        const u32 estimate = peer->roundTripTime + 4 * peer->roundTripTimeVariance + 5;
+        target = std::max(target, std::min(estimate, 100u));
+    }
+    if (!trained) Timing.Timeout = baseline;
+    else if (now - Timing.Changed >= 1000)
+    {
+        // A 5ms deadband and at most 10ms per second avoid chasing jitter.
+        if (target >= Timing.Timeout + 5)
+            Timing.Timeout = std::min(target, Timing.Timeout + 10);
+        else if (target + 5 <= Timing.Timeout)
+            Timing.Timeout = std::max(target, Timing.Timeout - std::min(Timing.Timeout, 10u));
+        Timing.Changed = now;
+    }
+    return Timing.Timeout;
+}
+
+void LAN::ObserveReceiveTimeout(u32 timeout, u64 started)
+{
+    const u64 now = Platform::GetMSCount();
+    if (now < started || (timeout && now - started >= timeout && ++Timing.EmptyWaits >= 3))
+        Timing = {};
+}
+
 int LAN::RecvPacketGeneric(u8* packet, bool block, u64* timestamp, u32 capacity)
 {
     if (PendingStops.load() || !packet || !capacity) return 0;
     std::lock_guard lock(SessionMutex);
     if (!Host || Connection != ClientState::Connected) return 0;
 
-    ProcessLAN(block ? 2 : 1, block ? std::max(GetRecvTimeout(), 0) : 0);
-    if (PendingStops.load() || RXQueue.empty()) return 0;
+    const u32 timeout = block ? ReceiveTimeout(true) : 0;
+    const u64 started = block ? Platform::GetMSCount() : 0;
+    ProcessLAN(block ? 2 : 1, timeout);
+    if (PendingStops.load() || RXQueue.empty())
+    {
+        if (block) ObserveReceiveTimeout(timeout, started);
+        return 0;
+    }
+    Timing.EmptyWaits = 0;
 
     ENetPacket* enetpacket = RXQueue.front();
     RXQueue.pop();
@@ -1281,6 +1385,7 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
     if (!Host || Connection != ClientState::Connected) return 0;
     ++Stats.ReplyCalls;
 
+    const u32 timeout = ReceiveTimeout(true);
     u16 ret = 0;
     auto partialResult = [&]
     {
@@ -1292,7 +1397,6 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
     if ((myinstmask & ConnectedBitmask) == ConnectedBitmask)
         return 0;
 
-    const u32 timeout = std::max(GetRecvTimeout(), 0);
     u64 started = Platform::GetMSCount();
     // Keep the existing inactivity wait when a new peer replies, but do not
     // renew it for duplicates or unrelated traffic. Also yield under a stream
@@ -1301,11 +1405,16 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
     {
         if (PendingStops.load()) return partialResult();
         const u64 elapsed = Platform::GetMSCount() - started;
-        if (received && timeout && elapsed >= timeout) return partialResult();
+        if (received && timeout && elapsed >= timeout)
+        {
+            ObserveReceiveTimeout(timeout, started);
+            return partialResult();
+        }
         ProcessLAN(2, elapsed < timeout ? timeout - static_cast<u32>(elapsed) : 0);
         if (PendingStops.load() || RXQueue.empty())
         {
             // no more replies available
+            if (!PendingStops.load()) ObserveReceiveTimeout(timeout, started);
             return partialResult();
         }
 
@@ -1343,6 +1452,7 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
             if (((myinstmask & ConnectedBitmask) == ConnectedBitmask) ||
                 ((ret & aidmask) == aidmask))
             {
+                Timing.EmptyWaits = 0;
                 // all the clients have sent their reply
                 enet_packet_destroy(enetpacket);
                 return ret;

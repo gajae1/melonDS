@@ -25,6 +25,7 @@
 #include <queue>
 #include <mutex>
 #include <atomic>
+#include <array>
 
 #include <enet/enet.h>
 
@@ -121,8 +122,11 @@ public:
         u64 DuplicateReplies = 0;
         u64 PartialReplyReturns = 0;
         u64 WorkLimitReturns = 0;
+        u32 EffectiveTimeoutMS = 25;
     };
     ReceiveStats GetReceiveStats();
+    void SetAutomaticReceiveTimeout(bool enabled) noexcept { AutomaticReceive.store(enabled); }
+    bool GetAutomaticReceiveTimeout() const noexcept { return AutomaticReceive.load(); }
 
     std::map<u32, DiscoveryData> GetDiscoveryList();
     std::vector<Player> GetPlayerList();
@@ -186,6 +190,23 @@ private:
     ReceiveStats Stats;
 
     u32 FrameCount;
+
+    std::atomic<bool> AutomaticReceive{true};
+    struct ReceiveTiming
+    {
+        std::array<u32, 16> Acks{};
+        std::array<u8, 16> Samples{};
+        u64 Poll = 0;
+        u64 Changed = 0;
+        u16 Peers = 0;
+        u32 Configured = 0;
+        u32 Timeout = 0;
+        unsigned EmptyWaits = 0;
+    } Timing;
+    u64 LastReceiveActivity = 0;
+    bool HadReceiveActivity = false;
+    u32 ReceiveTimeout(bool receiving = false);
+    void ObserveReceiveTimeout(u32 timeout, u64 started);
 
     void ProcessDiscovery();
 
