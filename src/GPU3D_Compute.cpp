@@ -376,6 +376,18 @@ bool ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
 
     MaxWorkTiles = TilesPerLine*TileLines*16;
 
+    // Bound both the producer's storage and its indirect consumers. Indirect
+    // dispatch does not validate counts and exceeding a device limit is UB.
+    GLint groupsX = 0, groupsZ = 0;
+    glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, &groupsX);
+    glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2, &groupsZ);
+    if (!OpenGL::CheckError("Compute dispatch limits") || groupsX <= 0 || groupsZ <= 0)
+        return false;
+    MaxBatchWork = int(std::min({u64(MaxWorkTiles), u64(groupsZ), u64(groupsX)*32}));
+    MaxBatchSpans = int(std::min(u64(64)*2048*ScaleFactor, u64(groupsX)*32));
+    if (MaxBatchWork < TilesPerLine*TileLines || MaxBatchSpans < ScreenHeight)
+        return false;
+
     for (int i = 0; i < tilememoryLayer_Num; i++)
     {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, TileMemory[i]);
@@ -384,7 +396,9 @@ bool ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
     }
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, FinalTileMemory);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, 4*3*2*ScreenWidth*ScreenHeight, nullptr, GL_DYNAMIC_DRAW);
+    // Two color/depth/attribute layers and the stencil/shadow-run state carried
+    // between batches. Final shading still runs only after every polygon.
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 4*7*ScreenWidth*ScreenHeight, nullptr, GL_DYNAMIC_DRAW);
     if (!OpenGL::CheckError("Compute final tile storage")) return false;
 
     int binResultSize = sizeof(BinResultHeader)
@@ -408,8 +422,7 @@ bool ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
 
     Parent.OutputTex3D = Framebuffer;
 
-    // eh those are pretty bad guesses
-    // though real hw shouldn't be eable to render all 2048 polygons on every line either
+    // BatchSize keeps each upload within these fixed allocations.
     int maxYSpanIndices = 64*2048 * ScaleFactor;
     YSpanIndices.resize(maxYSpanIndices);
 
@@ -712,6 +725,72 @@ void ComputeRenderer3D::RenderFrame()
         ClearBitmapDirty = 0;
     }
 
+    int first = 0;
+    do
+    {
+        const int count = BatchSize(first);
+        RenderBatch(first, count, captureinfo);
+        first += count;
+    } while (first < GPU3D.RenderNumPolygons);
+
+    glBindImageTexture(0, Framebuffer, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    u32 finalPassShader = 0;
+    if (GPU3D.RenderDispCnt & (1<<4))
+        finalPassShader |= 0x4;
+    if (GPU3D.RenderDispCnt & (1<<7))
+        finalPassShader |= 0x2;
+    if (GPU3D.RenderDispCnt & (1<<5))
+        finalPassShader |= 0x1;
+
+    glUseProgram(ShaderFinalPass[finalPassShader]);
+    glDispatchCompute(ScreenWidth/32, ScreenHeight, 1);
+    // The 2D compositor and display capture sample this image as a texture.
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+    glBindSampler(0, 0);
+    glBindSampler(1, 0);
+    glBindSampler(2, 0);
+}
+
+// Conservative screen-tile bounds avoid a per-frame GPU counter readback.
+// Each polygon remains whole and in order; zero-area polygons still need a
+// scanline. Edge setup may cover x-1 at a vertical right edge.
+int ComputeRenderer3D::BatchSize(int first) const
+{
+    int work = 0, spans = 0, edges = 0, count = 0;
+    while (first + count < GPU3D.RenderNumPolygons && count < MaxVariants)
+    {
+        const Polygon& poly = *GPU3D.RenderPolygonRAM[first + count];
+        int xmin = ScreenWidth, xmax = 0, ymin = ScreenHeight, ymax = 0;
+        for (u32 v = 0; v < poly.NumVertices; ++v)
+        {
+            const Vertex& vertex = *poly.Vertices[v];
+            const int x = HiresCoordinates ? (vertex.HiresPosition[0] * ScaleFactor) >> 4 : vertex.FinalPosition[0] * ScaleFactor;
+            const int y = HiresCoordinates ? (vertex.HiresPosition[1] * ScaleFactor) >> 4 : vertex.FinalPosition[1] * ScaleFactor;
+            xmin = std::min(xmin, x); xmax = std::max(xmax, x);
+            ymin = std::min(ymin, y); ymax = std::max(ymax, y);
+        }
+        const int height = std::max(1, ymax - ymin);
+        const int left = std::clamp(xmin - 1, 0, ScreenWidth - 1) / TileSize;
+        const int right = std::clamp(xmax, 0, ScreenWidth - 1) / TileSize;
+        const int top = std::clamp(ymin, 0, ScreenHeight - 1) / TileSize;
+        const int bottom = std::clamp(ymin + height - 1, 0, ScreenHeight - 1) / TileSize;
+        const int tiles = (right - left + 1) * (bottom - top + 1);
+        const int edgeCount = poly.NumVertices + 2;
+        if (work + tiles > MaxBatchWork || spans + height > MaxBatchSpans || edges + edgeCount > MaxYSpanSetups)
+            break;
+        work += tiles;
+        spans += height;
+        edges += edgeCount;
+        ++count;
+    }
+    // Scale validation guarantees room for one full-screen polygon.
+    assert(count || first == GPU3D.RenderNumPolygons);
+    return count;
+}
+
+void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo)
+{
     int numYSpans = 0;
     int numSetupIndices = 0;
 
@@ -733,9 +812,9 @@ void ComputeRenderer3D::RenderFrame()
 
     bool enableTextureMaps = GPU3D.RenderDispCnt & (1<<0);
 
-    for (int i = 0; i < GPU3D.RenderNumPolygons; i++)
+    for (int i = 0; i < count; i++)
     {
-        Polygon* polygon = GPU3D.RenderPolygonRAM[i];
+        Polygon* polygon = GPU3D.RenderPolygonRAM[first + i];
 
         u32 nverts = polygon->NumVertices;
         u32 vtop = polygon->VTop, vbot = polygon->VBottom;
@@ -751,7 +830,7 @@ void ComputeRenderer3D::RenderFrame()
         {
             // if the whole texture attribute matches
             // the texture layer will also match
-            Polygon* prevPolygon = GPU3D.RenderPolygonRAM[i - 1];
+            Polygon* prevPolygon = GPU3D.RenderPolygonRAM[first + i - 1];
             foundVariant = prevPolygon->TexParam == polygon->TexParam
                 && prevPolygon->TexPalette == polygon->TexPalette
                 && (prevPolygon->Attr & 0x30) == (polygon->Attr & 0x30)
@@ -771,26 +850,7 @@ void ComputeRenderer3D::RenderFrame()
             {
                 u32 texaddr = polygon->TexParam & 0xFFFF;
                 u32 texwidth = TextureWidth(polygon->TexParam);
-                u32 texheight = TextureHeight(polygon->TexParam);
-                int capblock = -1;
-                if ((textype == 7) && ((texwidth == 128) || (texwidth == 256)))
-                {
-                    // if this is a direct color texture, and the width is 128 or 256
-                    // then it might be a display capture
-                    u32 startaddr = texaddr << 3;
-                    u32 endaddr = startaddr + (texheight * texwidth * 2);
-
-                    startaddr >>= 15;
-                    endaddr = (endaddr + 0x7FFF) >> 15;
-
-                    for (u32 b = startaddr; b < endaddr; b++)
-                    {
-                        int blk = captureinfo[b];
-                        if (blk == -1) continue;
-
-                        capblock = blk;
-                    }
-                }
+                int capblock = GetTextureCaptureBlock(polygon->TexParam, captureinfo);
 
                 if (capblock != -1)
                 {
@@ -1007,7 +1067,7 @@ void ComputeRenderer3D::RenderFrame()
         glBufferSubData(GL_TEXTURE_BUFFER, 0, numSetupIndices*4*2, YSpanIndices.data());
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, RenderPolygonMemory);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GPU3D.RenderNumPolygons*sizeof(RenderPolygon), RenderPolygons);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, count*sizeof(RenderPolygon), RenderPolygons);
         // we haven't accessed image data yet, so we don't need to invalidate anything
     }
 
@@ -1025,7 +1085,7 @@ void ComputeRenderer3D::RenderFrame()
 
     MetaUniform meta;
     meta.DispCnt = GPU3D.RenderDispCnt;
-    meta.NumPolygons = GPU3D.RenderNumPolygons;
+    meta.NumPolygons = count;
     meta.NumVariants = numVariants;
     meta.AlphaRef = GPU3D.RenderAlphaRef;
     {
@@ -1103,7 +1163,7 @@ void ComputeRenderer3D::RenderFrame()
 
         // bin polygons
         glUseProgram(ShaderBinCombined);
-        glDispatchCompute(((GPU3D.RenderNumPolygons + 31) / 32), ScreenWidth/CoarseTileW, ScreenHeight/CoarseTileH);
+        glDispatchCompute(((count + 31) / 32), ScreenWidth/CoarseTileW, ScreenHeight/CoarseTileH);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
 
         // calculate list offsets
@@ -1220,72 +1280,9 @@ void ComputeRenderer3D::RenderFrame()
 
     // compose final image
     glUseProgram(ShaderDepthBlend[wbuffer]);
+    glUniform1i(0, first == 0);
     glDispatchCompute(ScreenWidth/TileSize, ScreenHeight/TileSize, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    glBindImageTexture(0, Framebuffer, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    u32 finalPassShader = 0;
-    if (GPU3D.RenderDispCnt & (1<<4))
-        finalPassShader |= 0x4;
-    if (GPU3D.RenderDispCnt & (1<<7))
-        finalPassShader |= 0x2;
-    if (GPU3D.RenderDispCnt & (1<<5))
-        finalPassShader |= 0x1;
-    
-    glUseProgram(ShaderFinalPass[finalPassShader]);
-    glDispatchCompute(ScreenWidth/32, ScreenHeight, 1);
-    // The 2D compositor and display capture sample this image as a texture.
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
-
-    glBindSampler(0, 0);
-    glBindSampler(1, 0);
-    glBindSampler(2, 0);
-
-    /*u64 starttime = armGetSystemTick();
-    EmuQueue.waitIdle();
-    printf("total time %f\n", armTicksToNs(armGetSystemTick()-starttime)*0.000001f);*/
-
-    /*for (u32 i = 0; i < RenderNumPolygons; i++)
-    {
-        if (RenderPolygons[i].Variant >= numVariants)
-        {
-            printf("blarb %d %d %d\n", RenderPolygons[i].Variant, i, RenderNumPolygons);
-        }
-        //assert(RenderPolygons[i].Variant < numVariants);
-    }*/
-
-    /*for (int i = 0; i < binresult->SortWorkWorkCount[0]*32; i++)
-    {
-        printf("sorted %x %x\n", binresult->SortedWork[i*2+0], binresult->SortedWork[i*2+1]);
-    }*/
-/*    if (polygonvisible != -1)
-    {
-        SpanSetupX* xspans = Gfx::DataHeap->CpuAddr<SpanSetupX>(XSpanSetupMemory);
-        printf("span result\n");
-        Polygon* poly = RenderPolygonRAM[polygonvisible];
-        u32 xspanoffset = RenderPolygons[polygonvisible].FirstXSpan;
-        for (u32 i = 0; i < (poly->YBottom - poly->YTop); i++)
-        {
-            printf("%d: %d - %d | %d %d | %d %d\n", i + poly->YTop, xspans[xspanoffset + i].X0, xspans[xspanoffset + i].X1, xspans[xspanoffset + i].__pad0, xspans[xspanoffset + i].__pad1, RenderPolygons[polygonvisible].YTop, RenderPolygons[polygonvisible].YBot);
-        }
-    }*/
-/*
-    printf("xspans: %d\n", numSetupIndices);
-    SpanSetupX* xspans = Gfx::DataHeap->CpuAddr<SpanSetupX>(XSpanSetupMemory[curSlice]);
-    for (int i = 0; i < numSetupIndices; i++)
-    {
-        printf("poly %d %d %d | line %d | %d to %d\n", YSpanIndices[i].PolyIdx, YSpanIndices[i].SpanIdxL, YSpanIndices[i].SpanIdxR, YSpanIndices[i].Y, xspans[i].X0, xspans[i].X1);
-    }
-    printf("bin result\n");
-    BinResult* binresult = Gfx::DataHeap->CpuAddr<BinResult>(BinResultMemory);
-    for (u32 y = 0; y < 192/8; y++)
-    {
-        for (u32 x = 0; x < 256/8; x++)
-        {
-            printf("%08x ", binresult->BinnedMaskCoarse[(x + y * (256/8)) * 2]);
-        }
-        printf("\n");
-    }*/
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 }
 
 void ComputeRenderer3D::RestartFrame()

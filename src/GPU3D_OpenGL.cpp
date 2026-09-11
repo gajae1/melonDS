@@ -92,6 +92,7 @@ void GLRenderer3D::UseRenderShader(bool wbuffer)
     CurShaderID = flags;
 
     RenderModeULoc = glGetUniformLocation(RenderShader[flags], "uRenderMode");
+    glUniform1i(glGetUniformLocation(RenderShader[flags], "uAlphaRef"), GPU3D.RenderAlphaRef);
 }
 
 void SetupDefaultTexParams(GLuint tex)
@@ -533,26 +534,7 @@ void GLRenderer3D::BuildPolygons(GLRenderer3D::RendererPolygon* polygons, int np
 
                 u32 texaddr = texparam & 0xFFFF;
                 u32 texwidth = TextureWidth(texparam);
-                u32 texheight = TextureHeight(texparam);
-                int capblock = -1;
-                if ((textype == 7) && ((texwidth == 128) || (texwidth == 256)))
-                {
-                    // if this is a direct color texture, and the width is 128 or 256
-                    // then it might be a display capture
-                    u32 startaddr = texaddr << 3;
-                    u32 endaddr = startaddr + (texheight * texwidth * 2);
-
-                    startaddr >>= 15;
-                    endaddr = (endaddr + 0x7FFF) >> 15;
-
-                    for (u32 b = startaddr; b < endaddr; b++)
-                    {
-                        int blk = captureinfo[b];
-                        if (blk == -1) continue;
-
-                        capblock = blk;
-                    }
-                }
+                int capblock = GetTextureCaptureBlock(texparam, captureinfo);
 
                 if (capblock != -1)
                 {

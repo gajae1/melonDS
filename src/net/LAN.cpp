@@ -1230,7 +1230,7 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
         bool good = true;
         if ((header->Type & 0xFFFF) != 2)
             good = false;
-        else if (header->Timestamp < (timestamp - 32))
+        else if (header->Timestamp < timestamp && timestamp - header->Timestamp > 32)
             good = false;
 
         if (good)

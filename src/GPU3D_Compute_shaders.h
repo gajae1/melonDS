@@ -335,6 +335,7 @@ layout (std430, binding = 5) buffer ResultBuffer
 const uint ResultColorStart = 0;
 const uint ResultDepthStart = ResultColorStart+ScreenWidth*ScreenHeight*2;
 const uint ResultAttrStart = ResultDepthStart+ScreenWidth*ScreenHeight*2;
+const uint ResultStencilStart = ResultAttrStart+ScreenWidth*ScreenHeight*2;
 )"};
 
 const char* Common = R"(
@@ -1273,6 +1274,7 @@ const std::string DepthBlend =
 
 layout (binding = 0) uniform usampler2D ClearBitmapColor;
 layout (binding = 1) uniform usampler2D ClearBitmapDepth;
+layout (location = 0) uniform int FirstBatch;
 
 layout (local_size_x = TileSize, local_size_y = TileSize) in;
 
@@ -1475,9 +1477,21 @@ void main()
     uint coarseMaskLo = BinningMaskAndOffset[BinningCoarseMaskStart + linearTile*CoarseBinStride + 0];
     uint coarseMaskHi = BinningMaskAndOffset[BinningCoarseMaskStart + linearTile*CoarseBinStride + 1];
 
+    int resultOffset = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * ScreenWidth;
+    uint stencil = 0U;
+    bool prevIsShadowMask = false;
     uvec2 color, depth;
     uvec2 attr = uvec2(ClearAttr, 0U);
-    if ((DispCnt & (1<<14)) != 0U)
+    if (FirstBatch == 0)
+    {
+        color = uvec2(ResultValue[ResultColorStart+resultOffset], ResultValue[ResultColorStart+resultOffset+FramebufferStride]);
+        depth = uvec2(ResultValue[ResultDepthStart+resultOffset], ResultValue[ResultDepthStart+resultOffset+FramebufferStride]);
+        attr = uvec2(ResultValue[ResultAttrStart+resultOffset], ResultValue[ResultAttrStart+resultOffset+FramebufferStride]);
+        uint state = ResultValue[ResultStencilStart+resultOffset];
+        stencil = state & 3U;
+        prevIsShadowMask = (state & 4U) != 0U;
+    }
+    else if ((DispCnt & (1<<14)) != 0U)
     {
         float scale = 1.0 / ScreenWidth;
         vec2 pos = (vec2(gl_GlobalInvocationID.xy) * scale) + ClearBitmapOffset;
@@ -1492,19 +1506,16 @@ void main()
         depth = uvec2(ClearDepth, 0U);
     }
 
-    uint stencil = 0U;
-    bool prevIsShadowMask = false;
-
     ProcessCoarseMask(linearTile, coarseMaskLo, 0, color, depth, attr, stencil, prevIsShadowMask);
     ProcessCoarseMask(linearTile, coarseMaskHi, BinStride/2, color, depth, attr, stencil, prevIsShadowMask);
 
-    int resultOffset = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * ScreenWidth;
     ResultValue[ResultColorStart+resultOffset] = color.x;
     ResultValue[ResultColorStart+resultOffset+FramebufferStride] = color.y;
     ResultValue[ResultDepthStart+resultOffset] = depth.x;
     ResultValue[ResultDepthStart+resultOffset+FramebufferStride] = depth.y;
     ResultValue[ResultAttrStart+resultOffset] = attr.x;
     ResultValue[ResultAttrStart+resultOffset+FramebufferStride] = attr.y;
+    ResultValue[ResultStencilStart+resultOffset] = stencil | (prevIsShadowMask ? 4U : 0U);
 }
 
 )";

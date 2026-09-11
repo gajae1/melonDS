@@ -268,6 +268,44 @@ bool ReceiveBounds(bool reply)
     return true;
 }
 
+bool ReplyStaleWindow()
+{
+    LocalMP net;
+    net.SetRecvTimeout(1);
+    for (int inst : {0, 1, 2}) net.Begin(inst);
+    auto cmd = Frame(1, 40);
+    auto early = Frame(2, 48);
+    auto reply = Frame(3, 64);
+
+    // A command that ran at timestamp 0 must still collect fresh replies; the
+    // unsigned stale window may not wrap and drop them, and the blank AID0
+    // reply must keep ending collection without setting a bit.
+    net.SendCmd(0, cmd.data(), cmd.size(), 0);
+    if (!Receive(net, 1, cmd, 0, true)) return false;
+    net.SendReply(1, early.data(), early.size(), 0, 1);
+    net.SendReply(2, nullptr, 0, 0, 0);
+    Output out;
+    out.fill(Sentinel);
+    if (!Check(net.RecvReplies(0, out.data() + 32, 0, 6) == 2 && Copied(out, early),
+               "fresh reply at timestamp 0 was dropped as stale")) return false;
+
+    // Age 0, exact 32 and future replies stay fresh; only age over 32 is stale.
+    net.SendCmd(0, cmd.data(), cmd.size(), 64);
+    if (!Receive(net, 1, cmd, 64, true)) return false;
+    for (u64 stamp : {64u, 32u, 65u})
+    {
+        net.SendReply(1, reply.data(), reply.size(), stamp, 1);
+        out.fill(Sentinel);
+        if (!Check(net.RecvReplies(0, out.data() + 32, 64, 2) == 2 && Copied(out, reply),
+                   "fresh, exact-32 or future reply was dropped")) return false;
+    }
+    net.SendReply(1, reply.data(), reply.size(), 31, 1);
+    out.fill(Sentinel);
+    return Check(net.RecvReplies(0, out.data() + 32, 64, 2) == 0
+                 && std::all_of(out.begin(), out.end(), [](u8 b) { return b == Sentinel; }),
+                 "age-33 reply survived the stale window");
+}
+
 bool InvalidInput()
 {
     LocalMP net;
@@ -316,6 +354,7 @@ int main(int argc, char** argv)
     else if (name == "new-host-session") ok = NewHostSession();
     else if (name == "packet-bounds") ok = ReceiveBounds(false);
     else if (name == "reply-bounds") ok = ReceiveBounds(true);
+    else if (name == "reply-stale-window") ok = ReplyStaleWindow();
     else if (name == "invalid-input") ok = InvalidInput();
     else return 2;
     std::printf("%s: %s\n", argv[1], ok ? "PASS" : "FAIL");

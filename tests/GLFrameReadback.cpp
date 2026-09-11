@@ -357,6 +357,8 @@ int CheckMidCapture(const char* backend);
 int CheckJitCapture(const char* backend);
 int CheckGLResourceLifetime(const char* name);
 int CheckGLAllocationFailure(const char* name);
+int CheckComputeWorkload(const char* name);
+int CheckGLTextureBoundaries(const char* name);
 
 int main(int argc, char** argv)
 {
@@ -367,7 +369,10 @@ int main(int argc, char** argv)
     const bool jitCaptureCase = argc == 3 && std::strcmp(argv[1], "capture-jit") == 0;
     const bool resourceCase = argc == 3 && std::strcmp(argv[1], "gl-resource") == 0;
     const bool allocationCase = argc == 3 && std::strcmp(argv[1], "gl-allocation") == 0;
-    const bool compute = failureCase || allocationCase || ((captureCase || midCaptureCase || jitCaptureCase) && std::strcmp(argv[2], "compute") == 0) ||
+    const bool workloadCase = argc == 3 && std::strcmp(argv[1], "compute-workload") == 0;
+    const bool textureCase = argc == 3 && std::strcmp(argv[1], "gl-texture-boundaries") == 0;
+    const bool compute = (textureCase && std::strcmp(argv[2], "capture-compute") == 0) ||
+                         workloadCase || failureCase || allocationCase || ((captureCase || midCaptureCase || jitCaptureCase) && std::strcmp(argv[2], "compute") == 0) ||
                          (argc > 1 && std::strcmp(argv[1], "compute") == 0);
     if (SDL_Init(SDL_INIT_VIDEO)) return 77;
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, compute ? 4 : 3);
@@ -378,13 +383,15 @@ int main(int argc, char** argv)
     auto context = SDL_GL_CreateContext(window);
     if (!context || !gladLoadGLLoader(SDL_GL_GetProcAddress)) return 77;
     std::printf("GPU=%s GL=%s compute=%d\n", glGetString(GL_RENDERER), glGetString(GL_VERSION), compute);
-    if (failureCase || captureCase || midCaptureCase || jitCaptureCase || resourceCase || allocationCase)
+    if (failureCase || captureCase || midCaptureCase || jitCaptureCase || resourceCase || allocationCase || workloadCase || textureCase)
     {
-        const int result = failureCase ? CheckComputeFailure(argv[2]) :
+        const int result = textureCase ? CheckGLTextureBoundaries(argv[2]) :
+            failureCase ? CheckComputeFailure(argv[2]) :
             captureCase ? CheckCaptureReadback(argv[2]) :
             midCaptureCase ? CheckMidCapture(argv[2]) :
             jitCaptureCase ? CheckJitCapture(argv[2]) :
-            resourceCase ? CheckGLResourceLifetime(argv[2]) : CheckGLAllocationFailure(argv[2]);
+            resourceCase ? CheckGLResourceLifetime(argv[2]) :
+            workloadCase ? CheckComputeWorkload(argv[2]) : CheckGLAllocationFailure(argv[2]);
         SDL_GL_DeleteContext(context);
         SDL_DestroyWindow(window);
         SDL_Quit();

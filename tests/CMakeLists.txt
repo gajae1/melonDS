@@ -183,7 +183,7 @@ if (MELONDS_TEST_GPU)
     endif()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GPU_TEST_SDL2 REQUIRED IMPORTED_TARGET sdl2)
-    add_executable(GLFrameReadback GLFrameReadback.cpp ComputeFailure.cpp GLCaptureReadback.cpp GLResourceLifetime.cpp GLAllocationFailure.cpp PlatformSync.cpp PlatformHeadless.cpp
+    add_executable(GLFrameReadback GLFrameReadback.cpp ComputeFailure.cpp ComputeWorkload.cpp GLTextureBoundaries.cpp GLCaptureReadback.cpp GLResourceLifetime.cpp GLAllocationFailure.cpp PlatformSync.cpp PlatformHeadless.cpp
         ../src/frontend/glad/glad.c)
     target_link_libraries(GLFrameReadback PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)
     foreach(method IN ITEMS UpdateRenderer CompileShaders)
@@ -224,6 +224,16 @@ if (MELONDS_TEST_GPU)
     add_test(NAME gpu-compute-frame-capture COMMAND GLFrameReadback compute)
     set_tests_properties(gpu-opengl-frame-capture gpu-compute-frame-capture
         PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    foreach(case IN ITEMS alpha-software alpha-opengl capture-software capture-opengl capture-compute dirty-wrap)
+        add_test(NAME gpu-gl-texture-${case} COMMAND GLFrameReadback gl-texture-boundaries ${case})
+        set_tests_properties(gpu-gl-texture-${case}
+            PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endforeach()
+    foreach(workload IN ITEMS storage dispatch spans control blend)
+        add_test(NAME gpu-compute-workload-${workload} COMMAND GLFrameReadback compute-workload ${workload})
+        set_tests_properties(gpu-compute-workload-${workload}
+            PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endforeach()
     foreach(failure IN ITEMS control capability compile link recompile frontend)
         add_test(NAME gpu-compute-failure-${failure} COMMAND GLFrameReadback compute-failure ${failure})
         set_tests_properties(gpu-compute-failure-${failure}

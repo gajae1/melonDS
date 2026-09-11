@@ -221,11 +221,15 @@ private:
     int TilesPerLine, TileLines;
     int ScaleFactor = -1;
     int MaxWorkTiles;
+    int MaxBatchWork;
+    int MaxBatchSpans;
     bool HiresCoordinates;
 
     int ShaderStepIdx = 0;
 
     void DeleteShaders();
+    int BatchSize(int first) const;
+    void RenderBatch(int first, int count, const int* captureinfo);
 
     void SetupAttrs(SpanSetupY* span, Polygon* poly, int from, int to);
     void SetupYSpan(RenderPolygon* rp, SpanSetupY* span, Polygon* poly, int from, int to, int side, s32 positions[10][2]);

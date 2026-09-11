@@ -24,6 +24,29 @@ inline u32 TextureHeight(u32 texparam)
     return 8 << ((texparam >> 23) & 0x7);
 }
 
+inline bool TextureCaptureWraps(u32 texparam)
+{
+    const u32 width = TextureWidth(texparam);
+    return ((texparam >> 26) & 7) == 7 && (width == 128 || width == 256) &&
+        (texparam & 0xFFFF) * 8 + width * TextureHeight(texparam) * 2 > 0x80000;
+}
+
+inline int GetTextureCaptureBlock(u32 texparam, const int* captureinfo)
+{
+    const u32 width = TextureWidth(texparam);
+    if (((texparam >> 26) & 7) != 7 || (width != 128 && width != 256) || TextureCaptureWraps(texparam))
+        return -1;
+
+    // A wrapping range may join ordinary VRAM and different capture banks.
+    // One capture layer cannot represent it; Update prepares the RAM fallback.
+    const u32 start = (texparam & 0xFFFF) * 8;
+    const u32 end = (start + width * TextureHeight(texparam) * 2 + 0x7FFF) >> 15;
+    int capblock = -1;
+    for (u32 b = start >> 15; b < end; ++b)
+        if (captureinfo[b] != -1) capblock = captureinfo[b];
+    return capblock;
+}
+
 enum
 {
     outputFmt_RGB6A5,
@@ -82,7 +105,9 @@ public:
         u64 entriesCount = ((startBit + bitsCount + 0x3F) >> 6) - startEntry;
         for (u32 j = startEntry; j < startEntry + entriesCount; j++)
         {
-            if (GetRangedBitMask(j, startBit, bitsCount) & dirty[j & ((vramSize / VRAMDirtyGranularity)-1)])
+            // j indexes u64 words, not individual dirty bits. Wrap the word
+            // index when the texture/palette range crosses the end of VRAM.
+            if (GetRangedBitMask(j, startBit, bitsCount) & dirty[j & ((vramSize / (VRAMDirtyGranularity * 64))-1)])
             {
                 if (MaskedHash(vram, vramSize, start, size) != oldHash)
                     return true;
@@ -94,6 +119,24 @@ public:
 
     bool Update(u8& clrBitmapDirty)
     {
+        if (GPU.GPU3D.RenderDispCnt & 1)
+        {
+            for (u32 i = 0; i < GPU.GPU3D.RenderNumPolygons; ++i)
+            {
+                if (!TextureCaptureWraps(GPU.GPU3D.RenderPolygonRAM[i]->TexParam)) continue;
+                int captureinfo[16];
+                GPU.GetCaptureInfo_Texture(captureinfo);
+                for (int block : captureinfo)
+                {
+                    if (block == -1) continue;
+                    // Readback must precede deriving dirty state and copying
+                    // flat VRAM, and precede the renderer's GL state setup.
+                    GPU.SyncAllVRAMCaptures();
+                    break;
+                }
+                break;
+            }
+        }
         auto textureDirty = GPU.VRAMDirty_Texture.DeriveState(GPU.VRAMMap_Texture, GPU);
         auto texPalDirty = GPU.VRAMDirty_TexPal.DeriveState(GPU.VRAMMap_TexPal, GPU);
 

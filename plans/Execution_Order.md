@@ -195,6 +195,8 @@ GR-11/12에서 확인한 실제 호출 경계를 진행한다. 창 교체/해제
 
 [최적화 조사](Optimization_Research_2026-09-11.md)는 계측·컴파일러·JIT·GPU·멀티코어·네트워크의 후보를 중복 ID에 합쳐 정리한다. 먼저 BV-10/CJ-18의 비용 분리와 BV-09의 대표 workload/holdout을 준비한다. 직접 block chaining·x64 cycle register·GPU upload 재사용은 해당 병목이 확인될 때 독립 블록으로 넘기며, 공유 CMake와 release 문서는 한 작성자가 통합한다.
 
+[1.1.33](releases/1.1.33.md)은 Compute 실제 workload/indirect 초과의 순서 보존 분할, 클래식 GL alpha와 텍스처 끝의 캡처·dirty word 경계를 구현했다. 그래픽 후속에는 blending을 끈 Compute 반투명 출력 차이의 정상/실패 대조, 큰 장면의 분할 비용, native texture fallback의 품질·성능을 남긴다. 다음 개발 묶음은 이 작은 반례와 JIT/ISA·배포 source/EXE 결속을 독립 소유로 진행한다. 게임·실기·다른 OS 수락은 위 로컬 수정과 구분한다.
+
 ### 설정 없이 안정적으로 연결하기
 
 NP-01/02/03과 FS-17의 후속 목표는 인터넷·PC·참여자 상태가 달라도 기본 설정으로 안정적으로 연결되는 것이다. 모든 환경에서 최저 지연을 보장한다는 뜻은 아니다. 먼저 host 수신 대기·큐 적체·지터·끊김을 관찰하고 게스트 Wi-Fi의 시간·IRQ 의미와 구분한다. 자동조절은 측정값과 검증된 제한 범위가 생긴 항목부터 적용한다.
@@ -207,7 +209,7 @@ NP-01/02/03과 FS-17의 후속 목표는 인터넷·PC·참여자 상태가 달�
 
 먼저 넘길 산출물은 현재 계측·조절 지점 목록과 제한된 네트워크 상태 재현이다. 새 프로토콜, NAT 우회·중계 서비스, 게임 내 무선 메뉴 생략은 이 요구만으로 자동 도입하지 않는다.
 
-1.1.32 수신 경계를 검토하며 발견한 `LocalMP::RecvReplies`의 `timestamp - 32` unsigned 경계는 NP-03 후속 반례로 남긴다. timestamp 0~31의 정상 reply와 32 이상 stale/정상 대조를 먼저 만들고 LAN의 같은 비교도 확인한다. 이번 capacity 수정의 완료에 timestamp 정책까지 포함하지 않는다.
+1.1.32에서 발견한 `timestamp - 32` unsigned 경계는 [1.1.33](releases/1.1.33.md)에서 LocalMP·LAN의 안전한 차 비교로 수정했다. 실제 큐·loopback의 timestamp 0, age 32/33·미래·빈 AID0 응답을 대조했다. 다음은 host 큐 시각 wrap과 관찰 전용 계측·늦은 peer·취소 응답성이다. guest 32μs 창을 host 자동 대기 정책으로 바꾸지 않는다.
 
 DSP 부족 출력·IRQ·채널 정렬, 실제 두 PC/구버전 혼합 LAN, 물리 오디오, Android·native A64·다른 OS·장기 게임 수락은 계속 열린 상태다. 실기 또는 해당 환경이 없다는 이유로 위 로컬 반례들을 함께 미루지 않는다.
 

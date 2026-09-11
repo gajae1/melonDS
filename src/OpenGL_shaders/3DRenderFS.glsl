@@ -17,6 +17,7 @@ layout(std140) uniform uConfig
 };
 
 uniform int uRenderMode; // 0=opaque 1=translucent 2=shadowmask
+uniform int uAlphaRef;
 
 smooth in vec4 fColor;
 smooth in vec2 fTexcoord;
@@ -100,6 +101,8 @@ void main()
     else
     {
         vec4 col = FinalColor();
+        // Match the existing half-step thresholds for the 5-bit alpha value.
+        if (col.a < (float(uAlphaRef) + 0.5) / 31.0) discard;
         if (uRenderMode == 0)
         {
             // opaque pixels
@@ -113,7 +116,6 @@ void main()
         else
         {
             // translucent pixels
-            if (col.a < 0.5/31) discard;
             if (col.a >= 30.5/31) discard;
 
             oAttr.b = 0;

@@ -107,6 +107,28 @@ bool Mesh()
     if (two.SendReply(0, reply.data(), reply.size(), 123456, 3) != int(reply.size()) ||
         !pump([&] { return one.RecvReplies(0, replies.data(), 123456, 1 << 3) == (1 << 3); }) ||
         !std::equal(reply.begin(), reply.end(), replies.begin() + 2 * 1024)) return false;
+    // NP-03: a command that ran at timestamp 0 must still collect its reply;
+    // the unsigned stale window may not wrap and drop it.
+    std::array<u8, 40> early{};
+    early.fill(0xC3);
+    std::array<u8, 15 * 1024> window{};
+    if (two.SendReply(0, early.data(), early.size(), 0, 3) != int(early.size()) ||
+        !pump([&] { return one.RecvReplies(0, window.data(), 0, 1 << 3) == (1 << 3); }) ||
+        !std::equal(early.begin(), early.end(), window.begin() + 2 * 1024)) return false;
+    // Age 33 stays rejected while exact 32 stays fresh, without relying on
+    // the delivery order of the two unsequenced frames.
+    if (two.SendReply(0, early.data(), early.size(), 123456 - 33, 3) != int(early.size()))
+        return false;
+    const auto staleDeadline = Platform::GetMSCount() + 200;
+    while (Platform::GetMSCount() < staleDeadline)
+    {
+        for (auto* node : nodes) node->Process();
+        if (one.RecvReplies(0, window.data(), 123456, 1 << 3) != 0) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (two.SendReply(0, reply.data(), reply.size(), 123456 - 32, 3) != int(reply.size()) ||
+        !pump([&] { return one.RecvReplies(0, window.data(), 123456, 1 << 3) == (1 << 3); }) ||
+        !std::equal(reply.begin(), reply.end(), window.begin() + 2 * 1024)) return false;
     if (!frame(two, one, 0x27) || !join(three, "Third")) return false;
     three.Begin(0);
     // Three clients share an IPv4 address but have different ENet endpoints.

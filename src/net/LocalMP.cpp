@@ -436,7 +436,7 @@ u16 LocalMP::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
         }
 
         if ((pktheader.SenderID == inst) || // packet we sent out (shouldn't happen, but hey)
-            (pktheader.Timestamp < (timestamp - 32))) // stale packet
+            (pktheader.Timestamp < timestamp && timestamp - pktheader.Timestamp > 32)) // stale packet
         {
             // skip this packet
             FIFORead(inst, 1, nullptr, pktheader.Length);
