@@ -14,11 +14,14 @@ Run directly, no test framework required:
     python tests/PackageIdentity.py
 """
 import os
+import hashlib
+import json
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -28,11 +31,28 @@ import source_identity
 
 
 MINI_MAIN = r'''#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "package_identity.h"
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc == 2 && !std::strcmp(argv[1], "--help"))
+    {
+        std::puts("Usage: generated identity fixture [--help|--build-info]");
+        return 0;
+    }
+    // Deterministic concurrent-writer control, after the packager's initial
+    // manifest validation but before it reads the files into the ZIP.
+    if (argc == 2 && !std::strcmp(argv[1], "--build-info"))
+        if (const char* path = std::getenv("PACKAGE_TEST_CHANGE_FILE"))
+        {
+            auto* file = std::fopen(path, "wb");
+            if (!file) return 3;
+            std::fputs("changed during packaging", file);
+            std::fclose(file);
+        }
     std::printf("{\"schema\":%d,\"source_id\":\"%s\",\"version\":\"9.9.90\"}\n",
                 MELONDS_PACKAGE_IDENTITY_SCHEMA, MELONDS_PACKAGE_IDENTITY_SOURCE_ID);
     return 0;
@@ -76,6 +96,155 @@ def pick_generator():
     return ['-G', 'Unix Makefiles']
 
 
+def packaging_scenario(work, repo, build, exe, env):
+    runtime = work / 'runtime'
+    runtime.mkdir()
+    shutil.copy2(exe, build / 'melonDS.exe')
+    shutil.copy2(exe, runtime / 'melonDS.exe')
+    (build / 'release-version.txt').write_text('9.9.90\n', encoding='utf-8')
+    # Explicit trusted deploy inputs, never inferred from a runtime scan.
+    deployed = {
+        'Qt6Core.dll': b'generated dependency placeholder',
+        'plugins/platforms/qwindows.dll': b'generated platform plugin',
+        'plugins/imageformats/qjpeg.dll': b'generated image plugin',
+        'licenses/qt/LICENSE.LGPL3': b'generated license placeholder',
+        'licenses/sdl/COPYING.txt': b'generated license placeholder',
+    }
+    extra = {
+        'user-notes.txt': b'synthetic user note',
+        'user-profile.json': b'{"synthetic":true}',
+        'screenshots/user-photo.jpg': b'synthetic jpg-named data',
+        'plugins/platforms/user-note.txt': b'synthetic non-plugin',
+        'licenses/qt/user-note.json': b'synthetic non-license',
+        'portable/note.txt': b'synthetic portable data',
+        'game.nds': b'synthetic ROM-named data',
+        'settings.toml': b'synthetic settings-named data',
+        'bios.bin': b'synthetic BIOS-named data',
+        'other.exe': b'synthetic unselected EXE',
+    }
+    for rel, data in (deployed | extra).items():
+        path = runtime / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    def sha(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    trusted = {'melonDS.exe': sha(exe), **{
+        rel: hashlib.sha256(data).hexdigest() for rel, data in deployed.items()}}
+    manifest = work / 'runtime-manifest.json'
+    manifest.write_text(json.dumps({'schema': 1, 'files': trusted}), encoding='utf-8')
+    command = [sys.executable, str(repo / 'tools/package-windows.py'), str(build), str(runtime)]
+    def package(output, manifest_path=manifest, environment=env):
+        return run([*command, '--runtime-manifest', str(manifest_path), '--output-dir', str(output)],
+                   repo, env=environment, check=False)
+    before = {p.relative_to(runtime): sha(p) for p in runtime.rglob('*') if p.is_file()}
+    omitted = run([*command, '--output-dir', str(work / 'omitted-manifest')], repo, env=env, check=False)
+    normal = package(work / 'package')
+    print(f'Packaging CLI: omitted-manifest exit={omitted.returncode}; valid-manifest exit={normal.returncode}', flush=True)
+    check(normal.returncode == 0, 'valid runtime manifest must package successfully: ' + normal.stderr.decode('utf-8', 'replace'))
+    check(omitted.returncode != 0 and b'--runtime-manifest' in omitted.stderr,
+          'runtime manifest must be required')
+    with zipfile.ZipFile(work / 'package/9.9.90-melonDS-windows-x64.zip') as archive:
+        expected = {'9.9.90-melonDS.exe': sha(exe), **{rel: trusted[rel] for rel in deployed}}
+        check(set(archive.namelist()) == set(expected), 'ZIP must contain exactly trusted deploy inputs')
+        check(all(hashlib.sha256(archive.read(rel)).hexdigest() == value for rel, value in expected.items()),
+              'ZIP byte hashes must match trusted inputs')
+    report = json.loads(normal.stdout)
+    check(report['excluded_runtime_files'] == len(extra) and report['excluded_known_private_files'] == 4,
+          'report must distinguish all exclusions from known private-file rules')
+    check(report['known_private_files_in_zip'] == 0 and report['runtime_manifest_sha256'] == sha(manifest),
+          'receipt must bind the validated selection')
+    check(b'10' in normal.stderr and b'excluded' in normal.stderr.lower() and
+          all(rel.encode() not in normal.stderr for rel in extra), 'exclusion warning uses counts, not private filenames')
+    check(before == {p.relative_to(runtime): sha(p) for p in runtime.rglob('*') if p.is_file()},
+          'normal packaging preserves every generated runtime file')
+
+    if os.name == 'nt':
+        mixed_files = dict(trusted)
+        mixed_files['Qt6Core.DLL'] = mixed_files.pop('Qt6Core.dll')
+        mixed_manifest = work / 'mixed-case-manifest.json'
+        mixed_manifest.write_text(json.dumps({'schema': 1, 'files': mixed_files}), encoding='utf-8')
+        mixed = package(work / 'mixed-case-package', mixed_manifest)
+        check(mixed.returncode == 0, 'Windows manifest may use a different case for the same file')
+        with zipfile.ZipFile(work / 'mixed-case-package/9.9.90-melonDS-windows-x64.zip') as archive:
+            mixed_expected = dict(expected)
+            mixed_expected['Qt6Core.DLL'] = mixed_expected.pop('Qt6Core.dll')
+            check(set(archive.namelist()) == set(mixed_expected) and
+                  all(hashlib.sha256(archive.read(rel)).hexdigest() == value
+                      for rel, value in mixed_expected.items()),
+                  'mixed-case ZIP must preserve manifest names and bytes')
+        mixed_report = json.loads(mixed.stdout)
+        print(f"Packaging CLI: mixed-case excluded={mixed_report['excluded_runtime_files']}; expected={len(extra)}", flush=True)
+        check(mixed_report['excluded_runtime_files'] == len(extra) and
+              mixed_report['excluded_known_private_files'] == 4 and b'excluded 10 runtime files' in mixed.stderr,
+              'Windows case aliases already in the ZIP must not count as excluded files')
+
+    rejected_output = work / 'rejected-package'
+    def reject_manifest(document, why):
+        bad = work / 'invalid-manifest.json'
+        bad.write_text(document if isinstance(document, str) else json.dumps(document), encoding='utf-8')
+        result = package(rejected_output, bad)
+        check(result.returncode != 0 and b'manifest' in result.stderr.lower(), why)
+        check(not rejected_output.exists(), 'invalid input must fail before creating output')
+    # Schema, aliases, and unsafe Windows/relative path spellings are one input
+    # validation group. No separate test infrastructure for each separator.
+    valid_json = json.dumps({'schema': 1, 'files': trusted})
+    for document in [[], {'schema': True, 'files': trusted}, {'schema': 2, 'files': trusted},
+                     {'schema': 1, 'files': []},
+                     valid_json.replace('"schema": 1', '"schema": 1, "schema": 1'),
+                     valid_json.replace('"files": {', '"files": {"Qt6Core.dll": "' + trusted['Qt6Core.dll'] + '",'),
+                     {'schema': 1, 'files': {**trusted, 'qt6core.DLL': trusted['Qt6Core.dll']}},
+                     {'schema': 1, 'files': {'Qt6Core.dll': trusted['Qt6Core.dll']}}]:
+        reject_manifest(document, 'invalid schema/duplicate/alias/missing main EXE must be refused')
+    for rel in ('../outside.dll', '/outside.dll', 'C:/outside.dll', 'C:outside.dll',
+                'plugins\\q.dll', 'Qt6Core.dll:stream', 'plugins/./q.dll', 'q.dll.',
+                'portable/note.txt', 'bios.bin', 'other.exe'):
+        expected_hash = hashlib.sha256(extra[rel]).hexdigest() if rel in extra else 'a'*64
+        reject_manifest({'schema': 1, 'files': {**trusted, rel: expected_hash}}, 'unsafe manifest path must be refused')
+    for value in ('A'*64, 'not-a-sha256', '0'*64):
+        reject_manifest({'schema': 1, 'files': {**trusted, 'Qt6Core.dll': value}}, 'invalid or mismatched file hash')
+    dll = runtime / 'Qt6Core.dll'
+    dll.unlink()
+    reject_manifest({'schema': 1, 'files': trusted}, 'missing deployed dependency')
+    dll.write_bytes(b'changed before packaging')
+    reject_manifest({'schema': 1, 'files': trusted}, 'changed deployed dependency')
+    dll.write_bytes(deployed['Qt6Core.dll'])
+    outside = work / 'outside.dll'
+    outside.write_bytes(b'generated outside-runtime file')
+    link = runtime / 'outside.dll'
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError) as exc:
+        print(f'Packaging containment symlink fixture unavailable: {exc}', flush=True)
+    else:
+        reject_manifest({'schema': 1, 'files': {**trusted, 'outside.dll': sha(outside)}},
+                        'manifest file resolving outside runtime')
+        link.unlink()
+
+    result = package(runtime / 'unsafe-output')
+    check(result.returncode != 0 and not (runtime / 'unsafe-output').exists(), 'output cannot be inside runtime')
+    collision = work / 'manifest-output'
+    collision.mkdir()
+    colliding_manifest = collision / '9.9.90-melonDS-manifest.json'
+    colliding_manifest.write_bytes(manifest.read_bytes())
+    result = package(collision, colliding_manifest)
+    check(result.returncode != 0 and colliding_manifest.read_bytes() == manifest.read_bytes(),
+          'output cannot replace input manifest')
+    alias = work / 'alias-output'
+    alias.mkdir()
+    os.link(runtime / 'user-notes.txt', alias / '9.9.90-melonDS-windows-x64.zip.tmp')
+    result = package(alias)
+    check(result.returncode != 0 and (runtime / 'user-notes.txt').read_bytes() == extra['user-notes.txt'],
+          'output hardlink cannot overwrite runtime data')
+
+    writer_output = work / 'writer-package'
+    result = package(writer_output, environment=dict(env, PACKAGE_TEST_CHANGE_FILE=str(dll)))
+    check(result.returncode != 0 and b'archive' in result.stderr.lower(), 'ZIP must reject bytes changed after initial validation')
+    check(not list(writer_output.glob('*.zip')), 'concurrent-writer failure must not publish archives')
+    dll.write_bytes(deployed['Qt6Core.dll'])
+    print('Packaging CLI: exact selection, exclusions, invalid inputs, output collisions and writer checks PASS', flush=True)
+    return lambda: package(work / 'stale-package')
+
+
 def scenario(work):
     repo = work / 'repo'
     build = work / 'build'
@@ -101,6 +270,9 @@ def scenario(work):
     def git(*args):
         return run(['git', *args], repo, env=git_env)
 
+    # Match the production repository: importing the CLI's Python modules may
+    # create bytecode, which is runtime cache rather than new source content.
+    (repo / '.gitignore').write_text('__pycache__/\n', encoding='utf-8', newline='\n')
     (repo / '.gitattributes').write_text('* text=auto\nlegacy.txt -text\n', encoding='utf-8', newline='\n')
     (repo / 'legacy.txt').write_bytes(b'historical source A\r\n')
     (repo / 'source.txt').write_text('identity source A\n', encoding='utf-8', newline='\n')
@@ -110,6 +282,9 @@ def scenario(work):
     (repo / 'CMakeLists.txt').write_text(
         mini_cmake(str(ROOT / 'cmake' / 'PackageIdentity.cmake')),
         encoding='utf-8', newline='\n')
+    (repo / 'tools').mkdir()
+    for name in ('package-windows.py', 'source_identity.py'):
+        shutil.copyfile(ROOT / 'tools' / name, repo / 'tools' / name)
     git('add', '-A')
     git('commit', '--quiet', '-m', 'source A')
     # Older repositories can contain CRLF blobs committed before a text policy.
@@ -149,11 +324,15 @@ def scenario(work):
           'EXE identity differs from the working identity (source A)')
     check(id_a == source_identity.verify_build_info(info_a, repo, expected_version='9.9.90'),
           'clean tree: working identity should equal the committed identity')
+    stale_package = packaging_scenario(work, repo, build, exe, git_env)
 
     # Commit source B without rebuilding: the stale binary must be rejected.
     (repo / 'source.txt').write_text('identity source B\n', encoding='utf-8', newline='\n')
     git('add', '-A')
     git('commit', '--quiet', '-m', 'source B')
+    rejected = stale_package()
+    check(rejected.returncode != 0 and b'source identity rejected' in rejected.stderr,
+          'packaging CLI must reject stale EXE after source commit')
     expect_rejected(exe_info(), 'stale EXE after a source commit')
     build_project()
     info_b = exe_info()
@@ -253,6 +432,8 @@ def main():
     try:
         scenario(work)
     finally:
+        check(work.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()) and
+              work.name.startswith('melonds-identity-'), 'cleanup must stay inside the generated temp root')
         shutil.rmtree(work, ignore_errors=True)
     print('PackageIdentity: PASS')
     return 0

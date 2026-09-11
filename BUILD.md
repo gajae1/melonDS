@@ -148,6 +148,24 @@ the same binary. Both sides use Git's check-in filters with
 `core.autocrlf=input`; committed blobs use the attributes from HEAD. This
 also handles historical CRLF blobs that were never renormalized in the index.
 
+Packaging also requires a UTF-8 runtime manifest with exact relative POSIX paths
+and lowercase SHA-256 hashes. For example (replace the sample hash):
+
+```json
+{"schema":1,"files":{"melonDS.exe":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+```
+
+Generate this list from trusted deployment inputs and the explicit copy list,
+including every required DLL, plugin and license file. Do not generate it by
+scanning an existing runtime directory or allowing whole directories/extensions.
+Unlisted runtime files are excluded with a count-only warning. Missing or changed
+listed files fail packaging; the ZIP's exact contents and hashes are checked too.
+Keep output outside the runtime and do not alias the input manifest.
+
+```sh
+python tools/package-windows.py build/windows-dev build/runtime --runtime-manifest build/runtime-manifest.json --output-dir build/packages
+```
+
 Ordinary builds default to identity OFF and do not gain a Git/Python
 requirement from this option. The source ID does not attest to the compiler,
 external libraries, reproducible builds, or signatures.

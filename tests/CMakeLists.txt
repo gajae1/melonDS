@@ -39,6 +39,9 @@ set_tests_properties(firmware-file-input PROPERTIES TIMEOUT 10)
 add_test(NAME package-source-identity
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/PackageIdentity.py")
 set_tests_properties(package-source-identity PROPERTIES TIMEOUT 120)
+add_test(NAME package-version-boundaries
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/PackageVersion.py")
+set_tests_properties(package-version-boundaries PROPERTIES TIMEOUT 120)
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/CaptureMethod.inc"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
