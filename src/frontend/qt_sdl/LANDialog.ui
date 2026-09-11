@@ -50,7 +50,7 @@
       <string>Receive statistics</string>
      </property>
      <property name="toolTip">
-      <string>Session totals reset on a new connection. Receive wait is time spent on this computer, including scheduling, not peer ping. Expired and rejected frames are local discards, not a measured network loss rate. Reply progress counts each sender's first contributing reply within a reply collection. Observation does not tune settings.</string>
+      <string>Session totals reset on a new connection. Receive wait is time spent on this computer, including scheduling, not peer ping. Oldest is the current front packet's time in this computer's receive queue, not peer RTT. Its wrapping 32-bit host timestamp does not give an absolute multi-day age. Expired and rejected frames are local discards, not a measured network loss rate. Reply progress counts each sender's first contributing reply within a reply collection. Observation does not tune settings.</string>
      </property>
      <layout class="QVBoxLayout" name="receiveStatisticsLayout">
       <item>

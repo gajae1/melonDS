@@ -351,6 +351,11 @@ LAN::ReceiveStats LAN::GetReceiveStats()
     std::lock_guard lock(SessionMutex);
     auto result = Stats;
     result.QueuedPackets = RXQueue.size();
+    if (!RXQueue.empty())
+    {
+        const auto* header = reinterpret_cast<const MPPacketHeader*>(RXQueue.front()->data);
+        result.OldestQueuedAgeMS = static_cast<u32>(Platform::GetMSCount() - header->Magic);
+    }
     return result;
 }
 

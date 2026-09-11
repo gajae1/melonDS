@@ -131,6 +131,143 @@ static int TestSchedulerSavestate(NDSArgs&& args)
     return failures ? 1 : 0;
 }
 
+static int TestUnalignedMemory(NDSArgs&& args, bool jit)
+{
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    if (args.JIT)
+    {
+        args.JIT->MaxBlockSize = 1;
+        args.JIT->BranchOptimizations = false;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    NDS::Current = nds.get();
+    // Little endian, alignment checking disabled. Do not test abort/PC operands.
+    if (nds->ARM9.CP15Control & ((1u << 1) | (1u << 7))) return 2;
+    constexpr u32 code = 0x02008000, data = 0x02012000;
+    constexpr u32 initial = 0x807F1234, value = 0xA1B2C3D4;
+    constexpr u32 before = 0x0BADF00D, after = 0xDEADBEEF;
+    // ARM DDI 0100I: pre-v6 ARM LDR rotates the aligned word, STR ignores bits 1:0.
+    // Aligned LDRH/LDRSH zero/sign-extend. Odd halfwords and unaligned Thumb words
+    // are UNPREDICTABLE: observe them without treating backend agreement as an oracle.
+    // All opcodes use r0,[r1,r2]; warm runs change r2 on the SAME cached block.
+    const struct {
+        const char* name;
+        u32 arm;
+        u16 thumb;
+        bool store, half;
+        unsigned offsets;
+        u32 expected[4]; // destination register for loads, containing word for stores
+    } cases[] = {
+        {"ldr",   0xE7910002, 0x5888, false, false, 0xF, {initial, 0x34807F12, 0x1234807F, 0x7F123480}},
+        {"str",   0xE7810002, 0x5088, true,  false, 0x9, {value, 0, 0, value}},
+        {"ldrh",  0xE19100B2, 0x5A88, false, true,  0xD, {0x1234, 0, 0x807F, 0}},
+        {"ldrsh", 0xE19100F2, 0x5E88, false, true,  0xD, {0x1234, 0, 0xFFFF807F, 0}},
+        {"strh",  0xE18100B2, 0x5288, true,  true,  0xD, {0x807FC3D4, 0, 0xC3D41234, 0}},
+    };
+    unsigned checked = 0, observed = 0, failures = 0;
+    for (bool arm7 : {false, true})
+    for (bool thumb : {false, true})
+    {
+        nds->CurCPU = arm7 ? 1 : 0;
+        ARM& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        const u32 cpsr = 0xA00000DF | (thumb ? 0x20 : 0);
+        for (unsigned i = 0; i < std::size(cases); ++i)
+        {
+            const auto& test = cases[i];
+            const u32 addr = code + (thumb ? 0x100 : 0) + i * 16;
+            nds->ARM9Write32(addr, thumb ? u32(test.thumb) | 0xE7FE0000 : test.arm);
+            nds->ARM9Write32(addr + 4, 0xEAFFFFFE);
+#if defined(JIT_ENABLED) && defined(__x86_64__)
+            std::vector<u8> compiled;
+#endif
+            for (unsigned offset = 0; offset < 4; ++offset)
+            {
+                if (!(test.offsets & (1u << offset))) continue;
+                for (unsigned run = 0; run < (jit && offset == 0 ? 2u : 1u); ++run)
+                {
+                    const bool cached = jit && (offset != 0 || run != 0);
+                    for (unsigned r = 0; r < 15; ++r) cpu.R[r] = 0x01020300 + r;
+                    cpu.R[0] = value;
+                    cpu.R[1] = data;
+                    cpu.R[2] = offset;
+                    nds->ARM9Write32(data - 4, before);
+                    nds->ARM9Write32(data, initial);
+                    nds->ARM9Write32(data + 4, after);
+                    cpu.CPSR = cpsr;
+                    cpu.JumpTo(addr | u32(thumb));
+                    cpu.Cycles = 0;
+                    auto& timestamp = arm7 ? nds->ARM7Timestamp : nds->ARM9Timestamp;
+                    auto& target = arm7 ? nds->ARM7Target : nds->ARM9Target;
+                    timestamp = 0;
+                    target = 1;
+#ifdef JIT_ENABLED
+                    if (jit)
+                    {
+                        auto& blocks = arm7 ? nds->JIT.JitBlocks7 : nds->JIT.JitBlocks9;
+                        if (cached)
+                        {
+                            if (!blocks.contains(addr | u32(thumb))) return 2;
+                            ARM_Dispatch(&cpu, blocks.at(addr | u32(thumb))->EntryPoint);
+                            timestamp = cpu.Cycles;
+                        }
+                        else if (arm7) nds->ARM7.Execute<CPUExecuteMode::JIT>();
+                        else nds->ARM9.Execute<CPUExecuteMode::JIT>();
+#if defined(__x86_64__)
+                        const auto* entry = reinterpret_cast<const u8*>(blocks.at(addr | u32(thumb))->EntryPoint);
+                        if (!cached)
+                        {
+                            const auto* end = nds->JIT.JITCompiler.GetCodePtr();
+                            if (end <= entry || end - entry > 1024) return 2;
+                            compiled.assign(entry, end);
+                        }
+                        if (offset == 3)
+                        {
+                            std::printf("native-memory ARM%d %s %s fastmem=%d unchanged=%d bytes=",
+                                arm7 ? 7 : 9, thumb ? "thumb" : "arm", test.name,
+                                nds->JIT.FastMemoryEnabled(), !std::memcmp(compiled.data(), entry, compiled.size()));
+                            for (size_t b = 0; b < compiled.size(); ++b) std::printf("%02X", entry[b]);
+                            std::puts("");
+                        }
+#endif
+                    }
+                    else
+#endif
+                    {
+                        if (arm7) nds->ARM7.Execute<CPUExecuteMode::Interpreter>();
+                        else nds->ARM9.Execute<CPUExecuteMode::Interpreter>();
+                    }
+                    const u32 word = nds->ARM9Read32(data);
+                    const bool unpredictable = test.half ? (offset & 1) : thumb && offset != 0;
+                    bool ok = true;
+                    if (unpredictable) ++observed;
+                    else
+                    {
+                        const u32 expectedR0 = test.store ? value : test.expected[offset];
+                        const u32 expectedWord = test.store ? test.expected[offset] : initial;
+                        ok = cpu.R[0] == expectedR0 && word == expectedWord &&
+                            cpu.R[1] == data && cpu.R[2] == offset && cpu.CPSR == cpsr &&
+                            cpu.R[15] == addr + (thumb ? 4 : 8) && timestamp > 0 &&
+                            nds->ARM9Read32(data - 4) == before && nds->ARM9Read32(data + 4) == after;
+                        for (unsigned r = 3; r < 15; ++r) ok &= cpu.R[r] == 0x01020300 + r;
+                        ++checked;
+                        failures += !ok;
+                    }
+                    std::printf("%s ARM%d %s %s opcode=%08X offset=%u: %s r0=%08X memory=%08X/%08X/%08X pc=%08X cpsr=%08X cycles=%llu\n",
+                        jit ? (cached ? "dispatch" : "jit-cold") : "interpreter", arm7 ? 7 : 9,
+                        thumb ? "thumb" : "arm", test.name, thumb ? test.thumb : test.arm, offset,
+                        unpredictable ? "OBSERVATION-UNPREDICTABLE" : ok ? "PASS" : "FAIL", cpu.R[0],
+                        nds->ARM9Read32(data - 4), word, nds->ARM9Read32(data + 4), cpu.R[15], cpu.CPSR,
+                        static_cast<unsigned long long>(timestamp));
+                }
+            }
+        }
+    }
+    std::printf("single memory alignment: %u defined checks, %u failures; %u unpredictable observations\n",
+        checked, failures, observed);
+    return failures ? 1 : 0;
+}
+
 static int TestThumbPushTiming(NDSArgs&& args, bool jit)
 {
     if (args.JIT)
@@ -481,6 +618,8 @@ int main(int argc, char** argv) {
     NDSArgs args;
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
+    if (argc > 2 && std::strcmp(argv[2], "unaligned-memory") == 0)
+        return TestUnalignedMemory(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "thumb-push-timing") == 0)
         return TestThumbPushTiming(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "thumb-stack") == 0)

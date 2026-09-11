@@ -188,14 +188,53 @@ int main(int argc, char** argv)
         std::printf("PASS generated MP command: bytes=40 timestamp=exact\n%s\n%s\n%s\n",
                     qPrintable(receiveSummary->text()), qPrintable(waitSummary->text()), qPrintable(replySummary->text()));
 
+        // Complete normal layout/event handling before deliberately retaining a
+        // second frame. Observing queue age must not consume or expire it.
+        lobby->ensurePolished();
+        lobby->layout()->activate();
+        QCoreApplication::processEvents();
+        command.fill(0xA7);
+        Require(host.SendCmd(0, command.data(), command.size(), timestamp + 1) == int(command.size()),
+                "queued statistics command send failed");
+        LAN::ReceiveStats queuedStats;
+        Require(Pump([&] {
+            client->Process();
+            queuedStats = client->GetReceiveStats();
+            return queuedStats.QueuedPackets > 0;
+        }, 2000, &host), "generated command did not enter receive queue");
+        Require(QMetaObject::invokeMethod(lobby, "doUpdatePlayerList"), "queued lobby update failed");
+        const auto observedQueue = client->GetReceiveStats();
+        Require(observedQueue.QueuedPackets == queuedStats.QueuedPackets &&
+                observedQueue.ExpiredPackets == queuedStats.ExpiredPackets,
+                "statistics getter or UI update consumed or expired the queue");
+        const auto queuedMatch = QRegularExpression("Queued: ([0-9]+) \\(oldest: ([0-9]+) ms\\)")
+            .match(receiveSummary->text());
+        bool validAge = false;
+        queuedMatch.captured(2).toULongLong(&validAge);
+        Require(queuedMatch.hasMatch() && validAge &&
+                queuedMatch.captured(1).toULongLong() == observedQueue.QueuedPackets,
+                "queued count or nonnegative oldest age missing from lobby");
+        std::printf("PASS queued observation: getter/UI preserved queue\n%s\n", qPrintable(receiveSummary->text()));
+
         const QString screenshotPath = qEnvironmentVariable("MELONDS_LAN_UI_SCREENSHOT");
         if (!screenshotPath.isEmpty())
         {
-            lobby->ensurePolished();
             lobby->layout()->activate();
-            QCoreApplication::processEvents();
             Require(lobby->grab().save(screenshotPath), "lobby screenshot save failed");
+            std::printf("Screenshot queue state: %llu\n",
+                        static_cast<unsigned long long>(client->GetReceiveStats().QueuedPackets));
         }
+
+        // Layout/grab may take longer than the existing 16 ms expiry. Drain
+        // through the public API without requiring this retained frame's payload.
+        Require(Pump([&] {
+            client->RecvHostPacket(0, received.data(), &receivedTimestamp, received.size());
+            return client->GetReceiveStats().QueuedPackets == 0;
+        }, 2000, &host), "receive queue did not drain");
+        Require(QMetaObject::invokeMethod(lobby, "doUpdatePlayerList"), "empty lobby update failed");
+        Require(receiveSummary->text().contains("Queued: 0 |") &&
+                !receiveSummary->text().contains("(oldest:"), "empty queue retained an oldest age");
+        std::printf("PASS empty queue: oldest suffix removed\n%s\n", qPrintable(receiveSummary->text()));
 
         host.EndSession();
         Require(Pump([&] { return lobby.isNull(); }, 2500), "host loss did not close lobby");

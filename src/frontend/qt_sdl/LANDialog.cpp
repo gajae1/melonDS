@@ -406,9 +406,12 @@ void LANDialog::timerEvent(QTimerEvent *event)
 void LANDialog::doUpdatePlayerList()
 {
     const auto stats = session->GetReceiveStats();
+    QString queued = QString::number(stats.QueuedPackets);
+    if (stats.QueuedPackets > 0)
+        queued += tr(" (oldest: %1 ms)").arg(stats.OldestQueuedAgeMS);
     ui->receiveSummary->setText(tr("Received packets: %1 | Queued: %2 | Peak queued: %3 | "
                                    "Expired: %4 | Rejected: %5 | Service errors: %6")
-        .arg(stats.ReceivedPackets).arg(stats.QueuedPackets).arg(stats.PeakQueuedPackets)
+        .arg(stats.ReceivedPackets).arg(queued).arg(stats.PeakQueuedPackets)
         .arg(stats.ExpiredPackets).arg(stats.RejectedPackets).arg(stats.ServiceErrors));
     if (stats.WaitSamples == 0)
         ui->waitSummary->setText(tr("Receive wait: no samples yet"));

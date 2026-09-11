@@ -105,6 +105,9 @@ public:
         u64 RejectedPackets = 0;
         u64 ExpiredPackets = 0;
         u64 QueuedPackets = 0;
+        // Live age of the front packet using the existing modulo32 host stamp;
+        // zero when empty. Reading it neither consumes nor expires the queue.
+        u64 OldestQueuedAgeMS = 0;
         u64 PeakQueuedPackets = 0;
         u64 WaitSamples = 0;
         u64 RequestedWaitMS = 0;

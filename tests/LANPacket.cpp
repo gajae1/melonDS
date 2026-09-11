@@ -58,7 +58,11 @@ int InjectHostService(ENetHost*, ENetEvent* event, enet_uint32 timeout)
         ForcedServiceResult = 0;
         return result;
     }
-    if (Events.empty()) return 0;
+    if (Events.empty())
+    {
+        if (TimedDelivery) Tick += timeout;
+        return 0;
+    }
     if (!ServiceTicks.empty())
     {
         if (TimedDelivery && ServiceTicks.front() > Tick && ServiceTicks.front() - Tick > timeout)
@@ -306,14 +310,14 @@ bool ReceiveCapacity()
 
 bool QueuedFrameClockWrap()
 {
-    struct Case { u64 Received, Now; bool Accepted; };
+    struct Case { u64 Received, Now; u32 Age; bool Accepted; };
     constexpr Case cases[] = {
-        {0, 0, true}, {8, 8, true},
-        {1000, 1016, true}, {1000, 1017, false},
-        {0xFFFFFFF8, 0x100000000, true},
-        {0xFFFFFFF8, 0x100000008, true},
-        {0xFFFFFFF8, 0x100000009, false},
-        {1000, 999, false},
+        {0, 0, 0, true}, {8, 8, 0, true},
+        {1000, 1016, 16, true}, {1000, 1017, 17, false},
+        {0xFFFFFFF8, 0x100000000, 8, true},
+        {0xFFFFFFF8, 0x100000008, 16, true},
+        {0xFFFFFFF8, 0x100000009, 17, false},
+        {1000, 999, 0xFFFFFFFFu, false},
     };
     bool passed = true;
     for (u32 type : {0u, 1u})
@@ -325,6 +329,8 @@ bool QueuedFrameClockWrap()
         f.Net.Process(); // Production receive stamps and queues the ENet packet.
         if (f.Snapshot().Queued != 1 || FreedPackets != 0) return false;
         Tick = test.Now;
+        if (f.Net.GetReceiveStats().OldestQueuedAgeMS != test.Age ||
+            f.Snapshot().Queued != 1 || FreedPackets != 0) return false;
         Output out;
         out.fill(Sentinel);
         u64 stamp = 0;
@@ -571,6 +577,101 @@ bool NonpositiveWait()
     return true;
 }
 
+void ReplyAt(LANPacketTest& f, u64 arrival, u32 sender, u32 aid, u64 stamp, u8 value)
+{
+    auto* packet = Packet(2 | (aid << 16), sender, 40);
+    reinterpret_cast<MPPacketHeader*>(packet->data)->Timestamp = stamp;
+    std::fill_n(packet->data + sizeof(MPPacketHeader), 40, value);
+    Inject(packet, &f.Peers[sender]);
+    ServiceTicks.push_back(arrival);
+}
+
+bool ReorderedReplies()
+{
+    LANPacketTest f;
+    TimedDelivery = true;
+    const u64 start = Tick;
+    // Peer2's previous exchange arrives first, outside the existing guest32us
+    // freshness window. The current reply from peer1 precedes peer2's new one.
+    ReplyAt(f, start + 2, 2, 2, Timestamp - 33, 0xAA);
+    ReplyAt(f, start + 9, 1, 1, Timestamp, 0x11);
+    ReplyAt(f, start + 20, 2, 2, Timestamp + 1, 0x22);
+    Output out, expected;
+    out.fill(Sentinel);
+    expected.fill(Sentinel);
+    std::fill_n(expected.data() + 32, 40, 0x11);
+    std::fill_n(expected.data() + 32 + 1024, 40, 0x22);
+    const u16 result = f.Net.RecvReplies(0, out.data() + 32, Timestamp, 0x6);
+    const auto stats = f.Net.GetReceiveStats();
+    return result == 0x6 && out == expected && Tick - start == 20 &&
+        FreedPackets == 3 && Events.empty() && stats.NewPeerReplies == 2 &&
+        stats.DuplicateReplies == 0 && stats.ReceivedPackets == 3 &&
+        stats.WaitTimeMS == 20 && stats.PartialReplyReturns == 0;
+}
+
+bool MissingAndLateReply()
+{
+    LANPacketTest f;
+    TimedDelivery = true;
+    const u64 start = Tick;
+    ReplyAt(f, start + 5, 1, 1, Timestamp, 0x11);
+    Output out, expected;
+    out.fill(Sentinel);
+    expected.fill(Sentinel);
+    std::fill_n(expected.data() + 32, 40, 0x11);
+    // Nothing from peer2 is delivered. First contribution from peer1 renews
+    // the normal inactivity wait, then the missing peer uses its full25ms.
+    const auto partial = f.Net.RecvReplies(0, out.data() + 32, Timestamp, 0x6);
+    if (partial != 0x2 || out != expected || Tick - start != 30) return false;
+    // The late datagram is beyond the next wait, and must survive for a later
+    // call rather than being silently delivered early or flushed on expiry.
+    ReplyAt(f, start + 60, 2, 2, Timestamp, 0x22);
+    out.fill(Sentinel);
+    if (f.Net.RecvReplies(0, out.data() + 32, Timestamp, 0x4) != 0 ||
+        !Unchanged(out) || Tick - start != 55 || Events.size() != 1) return false;
+    expected.fill(Sentinel);
+    std::fill_n(expected.data() + 32 + 1024, 40, 0x22);
+    const auto recovered = f.Net.RecvReplies(0, out.data() + 32, Timestamp, 0x4);
+    const auto stats = f.Net.GetReceiveStats();
+    return recovered == 0x4 && out == expected && Tick - start == 60 &&
+        FreedPackets == 2 && Events.empty() && stats.ReplyCalls == 3 &&
+        stats.NewPeerReplies == 2 && stats.PartialReplyReturns == 1 &&
+        stats.WaitSamples == 4 && stats.WaitTimeMS == 60 && stats.MaxWaitMS == 25 &&
+        f.Net.GetRecvTimeout() == 25;
+}
+
+bool BurstAfterFramePause()
+{
+    LANPacketTest f;
+    const u64 start = Tick;
+    for (u32 i = 0; i < 3; ++i)
+    {
+        Tick = start + i * 3;
+        auto* packet = Packet(1, 1, 40);
+        reinterpret_cast<MPPacketHeader*>(packet->data)->Timestamp = Timestamp + i;
+        std::fill_n(packet->data + sizeof(MPPacketHeader), 40, static_cast<u8>(0x10 + i));
+        Inject(packet, &f.Peers[1]);
+        f.Net.Process();
+    }
+    Tick = start + 17;
+    // Only the oldest queued datagram has exceeded16ms. Later arrivals still
+    // reach the caller in order with their own payloads and guest timestamps.
+    for (u32 i = 1; i < 3; ++i)
+    {
+        Output out, expected;
+        out.fill(Sentinel);
+        expected.fill(Sentinel);
+        std::fill_n(expected.data() + 32, 40, static_cast<u8>(0x10 + i));
+        u64 stamp = 0;
+        if (f.Net.RecvHostPacket(0, out.data() + 32, &stamp) != 40 ||
+            out != expected || stamp != Timestamp + i) return false;
+    }
+    const auto stats = f.Net.GetReceiveStats();
+    return stats.ReceivedPackets == 3 && stats.ExpiredPackets == 1 &&
+        stats.PeakQueuedPackets == 3 && stats.QueuedPackets == 0 &&
+        stats.WaitSamples == 0 && FreedPackets == 3 && Events.empty();
+}
+
 bool HandshakeAndRejoin()
 {
     LAN net;
@@ -614,8 +715,10 @@ bool ReceiveObservations()
     const auto before = f.Snapshot();
     const auto queued = f.Net.GetReceiveStats();
     if (queued.ReceivedPackets != 1 || queued.QueuedPackets != 1 || queued.PeakQueuedPackets != 1 ||
-        queued.WaitSamples || !(f.Snapshot() == before)) return false;
-    Tick += 17;
+        queued.OldestQueuedAgeMS || queued.WaitSamples || !(f.Snapshot() == before)) return false;
+    Tick += 8;
+    if (f.Net.GetReceiveStats().OldestQueuedAgeMS != 8 || !(f.Snapshot() == before)) return false;
+    Tick += 9;
     f.Net.Process();
     auto* invalid = Packet(0, 1, 40);
     invalid->data[0] = 0;
@@ -623,7 +726,7 @@ bool ReceiveObservations()
     f.Net.Process();
     const auto expired = f.Net.GetReceiveStats();
     if (expired.ExpiredPackets != 1 || expired.RejectedPackets != 1 ||
-        expired.ReceivedPackets != 1 || expired.QueuedPackets || expired.WaitSamples) return false;
+        expired.ReceivedPackets != 1 || expired.QueuedPackets || expired.OldestQueuedAgeMS || expired.WaitSamples) return false;
     for (int i = 0; i < 2; ++i)
     {
         Inject(Packet(0, 1, 40), &f.Peers[1]);
@@ -775,6 +878,9 @@ int main()
     Check("reply-duplicate-does-not-extend-slow-peer-wait", ReplyProgressKeepsSlowPeer(true));
     Check("reply-flood-yields-and-resumes", ReplyFloodYields());
     Check("nonpositive-timeout-polls-without-unsigned-wait", NonpositiveWait());
+    Check("reordered-replies-preserve-current-payload-and-peer-progress", ReorderedReplies());
+    Check("missing-peer-waits-and-late-reply-survives-expiry", MissingAndLateReply());
+    Check("burst-after-frame-pause-expires-only-oldest", BurstAfterFramePause());
     Check("receive-observation-does-not-consume-or-tune", ReceiveObservations());
     Check("wait-and-reply-progress-observation", WaitAndReplyObservations());
     Check("service-error-clock-and-work-limit-observation", ServiceObservationBoundaries());
