@@ -24,6 +24,7 @@
 #include <map>
 #include <queue>
 #include <mutex>
+#include <atomic>
 
 #include <enet/enet.h>
 
@@ -147,6 +148,9 @@ private:
     // UI discovery/connect/cancel and emulation packet processing share one
     // ENet host. Nested public session operations take the same recursive lock.
     std::recursive_mutex SessionMutex;
+    // Announce shutdown before waiting for the session lock. A count keeps
+    // overlapping EndSession calls from clearing another caller's request.
+    std::atomic<unsigned> PendingStops{0};
     ClientState Connection = ClientState::Idle;
     u32 ConnectionStartTick = 0;
     bool ClientInitReceived = false;

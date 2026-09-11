@@ -577,6 +577,44 @@ bool NonpositiveWait()
     return true;
 }
 
+bool LongWaitKeepsDeadline()
+{
+    for (int timeout : {80, 2000})
+    {
+        LANPacketTest f;
+        f.Net.SetRecvTimeout(timeout);
+        TimedDelivery = true;
+        const u64 start = Tick;
+        Inject(Packet(1, 1, 40), &f.Peers[1]);
+        ServiceTicks = {start + timeout - 10};
+        Output out;
+        out.fill(Sentinel);
+        u64 stamp = 0;
+        if (f.Net.RecvHostPacket(0, out.data() + 32, &stamp) != 40 ||
+            stamp != Timestamp || !Copied(out, 0, 40) || !Events.empty()) return false;
+    }
+    for (u64 start : {1000ULL, 0xFFFFFFF8ULL})
+    {
+        LANPacketTest f;
+        f.Net.SetRecvTimeout(80);
+        Tick = start;
+        TimedDelivery = true;
+        Inject(Packet(1, 1, 40), &f.Peers[1]);
+        ServiceTicks = {start + 81};
+        Output out;
+        out.fill(Sentinel);
+        u64 stamp = 0;
+        if (f.Net.RecvHostPacket(0, out.data() + 32, &stamp) != 0 ||
+            Tick != start + 80 || stamp || !Unchanged(out) || Events.size() != 1) return false;
+        // Expiry leaves the later datagram available to the next consumer.
+        Tick = start + 81;
+        f.Net.SetRecvTimeout(0);
+        if (f.Net.RecvHostPacket(0, out.data() + 32, &stamp) != 40 ||
+            stamp != Timestamp || !Copied(out, 0, 40) || !Events.empty()) return false;
+    }
+    return true;
+}
+
 void ReplyAt(LANPacketTest& f, u64 arrival, u32 sender, u32 aid, u64 stamp, u8 value)
 {
     auto* packet = Packet(2 | (aid << 16), sender, 40);
@@ -878,6 +916,7 @@ int main()
     Check("reply-duplicate-does-not-extend-slow-peer-wait", ReplyProgressKeepsSlowPeer(true));
     Check("reply-flood-yields-and-resumes", ReplyFloodYields());
     Check("nonpositive-timeout-polls-without-unsigned-wait", NonpositiveWait());
+    Check("long-wait-keeps-deadline-and-late-datagram", LongWaitKeepsDeadline());
     Check("reordered-replies-preserve-current-payload-and-peer-progress", ReorderedReplies());
     Check("missing-peer-waits-and-late-reply-survives-expiry", MissingAndLateReply());
     Check("burst-after-frame-pause-expires-only-oldest", BurstAfterFramePause());

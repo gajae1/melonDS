@@ -23,6 +23,18 @@ namespace melonDS
 {
 struct LANPacketTest
 {
+    static bool ReceiveHoldsMutex(LAN& net, const std::atomic<bool>& done)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!done.load() && std::chrono::steady_clock::now() < deadline)
+        {
+            if (!net.SessionMutex.try_lock()) return !done.load();
+            net.SessionMutex.unlock();
+            std::this_thread::yield();
+        }
+        return false;
+    }
+
     static bool MeshReady(LAN& net, u16 mask)
     {
         if ((net.ConnectedBitmask & mask) != mask) return false;
@@ -148,6 +160,133 @@ bool Mesh()
     });
 }
 
+bool ReceiveWaits()
+{
+    using Clock = std::chrono::steady_clock;
+    const auto elapsedMS = [](Clock::time_point start) {
+        return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+    };
+    LAN host, client;
+    auto connect = [&]
+    {
+        if (!client.StartClient("Wait client", "127.0.0.1")) return false;
+        client.EndDiscovery();
+        if (!Pump(host, client, [&] { return client.GetClientState() == LAN::ClientState::Connected; }))
+            return false;
+        host.Begin(0);
+        client.Begin(0);
+        return Pump(host, client, [&] {
+            return host.GetNumPlayers() == 2 && client.GetNumPlayers() == 2 &&
+                LANPacketTest::MeshReady(host, 0x3) && LANPacketTest::MeshReady(client, 0x3);
+        });
+    };
+    if (!host.StartHost("Wait host", 2)) return false;
+    host.EndDiscovery();
+    if (!connect()) return false;
+
+    bool passed = true;
+    std::array<u8, 15 * 1024 + 64> untouched{};
+    untouched.fill(0xA5);
+    constexpr u64 untouchedStamp = 0xBADC0FFEE;
+    std::array<u8, 40> command{};
+    for (size_t i = 0; i < command.size(); ++i) command[i] = u8(i * 7 + 3);
+    constexpr u64 commandStamp = 123456;
+    auto expected = untouched;
+    std::copy(command.begin(), command.end(), expected.begin() + 32);
+
+    for (const bool replies : {false, true})
+    {
+        LAN& receiving = replies ? host : client;
+        receiving.SetRecvTimeout(1000);
+        auto output = untouched;
+        u64 stamp = untouchedStamp;
+        int result = -99;
+        double receiveMS = 0;
+        std::atomic<bool> done{false};
+        std::thread receiver([&] {
+            const auto start = Clock::now();
+            result = replies ? receiving.RecvReplies(0, output.data() + 32, stamp, 1 << 1)
+                             : receiving.RecvHostPacket(0, output.data() + 32, &stamp);
+            receiveMS = elapsedMS(start);
+            done.store(true);
+        });
+        // Only the receive thread touches this LAN object until cancellation.
+        // Lock contention proves it entered the receive; elapsed sleeps do not.
+        const bool held = LANPacketTest::ReceiveHoldsMutex(receiving, done);
+        const bool inFlight = held && !done.load();
+        const auto cancelStart = Clock::now();
+        receiving.EndSession();
+        const double cancelMS = elapsedMS(cancelStart);
+        receiver.join();
+        const bool cancelled = inFlight && cancelMS < 250 && result == 0 &&
+            output == untouched && stamp == untouchedStamp &&
+            receiving.GetClientState() == LAN::ClientState::Idle && receiving.GetPlayerList().empty() &&
+            receiving.GetNumPlayers() == 0 && receiving.GetMaxPlayers() == 0 &&
+            receiving.GetReceiveStats().QueuedPackets == 0;
+        std::printf("%s cancel_ms=%.3f receive_ms=%.3f mutex_held=%d result=%d %s\n",
+            replies ? "RecvReplies" : "RecvHostPacket", cancelMS, receiveMS, int(inFlight), result,
+            cancelled ? "PASS" : "FAIL");
+        passed &= cancelled;
+
+        if (replies)
+        {
+            client.EndSession();
+            if (!host.StartHost("Wait host restarted", 2)) return false;
+            host.EndDiscovery();
+        }
+        else if (!Pump(host, client, [&] { return host.GetNumPlayers() == 1; })) return false;
+        if (!connect()) return false;
+        client.SetRecvTimeout(25);
+        output = untouched;
+        stamp = untouchedStamp;
+        if (host.SendCmd(0, command.data(), command.size(), commandStamp) != int(command.size()) ||
+            !Pump(host, client, [&] {
+                return client.RecvHostPacket(0, output.data() + 32, &stamp) == int(command.size());
+            }) || output != expected || stamp != commandStamp)
+        {
+            std::fputs("FAIL valid command after receive cancellation and rejoin\n", stderr);
+            return false;
+        }
+    }
+
+    client.SetRecvTimeout(80);
+    auto output = untouched;
+    u64 stamp = untouchedStamp;
+    const auto idleStart = Clock::now();
+    const int idleResult = client.RecvHostPacket(0, output.data() + 32, &stamp);
+    const double idleMS = elapsedMS(idleStart);
+    const bool waited = idleResult == 0 && idleMS >= 50 && idleMS < 2000 &&
+        output == untouched && stamp == untouchedStamp;
+    std::printf("configured_wait_ms=80 actual_ms=%.3f result=%d %s\n",
+        idleMS, idleResult, waited ? "PASS" : "FAIL");
+    passed &= waited;
+
+    client.SetRecvTimeout(1000);
+    output = untouched;
+    stamp = untouchedStamp;
+    std::atomic<bool> done{false};
+    bool held = false;
+    int sent = 0;
+    double sendMS = 0;
+    const auto delayedStart = Clock::now();
+    std::thread sender([&] {
+        held = LANPacketTest::ReceiveHoldsMutex(client, done);
+        if (!held) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        sent = host.SendCmd(0, command.data(), command.size(), commandStamp);
+        sendMS = elapsedMS(delayedStart);
+    });
+    const int delayedResult = client.RecvHostPacket(0, output.data() + 32, &stamp);
+    const double delayedMS = elapsedMS(delayedStart);
+    done.store(true);
+    sender.join();
+    const bool arrived = held && sent == int(command.size()) && delayedResult == int(command.size()) &&
+        delayedMS >= 50 && delayedMS < 2000 && output == expected && stamp == commandStamp;
+    std::printf("configured_wait_ms=1000 delayed_send_ms=%.3f receive_ms=%.3f result=%d %s\n",
+        sendMS, delayedMS, delayedResult, arrived ? "PASS" : "FAIL");
+    return passed && arrived;
+}
+
 int main()
 {
     LAN host, client;
@@ -214,6 +353,12 @@ int main()
         std::fputs("FAIL client mesh, late readiness, reply routing or reused player slot\n", stderr);
         return 10;
     }
+    if (!ReceiveWaits())
+    {
+        std::fputs("FAIL receive cancellation, rejoin or configured wait preservation\n", stderr);
+        return 11;
+    }
     std::puts("PASS real loopback handshake, MP frame, leave/rejoin, host loss, snapshots and interface lifetime");
     std::puts("PASS four-participant mesh, late readiness, client replies and reused player slot");
+    std::puts("PASS blocked host/reply cancellation, rejoin and untruncated receive waits");
 }

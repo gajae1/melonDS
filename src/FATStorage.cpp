@@ -1337,6 +1337,62 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
     return res == FR_OK && synced;
 }
 
+bool FATStorage::Flush()
+{
+    if (!File) return false;
+    if (ReadOnly || !SourceDir) return true;
+    return FileFlush(File) && Save();
+}
+
+bool FATStorage::SaveCopy(const std::string& destination)
+{
+    if (!File || destination.empty() || !FileSize || (FileSize & 0x1FF) ||
+        (FileSize >> 9) > UINT32_MAX) return false;
+    std::error_code err;
+    const auto output = fs::absolute(melonDS::PathFromUTF8(destination), err).lexically_normal();
+    if (err) return false;
+    const bool exists = fs::exists(output, err);
+    if (err || (exists && (!fs::is_regular_file(output, err) || err))) return false;
+    for (const auto& protectedPath : {FilePath, IndexPath})
+    {
+        const auto original = fs::absolute(melonDS::PathFromUTF8(GetLocalFilePath(protectedPath)), err).lexically_normal();
+        if (err) return false;
+#ifdef _WIN32
+        const bool sameName = _wcsicmp(output.filename().c_str(), original.filename().c_str()) == 0;
+#else
+        const bool sameName = output.filename() == original.filename();
+#endif
+        // Parent identity also protects an absent sidecar through a root alias.
+        if (sameName)
+        {
+            const bool sameParent = fs::equivalent(output.parent_path(), original.parent_path(), err);
+            if (err || sameParent) return false;
+        }
+        const bool originalExists = fs::exists(original, err);
+        if (err) return false;
+        if (exists && originalExists)
+        {
+            const bool sameFile = fs::equivalent(output, original, err);
+            if (err || sameFile) return false;
+        }
+    }
+    if (!FileFlush(File)) return false;
+    // Copy the logical image, including zero-filled sparse sectors, so the
+    // result can reopen without the original index. No sync is acknowledged.
+    return WriteFileAtomically(destination, [&](const FileWriteCallback& write)
+    {
+        u8 buffer[64 * 1024];
+        const u64 sectors = FileSize >> 9;
+        for (u64 start = 0; start < sectors;)
+        {
+            const u32 count = std::min<u64>(sizeof(buffer) / 512, sectors - start);
+            if (ReadSectors(static_cast<u32>(start), count, buffer) != count || !write(buffer, count * 512)) return false;
+            start += count;
+        }
+        return true;
+    });
+}
+
 bool FATStorage::Save()
 {
     if (!File) return false;

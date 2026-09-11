@@ -78,6 +78,25 @@ if (TARGET Qt6::Core)
     target_include_directories(FATStorageLifecycle PRIVATE "${dsifat_root}/src" "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_features(FATStorageLifecycle PRIVATE cxx_std_26)
     target_link_libraries(FATStorageLifecycle PRIVATE Qt6::Core)
+    if (TARGET FrontendClose)
+        # Reuse the real FAT/Qt I/O fixture in the existing close-window tests.
+        target_sources(FrontendClose PRIVATE
+            "${dsifat_root}/src/FATIO.cpp" "${dsifat_root}/src/sha1/sha1.c"
+            "${dsifat_root}/src/fatfs/ff.c" "${dsifat_root}/src/fatfs/ffsystem.c"
+            "${dsifat_root}/src/fatfs/ffunicode.c")
+        target_include_directories(FrontendClose PRIVATE "${dsifat_root}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+        add_dependencies(FrontendClose FATStorageLifecycle)
+        foreach(case IN ITEMS cancel-ds cancel-dldi child-cancel child-retry clean readonly
+                retry recovery recovery-cancel recovery-failure)
+            add_test(NAME frontend-close-sd-${case} COMMAND FrontendClose sd-${case})
+            set_tests_properties(frontend-close-sd-${case} PROPERTIES
+                TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endforeach()
+    endif()
+    foreach(case IN ITEMS normal aliases errors)
+        add_test(NAME fs-recovery-fat-${case} COMMAND FATStorageLifecycle recovery-${case})
+        set_tests_properties(fs-recovery-fat-${case} PROPERTIES TIMEOUT 15)
+    endforeach()
     set(fat_delete_cases file-normal dir-normal file-edit dir-edit dir-new file-type dir-type index-commit
         readonly-normal root-alias dir-symlink)
     if (WIN32)

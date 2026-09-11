@@ -11,6 +11,7 @@ FileHandle* OpenLocalFile(const std::string&, FileMode) { return nullptr; }
 bool WriteFileAtomically(const std::string&, const std::function<bool(const FileWriteCallback&)>&, bool) { return false; }
 bool LocalFileExists(const std::string&) { return false; }
 #ifndef MELONDS_TEST_FILE_EXISTS
+std::string GetLocalFilePath(const std::string& path) { return path; }
 bool FileExists(const std::string&) { return false; }
 #endif
 #ifndef MELONDS_TEST_MEMORY_FILES

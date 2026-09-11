@@ -5,6 +5,7 @@
 // fixtures: they do not prove worker durability or producer acknowledgement.
 // Those integration boundaries are covered separately by SaveManagerIO and the
 // frontend build. No production SaveManager API is required for the baseline red.
+// SD cases reuse the full current FATStorage/FatFs and Qt file I/O fixture.
 #include <QApplication>
 #include <QAbstractButton>
 #include <QCloseEvent>
@@ -26,6 +27,10 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#define FAT_STORAGE_IO_ONLY
+#include "FATStorageLifecycle.cpp"
+#undef FAT_STORAGE_IO_ONLY
 
 namespace Config
 {
@@ -107,6 +112,8 @@ struct EmuInstance
     std::array<MainWindow*, kMaxWindows> windows{};
     MainWindow* mainWindow = nullptr;
     std::unique_ptr<SaveManager> ndsSave, gbaSave, firmwareSave;
+    std::array<std::unique_ptr<melonDS::FATStorage>, 2> sdCards;
+    std::array<melonDS::FATStorage*, 2> getSDCards() { return {sdCards[0].get(), sdCards[1].get()}; }
 
     EmuThread* getEmuThread() { return &thread; }
     MainWindow* getMainWindow() { return mainWindow; }
@@ -168,7 +175,9 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     if (argc != 2) return 2;
-    const std::string scenario = argv[1];
+    const std::string argument = argv[1];
+    const bool sd = argument.starts_with("sd-");
+    const std::string scenario = sd ? argument.substr(3) : argument;
     if (scenario == "app-state")
     {
         EmuInstance instance;
@@ -186,14 +195,14 @@ int main(int argc, char** argv)
         std::printf("closed-window application-state delivery: %s\n", passed ? "PASS" : "FAIL");
         return passed ? 0 : 1;
     }
-    const bool childCancel = scenario == "child-cancel";
+    const bool childCancel = scenario == "child-cancel" || (sd && scenario == "child-retry");
     const bool secondary = scenario == "secondary";
-    const bool clean = scenario == "clean";
-    const bool retry = scenario == "retry";
+    const bool clean = scenario == "clean" || (sd && scenario == "readonly");
+    const bool retry = scenario == "retry" || (sd && scenario == "child-retry");
     const bool recovery = scenario == "recovery" || scenario == "recovery-cancel" || scenario == "recovery-failure";
     const bool accepts = clean || retry || scenario == "recovery";
     if (!childCancel && !secondary && !accepts && !recovery &&
-        scenario != "cancel-ds" && scenario != "cancel-gba" && scenario != "cancel-firmware") return 2;
+        scenario != "cancel-ds" && scenario != "cancel-gba" && scenario != "cancel-firmware" && !(sd && scenario == "cancel-dldi")) return 2;
 
     QTemporaryDir directory;
     if (!directory.isValid()) return 2;
@@ -235,6 +244,49 @@ int main(int argc, char** argv)
     if (clean)
         for (auto* manager : {parentInstance.ndsSave.get(), parentInstance.gbaSave.get(), parentInstance.firmwareSave.get()})
             manager->pending = false;
+    FATStorage* card = nullptr;
+    QString imagePath, hostPath, indexPath;
+    QByteArray imageBefore, indexBefore;
+    const auto guestPayload = ExportTest::Payload(12291);
+    const QByteArray hostEdit("independent host edit"), copyOriginal("existing recovery destination");
+    ExportTest::ReplacementLock copyLock;
+    if (sd)
+    {
+        for (auto* save : {parentInstance.ndsSave.get(), parentInstance.gbaSave.get(),
+                parentInstance.firmwareSave.get(), childInstance.ndsSave.get()})
+        { save->pending = false; save->failFlush = false; }
+        imagePath = directory.filePath("card.img");
+        indexPath = imagePath + ".idx";
+        const auto folder = directory.filePath("folder");
+        Require(QDir().mkdir(folder), "generated SD folder");
+        hostPath = folder + "/KEEP.BIN";
+        WriteBytes(hostPath, original);
+        auto& owner = childCancel ? childInstance : parentInstance;
+        auto& slot = owner.sdCards[scenario == "cancel-dldi" ? 1 : 0];
+        slot = std::make_unique<FATStorage>(imagePath.toStdString(), Capacity,
+            scenario == "readonly", folder.toStdString());
+        card = slot.get();
+        Require(card->IsValid(), "generated SD image");
+        indexBefore = read(indexPath);
+        if (!clean)
+        {
+            ff_disk_open([&](BYTE* data, LBA_t start, UINT count) { return card->ReadSectors(start, count, data); },
+                [&](const BYTE* data, LBA_t start, UINT count) { return card->WriteSectors(start, count, data); }, card->GetSectorCount());
+            FATFS volume;
+            Require(f_mount(&volume, "0:", 1) == FR_OK && f_unlink("0:/KEEP.BIN") == FR_OK && f_unmount("0:") == FR_OK,
+                "actual guest deletion before close");
+            ff_disk_close();
+            Require(card->InjectFile("NEW.BIN", reinterpret_cast<u8*>(const_cast<char*>(guestPayload.constData())), guestPayload.size()),
+                "pending guest data for recovery image");
+            WriteBytes(hostPath, hostEdit);
+        }
+        imageBefore = read(imagePath);
+        if (scenario == "recovery-failure")
+        {
+            WriteBytes(recoveryPath, copyOriginal);
+            copyLock.Lock(recoveryPath);
+        }
+    }
     // A cancelled close must undo only its own pause, including a prior pause.
     parentInstance.thread.depth = scenario == "cancel-ds" ? 1 : 0;
     const int previousDepth = parentInstance.thread.depth;
@@ -254,6 +306,7 @@ int main(int argc, char** argv)
     QCoreApplication::processEvents();
 
     int prompts = 0, fileDialogs = 0;
+    QPointer<QFileDialog> handledFileDialog;
     bool timedOut = false, allProducersPaused = true;
     QElapsedTimer elapsed;
     elapsed.start();
@@ -265,13 +318,20 @@ int main(int argc, char** argv)
         {
             check(!(box->standardButtons() & QMessageBox::Discard), "Close offered an unconditional discard action");
             auto* cancel = box->button(QMessageBox::Cancel);
-            if (!cancel) { box->accept(); return; }
+            if (!cancel)
+            {
+                if (auto* yes = box->button(QMessageBox::Yes)) yes->click();
+                else box->accept();
+                return;
+            }
             ++prompts;
+            if (sd) check(box->text().contains("image", Qt::CaseInsensitive), "SD warning does not explain image recovery");
             allProducersPaused &= parentInstance.thread.depth > previousDepth;
             if (childCancel) allProducersPaused &= childInstance.thread.depth > 0;
             if (!timedOut && prompts == 1 && retry)
             {
                 target->failFlush = false;
+                if (sd) WriteBytes(hostPath, original);
                 auto* button = box->button(QMessageBox::Retry);
                 check(button != nullptr, "Save failure has no Retry action");
                 (button ? button : cancel)->click();
@@ -286,13 +346,17 @@ int main(int argc, char** argv)
         }
         else if (auto* dialog = qobject_cast<QFileDialog*>(modal))
         {
+            if (handledFileDialog == dialog) return;
+            handledFileDialog = dialog;
             ++fileDialogs;
             check(dialog->testOption(QFileDialog::DontUseNativeDialog), "Recovery dialog did not explicitly disable native dialogs");
             if (timedOut || scenario == "recovery-cancel") dialog->reject();
             else
             {
                 dialog->selectFile(recoveryPath);
-                check(QMetaObject::invokeMethod(dialog, "accept", Qt::DirectConnection), "Could not accept the Qt recovery file dialog");
+                // Let this timer return before QFileDialog opens its nested
+                // overwrite confirmation, so the actor can answer that too.
+                check(QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection), "Could not accept the Qt recovery file dialog");
             }
         }
     });
@@ -312,7 +376,7 @@ int main(int argc, char** argv)
     {
         check(!accepted && root && !parentInstance.destroyed && parentInstance.deletions == 0,
               "Close was accepted or a window was destroyed after save recovery was cancelled");
-        check(target->pending && read(originalPath) == original, "Cancel lost pending data or changed the original save");
+        check((sd || target->pending) && read(originalPath) == original, "Cancel lost pending data or changed the original save");
         check(Config::saves == 0 && parentInstance.enabledWrites == 0, "Cancel persisted closing-window configuration");
         check(parentInstance.thread.depth == previousDepth && parentInstance.thread.pauses == 1 && parentInstance.thread.unpauses == 1,
               "Cancel did not restore exactly the pre-close pause state");
@@ -327,9 +391,11 @@ int main(int argc, char** argv)
     else
     {
         check(accepted && !root && parentInstance.destroyed, "Successful close did not destroy the final window/instance");
-        if (retry) check(!target->pending && read(originalPath) == target->latest && target->flushes >= 2,
+        if (childCancel) check(!extra && !child && !grandchild && childInstance.destroyed,
+            "Successful retry did not close the complete instance subtree");
+        if (retry && !sd) check(!target->pending && read(originalPath) == target->latest && target->flushes >= 2,
                          "Retry closed before the latest original save committed");
-        if (scenario == "recovery")
+        if (scenario == "recovery" && !sd)
             check(target->pending && read(originalPath) == original && read(recoveryPath) == target->latest &&
                   QString::fromStdString(target->GetPath()) == originalPath,
                   "Recovery copy was missing or treated as a successful original save");
@@ -340,11 +406,36 @@ int main(int argc, char** argv)
         check(allProducersPaused && !target->usedWhileRunning, "Save recovery ran before every closing producer was paused");
     }
     if (recovery) check(fileDialogs == 1, "Recovery path selection did not use one real Qt file dialog");
-    if (scenario == "recovery-cancel") check(target->copies == 0, "Cancelling the file picker still wrote a recovery copy");
-    if (scenario == "recovery-failure") check(target->copies == 1 && read(recoveryPath).isEmpty(), "Failed recovery copy was accepted or left a file");
+    if (scenario == "recovery-cancel" && !sd) check(target->copies == 0, "Cancelling the file picker still wrote a recovery copy");
+    if (scenario == "recovery-failure" && !sd) check(target->copies == 1 && read(recoveryPath).isEmpty(), "Failed recovery copy was accepted or left a file");
     check(!parentInstance.thread.broadcastUsed && !childInstance.thread.broadcastUsed, "Close pause changed unrelated instances through broadcast");
+    if (sd)
+    {
+        check(card->IsValid(), "close preflight replaced the live SD storage");
+        if (!clean && !retry)
+            check(read(imagePath) == imageBefore && read(indexPath) == indexBefore && read(hostPath) == hostEdit,
+                "SD cancel/recovery changed original image, index or conflicting host bytes");
+        if (retry)
+            check(!QFile::exists(hostPath) && read(QFileInfo(hostPath).dir().filePath("NEW.BIN")) == guestPayload,
+                "same-live-card Retry did not finish folder synchronization");
+        if (scenario == "recovery")
+        {
+            auto expectedImage = imageBefore;
+            expectedImage.resize(Capacity, '\0');
+            check(read(recoveryPath) == expectedImage, "recovery does not contain byte-exact logical guest image");
+            FATStorage recovered(recoveryPath.toStdString(), 0, true);
+            QByteArray actual(guestPayload.size(), '\0');
+            check(recovered.IsValid() && recovered.GetSectorCount() == Capacity / 512 &&
+                recovered.ReadFile("NEW.BIN", 0, actual.size(), reinterpret_cast<u8*>(actual.data())) == actual.size() && actual == guestPayload,
+                "separate recovered image could not reload actual guest data");
+        }
+        if (scenario == "recovery-failure")
+            check(read(recoveryPath) == copyOriginal && !accepted, "failed SD copy damaged destination or accepted close");
+        if (scenario == "recovery-cancel")
+            check(!QFile::exists(recoveryPath), "cancelled SD file picker wrote a recovery image");
+    }
     delete root.data();
-    std::printf("Frontend close %s: %d failures\n", scenario.c_str(), failures);
+    std::printf("Frontend close %s: %d failures\n", argument.c_str(), failures);
     return failures ? 1 : 0;
 }
 

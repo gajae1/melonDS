@@ -784,23 +784,22 @@ void MainWindow::saveEnabled(bool enabled)
 
 bool MainWindow::flushSaveManagers(EmuInstance* instance)
 {
-    const std::pair<SaveManager*, QString> saves[] = {
-        {instance->ndsSave.get(), tr("DS save data")},
-        {instance->gbaSave.get(), tr("GBA save data")},
-        {instance->firmwareSave.get(), tr("firmware data")},
-    };
-
-    for (const auto& [save, name] : saves)
+    const auto flush = [&](auto* save, const QString& name, bool image)
     {
-        if (!save || save->Flush()) continue;
+        if (!save || save->Flush()) return true;
 
         bool copyFailed = false;
         for (;;)
         {
             const QString originalPath = QString::fromStdString(save->GetPath());
-            QString detail = tr("The %1 could not be saved to its original file:\n%2\n\n"
-                                "Retry saving, cancel closing to keep the data in this session, "
-                                "or save a recovery copy to another location.").arg(name, originalPath);
+            QString detail = image
+                ? tr("The %1 could not synchronize its files with the selected folder.\n\n"
+                     "SD image: %2\n\nRetry folder synchronization, cancel closing to keep this session, "
+                     "or save an image copy to another location. "
+                     "The image copy preserves the SD contents but does not update the folder.").arg(name, originalPath)
+                : tr("The %1 could not be saved to its original file:\n%2\n\n"
+                     "Retry saving, cancel closing to keep the data in this session, "
+                     "or save a recovery copy to another location.").arg(name, originalPath);
             if (copyFailed)
                 detail += tr("\n\nThe recovery copy could not be saved either. Closing has not continued.");
 
@@ -831,16 +830,33 @@ bool MainWindow::flushSaveManagers(EmuInstance* instance)
             dialog.setAcceptMode(QFileDialog::AcceptSave);
             dialog.setFileMode(QFileDialog::AnyFile);
             dialog.setDirectory(QFileInfo(originalPath).absolutePath());
-            dialog.selectFile(QFileInfo(originalPath).fileName() + ".recovery");
+            dialog.selectFile(QFileInfo(originalPath).fileName() + (image ? ".recovery.img" : ".recovery"));
             if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty())
                 return false;
 
-            // A recovery copy authorizes closing; it does not commit the
-            // original path or clear the manager's pending original save.
+            // A copy authorizes closing, without acknowledging the original
+            // save or the SD folder sync. Cancel elsewhere can still resume it.
             if (save->SaveCopy(dialog.selectedFiles().first().toStdString())) break;
             copyFailed = true;
         }
-    }
+        return true;
+    };
+
+    const std::pair<SaveManager*, QString> saves[] = {
+        {instance->ndsSave.get(), tr("DS save data")},
+        {instance->gbaSave.get(), tr("GBA save data")},
+        {instance->firmwareSave.get(), tr("firmware data")},
+    };
+    for (const auto& [save, name] : saves)
+        if (!flush(save, name, false)) return false;
+
+    const auto cards = instance->getSDCards();
+    const std::pair<FATStorage*, QString> sdSaves[] = {
+        {cards[0], tr("DSi SD card")},
+        {cards[1], tr("DLDI SD card")},
+    };
+    for (const auto& [card, name] : sdSaves)
+        if (!flush(card, name, true)) return false;
     return true;
 }
 

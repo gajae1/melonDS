@@ -108,6 +108,7 @@ std::string GetLocalFilePath(const std::string& path) { return path; }
 #undef f_read
 #undef f_close
 
+#ifndef FAT_STORAGE_IO_ONLY
 static void TestExport(const std::string& scenario, const QString& path, const QString& source)
 {
     using namespace ExportTest;
@@ -411,6 +412,74 @@ static void TestDeletion(const std::string& mode, const QString& path, const QSt
     std::printf("PASS: delete-%s\n", mode.c_str());
 }
 
+static void TestRecovery(const std::string& mode, const QString& path, const QString& source)
+{
+    using namespace ExportTest;
+    const QString host = source + "/KEEP.BIN", index = path + ".idx";
+    const QString copy = QFileInfo(path).dir().filePath("recovery.img");
+    const auto original = ExportTest::Bytes(host), guest = Payload(12291);
+    FATStorage storage(path.toStdString(), Capacity, false, source.toStdString());
+    Check(storage.IsValid(), "recovery seed");
+    ff_disk_open([&](BYTE* data, LBA_t start, UINT count) { return storage.ReadSectors(start, count, data); },
+        [&](const BYTE* data, LBA_t start, UINT count) { return storage.WriteSectors(start, count, data); }, storage.GetSectorCount());
+    FATFS volume;
+    Check(f_mount(&volume, "0:", 1) == FR_OK && f_unlink("0:/KEEP.BIN") == FR_OK && f_unmount("0:") == FR_OK,
+        "recovery actual guest deletion");
+    ff_disk_close();
+    Check(storage.InjectFile("NEW.BIN", reinterpret_cast<u8*>(const_cast<char*>(guest.constData())), guest.size()), "recovery pending guest bytes");
+    Put(host, "independent host edit");
+    const auto imageBefore = ExportTest::Bytes(path), indexBefore = ExportTest::Bytes(index);
+    Check(!storage.Flush(), "live folder conflict is reported");
+    if (mode == "aliases")
+    {
+        QStringList aliases{path, index, QDir::current().relativeFilePath(path), QFileInfo(path).dir().filePath("./card.img")};
+#ifdef _WIN32
+        aliases.append(path.toUpper());
+        const QString hardlink = QFileInfo(path).dir().filePath("hardlink.img");
+        Check(CreateHardLinkW(reinterpret_cast<LPCWSTR>(hardlink.utf16()), reinterpret_cast<LPCWSTR>(path.utf16()), nullptr), "generated hardlink alias");
+        aliases.append(hardlink);
+#endif
+        const QString directoryAlias = QFileInfo(path).dir().filePath("copy-root-alias");
+        if (DirectoryAlias(QFileInfo(path).absolutePath(), directoryAlias))
+            aliases << directoryAlias + "/card.img" << directoryAlias + "/card.img.idx";
+        Reset();
+        for (const auto& alias : aliases) Check(!storage.SaveCopy(alias.toStdString()), "recovery rejects image/index alias");
+        Check(commits == 0, "aliases rejected before atomic commit");
+        active = false;
+    }
+    if (mode == "errors")
+    {
+        Put(copy, "previous recovery bytes");
+        failure = Failure::Read;
+        Check(!storage.SaveCopy(copy.toStdString()) && failure == Failure::None && ExportTest::Bytes(copy) == "previous recovery bytes",
+            "recovery read error preserves destination");
+#ifdef _WIN32
+        ReplacementLock lock;
+        lock.Lock(copy);
+        Check(!storage.SaveCopy(copy.toStdString()) && ExportTest::Bytes(copy) == "previous recovery bytes", "locked recovery commit preserves destination");
+        lock.Unlock();
+#endif
+    }
+    Check(ExportTest::Bytes(path) == imageBefore && ExportTest::Bytes(index) == indexBefore && !storage.Flush(),
+        "failed copies retain original image index and live conflict");
+    Check(storage.SaveCopy(copy.toStdString()), "separate recovery succeeds");
+    auto expected = imageBefore;
+    expected.resize(Capacity, '\0');
+    Check(ExportTest::Bytes(copy) == expected, "streamed logical image is byte exact");
+    {
+        FATStorage restored(copy.toStdString(), 0, true);
+        QByteArray actual(guest.size(), '\0');
+        Check(restored.IsValid() && restored.GetSectorCount() == Capacity / 512 &&
+            restored.ReadFile("NEW.BIN", 0, actual.size(), reinterpret_cast<u8*>(actual.data())) == actual.size() && actual == guest,
+            "recovery image reloads without original index");
+    }
+    Check(!storage.Flush() && ExportTest::Bytes(index) == indexBefore, "successful copy does not acknowledge folder conflict");
+    Put(host, original);
+    Check(storage.Flush() && !QFile::exists(host) && ExportTest::Bytes(source + "/NEW.BIN") == guest,
+        "same live storage retries resolved conflict");
+    std::printf("PASS: recovery-%s (image bytes=%lld)\n", mode.c_str(), static_cast<long long>(expected.size()));
+}
+
 static void TestReconciliation(const std::string& mode, const QString& path, const QString& source)
 {
     using namespace ExportTest;
@@ -499,6 +568,12 @@ int main(int argc, char** argv)
     QByteArray payload(8193, '\0');
     for (qsizetype i = 0; i < payload.size(); ++i) payload[i] = char((i * 17 + i / 512 + 9) & 255);
     WriteBytes(hostFile, payload);
+
+    if (scenario.starts_with("recovery-"))
+    {
+        TestRecovery(scenario.substr(9), path, source);
+        return 0;
+    }
 
     if (scenario.starts_with("delete-"))
     {
@@ -615,3 +690,5 @@ int main(int argc, char** argv)
     Require(openImages == 0 && Bytes(hostFile) == payload, "lifetime or host file preservation");
     std::printf("PASS: %s\n", scenario.c_str());
 }
+
+#endif // FAT_STORAGE_IO_ONLY

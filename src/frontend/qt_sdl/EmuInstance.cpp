@@ -586,6 +586,16 @@ static bool FlushSave(SaveManager* save, QString& errorstr)
     return false;
 }
 
+std::array<FATStorage*, 2> EmuInstance::getSDCards()
+{
+    std::array<FATStorage*, 2> cards{};
+    if (!nds) return cards;
+    if (auto* dsi = dynamic_cast<DSi*>(nds)) cards[0] = dsi->SDMMC.GetSDCard();
+    if (auto* cart = dynamic_cast<NDSCart::CartSD*>(nds->GetNDSCart()); cart && cart->GetSDCard())
+        cards[1] = &*cart->GetSDCard();
+    return cards;
+}
+
 bool EmuInstance::flushSaveData(QString& errorstr)
 {
     for (SaveManager* save : {ndsSave.get(), gbaSave.get(), firmwareSave.get()})

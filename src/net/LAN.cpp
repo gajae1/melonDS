@@ -306,6 +306,7 @@ bool LAN::StartClient(const char* playername, const char* host)
 
 void LAN::EndSession()
 {
+    ++PendingStops;
     std::lock_guard lock(SessionMutex);
     EndDiscovery();
     Active = false;
@@ -338,6 +339,7 @@ void LAN::EndSession()
     ClientInitReceived = false;
     Connection = ClientState::Idle;
     DiscoveryList.clear();
+    --PendingStops;
 }
 
 LAN::ClientState LAN::GetClientState()
@@ -959,7 +961,7 @@ bool LAN::ValidateMPPacket(const ENetEvent& event) const
 // 2 = waiting for a MP frame
 void LAN::ProcessLAN(int type, u32 timeout)
 {
-    if (!Host) return;
+    if (!Host || PendingStops.load()) return;
 
     u64 time_last = Platform::GetMSCount();
 
@@ -1001,29 +1003,51 @@ void LAN::ProcessLAN(int type, u32 timeout)
 
     ENetEvent event;
     // A stream of control packets must yield to UI cancellation/frame work.
-    for (unsigned received = 0; received < 64; ++received)
+    for (unsigned received = 0; received < 64;)
     {
-        const u64 waitStarted = timeout ? Platform::GetMSCount() : 0;
-        const int result = enet_host_service(Host, &event, timeout);
-        if (timeout)
+        if (PendingStops.load()) return;
+        // Preserve the configured receive deadline while making shutdown
+        // observable even when a user has selected a long inactivity wait.
+        const u32 wait = std::min(timeout, 25u);
+        const u64 waitStarted = wait ? Platform::GetMSCount() : 0;
+        const int result = enet_host_service(Host, &event, wait);
+        if (wait)
         {
             const u64 waitEnded = Platform::GetMSCount();
             if (waitEnded >= waitStarted)
             {
                 const u64 waited = waitEnded - waitStarted;
                 ++Stats.WaitSamples;
-                Stats.RequestedWaitMS += timeout;
+                Stats.RequestedWaitMS += wait;
                 Stats.WaitTimeMS += waited;
                 Stats.MaxWaitMS = std::max(Stats.MaxWaitMS, waited);
             }
             else
                 ++Stats.ClockRegressions;
         }
+        if (PendingStops.load())
+        {
+            if (result > 0 && event.type == ENET_EVENT_TYPE_RECEIVE)
+                enet_packet_destroy(event.packet);
+            return;
+        }
         if (result <= 0)
         {
             if (result < 0) ++Stats.ServiceErrors;
+            if (result == 0 && timeout > wait)
+            {
+                const u64 time = Platform::GetMSCount();
+                const u64 elapsed = time - time_last;
+                // A backwards or stationary clock must not extend the wait
+                // or turn a zero-result service call into a busy loop.
+                if (!elapsed || elapsed >= timeout) return;
+                timeout -= static_cast<u32>(elapsed);
+                time_last = time;
+                continue;
+            }
             return;
         }
+        ++received; // Empty wait slices do not spend the packet work limit.
         if (event.type == ENET_EVENT_TYPE_RECEIVE && event.channelID == Chan_MP)
         {
             if (!ValidateMPPacket(event))
@@ -1077,6 +1101,7 @@ void LAN::ProcessLAN(int type, u32 timeout)
 
 void LAN::Process()
 {
+    if (PendingStops.load()) return;
     std::lock_guard lock(SessionMutex);
     if (!Active) return;
 
@@ -1138,8 +1163,9 @@ void LAN::End(int inst)
 
 int LAN::SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp)
 {
+    if (PendingStops.load()) return 0;
     std::lock_guard lock(SessionMutex);
-    if (!Host || Connection != ClientState::Connected || len < 0 || len > 0x2000 || (!packet && len)) return 0;
+    if (PendingStops.load() || !Host || Connection != ClientState::Connected || len < 0 || len > 0x2000 || (!packet && len)) return 0;
 
     // TODO make the reliable part optional?
     //u32 flags = ENET_PACKET_FLAG_RELIABLE;
@@ -1175,12 +1201,12 @@ int LAN::SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp)
 
 int LAN::RecvPacketGeneric(u8* packet, bool block, u64* timestamp, u32 capacity)
 {
-    if (!packet || !capacity) return 0;
+    if (PendingStops.load() || !packet || !capacity) return 0;
     std::lock_guard lock(SessionMutex);
     if (!Host || Connection != ClientState::Connected) return 0;
 
     ProcessLAN(block ? 2 : 1, block ? std::max(GetRecvTimeout(), 0) : 0);
-    if (RXQueue.empty()) return 0;
+    if (PendingStops.load() || RXQueue.empty()) return 0;
 
     ENetPacket* enetpacket = RXQueue.front();
     RXQueue.pop();
@@ -1234,6 +1260,7 @@ int LAN::SendAck(int inst, u8* packet, int len, u64 timestamp)
 
 int LAN::RecvHostPacket(int inst, u8* packet, u64* timestamp, u32 capacity)
 {
+    if (PendingStops.load()) return 0;
     std::lock_guard lock(SessionMutex);
     if (Connection == ClientState::Disconnected) return -1;
     if (LastHostID != -1)
@@ -1249,6 +1276,7 @@ int LAN::RecvHostPacket(int inst, u8* packet, u64* timestamp, u32 capacity)
 
 u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
 {
+    if (PendingStops.load()) return 0;
     std::lock_guard lock(SessionMutex);
     if (!Host || Connection != ClientState::Connected) return 0;
     ++Stats.ReplyCalls;
@@ -1271,10 +1299,11 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
     // of already available packets, leaving the rest for the next call.
     for (unsigned received = 0; received < 64; ++received)
     {
+        if (PendingStops.load()) return partialResult();
         const u64 elapsed = Platform::GetMSCount() - started;
         if (received && timeout && elapsed >= timeout) return partialResult();
         ProcessLAN(2, elapsed < timeout ? timeout - static_cast<u32>(elapsed) : 0);
-        if (RXQueue.empty())
+        if (PendingStops.load() || RXQueue.empty())
         {
             // no more replies available
             return partialResult();

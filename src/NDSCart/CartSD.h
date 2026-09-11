@@ -34,6 +34,7 @@ public:
     ~CartSD() override;
 
     [[nodiscard]] const std::optional<FATStorage>& GetSDCard() const noexcept { return SD; }
+    [[nodiscard]] std::optional<FATStorage>& GetSDCard() noexcept { return SD; }
     void SetSDCard(FATStorage&& sdcard) noexcept
     {
         SD = std::move(sdcard);

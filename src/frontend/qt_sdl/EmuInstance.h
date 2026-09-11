@@ -94,6 +94,7 @@ public:
     int getConsoleType() { return consoleType; }
     EmuThread* getEmuThread() { return emuThread; }
     melonDS::NDS* getNDS() { return nds; }
+    std::array<melonDS::FATStorage*, 2> getSDCards();
 
     MainWindow* getMainWindow() { return mainWindow; }
     int getNumWindows() { return numWindows; }

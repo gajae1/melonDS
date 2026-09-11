@@ -69,6 +69,11 @@ public:
     [[nodiscard]] bool IsValid() const noexcept { return File != nullptr; }
     u64 GetSectorCount() const;
 
+    // The caller must pause guest writers through flush, recovery, and close.
+    bool Flush();
+    bool SaveCopy(const std::string& destination);
+    const std::string& GetPath() const noexcept { return FilePath; }
+
 private:
     std::string FilePath;
     std::string IndexPath;
