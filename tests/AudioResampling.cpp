@@ -9,7 +9,7 @@
 #include <vector>
 using namespace melonDS;
 
-static std::vector<s16> CapturePCM(bool dsi, AudioBitDepth depth, bool applySetter)
+static std::vector<s16> CapturePCM(bool dsi, AudioBitDepth depth, bool applySetter, bool chunked = false)
 {
     NDSArgs args;
     args.JIT.reset();
@@ -42,12 +42,30 @@ static std::vector<s16> CapturePCM(bool dsi, AudioBitDepth depth, bool applySett
         nds->ARM7Write16(0x04000500, 0x807F); // Enable mixer, full volume.
         nds->ARM7Write32(0x04000400, 0xA840007F); // PCM16, repeat, center pan.
         nds->Start();
-        std::array<s16, 4096> samples{};
+        std::array<s16, 4098> samples{};
         for (unsigned frame = 0; frame < 3; ++frame)
         {
             nds->RunFrame();
-            const int count = nds->SPU.ReadOutput(samples.data(), samples.size() / 2);
-            result.insert(result.end(), samples.begin(), samples.begin() + count * 2);
+            if (!chunked)
+            {
+                const int count = nds->SPU.ReadOutput(samples.data(), 2048);
+                result.insert(result.end(), samples.begin(), samples.begin() + count * 2);
+                continue;
+            }
+            constexpr s16 guard = 0x6AAD;
+            // Consume the same actual PCM with empty/short/oversized requests;
+            // three frames also take the ring across its wrap boundary.
+            for (int request : {0, 1, 7, 63, 256, 511, 2048, 1})
+            {
+                samples.fill(guard);
+                const int count = nds->SPU.ReadOutput(samples.data() + 1, request);
+                if (count < 0 || count > request || samples.front() != guard ||
+                    !std::all_of(samples.begin() + 1 + count * 2, samples.end(),
+                                 [](s16 sample) { return sample == guard; }))
+                    return {};
+                result.insert(result.end(), samples.begin() + 1, samples.begin() + 1 + count * 2);
+            }
+            if (nds->SPU.GetOutputSize() != 0) return {};
         }
     }
     return result;
@@ -64,6 +82,11 @@ static bool TestInitialBitDepth()
             std::none_of(sixteen.begin(), sixteen.end(), [](s16 sample) { return sample != 0; }))
         {
             std::fprintf(stderr, "Audio bitdepth %s: reference signal cannot distinguish policies\n", dsi ? "DSi" : "DS");
+            return false;
+        }
+        if (CapturePCM(dsi, AudioBitDepth::_16Bit, true, true) != sixteen)
+        {
+            std::fprintf(stderr, "Audio chunked read changes %s PCM or destination guards\n", dsi ? "DSi" : "DS");
             return false;
         }
         for (auto depth : {AudioBitDepth::Auto, AudioBitDepth::_10Bit, AudioBitDepth::_16Bit})

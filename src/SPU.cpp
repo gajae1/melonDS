@@ -1178,17 +1178,19 @@ int SPU::ReadOutput(s16* data, int samples)
         return 0;
     }
 
-    for (int i = 0; i < samples; i++)
+    if (samples > 0)
     {
-        *data++ = OutputBuffer[OutputBufferReadPos++];
-        *data++ = OutputBuffer[OutputBufferReadPos++];
-        OutputBufferReadPos &= ((2*OutputBufferSize)-1);
-
-        if (OutputBufferWritePos == OutputBufferReadPos)
-        {
-            Platform::Mutex_Unlock(AudioLock);
-            return i+1;
-        }
+        const u32 capacity = 2 * OutputBufferSize;
+        const u32 available = (OutputBufferWritePos - OutputBufferReadPos) & (capacity - 1);
+        samples = std::min<u32>(samples, available / 2);
+        const u32 count = 2 * samples;
+        const u32 first = std::min(count, capacity - OutputBufferReadPos);
+        // The ring is contiguous on either side of its wrap; keep stereo order
+        // and publish the new read position once, under the existing lock.
+        memcpy(data, OutputBuffer + OutputBufferReadPos, first * sizeof(s16));
+        if (count > first)
+            memcpy(data + first, OutputBuffer, (count - first) * sizeof(s16));
+        OutputBufferReadPos = (OutputBufferReadPos + count) & (capacity - 1);
     }
 
     Platform::Mutex_Unlock(AudioLock);

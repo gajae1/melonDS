@@ -54,6 +54,12 @@ extern QString emuDirectory;
 
 extern QElapsedTimer sysTimer;
 
+// Frontend startup state: when the GUI discards stdout (no inherited output
+// stream and no parent console), Platform::Log stops formatting because the
+// NUL sink would drop every byte. Defaults to logging enabled, so any logging
+// that happens before the startup sink choice is unchanged.
+void SetFrontendLogDiscard(bool discard);
+
 // GUI-only scope: stop every running worker before native context creation or
 // window publication. Nested scopes share loans; only the outermost returns them.
 // No worker message waits or instance destruction are allowed inside the scope.

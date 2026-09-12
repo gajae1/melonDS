@@ -46,6 +46,15 @@ extern CameraManager* camManager[2];
 
 extern melonDS::Net net;
 
+// Set once from the GUI startup path in main.cpp before any emulation thread
+// exists, and read-only afterwards. See SetFrontendLogDiscard in main.h.
+static bool g_frontendLogDiscard = false;
+
+void SetFrontendLogDiscard(bool discard)
+{
+    g_frontendLogDiscard = discard;
+}
+
 namespace melonDS::Platform
 {
 
@@ -314,6 +323,9 @@ u64 FileLength(FileHandle* file)
 void Log(LogLevel level, const char* fmt, ...)
 {
     if (fmt == nullptr)
+        return;
+
+    if (g_frontendLogDiscard)
         return;
 
     va_list args;

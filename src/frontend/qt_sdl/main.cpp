@@ -392,7 +392,9 @@ int main(int argc, char** argv)
         else
         {
             // Otherwise, discard log output.
-            freopen("NUL:", "w", stdout);
+            // Confirmed NUL stdout: stop formatting logs that would be dropped.
+            if (freopen("NUL:", "w", stdout))
+                SetFrontendLogDiscard(true);
             freopen("NUL:", "w", stderr);
         }
     }
