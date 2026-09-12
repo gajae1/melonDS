@@ -351,6 +351,14 @@ finish or readback precedes the production consumer. These cases cover selected
 sizes and destination bank wrap, not DMA, warmed JIT, mid-capture timing or all
 2D source-A layers. Software is a control, not a universal hardware oracle.
 
+`GLFrameReadback capture-jit <software|opengl|compute>` warms one ARM9 load block
+on RAM, then reuses it for live source-A capture reads at scanlines 32, 80 and
+208. CPU-first and DMA-first controls cover normal JIT/fastmem, 16/32-bit loads,
+128/256-pixel widths and destination bank wrap (24 software and 48 per GL backend
+including 2x). Completed lines, future-line poison and the DMA result are checked
+without a fixture readback. Fastmem reaches VRAM through its production fallback;
+this is not direct VRAM host mapping or a subscanline/hardware timing test.
+
 `GLFrameReadback gl-resource <normal|common-fail|3d-fail>` records real driver
 program/buffer/texture generation and deletion. Normal teardown repeats twice
 in one current context. Fault cases compile a deliberately invalid first shader;

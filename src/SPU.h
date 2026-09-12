@@ -119,6 +119,15 @@ public:
         {
             KeyOn = true;
         }
+        else if (!(Cnt & (1<<31)) &&
+                 ((oldcnt & (1<<31)) || ((oldcnt & (1<<15)) && !(Cnt & (1<<15)))))
+        {
+            // Explicit stop or release of a held sample. A natural one-shot
+            // end clears Busy directly and retains its last sample period.
+            KeyOn = false;
+            CurSample = 0;
+            PrevSample[0] = PrevSample[1] = PrevSample[2] = 0;
+        }
     }
 
     void SetSrcAddr(u32 val) { SrcAddr = val & 0x07FFFFFC; }

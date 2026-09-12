@@ -78,7 +78,7 @@ ASan/UBSan/TSan의 지원 조합 표와 추가 JIT 통합은 BV-11의 후속 과
 
 [1.1.29](releases/1.1.29.md)의 `lan-packet-validation`, `lan-loopback-session`, `lan-ui-session`은 packet 경계와 실제 loopback/Qt 연결·취소·재시도를 구분한다. `input-dialog-selection-`과 `frontend-joystick-`는 가상 장치·임시 설정·일부 serial/센서 대역을 사용한다. `dsi-title-`는 생성 NAND·실제 FatFs/암호/I/O와 통제한 실패 경계를 사용한다. 실제 매체·게임·실물 입력·다른 OS 결과로 확대하지 않는다. 같은 최종 소스의 전체 548/548 성공은 재사용한다.
 
-[1.1.30](releases/1.1.30.md)의 같은 LAN fixture는 실제 4명·늦은 참가/준비·클라이언트 command/reply·ID 재사용을 추가한다. `savestate-load-audio-`는 성공/실패 복귀 뒤 실제 SDL dummy callback과 새로 생성한 PCM을 대조한다. `gpu-*-capture-jit`는 source A의 DMA 첫 소비 뒤 동일 JIT 블록을 재사용하며, 캡처를 끈 poison 대조도 확인한다. native VRAM fastmem mapping·JIT-first·실기/물리 장치 검증으로 확대하지 않는다.
+[1.1.30](releases/1.1.30.md)의 같은 LAN fixture는 실제 4명·늦은 참가/준비·클라이언트 command/reply·ID 재사용을 추가한다. `savestate-load-audio-`는 성공/실패 복귀 뒤 실제 SDL dummy callback과 새로 생성한 PCM을 대조한다. 1.1.62의 `gpu-*-capture-jit`는 RAM에서 준비한 동일 JIT 읽기 블록으로 source A를 CPU-first/DMA-first 순서로 소비한다. 일반 JIT/fastmem, 16/32비트, 128/256폭·bank wrap, GL1x/2x에서 과거/미래 줄과 poison 대조를 확인한다. VRAM은 기존 동기화 fallback을 사용하며 직접 host 매핑·subscanline latch·실기/물리 장치 검증으로 확대하지 않는다.
 
 한 변경 기록에 소스 기준·변경 ID·빌드 종류·compiler/의존성 버전·관련 옵션·실행 명령·입력 종류·기대 결과·실패/성공/skip·남은 범위를 적는다.
 재현 입력은 합성 자료를 우선하고 실제 게임·저장 파일은 공개 자료에 넣지 않는다. 공개 가능한 digest와 필요한 비식별 환경 정보만 사용한다.

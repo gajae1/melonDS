@@ -383,3 +383,14 @@ far 코드 버퍼의 실제 용량 소진/자동 리셋 후 SMC는1.1.59 고정 
 기준1.1.60의 생성56조건에서448검사 실패를 확인했고, 시작만 연결한 중간 후보의 과거 overflow 재현에서는112검사가 실패했다. 최종60사례/실행모드에서 양 CPU·타이머4개·연쇄·IRQ on/off·ARM9 클록 전환·짧은 최종 블록·완료/비활성·pending 저장/복원을 확인했다. 실제 guest STR로 채널과 타이머를 켜서 RunFrame으로 전송했으며 JIT/fastmem의 warm 재실행은 기존 블록 보존·코드 추가 생성 없음과 데이터/PC/IRQ를 확인했다. 전체 Windows805/805(80.58초, 실패/skip0), JIT OFF 영향 범위3/3이 통과했다.
 
 현행14.2 및 원본1.1 slot2 블랙 상태를 세 renderer에서 각각600프레임 재생한 마지막 화면은 같은 renderer의1.1.60과 같고 개인 입력 hash를 보존했다. 타이머 요청은 기존 scheduler 단위로 처리하며 물리 DSi 시작 지연·subblock interval·round-robin·버스 중재·native ARM/실기 timing은 완료하지 않았다. CJ-04 겹친 MPU 갱신 후보는 분석 근거만 확보했고 제품 통합은 남는다. GitHub Actions·macOS 빌드는 사용하지 않는다.
+
+
+2026-09-13, 1.1.62: AD-07의 PCM8/16·ADPCM one-shot HOLD를 구현한다. 마지막 sample 시작에서 Busy를 내리고 마지막 주기 끝까지 출력을 유지하며, HOLD이면 유지 출력을 계속한다. 재시작의 첫 주기 유지와 뒤따르는 무음 주기는 [GBATEK Sound Notes](https://fabiensanglard.net/another_world_polygons_GBA/gbatech.html#dssoundnotes)에 따라 보존한다. 수동 stop·HOLD 해제·reset은 잔여값을 정리하고 새 상태 필드나 포맷을 추가하지 않는다. 실제 mixer/resampler·capture 경로의10개 명시적 PCM 연속 파형 대조와6개96-sample 종료 timeline이 통과했다. 기존 버전의 HOLD on은 캡처가12288/-8192/4097 대신0이었고 Busy가두 half-period 늦게 내려갔다.
+
+첫 HOLD 후보는 구형14.2의 수동중지 상태에서 남은 내부 sample을 재생했다. 이전 코어가 실제 MMIO·전체 savestate로 만든8개 상태를 대조하고, 자연 one-shot 마지막 구간을 제외한 비활성 채널의 잔여값을 불러오기 때 정리했다. 수정 후8개 캡처와1604-frame PCM이 이전 코어와 같고 새 held-state의 저장/복원도 통과했다. 구형 수동중지가 정확히 마지막 sample과 겹친 상태와 HOLD 중 format/repeat/length를 바꾼 상태는 저장 정보만으로 구분하기 어려워 AD-07/CJ-10 후속으로 남긴다. 실기·물리 오디오·sub-mixer timing 수락은 별도다.
+
+CJ-19/GR-05/06은 RAM에서 준비한 같은 native load 블록으로 source A를 CPU-first/DMA-first 순서로 읽는다. 일반 JIT/fastmem·16/32비트·128/256폭·bank wrap·GL1x/2x의120조건에서 캡처960값과 준비 단계960값이 통과했다. 실제 VCOUNT polling·guest load/즉시 DMA를 사용하며 미완료 줄은 poison을 유지한다. 이 범위에서는 새 렌더러 결함이 재현되지 않아 제품 그래픽 코드는 유지했다. fastmem은 기존 VRAM 동기화 fallback을 사용하며 직접 host 매핑이나 성능 개선을 주장하지 않는다. 모든2D source A·subscanline latch·VCOUNT 변경·다른 driver/native A64·실기/게임은 후속이다.
+
+최종 Windows 빌드와 전체806/806(87.13초, 실패·skip0), JIT OFF 오디오 영향 범위2/2가 통과했다. 배포322파일·PE129개의 import와 독립 PATH 실행도 확인했다. 이 증분은 오디오 의미 수정과 캡처 검증 공백 해소이며 전체 FPS·물리 지연 개선을 주장하지 않는다. GitHub Actions·macOS 빌드는 사용하지 않는다.
+
+현행14.2와 원본1.1 slot2(형식13)의 블랙 상태를 세 renderer에서 각각600프레임 재생했고 같은 renderer의 마지막 화면은1.1.61과 같다. 개인 입력 파일 hash를 보존했다. 전체 게임 오디오·모든 상태의 일반 호환이나 모든 프레임의 timing 동등성으로 확대하지 않는다.

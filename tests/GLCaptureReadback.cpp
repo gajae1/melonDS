@@ -227,11 +227,25 @@ int CheckCaptureReadback(const char* backend)
 
 namespace
 {
-bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool write,
-                   bool relocate = false, bool warmed = false)
+struct CaptureJIT
 {
+    bool FastMemory;
+    bool CPUFirst;
+    bool Word;
+};
+
+bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool write,
+                   bool relocate = false, const CaptureJIT* jit = nullptr)
+{
+    const bool warmed = jit != nullptr;
+    const bool cpuFirst = warmed && jit->CPUFirst;
+    const bool word = warmed && jit->Word;
+    const auto loadValue = [word](u16 value) -> u32 {
+        return word ? value | (u32(value) << 16) : value;
+    };
     NDSArgs args;
     args.JIT = warmed ? std::optional{JITArgs{}} : std::nullopt;
+    if (warmed) args.JIT->FastMemory = jit->FastMemory;
     Scene scene;
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
@@ -275,7 +289,7 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
     const u32 addresses[] = {0x04000006, address(24), address(40), address(64),
         address(8), address(120), 0x04000064, test.Source == 4 ? capture | (1u << 29) : 0x81070000,
         relocated(40), relocated(64), relocated(8), relocated(120),
-        0x040000B0, Results + 0x100, 0x80000001};
+        0x040000B0, Results + 0x100, word ? 0x84000001u : 0x80000001u};
     for (unsigned i = 0; i < std::size(addresses); ++i)
         nds->ARM9Write32(Addresses + i * 4, addresses[i]);
 
@@ -283,7 +297,7 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
     // callback, artificial GL flush, or direct framebuffer read resolves it.
     constexpr u32 ReadCode = 0x02014000;
     std::vector<u32> program;
-    std::vector<u16> expected;
+    std::vector<u32> expected;
     const auto waitLine = [&](unsigned line) {
         program.insert(program.end(), {0xE5980000, 0xE1D010B0,
             0xE3510000 | line, 0x1AFFFFFC}); // LDR address; LDRH; CMP; BNE
@@ -292,7 +306,7 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
         // BLX r7 gives the load its own block, even with branch optimization.
         program.insert(program.end(), {0xE5980000 | (index * 4), warmed ? 0xE12FFF37u : 0xE1D010B0u,
             0xE5891000 | (static_cast<u32>(expected.size()) * 4)});
-        expected.push_back(value);
+        expected.push_back(loadValue(value));
     };
     const auto pixel = [&](bool triangle) {
         return test.Source == 4 ? Blue : test.Source == 3 ? Red : Expected(test, triangle);
@@ -307,16 +321,24 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
         program.insert(program.end(), {0xE5980018, 0xE598101C, 0xE5801000});
     else
     {
+        if (cpuFirst)
+        {
+            read(1, pixel(true));
+            read(2, Poison);
+        }
         if (test.Source == 1 || warmed)
         {
-            // Start an actual immediate ARM9 DMA from live capture VRAM before
-            // the CPU itself reads it. Its destination is separate guest RAM.
+            // The control uses DMA first. CPU-first cases reach the same DMA
+            // only after the warmed load has read completed and future lines.
             program.insert(program.end(), {0xE5980030, 0xE5981004, 0xE5801000,
                 0xE5981034, 0xE5801004, 0xE5981038, 0xE5801008});
             read(13, pixel(true));
         }
-        read(1, pixel(true));
-        read(2, Poison);
+        if (!cpuFirst)
+        {
+            read(1, pixel(true));
+            read(2, Poison);
+        }
     }
     if (test.Source == 4) read(4, Green);
     if (write)
@@ -348,7 +370,7 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
         nds->ARM9Write32(Code + i * 4, program[i]);
     if (warmed)
     {
-        nds->ARM9Write32(ReadCode, 0xE1D010B0); // LDRH r1,[r0]
+        nds->ARM9Write32(ReadCode, word ? 0xE5901000 : 0xE1D010B0); // LDR/LDRH r1,[r0]
         nds->ARM9Write32(ReadCode + 4, 0xE12FFF1E); // BX lr
     }
     const auto startGuest = [&] {
@@ -371,17 +393,20 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
     JitBlockEntry warmEntry = nullptr;
     if (warmed)
     {
-        // First run: capture disabled, so DMA and every CPU probe must see
-        // poison. Repeated calls compile and then execute the same load block.
-        // Its RAM load can use fastmem; VRAM uses the production slow path.
+        // Warm on RAM only. With fastmem, the first live VRAM read must patch
+        // the existing native load through the production memory handler.
+        // No earlier VRAM read or DMA may synchronize the CPU-first capture.
+        nds->ARM9Write32(Results + 0x200, loadValue(Poison));
+        for (unsigned i = 1; i <= 5; ++i)
+            nds->ARM9Write32(Addresses + i * 4, Results + 0x200);
         startGuest();
         nds->RunFrame();
         for (unsigned i = 0; i < expected.size(); ++i)
         {
             const u32 actual = nds->ARM9Read32(Results + i * 4);
-            if (actual != Poison)
+            if (actual != loadValue(Poison))
             {
-                std::fprintf(stderr, "capture warm result %u: %04x expected %04x\n", i, actual, Poison);
+                std::fprintf(stderr, "capture warm result %u: %08x expected %08x\n", i, actual, loadValue(Poison));
                 ++warmErrors;
             }
         }
@@ -393,11 +418,13 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
         }
         fastmem = nds->JIT.FastMemoryEnabled();
         compiled = warmEntry && nds->IsJITEnabled();
-        if (nds->ARM9.R[11] != 1 || !compiled || !fastmem) ++warmErrors;
+        if (nds->ARM9.R[11] != 1 || !compiled || fastmem != jit->FastMemory) ++warmErrors;
+        for (unsigned i = 1; i <= 5; ++i)
+            nds->ARM9Write32(Addresses + i * 4, addresses[i]);
     }
 #endif
     // Do not rewrite code or reset the JIT between the poison and capture runs.
-    // On the second run DMA is the first capture consumer, at scanline 32.
+    // The selected first consumer reaches live capture VRAM at scanline 32.
     startGuest();
     scene.Submit(*nds);
     nds->ARM9Write32(0x04000064, capture);
@@ -426,8 +453,8 @@ bool RunMidCapture(const char* backend, const CaptureCase& test, int scale, bool
         backend, test.Size, test.Offset, test.Source, scale, write, relocate, errors, nds->ARM9.R[11]);
     if (warmed)
     {
-        std::printf("capture_jit=%s warm_reads=%zu warm_errors=%u fastmem=%d compiled=%d reused=%d results=",
-            backend, expected.size(), warmErrors, fastmem, compiled, reused);
+        std::printf("capture_jit=%s first=%s width=%u warm_reads=%zu warm_errors=%u fastmem=%d compiled=%d reused=%d results=",
+            backend, cpuFirst ? "cpu" : "dma", word ? 32u : 16u, expected.size(), warmErrors, fastmem, compiled, reused);
         for (unsigned i = 0; i < expected.size(); ++i)
             std::printf("%s%04x", i ? "," : "", nds->ARM9Read32(Results + i * 4));
         std::printf("\n");
@@ -459,10 +486,20 @@ int CheckJitCapture(const char* backend)
     if (std::strcmp(backend, "software") && std::strcmp(backend, "opengl") && std::strcmp(backend, "compute")) return 2;
 #ifdef JIT_ENABLED
     if (!ARMJIT_Memory::IsFastMemSupported()) return 77;
-    // Opaque red triangle on green clear color, captured from source A into B.
-    // At line 32: DMA sees red, while line 40 is still poison. At line 80:
-    // line 40 is red, line 64 is green, and line 120 is still poison.
-    return RunMidCapture(backend, {0, 1, 0, false}, 1, false, false, true) ? 0 : 1;
+    // Source A: opaque red triangle on green clear, captured into B. Exercise
+    // both first consumers and both native load widths, including bank wrap.
+    constexpr CaptureCase cases[] = {{0, 1, 0, false}, {3, 0, 0, false}, {3, 3, 0, false}};
+    bool passed = true;
+    for (const auto& test : cases)
+    for (int scale = 1; scale <= (std::strcmp(backend, "software") ? 2 : 1); ++scale)
+    for (bool fastmem : {false, true})
+    for (bool cpuFirst : {false, true})
+    for (bool word : {false, true})
+    {
+        const CaptureJIT jit{fastmem, cpuFirst, word};
+        passed &= RunMidCapture(backend, test, scale, false, false, &jit);
+    }
+    return passed ? 0 : 1;
 #else
     return 77;
 #endif

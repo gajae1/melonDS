@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <vector>
 using namespace melonDS;
@@ -201,8 +202,286 @@ static bool TestCaptureSource()
     return passed;
 }
 
-int main()
+static bool TestOneShotHoldTiming()
 {
+    // Drive the public Mix entry point in its normal 512-cycle quanta, with
+    // the scheduler's normal pre-dispatch cancellation. Observe only ARM7
+    // MMIO and capture RAM; no private channel state or injected results.
+    constexpr u32 source = 0x02004000, dest = 0x02008000;
+    constexpr u32 guard = 0x5A5A5A5A;
+    bool passed = true;
+    for (unsigned format = 0; format < 3; ++format)
+    for (bool hold : {false, true})
+    {
+        NDSArgs args;
+        args.JIT.reset();
+        auto nds = std::make_unique<NDS>(std::move(args));
+        nds->Reset();
+        nds->SPU.SetInterpolation(AudioInterpolation::None);
+        nds->ARM7Write16(0x04000304, 1);
+        nds->ARM7Write16(0x04000504, 0x0200);
+        nds->ARM7Write16(0x04000500, 0x807F);
+        for (unsigned i = 0; i < 16; ++i) nds->ARM7Write8(source + i, 0);
+        const s16 last = format == 0 ? 12288 : format == 1 ? -8192 : 4097;
+        if (format == 0)
+        {
+            for (unsigned i = 0; i < 16; ++i) nds->ARM7Write8(source + i, i == 15 ? 48 : 16);
+        }
+        else if (format == 1)
+        {
+            for (unsigned i = 0; i < 8; ++i) nds->ARM7Write16(source + i * 2, u16(i == 7 ? last : 4096));
+        }
+        else
+        {
+            nds->ARM7Write32(source, 4096);
+            nds->ARM7Write8(source + 15, 0x10);
+        }
+        nds->ARM7Write32(0x04000404, source);
+        nds->ARM7Write32(0x04000408, 0x0000FC00); // Two mixer ticks per source period.
+        nds->ARM7Write32(0x0400040C, 4);
+        const u32 control = 0x9040007F | (format << 29) | (hold ? 0x8000 : 0);
+        nds->ARM7Write32(0x04000400, control);
+        nds->ARM7Write16(0x04000418, 0xFE00); // Capture every half source period.
+        nds->ARM7Write32(0x04000510, dest);
+        for (unsigned i = 0; i < 200; i += 4) nds->ARM7Write32(dest - 4 + i, guard);
+        nds->ARM7Write16(0x04000514, 48); // 96 captured half periods.
+        nds->ARM7Write8(0x04000508, 0x86);
+        auto tick = [&] {
+            nds->CancelEvent(Event_SPU);
+            nds->SPU.Mix(512);
+        };
+        const unsigned first = format == 2 ? 22 : 6;
+        const unsigned count = format == 0 ? 16 : format == 1 ? 8 : 24;
+        const unsigned final = first + 2 * (count - 1);
+        std::array<bool, 96> busy;
+        for (unsigned i = 0; i < busy.size(); ++i)
+        {
+            tick();
+            busy[i] = (nds->ARM7Read32(0x04000400) >> 31) != 0;
+        }
+        unsigned dataErrors = 0, busyErrors = 0;
+        for (unsigned i = 0; i < busy.size(); ++i)
+        {
+            const unsigned time = i + 1;
+            const s16 expected = time < first ? 0 : time < final ? 4096 :
+                time < final + 2 || hold ? last : 0;
+            dataErrors += s16(nds->ARM7Read16(dest + i * 2)) != expected;
+            busyErrors += busy[i] != (time < final);
+        }
+        const bool guards = nds->ARM7Read32(dest - 4) == guard && nds->ARM7Read32(dest + 192) == guard;
+        std::printf("HOLD timing format=%u hold=%u final-tick=%u busy-before/final/after=%u/%u/%u capture-final/half/end=%d/%d/%d data-errors=%u busy-errors=%u guards=%u\n",
+            format, hold, final, busy[final - 2], busy[final - 1], busy[final],
+            s16(nds->ARM7Read16(dest + (final - 1) * 2)), s16(nds->ARM7Read16(dest + final * 2)),
+            s16(nds->ARM7Read16(dest + (final + 1) * 2)), dataErrors, busyErrors, guards);
+        passed &= !dataErrors && !busyErrors && guards && !(nds->ARM7Read8(0x04000508) & 0x80);
+        if (format != 1) continue;
+
+        // Each observation captures two real consecutive mixer ticks. A
+        // four-byte capture commits both samples and clears capture Busy.
+        auto pair = [&](const char* name, s16 expected0, s16 expected1, bool expectedBusy) {
+            nds->ARM7Write32(dest, guard);
+            nds->ARM7Write16(0x04000514, 1);
+            nds->ARM7Write8(0x04000508, 0x86);
+            tick();
+            const bool busy0 = (nds->ARM7Read32(0x04000400) >> 31) != 0;
+            tick();
+            const s16 actual0 = s16(nds->ARM7Read16(dest)), actual1 = s16(nds->ARM7Read16(dest + 2));
+            const bool busy1 = (nds->ARM7Read32(0x04000400) >> 31) != 0;
+            const bool ok = actual0 == expected0 && actual1 == expected1 &&
+                busy0 == expectedBusy && busy1 == expectedBusy && !(nds->ARM7Read8(0x04000508) & 0x80);
+            std::printf("HOLD control hold=%u %s capture=%d/%d expected=%d/%d busy=%u/%u: %s\n",
+                hold, name, actual0, actual1, expected0, expected1, busy0, busy1, ok ? "PASS" : "FAIL");
+            passed &= ok;
+        };
+        const s16 held = hold ? last : 0;
+        nds->ARM7Write16(0x04000500, 0x007F);
+        nds->ARM7Write32(dest, guard);
+        nds->ARM7Write16(0x04000514, 1);
+        nds->ARM7Write8(0x04000508, 0x86);
+        tick(); tick();
+        passed &= nds->ARM7Read32(dest) == guard && (nds->ARM7Read8(0x04000508) & 0x80) &&
+            !(nds->ARM7Read32(0x04000400) & 0x80000000);
+        nds->ARM7Write16(0x04000500, 0x807F);
+        tick(); tick();
+        passed &= s16(nds->ARM7Read16(dest)) == held && s16(nds->ARM7Read16(dest + 2)) == held;
+        pair("master-reenabled", held, held, false);
+        nds->ARM7Write16(0x04000304, 0);
+        pair("sound-power-off-capture", held, held, false);
+        nds->ARM7Write16(0x04000304, 1);
+
+        // A new key-on must refill the real source FIFO. GBATEK documents
+        // retained output only in the first PCM startup period with HOLD.
+        for (unsigned i = 0; i < 8; ++i) nds->ARM7Write16(source + i * 2, 6144);
+        nds->ARM7Write8(0x04000403, u8(control >> 24));
+        pair("retrigger-first-period", held, 0, true);
+        pair("retrigger-dummy-periods", 0, 0, true);
+        pair("retrigger-first-sample", 0, 6144, true);
+        // Preserve the existing explicit Stop behavior; retention on a
+        // manual stop with HOLD set has no independent hardware oracle here.
+        nds->ARM7Write16(0x04000402, u16((control & ~0x80000000u) >> 16));
+        pair("explicit-stop", 0, 0, false);
+        nds->ARM7Write32(0x04000400, control);
+        for (unsigned i = 0; i < 24; ++i) tick();
+        pair("retrigger-completed", hold ? 6144 : 0, hold ? 6144 : 0, false);
+        nds->ARM7Write8(0x04000401, 0); // Clear HOLD without setting Start.
+        pair("clear-hold", 0, 0, false);
+        nds->ARM7Write8(0x04000401, 0x80);
+        pair("hold-after-clear", 0, 0, false);
+        nds->ARM7Write32(0x04000400, control | 0x8000);
+        for (unsigned i = 0; i < 24; ++i) tick();
+        pair("held-before-reset", 6144, 6144, false);
+        // The inactive-state compatibility normalization must preserve an
+        // actual newly completed HOLD through the public serializer, too.
+        Savestate heldState;
+        if (!nds->DoSavestate(&heldState)) return false;
+        heldState.Finish();
+        if (heldState.Error) return false;
+        nds->Reset();
+        Savestate restored(heldState.Buffer(), heldState.Length(), false);
+        if (!nds->DoSavestate(&restored) || restored.Error) return false;
+        pair("held-state-roundtrip", 6144, 6144, false);
+        nds->Reset();
+        nds->ARM7Write16(0x04000500, 0x807F);
+        nds->ARM7Write32(0x04000400, 0x3040807F); // HOLD alone after reset.
+        nds->ARM7Write16(0x04000418, 0xFE00);
+        nds->ARM7Write32(0x04000510, dest);
+        pair("reset-no-stale-sample", 0, 0, false);
+    }
+    return passed;
+}
+
+static bool TestOneShotHold()
+{
+    // GBATEK DS Sound Notes: one-shot HOLD keeps the final decoded sample
+    // after Busy clears. The oracle is an explicit PCM16 continuation of
+    // that waveform, through the same real mixer/resampler/capture path.
+    // https://problemkaputt.de/gbatek.htm#dssoundnotes
+    constexpr u32 source = 0x02004000, destination = 0x02008000;
+    constexpr u32 guard = 0x5A5A5A5A;
+    bool passed = true;
+    for (auto interpolation : {AudioInterpolation::None, AudioInterpolation::Linear,
+             AudioInterpolation::Cosine, AudioInterpolation::Cubic, AudioInterpolation::SNESGaussian})
+    for (unsigned format = 0; format < 3; ++format)
+    for (bool hold : {false, true})
+    {
+        // All formats use the hardware path; optional filters need only the
+        // shared PCM16 HOLD transition, with a different signed final sample.
+        if (interpolation != AudioInterpolation::None && (format != 1 || !hold)) continue;
+        const s16 last = format == 0 ? 12288 : format == 1 ? -8192 : 4097;
+        const unsigned count = format == 0 ? 16 : format == 1 ? 8 : 24;
+        const unsigned padding = format == 2 ? 8 : 0;
+        std::array<std::vector<s16>, 2> output;
+        std::array<std::vector<s16>, 2> captured;
+        for (unsigned reference = 0; reference < 2; ++reference)
+        {
+            NDSArgs args;
+            args.JIT.reset();
+            args.BitDepth = AudioBitDepth::_16Bit;
+            auto nds = std::make_unique<NDS>(std::move(args));
+            nds->Reset();
+            nds->SPU.SetInterpolation(interpolation);
+            nds->ARM9.Halt(1);
+            nds->ARM7.Halt(1);
+            nds->ARM7Write16(0x04000304, 1);
+            nds->ARM7Write16(0x04000504, 0x0200);
+            nds->ARM7Write16(0x04000500, 0x807F);
+            if (reference)
+            {
+                for (unsigned i = 0; i < 4096; ++i)
+                {
+                    const s16 sample = i < padding ? 0 : i < padding + count - 1 ? 4096 :
+                        i == padding + count - 1 || hold ? last : 0;
+                    nds->ARM7Write16(source + i * 2, u16(sample));
+                }
+            }
+            else if (format == 0)
+            {
+                for (unsigned i = 0; i < 16; ++i)
+                    nds->ARM7Write8(source + i, i == 15 ? 48 : 16);
+            }
+            else if (format == 1)
+            {
+                for (unsigned i = 0; i < 8; ++i)
+                    nds->ARM7Write16(source + i * 2, u16(i == 7 ? last : 4096));
+            }
+            else
+            {
+                // Index 0, step 7: 23 zero nibbles leave 4096 unchanged;
+                // the final nibble 1 adds exactly 1, with index still zero.
+                nds->ARM7Write32(source, 4096);
+                for (unsigned i = 4; i < 16; ++i)
+                    nds->ARM7Write8(source + i, i == 15 ? 0x10 : 0);
+            }
+            nds->ARM7Write32(0x04000404, source);
+            nds->ARM7Write32(0x04000408, 0x0000FE00);
+            nds->ARM7Write32(0x0400040C, reference ? 2048 : 4);
+            nds->ARM7Write32(0x04000400, 0x9040007F |
+                ((reference ? 1 : format) << 29) | (!reference && hold ? 0x8000 : 0));
+            nds->ARM7Write16(0x04000418, 0xFE00);
+            nds->ARM7Write16(0x04000438, 0xFE00);
+            nds->Start();
+            std::array<s16, 4096> samples;
+            auto frame = [&] {
+                nds->RunFrame();
+                const int frames = nds->SPU.ReadOutput(samples.data(), samples.size() / 2);
+                output[reference].insert(output[reference].end(), samples.begin(), samples.begin() + frames * 2);
+            };
+            frame();
+            for (unsigned unit = 0; unit < 2; ++unit)
+            {
+                const u32 dest = destination + unit * 64;
+                for (unsigned i = 0; i < 40; i += 4) nds->ARM7Write32(dest - 4 + i, guard);
+                nds->ARM7Write32(0x04000510 + unit * 8, dest);
+                nds->ARM7Write16(0x04000514 + unit * 8, 8);
+                nds->ARM7Write8(0x04000508 + unit, unit == 0 ? 0x86 : 0x84);
+            }
+            frame();
+            if (format == 1 && interpolation == AudioInterpolation::None)
+            {
+                // Compare the complete audible mute/resume transients, too.
+                nds->ARM7Write16(0x04000500, 0x007F);
+                frame();
+                nds->ARM7Write16(0x04000500, 0x807F);
+                frame();
+                nds->ARM7Write16(0x04000304, 0);
+                frame();
+                nds->ARM7Write16(0x04000304, 1);
+                frame();
+            }
+            const bool busy = (nds->ARM7Read32(0x04000400) >> 31) != 0;
+            for (unsigned unit = 0; unit < 2; ++unit)
+            {
+                const u32 dest = destination + unit * 64;
+                const s16 expected = hold ? (unit == 0 ? last : last / 2) : 0;
+                unsigned mismatches = 0;
+                for (unsigned i = 0; i < 32; i += 2)
+                {
+                    const s16 actual = s16(nds->ARM7Read16(dest + i));
+                    captured[reference].push_back(actual);
+                    if (interpolation == AudioInterpolation::None) mismatches += actual != expected;
+                }
+                const bool intact = nds->ARM7Read32(dest - 4) == guard && nds->ARM7Read32(dest + 32) == guard;
+                const bool captureStopped = !(nds->ARM7Read8(0x04000508 + unit) & 0x80);
+                std::printf("HOLD format=%u hold=%u interp=%u reference=%u tap=%s capture=%d hardware-mismatches=%u busy=%u guards=%u stopped=%u\n",
+                    format, hold, unsigned(interpolation), reference, unit == 0 ? "channel" : "mixer", s16(nds->ARM7Read16(dest)),
+                    mismatches, busy, intact, captureStopped);
+                passed &= !mismatches && intact && captureStopped && busy == bool(reference);
+            }
+        }
+        const auto diff = std::mismatch(output[0].begin(), output[0].end(), output[1].begin(), output[1].end());
+        const bool equal = !output[0].empty() && output[0] == output[1] && captured[0] == captured[1];
+        std::printf("HOLD output format=%u hold=%u interp=%u frames=%zu reference-frames=%zu first-difference=%zu actual=%d expected=%d: %s\n",
+            format, hold, unsigned(interpolation), output[0].size() / 2, output[1].size() / 2, size_t(diff.first - output[0].begin()),
+            diff.first == output[0].end() ? 0 : *diff.first, diff.second == output[1].end() ? 0 : *diff.second,
+            equal ? "PASS" : "FAIL");
+        passed &= equal;
+    }
+    return TestOneShotHoldTiming() && passed;
+}
+
+int main(int argc, char** argv)
+{
+    if (argc == 2 && std::strcmp(argv[1], "one-shot-hold") == 0) return TestOneShotHold() ? 0 : 6;
     if (!TestCaptureSource()) return 5;
     if (!TestInitialBitDepth()) return 4;
     NDSArgs args;

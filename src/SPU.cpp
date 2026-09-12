@@ -38,7 +38,6 @@ using Platform::LogLevel;
 
 // SPU TODO
 // * capture addition modes, overflow bugs
-// * channel hold
 
 
 const s8 SPUChannel::ADPCMIndexTable[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
@@ -372,6 +371,8 @@ SPUChannel::SPUChannel(u32 num, melonDS::NDS& nds, AudioInterpolation interpolat
 void SPUChannel::Reset()
 {
     KeyOn = false;
+    CurSample = 0;
+    PrevSample[0] = PrevSample[1] = PrevSample[2] = 0;
 
     SetCnt(0);
     SrcAddr = 0;
@@ -418,6 +419,24 @@ void SPUChannel::DoSavestate(Savestate* file)
     file->Var32(&FIFOReadOffset);
     file->Var32(&FIFOLevel);
     file->VarArray(FIFO, sizeof(FIFO));
+
+    if (!file->Saving && !file->Error && !(Cnt & (1<<31)))
+    {
+        // Older manual stops left decoded samples in the savestate. Only a
+        // natural one-shot end can still have an audible final period/HOLD.
+        const u32 format = (Cnt >> 29) & 0x3;
+        u32 samples = LoopPos + Length;
+        if      (format == 1) samples >>= 1;
+        else if (format == 2) samples <<= 1;
+        const bool last = format < 3 && ((Cnt >> 27) & 0x3) == 2 &&
+            Pos >= 0 && u32(Pos) + 1 == samples;
+        if (!last)
+        {
+            KeyOn = false;
+            CurSample = 0;
+            PrevSample[0] = PrevSample[1] = PrevSample[2] = 0;
+        }
+    }
 }
 
 void SPUChannel::FIFO_BufferData()
@@ -488,7 +507,8 @@ void SPUChannel::Start()
     PrevSample[0] = 0;
     PrevSample[1] = 0;
     PrevSample[2] = 0;
-    CurSample = 0;
+    // HOLD survives the first startup period, before the dummy samples.
+    if (!(Cnt & (1<<15))) CurSample = 0;
 
     FIFOReadPos = 0;
     FIFOWritePos = 0;
@@ -506,7 +526,7 @@ void SPUChannel::Start()
 void SPUChannel::NextSample_PCM8()
 {
     Pos++;
-    if (Pos < 0) return;
+    if (Pos < 0) { CurSample = 0; return; }
     if (Pos >= (LoopPos + Length))
     {
         u32 repeat = (Cnt >> 27) & 0x3;
@@ -516,7 +536,7 @@ void SPUChannel::NextSample_PCM8()
         }
         else if (repeat & 2)
         {
-            CurSample = 0;
+            if (!(Cnt & (1<<15))) CurSample = 0;
             Cnt &= ~(1<<31);
             return;
         }
@@ -524,12 +544,14 @@ void SPUChannel::NextSample_PCM8()
 
     s8 val = FIFO_ReadData<s8>();
     CurSample = val << 8;
+    if (((Cnt >> 27) & 0x3) == 2 && (Pos + 1) >= (LoopPos + Length))
+        Cnt &= ~(1<<31);
 }
 
 void SPUChannel::NextSample_PCM16()
 {
     Pos++;
-    if (Pos < 0) return;
+    if (Pos < 0) { CurSample = 0; return; }
     if ((Pos<<1) >= (LoopPos + Length))
     {
         u32 repeat = (Cnt >> 27) & 0x3;
@@ -539,7 +561,7 @@ void SPUChannel::NextSample_PCM16()
         }
         else if (repeat & 2)
         {
-            CurSample = 0;
+            if (!(Cnt & (1<<15))) CurSample = 0;
             Cnt &= ~(1<<31);
             return;
         }
@@ -547,6 +569,8 @@ void SPUChannel::NextSample_PCM16()
 
     s16 val = FIFO_ReadData<s16>();
     CurSample = val;
+    if (((Cnt >> 27) & 0x3) == 2 && ((Pos + 1) << 1) >= (LoopPos + Length))
+        Cnt &= ~(1<<31);
 }
 
 void SPUChannel::NextSample_ADPCM()
@@ -554,6 +578,7 @@ void SPUChannel::NextSample_ADPCM()
     Pos++;
     if (Pos < 8)
     {
+        CurSample = 0;
         if (Pos == 0)
         {
             // setup ADPCM
@@ -581,7 +606,7 @@ void SPUChannel::NextSample_ADPCM()
         }
         else if (repeat & 2)
         {
-            CurSample = 0;
+            if (!(Cnt & (1<<15))) CurSample = 0;
             Cnt &= ~(1<<31);
             return;
         }
@@ -622,6 +647,8 @@ void SPUChannel::NextSample_ADPCM()
     }
 
     CurSample = ADPCMVal;
+    if (((Cnt >> 27) & 0x3) == 2 && ((Pos + 1) >> 1) >= (LoopPos + Length))
+        Cnt &= ~(1<<31);
 }
 
 void SPUChannel::NextSample_PSG()
@@ -647,9 +674,14 @@ void SPUChannel::NextSample_Noise()
 template<u32 type>
 s32 SPUChannel::Run(u32 cycles)
 {
-    if (!(Cnt & (1<<31))) return 0;
+    // Busy clears at the BEGIN of the last one-shot sample period. Continue
+    // that period, HOLD and interpolation without reading further samples.
+    // https://problemkaputt.de/gbatek.htm#dssoundnotes
+    if (!(Cnt & (1<<31)) && CurSample == 0 &&
+        (InterpType == AudioInterpolation::None ||
+         (PrevSample[0] == 0 && PrevSample[1] == 0 && PrevSample[2] == 0))) return 0;
 
-    if ((type < 3) && ((Length+LoopPos) < 16)) return 0;
+    if ((Cnt & (1<<31)) && (type < 3) && ((Length+LoopPos) < 16)) return 0;
 
     if (KeyOn)
     {
@@ -675,6 +707,12 @@ s32 SPUChannel::Run(u32 cycles)
             PrevSample[0] = CurSample;
         }
 
+        if (!(Cnt & (1<<31)))
+        {
+            if (!(Cnt & (1<<15))) CurSample = 0;
+            continue;
+        }
+
         switch (type)
         {
         case 0: NextSample_PCM8(); break;
@@ -684,7 +722,6 @@ s32 SPUChannel::Run(u32 cycles)
         case 4: NextSample_Noise(); break;
         }
 
-        if (!(Cnt & (1<<31))) break;
     }
 
     s32 val = (s32)CurSample;
