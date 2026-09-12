@@ -709,6 +709,34 @@ static int DSSaveCapacity(const string& test)
                 f.Load();
             }
         }
+        else if (test == "ds-capacity-profile")
+        {
+            // Prime the real SaveManager first, so a full first capture cannot
+            // conceal a wrong dirty range on a later page/chip-wrapping write.
+            for (u32 type : {11u, 12u, 13u, 14u})
+            {
+                DSSaveFixture f(131072 + 17);
+                f.Load(type);
+                const unsigned width = type == 13 ? 3 : 2;
+                DSWrite(f.Cart(), 0x02, width, 0x27, QByteArray::fromHex("96"));
+                f.expected[0x27] = char(0x96); f.Flush();
+                const u32 page = type == 11 ? 32 : type == 12 ? 128 : 256;
+                const u32 start = type == 14 ? 32767 : 3 * page - 1;
+                const u32 next = type == 14 ? 0 : 2 * page;
+                DSWrite(f.Cart(), 0x02, width, start, QByteArray::fromHex("a619c3"));
+                f.expected[start] = char(0xA6); f.expected[next] = char(0x19);
+                f.expected[next + 1] = char(0xC3); f.Flush();
+                f.Load(type);
+                RequireDSCapacity(DSRead(f.Cart(), 0x03, width, next, 2) == QByteArray::fromHex("19c3"),
+                    "explicit profile lost page/chip wrap through disk reload");
+                f.Load(); // Raw capacity alone must not retain a manual profile.
+                RequireDSCapacity(f.Cart().GetROMParams().SaveMemType == 2,
+                    "Automatic inherited a manual EEPROM/FRAM profile from padded bytes");
+            }
+            DSSaveFixture ambiguous(32768);
+            RequireDSCapacity(ambiguous.Cart().GetROMParams().SaveMemType == 2,
+                "A 32KiB file alone must not identify FRAM");
+        }
         else if (test == "ds-capacity-flash")
         {
             DSSaveFixture f(524288 + 17);
@@ -850,7 +878,9 @@ static int ManualDSSave(const string& test)
             struct Chip { u32 type, length, width; u8 write, read; };
             for (const auto chip : {Chip{1,512,1,0x0A,0x0B}, Chip{2,8192,2,0x02,0x03},
                 Chip{3,65536,2,0x02,0x03}, Chip{4,131072,3,0x02,0x03},
-                Chip{5,262144,3,0x0A,0x03}, Chip{6,524288,3,0x0A,0x03}, Chip{7,1048576,3,0x0A,0x03}})
+                Chip{5,262144,3,0x0A,0x03}, Chip{6,524288,3,0x0A,0x03}, Chip{7,1048576,3,0x0A,0x03},
+                Chip{11,8192,2,0x02,0x03}, Chip{12,65536,2,0x02,0x03},
+                Chip{13,131072,3,0x02,0x03}, Chip{14,32768,2,0x02,0x03}})
             {
                 const auto name = QString("manual-%1.nds").arg(chip.type);
                 RequireDSCapacity(load(prepared(name), chip.type), "manual initial DS load");
@@ -924,7 +954,7 @@ static int ManualDSSave(const string& test)
                     ReadSaveFile(oldPath) == oldBytes && ndsSaveCalls == callbacks,
                     "rejected manual DS request changed live cart/save ownership, bytes or callbacks");
             };
-            for (u32 type : {8u, 10u, UINT32_MAX})
+            for (u32 type : {8u, 10u, 15u, UINT32_MAX})
             {
                 RequireDSCapacity(!loader.loadROM({"unread.nds"}, false, error, {}, {}, type) && !error.isEmpty(), "invalid raw DS option accepted");
                 auto data = prepared("unread.nds"); auto* input = data->Bytes.get();

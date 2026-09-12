@@ -26,7 +26,7 @@
 
 #define SAVESTATE_MAJOR 14
 #define SAVESTATE_MINOR 2
-#define SAVESTATE_MAX_MINOR 6
+#define SAVESTATE_MAX_MINOR 7
 
 // bitmask for the savestate config word
 enum

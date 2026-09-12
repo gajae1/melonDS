@@ -1961,7 +1961,7 @@ bool EmuInstance::loadSaveRAM(string path, string original, bool gba, unique_ptr
 
 bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared, std::optional<melonDS::u32> dsSaveType)
 {
-    if (dsSaveType && *dsSaveType > 7)
+    if (dsSaveType && !NDSCart::IsSupportedSPISaveType(*dsSaveType))
     {
         errorstr = "Unsupported DS SPI save type.";
         return false;

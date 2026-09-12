@@ -33,9 +33,10 @@ namespace NDSCart
 
 namespace
 {
-constexpr std::array<u32, 11> SaveLengths = {
+constexpr std::array<u32, 15> SaveLengths = {
     0, 512, 8192, 65536, 128*1024, 256*1024, 512*1024, 1024*1024,
-    8192*1024, 16384*1024, 65536*1024
+    8192*1024, 16384*1024, 65536*1024,
+    8192, 65536, 128*1024, 32*1024
 };
 
 std::optional<u32> SaveTypeForLength(u32 length)
@@ -48,9 +49,22 @@ std::optional<u32> SaveTypeForLength(u32 length)
 u32 SaveProtocol(u32 type)
 {
     if (type <= 1) return type; // None or tiny EEPROM.
-    if (type <= 4) return 2; // Regular EEPROM.
+    if (type <= 4 || type >= 11) return 2; // Legacy or explicit EEPROM/FRAM.
     if (type <= 7) return 3; // SPI Flash.
     return 4; // NAND.
+}
+
+u32 EEPROMPageSize(u32 profile)
+{
+    // M95640, M95512 and M95M01. Legacy capacity-only codes and FM25W256
+    // FRAM deliberately have no page latch.
+    switch (profile)
+    {
+        case 11: return 32;
+        case 12: return 128;
+        case 13: return 256;
+        default: return 0;
+    }
 }
 }
 
@@ -72,7 +86,8 @@ CartRetail::CartRetail(std::unique_ptr<u8[]>&& rom, u32 len, u32 chipid, bool ba
 {
     LenientAddressing = false;
 
-    u32 savememtype = ROMParams.SaveMemType <= 10 ? ROMParams.SaveMemType : 0;
+    u32 savememtype = ROMParams.SaveMemType < SaveLengths.size() ? ROMParams.SaveMemType : 0;
+    SRAMProfile = savememtype >= 11 ? savememtype : 0;
     SRAMLength = SaveLengths[savememtype];
     SRAMFileLength = std::max(SRAMLength, sram ? sramlen : 0);
 
@@ -111,7 +126,14 @@ void CartRetail::Reset()
 
     SRAMSaveAddr = 0;
     SRAMSaveLen = 0;
-    FlashPending = false;
+    PagePending = false;
+}
+
+void CartRetail::PrepareSavestate(Savestate* file) const
+{
+    if (!file->Saving) return;
+    if (SRAMProfile) file->RequireMinorVersion(7);
+    else if (PagePending) file->RequireMinorVersion(6);
 }
 
 void CartRetail::DoSavestate(Savestate* file)
@@ -127,7 +149,7 @@ void CartRetail::DoSavestate(Savestate* file)
     if (file->Error) return;
     const auto restoredType = SaveTypeForLength(length);
     if (!file->Saving && (!restoredType ||
-        (SRAMType == 4) != (*restoredType >= 8) ||
+        (SRAMType == 4) != (SaveProtocol(*restoredType) == 4) ||
         length > file->BufferLength() - file->Length()))
     {
         file->Error = true;
@@ -138,7 +160,7 @@ void CartRetail::DoSavestate(Savestate* file)
     if (!file->Saving)
     {
         // Stage the save bytes and SPI latch until the full retail record is
-        // valid, including the conditional pending Flash payload.
+        // valid, including the conditional profile and pending page payload.
         try { if (fileLength) restored = std::make_unique<u8[]>(fileLength); }
         catch (const std::bad_alloc&) { file->Error = true; return; }
         if (SRAMFileLength) memcpy(restored.get(), SRAM.get(), SRAMFileLength);
@@ -148,11 +170,13 @@ void CartRetail::DoSavestate(Savestate* file)
     if (length) file->VarArray(file->Saving ? SRAM.get() : restored.get(), length);
     u32 pos = SRAMPos, addr = SRAMAddr, saveAddr = SRAMSaveAddr, saveLen = SRAMSaveLen;
     u8 cmd = SRAMCmd, status = SRAMStatus;
-    auto flash = FlashBuffer;
-    // The flag extends only active Flash records. Idle and non-Flash layouts
-    // remain byte-for-byte compatible, including derived IR/NAND tails.
-    constexpr u32 flashFlag = 1u << 31;
-    if (file->Saving && FlashPending) saveLen |= flashFlag;
+    auto pageBuffer = PageBuffer;
+    u32 profile = file->Saving ? SRAMProfile : 0;
+    // No-profile records keep the old layout and derived IR/NAND tails. Exact
+    // media must be saved even when idle: capacity cannot distinguish them.
+    constexpr u32 pendingFlag = 1u << 31, profileFlag = 1u << 30;
+    if (file->Saving && PagePending) saveLen |= pendingFlag;
+    if (file->Saving && profile) saveLen |= profileFlag;
     const bool legacy = !file->Saving && file->MajorVersion() == 13;
     if (!legacy) file->Var32(&pos);
     file->Var8(&cmd);
@@ -163,31 +187,53 @@ void CartRetail::DoSavestate(Savestate* file)
         file->Var32(&saveAddr);
         file->Var32(&saveLen);
     }
-    const bool pending = !legacy && (saveLen & flashFlag);
+    const bool pending = !legacy && (saveLen & pendingFlag);
+    const bool hasProfile = !legacy && (saveLen & profileFlag);
+    if (!legacy) saveLen &= ~(pendingFlag | profileFlag);
+    if (hasProfile)
+    {
+        file->Var32(&profile);
+        if (file->Error || !file->IsAtLeastVersion(14, 7) || profile < 11 ||
+            profile >= SaveLengths.size() || SaveLengths[profile] != length)
+        {
+            file->Error = true;
+            return;
+        }
+    }
+    else if (*restoredType >= 11)
+    {
+        // In particular, a 32K state without profile metadata is not FRAM.
+        file->Error = true;
+        return;
+    }
+    const u32 protocol = SaveProtocol(hasProfile ? profile : *restoredType);
     if (pending)
     {
-        saveLen &= ~flashFlag;
-        const bool page = cmd == 0x02 || cmd == 0x0A;
-        const bool erase = cmd == 0xDB || cmd == 0xD8;
-        if (!file->IsAtLeastVersion(14, 6) || SaveProtocol(*restoredType) != 3 || !(status & 2) ||
-            saveAddr > 0xFFFFFF ||
-            !(page ? pos >= 5 && saveLen > 0 && saveLen <= 256 :
+        const bool flash = protocol == 3;
+        const u32 pageSize = flash ? 256 : EEPROMPageSize(profile);
+        const bool page = cmd == 0x02 || (flash && cmd == 0x0A);
+        const bool erase = flash && (cmd == 0xDB || cmd == 0xD8);
+        const u32 addressBytes = flash || length > 65536 ? 3 : 2;
+        if (!file->IsAtLeastVersion(14, flash ? 6 : 7) || !pageSize || !(status & 2) ||
+            saveAddr >= (1u << (addressBytes * 8)) ||
+            !(page ? pos >= addressBytes + 2 && saveLen > 0 && saveLen <= pageSize :
               erase && pos == 4 && saveLen == (cmd == 0xDB ? 256u : 65536u)))
         {
             file->Error = true;
             return;
         }
-        file->VarArray(flash.data(), flash.size());
+        file->VarArray(pageBuffer.data(), pageBuffer.size());
     }
     if (file->Error || file->Saving) return;
     SRAM = std::move(restored);
     SRAMLength = length;
     SRAMFileLength = fileLength;
-    SRAMType = SaveProtocol(*restoredType);
+    SRAMType = protocol;
+    SRAMProfile = profile;
     SRAMPos = pos; SRAMCmd = cmd; SRAMAddr = addr; SRAMStatus = status;
     SRAMSaveAddr = saveAddr; SRAMSaveLen = saveLen;
-    FlashPending = pending;
-    FlashBuffer = flash;
+    PagePending = pending;
+    PageBuffer = pageBuffer;
     // Pre-14.6 states already contain their transmitted bytes. Keep those
     // bytes and legacy dirty range; newly received data uses the page latch.
     if (SRAM)
@@ -207,26 +253,28 @@ void CartRetail::SetSaveMemory(const u8* savedata, u32 savelen)
 void CartRetail::SPISelect()
 {
     SRAMPos = 0;
-    FlashPending = false;
-    if (SRAMType == 3) SRAMSaveLen = 0;
+    PagePending = false;
+    if (SRAMType == 3 || EEPROMPageSize(SRAMProfile)) SRAMSaveLen = 0;
 }
 
 void CartRetail::SPIRelease()
 {
-    if (FlashPending)
+    if (PagePending)
     {
-        u32 length = (SRAMCmd == 0xD8) ? 65536 : 256;
+        const bool flash = SRAMType == 3;
+        const u32 pageSize = flash ? 256 : EEPROMPageSize(SRAMProfile);
+        u32 length = (flash && SRAMCmd == 0xD8) ? 65536 : pageSize;
         u32 offset = (SRAMSaveAddr & (SRAMLength - 1)) & ~(length - 1);
         if (SRAMCmd == 0x02 || SRAMCmd == 0x0A)
         {
             for (u32 i = 0; i < SRAMSaveLen; ++i)
             {
-                const u32 index = (SRAMAddr - SRAMSaveLen + i) & 255;
-                if (SRAMCmd == 0x02) SRAM[offset + index] &= FlashBuffer[index];
-                else SRAM[offset + index] = FlashBuffer[index];
+                const u32 index = (SRAMAddr - SRAMSaveLen + i) & (pageSize - 1);
+                if (flash && SRAMCmd == 0x02) SRAM[offset + index] &= PageBuffer[index];
+                else SRAM[offset + index] = PageBuffer[index];
             }
-            const u32 first = (SRAMAddr - SRAMSaveLen) & 255;
-            if (SRAMSaveLen <= 256 - first)
+            const u32 first = (SRAMAddr - SRAMSaveLen) & (pageSize - 1);
+            if (SRAMSaveLen <= pageSize - first)
             {
                 offset += first;
                 length = SRAMSaveLen;
@@ -235,7 +283,7 @@ void CartRetail::SPIRelease()
         else
             memset(SRAM.get() + offset, 0xFF, length);
         Platform::WriteNDSSave(SRAM.get(), SRAMFileLength, offset, length, UserData);
-        FlashPending = false;
+        PagePending = false;
         SRAMStatus &= ~2;
         SRAMSaveAddr = SRAMSaveLen = 0;
         return;
@@ -383,14 +431,28 @@ u8 CartRetail::SRAMWrite_EEPROM(u8 val)
         else
         {
             // TODO: implement WP bits
-            // TODO: restrict writing to page based on EEPROM size
-            // except for FRAM????
+            const u32 pageSize = EEPROMPageSize(SRAMProfile);
             if (SRAMStatus & (1<<1))
             {
-                SRAM[SRAMAddr & (SRAMLength-1)] = val;
-                SRAMSaveLen++;
+                if (pageSize)
+                {
+                    if (!PagePending)
+                    {
+                        PageBuffer.fill(0xFF);
+                        PagePending = true;
+                        SRAMSaveLen = 0;
+                    }
+                    PageBuffer[SRAMAddr & (pageSize - 1)] = val;
+                    SRAMSaveLen = std::min(SRAMSaveLen + 1, pageSize);
+                }
+                else
+                {
+                    SRAM[SRAMAddr & (SRAMLength-1)] = val;
+                    SRAMSaveLen = std::min(SRAMSaveLen + 1, SRAMLength);
+                }
             }
-            SRAMAddr++;
+            SRAMAddr = pageSize ? (SRAMAddr & ~(pageSize - 1)) | ((SRAMAddr + 1) & (pageSize - 1))
+                                : SRAMAddr + 1;
         }
         return 0;
 
@@ -443,13 +505,13 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
         {
             if (SRAMStatus & (1<<1))
             {
-                if (!FlashPending)
+                if (!PagePending)
                 {
-                    FlashBuffer.fill(0xFF);
-                    FlashPending = true;
+                    PageBuffer.fill(0xFF);
+                    PagePending = true;
                     SRAMSaveLen = 0;
                 }
-                FlashBuffer[SRAMAddr & 255] = val;
+                PageBuffer[SRAMAddr & 255] = val;
                 SRAMSaveLen = std::min(SRAMSaveLen + 1, 256u);
             }
             SRAMAddr = (SRAMAddr & ~255u) | ((SRAMAddr + 1) & 255);
@@ -504,14 +566,14 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
         }
         if ((SRAMPos == 3) && (SRAMStatus & (1<<1)))
         {
-            FlashPending = true;
-            FlashBuffer.fill(0xFF);
+            PagePending = true;
+            PageBuffer.fill(0xFF);
             SRAMSaveLen = SRAMCmd == 0xDB ? 256 : 65536;
         }
         else if (SRAMPos > 3)
         {
             // ERASE ends immediately after its address; extra data cancels it.
-            FlashPending = false;
+            PagePending = false;
             SRAMSaveLen = 0;
         }
         return 0;

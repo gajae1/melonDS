@@ -57,8 +57,7 @@ public:
     void Reset() override;
 
     void DoSavestate(Savestate* file) override;
-    void PrepareSavestate(Savestate* file) const override
-    { if (file->Saving && FlashPending) file->RequireMinorVersion(6); }
+    void PrepareSavestate(Savestate* file) const override;
 
     void SetSaveMemory(const u8* savedata, u32 savelen) override;
 
@@ -85,6 +84,8 @@ protected:
     u32 SRAMLength = 0;
     u32 SRAMFileLength = 0;
     u32 SRAMType = 0;
+    // Zero retains the legacy capacity-only behavior; 11..14 identify media.
+    u32 SRAMProfile = 0;
 
     u32 SRAMPos = 0;
     u8 SRAMCmd = 0;
@@ -96,10 +97,10 @@ protected:
     u32 SRAMSaveAddr = 0;
     u32 SRAMSaveLen = 0;
 
-    // SPI Flash latches a page before CS rises. Earlier laps do not program
-    // bits: only the last byte received for each page offset is committed.
-    std::array<u8, 256> FlashBuffer {};
-    bool FlashPending = false;
+    // EEPROM/Flash pages latch until CS rises. Only the last received byte for
+    // each offset is committed; FRAM writes directly without this buffer.
+    std::array<u8, 256> PageBuffer {};
+    bool PagePending = false;
 };
 
 }

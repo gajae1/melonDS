@@ -34,6 +34,13 @@ struct SaveSink
     unsigned Notices = 0;
 };
 
+// Explicit chip fixtures: ST M95640-W, M95512-W, M95M01-R. Legacy codes
+// describe only the old capacity/protocol, not these chips' page geometry.
+struct EEPROMProfile { u32 Type, Legacy, Capacity, Page, AddressBytes; };
+static constexpr EEPROMProfile EEPROMProfiles[] = {
+    {11, 2, 8192, 32, 2}, {12, 3, 65536, 128, 2}, {13, 4, 131072, 256, 3}
+};
+
 namespace melonDS::Platform
 {
 void Log(LogLevel, const char*, ...) {}
@@ -68,13 +75,18 @@ struct Fixture
     SaveSink Sink;
     std::unique_ptr<CartRetail> Cart;
 
-    explicit Fixture(u32 saveType = 1, u32 padding = 0)
+    explicit Fixture(u32 saveType = 1, u32 padding = 0, u8 seed = 0x5A)
     {
         constexpr u32 sizes[] = {0, 512, 8192, 65536, 131072, 262144, 524288, 1048576};
-        const u32 size = sizes[saveType] + padding;
+        u32 physical;
+        if (saveType <= 7) physical = sizes[saveType];
+        else if (saveType >= 11 && saveType <= 13) physical = EEPROMProfiles[saveType - 11].Capacity;
+        else if (saveType == 14) physical = 32768; // Infineon FM25W256
+        else std::abort();
+        const u32 size = physical + padding;
         Sink.Persisted.resize(size);
         for (u32 i = 0; i < size; ++i)
-            Sink.Persisted[i] = u8((i * 37 + (i >> 8) * 19) ^ 0x5A);
+            Sink.Persisted[i] = u8((i * 37 + (i >> 8) * 19) ^ seed);
         auto sram = std::make_unique<u8[]>(size);
         std::copy(Sink.Persisted.begin(), Sink.Persisted.end(), sram.get());
         auto rom = std::make_unique<u8[]>(sizeof(NDSHeader));
@@ -87,6 +99,8 @@ struct Fixture
 
 static void CheckImage(const Fixture& f, const Bytes& expected)
 {
+    Check(f.Cart->GetSaveMemoryLength() == expected.size(), "SRAM backing length changed");
+    if (f.Cart->GetSaveMemoryLength() != expected.size()) return;
     const u8* actual = f.Cart->GetSaveMemory();
     for (size_t i = 0; i < expected.size(); ++i)
     {
@@ -108,6 +122,12 @@ static void CheckImage(const Fixture& f, const Bytes& expected)
             break;
         }
     }
+}
+
+static void CheckMemory(const Fixture& f, const Bytes& expected, const char* reason)
+{
+    Check(f.Cart->GetSaveMemoryLength() == expected.size() &&
+          std::equal(expected.begin(), expected.end(), f.Cart->GetSaveMemory()), reason);
 }
 
 static void Send(CartRetail& cart, std::initializer_list<u8> bytes)
@@ -462,6 +482,278 @@ static void Flash(const std::string_view test)
     }
 }
 
+static void RegularStart(CartRetail& cart, u32 addressBytes, u8 command, u32 address)
+{
+    cart.SPISelect();
+    cart.SPITransmitReceive(command);
+    for (u32 i = addressBytes; i > 0; --i) cart.SPITransmitReceive(u8(address >> ((i - 1) * 8)));
+}
+
+static void RegularRead(CartRetail& cart, u32 addressBytes, u32 address,
+                        std::initializer_list<u8> expected)
+{
+    RegularStart(cart, addressBytes, 0x03, address);
+    for (u8 byte : expected)
+        Check(cart.SPITransmitReceive(0) == byte, "Profile READ did not advance linearly at a page/chip boundary");
+    cart.SPIRelease();
+}
+
+static void ProfilePage()
+{
+    for (const auto& profile : EEPROMProfiles)
+    {
+        std::printf("EEPROM profile %u: page=%u, capacity=%u\n", profile.Type, profile.Page, profile.Capacity);
+        Fixture f(profile.Type, 17);
+        auto& cart = *f.Cart;
+        Bytes expected = f.Sink.Persisted;
+        RegularStart(cart, profile.AddressBytes, 0x02, profile.Page - 1);
+        Send(cart, {0xA1, 0xB2});
+        CheckImage(f, expected);
+        cart.SPIRelease();
+        CheckImage(f, expected);
+        Check(f.Sink.Notices == 0 && !(Status(cart) & 2), "Profile WRITE without WREN mutated memory/persistence");
+
+        for (u32 last : {0x1000 + profile.Page - 1, profile.Capacity - 1})
+        {
+            const auto notices = f.Sink.Notices;
+            Command(cart, 0x06);
+            Check(Status(cart) & 2, "EEPROM WREN did not set WEL");
+            RegularStart(cart, profile.AddressBytes, 0x02, last);
+            Send(cart, {0xA1, 0xB2, 0xC3});
+            CheckImage(f, expected); // Neither memory nor the save sink commits while CS is low.
+            Check(f.Sink.Notices == notices, "EEPROM profile notified before CS release");
+            cart.SPIRelease();
+            expected[last] = 0xA1;
+            expected[last + 1 - profile.Page] = 0xB2;
+            expected[last + 2 - profile.Page] = 0xC3;
+            CheckImage(f, expected); // Includes the next page and opaque file padding.
+            Check(f.Sink.Notices == notices + 1 && !(Status(cart) & 2), "EEPROM release did not commit once and clear WEL");
+            cart.SPIRelease();
+            Check(f.Sink.Notices == notices + 1, "EEPROM repeated CS release replayed a page");
+        }
+
+        Command(cart, 0x06);
+        RegularStart(cart, profile.AddressBytes, 0x02, 0x800);
+        for (u32 i = 0; i < profile.Page; ++i) cart.SPITransmitReceive(0);
+        for (u32 i = 0; i < profile.Page; ++i) cart.SPITransmitReceive(0xA5);
+        cart.SPITransmitReceive(0x3C);
+        const auto notices = f.Sink.Notices;
+        CheckImage(f, expected);
+        cart.SPIRelease();
+        std::fill_n(expected.begin() + 0x800, profile.Page, 0xA5);
+        expected[0x800] = 0x3C; // Last received byte wins over both earlier laps.
+        CheckImage(f, expected);
+        Check(f.Sink.Notices == notices + 1, "Overflowed EEPROM page lost its save notification");
+        const u32 edge = 0x1000 + profile.Page - 1;
+        RegularRead(cart, profile.AddressBytes, edge, {expected[edge], expected[edge + 1]});
+        RegularRead(cart, profile.AddressBytes, profile.Capacity - 1,
+                    {expected[profile.Capacity - 1], expected[0]});
+
+        // Codes 2/3/4 retain their historical immediate, linear writes.
+        Fixture legacy(profile.Legacy, 17);
+        auto linear = legacy.Sink.Persisted;
+        Command(*legacy.Cart, 0x06);
+        RegularStart(*legacy.Cart, profile.AddressBytes, 0x02, profile.Page - 1);
+        Send(*legacy.Cart, {0x19, 0xE7});
+        linear[profile.Page - 1] = 0x19; linear[profile.Page] = 0xE7;
+        CheckMemory(legacy, linear, "Exact EEPROM profile changed legacy 2/3/4 write semantics");
+        legacy.Cart->SPIRelease();
+        CheckImage(legacy, linear);
+    }
+}
+
+static void ProfileFRAM()
+{
+    // FM25W256 has no EEPROM page latch; writes cross 32-byte boundaries and
+    // wrap at its 32KiB physical array, while file padding remains attached.
+    Fixture f(14, 17);
+    auto& cart = *f.Cart;
+    Bytes expected = f.Sink.Persisted;
+    RegularStart(cart, 2, 0x02, 0x1F); Send(cart, {0xA1, 0xB2});
+    CheckImage(f, expected); cart.SPIRelease(); CheckImage(f, expected);
+    Check(f.Sink.Notices == 0 && !(Status(cart) & 2), "FRAM WRITE without WREN was accepted");
+    for (u32 last : {0x1Fu, 0x7FFFu})
+    {
+        const auto before = expected;
+        const auto notices = f.Sink.Notices;
+        Command(cart, 0x06);
+        Check(Status(cart) & 2, "FRAM WREN did not set WEL");
+        RegularStart(cart, 2, 0x02, last);
+        cart.SPITransmitReceive(0xA1); expected[last] = 0xA1;
+        CheckMemory(f, expected, "FRAM first byte was not visible before CS release");
+        cart.SPITransmitReceive(0xB2); expected[last == 0x7FFF ? 0 : 0x20] = 0xB2;
+        CheckMemory(f, expected, "FRAM second byte wrapped at an EEPROM page or entered padding");
+        Check(f.Sink.Notices == notices && f.Sink.Persisted == before, "FRAM host save committed before CS release");
+        cart.SPIRelease(); CheckImage(f, expected);
+        Check(f.Sink.Notices == notices + 1 && !(Status(cart) & 2), "FRAM release did not publish its bytes and clear WEL");
+        cart.SPIRelease();
+        Check(f.Sink.Notices == notices + 1, "FRAM release duplicated persistence");
+        RegularRead(cart, 2, last, {0xA1, 0xB2});
+    }
+    Command(cart, 0x06); Command(cart, 0x04);
+    RegularStart(cart, 2, 0x02, 0x1F); Send(cart, {0}); cart.SPIRelease();
+    CheckImage(f, expected);
+    Check(!(Status(cart) & 2) && f.Sink.Notices == 2, "FRAM WRDI did not protect later writes");
+}
+
+struct RetailState
+{
+    Bytes Data;
+    u32 LengthOffset, SaveLenOffset, ProfileOffset;
+    bool Valid;
+};
+
+static RetailState SaveRetail(Fixture& f, u32 physical, u32 profile, bool pending)
+{
+    // Obtain the unchanged CartCommon boundary through its writer. Offsets
+    // below describe the specified retail wire format, not live latch fields.
+    Savestate common(128); f.Cart->CartCommon::DoSavestate(&common);
+    const u32 lengthOffset = common.Length();
+    const u32 saveLenOffset = lengthOffset + 4 + physical + 4 + 1 + 4 + 1 + 4;
+    const u32 profileOffset = saveLenOffset + 4;
+    const u32 expectedEnd = profileOffset + (profile ? 4 : 0) + (pending ? 256 : 0);
+    Savestate saved(physical + 1024); f.Cart->DoSavestate(&saved);
+    bool valid = !saved.Error && saved.Length() == expectedEnd;
+    if (valid)
+    {
+        u32 capacity = 0, flags = 0, storedProfile = 0;
+        const auto* bytes = static_cast<const u8*>(saved.Buffer());
+        std::memcpy(&capacity, bytes + lengthOffset, 4);
+        std::memcpy(&flags, bytes + saveLenOffset, 4);
+        if (profile) std::memcpy(&storedProfile, bytes + profileOffset, 4);
+        valid = capacity == physical && storedProfile == profile &&
+                (flags & 0xC0000000u) == ((profile ? 0x40000000u : 0) | (pending ? 0x80000000u : 0));
+    }
+    Check(valid, "Retail state lost physical length, exact profile flag/code, or conditional page buffer");
+    saved.Section("TAIL"); u32 marker = 0x1234ABCD; saved.Var32(&marker); saved.Finish();
+    const u16 minor = profile ? 7 : pending ? 6 : 2;
+    const bool versionOK = !saved.Error && saved.MajorVersion() == 14 && saved.MinorVersion() == minor;
+    Check(versionOK, "Exact profiles require 14.7; legacy idle/Flash pending remain 14.2/14.6");
+    return {Bytes(static_cast<const u8*>(saved.Buffer()), static_cast<const u8*>(saved.Buffer()) + saved.Length()),
+            lengthOffset, saveLenOffset, profileOffset, valid && versionOK};
+}
+
+static bool LoadRetail(Fixture& f, RetailState& saved)
+{
+    Savestate load(saved.Data.data(), saved.Data.size(), false);
+    f.Cart->DoSavestate(&load);
+    if (load.Error) { Check(false, "Valid retail profile state was rejected"); return false; }
+    load.Section("TAIL"); u32 marker = 0; load.Var32(&marker);
+    Check(!load.Error && marker == 0x1234ABCD, "Retail profile consumed the following section");
+    return !load.Error && marker == 0x1234ABCD;
+}
+
+static void ProfileState()
+{
+    for (const auto& profile : EEPROMProfiles)
+    {
+        Fixture source(profile.Type, 17);
+        SaveRetail(source, profile.Capacity, profile.Type, false); // Exact even when idle.
+        Command(*source.Cart, 0x06);
+        RegularStart(*source.Cart, profile.AddressBytes, 0x02, profile.Capacity - 1);
+        Send(*source.Cart, {0xA1});
+        CheckImage(source, source.Sink.Persisted);
+        auto saved = SaveRetail(source, profile.Capacity, profile.Type, true);
+        // A failing baseline layout must not become an out-of-bounds test read.
+        if (!saved.Valid) continue;
+        Fixture receiver(profile.Legacy, 17, 0xC3);
+        Bytes expected = receiver.Sink.Persisted;
+        std::copy_n(source.Cart->GetSaveMemory(), profile.Capacity, expected.begin());
+        if (!LoadRetail(receiver, saved)) continue;
+        CheckImage(receiver, expected); // Receiver's opaque tail, source's physical array.
+        receiver.Sink.Notices = 0;
+        Send(*receiver.Cart, {0xB2, 0xC3});
+        CheckImage(receiver, expected);
+        receiver.Cart->SPIRelease();
+        expected[profile.Capacity - 1] = 0xA1;
+        expected[profile.Capacity - profile.Page] = 0xB2;
+        expected[profile.Capacity - profile.Page + 1] = 0xC3;
+        CheckImage(receiver, expected);
+        Check(receiver.Sink.Notices == 1 && !(Status(*receiver.Cart) & 2), "Restored EEPROM page lost pending data/WEL");
+        SaveRetail(receiver, profile.Capacity, profile.Type, false);
+    }
+    {
+        // Reverse direction at the same capacity: a current 14.2 legacy-layout
+        // state retains already-written bytes and restores linear semantics.
+        Fixture source(2, 17);
+        Command(*source.Cart, 0x06); RegularStart(*source.Cart, 2, 0x02, 0x1F); Send(*source.Cart, {0xA1});
+        auto saved = SaveRetail(source, 8192, 0, false);
+        Fixture receiver(11, 17, 0xC3);
+        Bytes expected = receiver.Sink.Persisted;
+        std::copy_n(source.Cart->GetSaveMemory(), 8192, expected.begin());
+        if (saved.Valid && LoadRetail(receiver, saved))
+        {
+            CheckImage(receiver, expected);
+            Send(*receiver.Cart, {0xB2, 0xC3}); expected[0x20] = 0xB2; expected[0x21] = 0xC3;
+            CheckMemory(receiver, expected, "Legacy 14.2 loaded into exact EEPROM retained page-latched semantics");
+            receiver.Cart->SPIRelease(); CheckImage(receiver, expected);
+            SaveRetail(receiver, 8192, 0, false);
+        }
+    }
+    {
+        Fixture source(14, 17);
+        SaveRetail(source, 32768, 14, false);
+        Command(*source.Cart, 0x06); RegularStart(*source.Cart, 2, 0x02, 0x7FFF); Send(*source.Cart, {0xA1});
+        auto saved = SaveRetail(source, 32768, 14, false); // FRAM has no pending page buffer.
+        Fixture receiver(14, 17, 0xC3);
+        Bytes expected = receiver.Sink.Persisted;
+        std::copy_n(source.Cart->GetSaveMemory(), 32768, expected.begin());
+        if (saved.Valid && LoadRetail(receiver, saved))
+        {
+            CheckImage(receiver, expected);
+            Send(*receiver.Cart, {0xB2}); expected[0] = 0xB2;
+            CheckMemory(receiver, expected, "Restored FRAM lost immediate write or physical address wrap");
+            receiver.Cart->SPIRelease(); CheckImage(receiver, expected);
+            Check(!(Status(*receiver.Cart) & 2), "Restored FRAM failed to consume WEL");
+        }
+    }
+    {
+        Fixture flash(6, 17);
+        SaveRetail(flash, 524288, 0, false);
+        Command(*flash.Cart, 0x06); FlashStart(*flash.Cart, 0x0A, 0x1FF); Send(*flash.Cart, {0xA1});
+        SaveRetail(flash, 524288, 0, true);
+        CheckImage(flash, flash.Sink.Persisted);
+    }
+
+    Fixture incoming(11, 17, 0x3C);
+    Command(*incoming.Cart, 0x06); RegularStart(*incoming.Cart, 2, 0x02, 0x40); Send(*incoming.Cart, {0xD4});
+    auto valid = SaveRetail(incoming, 8192, 11, true);
+    if (!valid.Valid) return;
+    for (std::string_view defect : {"profile", "capacity-profile", "length", "pending-length", "profile-tail", "page-tail"})
+    {
+        std::printf("Reject profile state: %.*s\n", int(defect.size()), defect.data());
+        Bytes broken = valid.Data;
+        const auto put32 = [&](u32 offset, u32 value) { std::memcpy(broken.data() + offset, &value, 4); };
+        if (defect == "profile") put32(valid.ProfileOffset, 10);
+        else if (defect == "capacity-profile") put32(valid.ProfileOffset, 12); // 64KiB profile over an 8KiB record.
+        else if (defect == "length") put32(valid.LengthOffset, 8193);
+        else if (defect == "pending-length") put32(valid.SaveLenOffset, 0xC0000000u); // A flagged latch with no bytes.
+        else
+        {
+            const u32 end = valid.ProfileOffset + (defect == "profile-tail" ? 3 : 4 + 255);
+            broken.resize(end);
+            put32(8, end); put32(20, end - 16); // Valid outer spans; truncated retail extension.
+        }
+        Fixture receiver(11, 17);
+        Bytes expected = receiver.Sink.Persisted;
+        Command(*receiver.Cart, 0x06); RegularStart(*receiver.Cart, 2, 0x02, 0x5F); Send(*receiver.Cart, {0xA6});
+        auto* memory = receiver.Cart->GetSaveMemory();
+        const auto notices = receiver.Sink.Notices;
+        Savestate load(broken.data(), broken.size(), false); receiver.Cart->DoSavestate(&load);
+        // This checks retail SRAM/protocol/latch staging, not whole-cart atomicity:
+        // CartCommon's unrelated ROM-bus fields are outside this test's claim.
+        Check(load.Error && receiver.Cart->GetSaveMemory() == memory && receiver.Sink.Notices == notices,
+              "Rejected profile state replaced base SRAM or invoked a save callback");
+        CheckImage(receiver, expected);
+        Send(*receiver.Cart, {0xB2});
+        CheckImage(receiver, expected);
+        receiver.Cart->SPIRelease(); expected[0x5F] = 0xA6; expected[0x40] = 0xB2;
+        CheckImage(receiver, expected);
+        Check(receiver.Sink.Notices == notices + 1 && !(Status(*receiver.Cart) & 2),
+              "Rejected profile state disturbed the receiver's pending page/protocol");
+    }
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
@@ -471,6 +763,9 @@ int main(int argc, char** argv)
     else if (test == "page-overflow") PageOverflow();
     else if (test == "restore-write") RestoreWrite();
     else if (test == "regular-control") RegularControl();
+    else if (test == "profile-page") ProfilePage();
+    else if (test == "profile-fram") ProfileFRAM();
+    else if (test == "profile-state") ProfileState();
     else if (test == "flash-program" || test == "flash-page" || test == "flash-erase" || test == "flash-state") Flash(test);
     else return 2;
     std::printf("%s: %s\n", argv[1], failures ? "FAIL" : "PASS");

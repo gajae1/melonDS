@@ -216,11 +216,13 @@ int main(int argc, char** argv)
     };
     if (argc == 2 && std::string(argv[1]) == "ds-save-request")
     {
-        // Queue distinct QVariant snapshots before consuming any of them. The
-        // real dispatcher must retain explicit zero separately from Automatic.
-        const std::optional<u32> choices[] = {0, 7, std::nullopt, 3, 1, std::nullopt};
+        // Queue distinct QVariant snapshots before consuming any of them.
+        // The real dispatcher retains exact chip profiles and legacy codes,
+        // including explicit zero separately from Automatic.
+        const std::vector<std::optional<u32>> choices = {0, 11, 12, 13, 14, 7, std::nullopt, 2, 3, 4, 1, std::nullopt};
+        const int count = static_cast<int>(choices.size());
         std::vector<EmuThread::CartLoadRequest> expected;
-        for (int i = 0; i < 6; ++i)
+        for (int i = 0; i < count; ++i)
         {
             EmuThread::CartLoadRequest request;
             request.Files = {QString("generated-%1.nds").arg(i)};
@@ -235,9 +237,9 @@ int main(int argc, char** argv)
             request.Files = {"later-reselection.nds"};
         }
         thread.handleMessages();
-        check(thread.msgSemaphore.tryAcquire(6) && instance.cartLoads.size() == 6,
+        check(thread.msgSemaphore.tryAcquire(count) && instance.cartLoads.size() == expected.size(),
               "Queued DS requests did not all reach the loader");
-        for (size_t i = 0; i < instance.cartLoads.size(); ++i)
+        for (size_t i = 0; i < instance.cartLoads.size() && i < expected.size(); ++i)
         {
             const auto& actual = instance.cartLoads[i];
             check(actual.Files == expected[i].Files && actual.Assets.Source == expected[i].Files &&

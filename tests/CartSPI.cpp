@@ -167,7 +167,7 @@ struct FlashFixture
     u32 CPU;
     bool Infrared;
 
-    FlashFixture(u32 cpu, bool dsi, bool infrared = false, u8 seed = 0x5A)
+    FlashFixture(u32 cpu, bool dsi, bool infrared = false, u8 seed = 0x5A, u32 saveType = 6)
         : CPU(cpu), Infrared(infrared)
     {
         if (dsi)
@@ -186,7 +186,7 @@ struct FlashFixture
         auto sram = std::make_unique<u8[]>(Length);
         for (u32 i = 0; i < Length; ++i) sram[i] = seed ^ (i * 37 + (i >> 8));
         std::unique_ptr<NDSCart::CartRetail> cart;
-        const ROMListEntry params {0, 0x10000, 6};
+        const ROMListEntry params {0, 0x10000, saveType};
         if (infrared)
             cart = std::make_unique<NDSCart::CartRetailIR>(ObservedCart::MakeROM(false),
                 0x10000, 0, 1, false, params, std::move(sram), Length, nullptr);
@@ -328,6 +328,53 @@ static void TestFlashWriteState(u32 cpu, bool dsi, u8 command, bool infrared = f
     }
 }
 
+static void TestProfileState(u32 type, u32 cpu, bool dsi, bool infrared = false)
+{
+    std::printf("EEPROM/FRAM state type=%u %s ARM%u IR=%u\n", type, dsi ? "DSi" : "DS", cpu ? 7 : 9, infrared);
+    std::fflush(stdout);
+    FlashFixture original(cpu, dsi, infrared, 0x5A, type);
+    const bool fram = type == 14;
+    const unsigned width = type == 13 ? 3 : 2;
+    const u32 page = type == 11 ? 32 : type == 12 ? 128 : 256;
+    const u32 start = fram ? 32767 : 3 * page - 1;
+    const u32 next = fram ? 0 : 2 * page;
+    std::vector<u8> expected(original.Cart->GetSaveMemory(),
+        original.Cart->GetSaveMemory() + FlashFixture::Length);
+    original.EnableWrite();
+    original.Begin(0x02);
+    for (int shift = int(width - 1) * 8; shift >= 0; shift -= 8)
+        original.Data(u8(start >> shift));
+    original.Data(0xA6);
+    if (fram) expected[start] = 0xA6;
+    original.Expect(expected, "Profile used the wrong before-CS commit behavior");
+    Savestate held;
+    original.Save(held, 7);
+    // Load into a default EEPROM8K cart, requiring the state to restore the
+    // media profile as well as capacity. File padding belongs to the receiver.
+    FlashFixture restored(cpu, dsi, infrared, 0x5A, 2);
+    restored.Machine->ARM9Write32(0x02000200, 0);
+    restored.Cart->GetSaveMemory()[17] ^= 0xFF;
+    restored.Restore(held);
+    restored.Expect(expected, "Profile restore lost held data or receiver padding");
+    restored.Data(0x19); restored.Data(0xC3);
+    if (fram) { expected[next] = 0x19; expected[next + 1] = 0xC3; }
+    restored.Expect(expected, "Restored profile changed commit timing");
+    restored.Release();
+    expected[start] = 0xA6; expected[next] = 0x19; expected[next + 1] = 0xC3;
+    restored.Expect(expected, "Profile continuation lost page/chip wrap");
+    Savestate idle;
+    restored.Save(idle, 7); // Idle exact profiles still need media metadata.
+    original.Restore(idle);
+    original.Release();
+    original.Expect(expected, "Idle profile restore replayed an old page latch");
+    if (infrared)
+    {
+        original.Control(0xA040); original.Data(0x08);
+        Check(original.Data(0) == 0xAA, "Profile state displaced the derived IR tail");
+        original.Release();
+    }
+}
+
 static void TestFlashEraseState(u32 cpu, bool dsi)
 {
     const u8 command = cpu ? 0xDB : 0xD8;
@@ -374,6 +421,16 @@ try
 {
     if (argc != 2) return 2;
     const std::string mode = argv[1];
+    if (mode == "profile-state")
+    {
+        TestProfileState(11, 0, false);
+        TestProfileState(12, 1, false, true);
+        TestProfileState(13, 1, true);
+        TestProfileState(14, 1, false);
+        TestProfileState(14, 0, true);
+        std::printf("Cart SPI profile-state: %u failures\n", Failures);
+        return Failures ? 1 : 0;
+    }
     if (mode == "flash-state")
     {
         for (bool dsi : {false, true})

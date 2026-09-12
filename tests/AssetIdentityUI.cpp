@@ -82,8 +82,9 @@ static int DSSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const 
     const QString first = root.filePath("a/manual.nds"), second = root.filePath("b/reselection.nds");
     Check(Write(first, "generated first DS") && Write(second, "generated second DS"), "DS sources");
     const QStringList labels{"Automatic", "No save", "EEPROM - 512 bytes", "EEPROM - 8 KiB",
-        "EEPROM - 64 KiB", "EEPROM - 128 KiB", "Flash - 256 KiB", "Flash - 512 KiB", "Flash - 1 MiB"};
-    const std::optional<u32> values[] = {std::nullopt, 0, 1, 2, 3, 4, 5, 6, 7};
+        "EEPROM - 64 KiB", "EEPROM - 128 KiB", "FRAM - 32 KiB",
+        "Flash - 256 KiB", "Flash - 512 KiB", "Flash - 1 MiB"};
+    const std::optional<u32> values[] = {std::nullopt, 0, 1, 11, 12, 13, 14, 5, 6, 7};
     int prompts = 0;
     const auto choose = [&](int index, int action, std::stop_source* stop = nullptr) {
         QTimer::singleShot(0, &thread, [&, index, action, stop] {
@@ -112,7 +113,7 @@ static int DSSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const 
         };
         if (mode == "ds-save-choices")
         {
-            for (int index = 0; index < 9; ++index)
+            for (int index = 0; index < labels.size(); ++index)
             {
                 messages.clear();
                 const auto source = index % 2 ? second : first;
@@ -136,7 +137,7 @@ static int DSSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const 
                 messages.clear();
                 auto prepared = std::make_shared<ROMPreparation::Data>(); prepared->Source = {first};
                 std::stop_source stop; prepared->Stop = stop.get_token();
-                choose(8, action, action == 1 || action == 2 ? &stop : nullptr);
+                choose(labels.indexOf("FRAM - 32 KiB"), action, action == 1 || action == 2 ? &stop : nullptr);
                 error = "old error";
                 Check(!load(first, prepared, true) && error.isEmpty() && messages.empty(),
                       "DS cancel, accepted-stop race, stopped dialog or invalid text dispatched");
@@ -146,10 +147,10 @@ static int DSSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const 
             Check(!load(first, stopped, true) && error.isEmpty() && messages.empty(), "Stopped DS request opened a chooser/queued");
             Choose("Cancel", true);
             Check(!load(root.filePath("a/game.nds"), {}, true) && messages.empty(), "Ownership cancellation reached DS save dispatch");
-            choose(2, 1);
+            choose(labels.indexOf("EEPROM - 8 KiB"), 1);
             Check(load(second, {}, true) == 1 && !messages.empty() &&
                   messages.front().param.value<EmuThread::CartLoadRequest>().Files == QStringList{second} &&
-                  messages.front().param.value<EmuThread::CartLoadRequest>().DSSaveType == 1,
+                  messages.front().param.value<EmuThread::CartLoadRequest>().DSSaveType == 11,
                   "Fresh DS reselection retained cancelled source/save type");
         }
         messages.clear();
@@ -163,7 +164,7 @@ static int DSSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const 
               "Ordinary DS load inherited an explicit save type");
         QCoreApplication::processEvents();
     }
-    Check(prompts == (mode == "ds-save-choices" ? 18 : 10), "Unexpected DS chooser count");
+    Check(prompts == (mode == "ds-save-choices" ? 20 : 10), "Unexpected DS chooser count");
     Check(!QFile::exists(instance.config.directory + "/manual.sav") &&
           !QFile::exists(instance.config.directory + "/reselection.sav"), "DS chooser wrote a save file");
     std::printf("%s: %d failures (actual Qt chooser; recorded consumer)\n", mode.toUtf8().constData(), failures);
