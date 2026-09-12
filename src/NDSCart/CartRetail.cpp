@@ -66,6 +66,12 @@ u32 EEPROMPageSize(u32 profile)
         default: return 0;
     }
 }
+
+bool IsStatusCommand(u32 protocol, u8 command)
+{
+    return protocol > 0 && protocol < 4 &&
+        (command == 0x04 || command == 0x06 || (protocol < 3 && command == 0x01));
+}
 }
 
 std::optional<u32> CartRetail::SPITypeForSaveLength(u32 length)
@@ -122,7 +128,9 @@ void CartRetail::Reset()
     SRAMPos = 0;
     SRAMCmd = 0;
     SRAMAddr = 0;
-    SRAMStatus = 0;
+    // BP and SRWD/WPEN are nonvolatile within the inserted cartridge. Raw
+    // .sav files contain only the array, so reopening still loses these bits.
+    SRAMStatus &= SRAMType == 1 ? 0x0C : SRAMType == 2 ? 0x8C : 0;
 
     SRAMSaveAddr = 0;
     SRAMSaveLen = 0;
@@ -132,7 +140,8 @@ void CartRetail::Reset()
 void CartRetail::PrepareSavestate(Savestate* file) const
 {
     if (!file->Saving) return;
-    if (SRAMProfile) file->RequireMinorVersion(7);
+    if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd)) file->RequireMinorVersion(8);
+    else if (SRAMProfile) file->RequireMinorVersion(7);
     else if (PagePending) file->RequireMinorVersion(6);
 }
 
@@ -207,6 +216,24 @@ void CartRetail::DoSavestate(Savestate* file)
         return;
     }
     const u32 protocol = SaveProtocol(hasProfile ? profile : *restoredType);
+    if (!file->Saving && IsStatusCommand(protocol, cmd))
+    {
+        if (legacy)
+        {
+            // Version 13 has no byte position to resume. Keep its status.
+            pos = 0;
+            cmd = 0;
+        }
+        else if (file->IsAtLeastVersion(14, 8) &&
+                 (pending || saveLen || (cmd == 0x01 && addr > 0xFF)))
+        {
+            file->Error = true;
+            return;
+        }
+        // In 14.0..7, WRSR already cleared WEL when its data byte arrived,
+        // so release cannot replay it. A saved opcode with no data can still
+        // receive that byte and complete; preserve its position and WEL.
+    }
     if (pending)
     {
         const bool flash = protocol == 3;
@@ -259,6 +286,20 @@ void CartRetail::SPISelect()
 
 void CartRetail::SPIRelease()
 {
+    if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd))
+    {
+        // EEPROM/Flash commands must end at their defined byte boundary.
+        // FM25W256 documents only the normal lengths: rejecting malformed
+        // extra bytes is our policy, not a measured FRAM hardware behavior.
+        // WP is inactive here: this interface exposes no physical WP input.
+        if (SRAMCmd == 0x06 && SRAMPos == 1) SRAMStatus |= 2;
+        else if (SRAMCmd == 0x04 && SRAMPos == 1) SRAMStatus &= ~2;
+        else if (SRAMCmd == 0x01 && SRAMPos == 2 && (SRAMStatus & 2))
+            SRAMStatus = SRAMAddr & (SRAMType == 1 ? 0x0C : 0x8C);
+        SRAMPos = 0;
+        SRAMCmd = 0;
+        return;
+    }
     if (PagePending)
     {
         const bool flash = SRAMType == 3;
@@ -305,6 +346,9 @@ void CartRetail::SPIRelease()
         SRAMSaveAddr = 0;
         SRAMSaveLen = 0;
     }
+    // FM25W256 consumes WEL on WRITE completion even if BP blocked the
+    // first byte. A rejected EEPROM page does not start a write cycle.
+    if (SRAMProfile == 14 && SRAMCmd == 0x02 && SRAMPos >= 4) SRAMStatus &= ~2;
 }
 
 u8 CartRetail::SPITransmitReceive(u8 val)
@@ -315,21 +359,15 @@ u8 CartRetail::SPITransmitReceive(u8 val)
 
     if (SRAMPos == 0)
     {
-        // handle generic commands with no parameters
-        switch (val)
-        {
-        case 0x04: // write disable
-            SRAMStatus &= ~(1<<1);
-            return 0;
-        case 0x06: // write enable
-            SRAMStatus |= (1<<1);
-            return 0;
-
-        default:
-            SRAMCmd = val;
-            SRAMAddr = 0;
-            break;
-        }
+        SRAMCmd = val;
+        SRAMAddr = 0;
+        if (IsStatusCommand(SRAMType, val)) SRAMSaveAddr = SRAMSaveLen = 0;
+        if (val == 0x04 || val == 0x06) ret = 0;
+    }
+    else if (IsStatusCommand(SRAMType, SRAMCmd))
+    {
+        if (SRAMCmd == 0x01 && SRAMPos == 1) SRAMAddr = val;
+        ret = 0;
     }
     else
     {
@@ -342,20 +380,26 @@ u8 CartRetail::SPITransmitReceive(u8 val)
         }
     }
 
-    SRAMPos++;
+    // Only zero denotes a new opcode; an overlong or restored transaction
+    // must never wrap around and reinterpret payload as another command.
+    if (SRAMPos != 0xFFFFFFFF) SRAMPos++;
     return ret;
+}
+
+bool CartRetail::IsWriteProtected(u32 address) const
+{
+    // The BP layout is common to M95040/M95xxx and FM25W256. It is not
+    // the M25PE Flash lock-register protocol.
+    const u32 bp = (SRAMStatus >> 2) & 3;
+    const u32 start = bp == 0 ? SRAMLength : bp == 1 ? SRAMLength * 3 / 4 :
+                      bp == 2 ? SRAMLength / 2 : 0;
+    return (address & (SRAMLength - 1)) >= start;
 }
 
 u8 CartRetail::SRAMWrite_EEPROMTiny(u8 val)
 {
     switch (SRAMCmd)
     {
-    case 0x01: // write status register
-        // TODO: WP bits should be nonvolatile!
-        if (SRAMPos == 1)
-            SRAMStatus = (SRAMStatus & 0x01) | (val & 0x0C);
-        return 0;
-
     case 0x05: // read status register
         return SRAMStatus | 0xF0;
 
@@ -369,12 +413,11 @@ u8 CartRetail::SRAMWrite_EEPROMTiny(u8 val)
         }
         else
         {
-            // TODO: implement WP bits!
-            if (SRAMStatus & (1<<1))
+            if ((SRAMStatus & (1<<1)) && !IsWriteProtected(SRAMSaveAddr))
             {
                 // The starting address latches the page; only its low bits advance.
                 SRAM[(SRAMSaveAddr & 0x1F0) | (SRAMAddr & 0xF)] = val;
-                SRAMSaveLen++;
+                SRAMSaveLen = std::min(SRAMSaveLen + 1, 16u);
             }
             SRAMAddr++;
         }
@@ -411,12 +454,6 @@ u8 CartRetail::SRAMWrite_EEPROM(u8 val)
 
     switch (SRAMCmd)
     {
-    case 0x01: // write status register
-        // TODO: WP bits should be nonvolatile!
-        if (SRAMPos == 1)
-            SRAMStatus = (SRAMStatus & 0x01) | (val & 0x0C);
-        return 0;
-
     case 0x05: // read status register
         return SRAMStatus;
 
@@ -430,8 +467,10 @@ u8 CartRetail::SRAMWrite_EEPROM(u8 val)
         }
         else
         {
-            // TODO: implement WP bits
             const u32 pageSize = EEPROMPageSize(SRAMProfile);
+            // FM25W256 stops incrementing at the first protected address;
+            // the rest of this burst must not wrap back into writable RAM.
+            if (IsWriteProtected(SRAMAddr)) return 0;
             if (SRAMStatus & (1<<1))
             {
                 if (pageSize)

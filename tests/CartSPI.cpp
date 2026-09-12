@@ -375,6 +375,65 @@ static void TestProfileState(u32 type, u32 cpu, bool dsi, bool infrared = false)
     }
 }
 
+static void TestStatusProtection(u32 type, u32 cpu, bool dsi, bool infrared)
+{
+    std::printf("SPI protection type=%u %s ARM%u IR=%u\n", type, dsi ? "DSi" : "DS", cpu ? 7 : 9, infrared);
+    FlashFixture original(cpu, dsi, infrared, 0x5A, type);
+    auto expected = std::vector<u8>(original.Cart->GetSaveMemory(),
+        original.Cart->GetSaveMemory() + FlashFixture::Length);
+    const auto status = [](FlashFixture& f) {
+        f.Begin(0x05); const u8 value = f.Data(0); f.Release(); return value;
+    };
+    // Save while WREN is still selected, then finish through real AUXSPI CS.
+    original.Begin(0x06);
+    Savestate enable; original.Save(enable, 8);
+    FlashFixture restored(cpu, dsi, infrared, 0x5A, type);
+    restored.Restore(enable); restored.Release();
+    Check(status(restored) & 2, "Restored WREN did not enable writes at CS release");
+    if (type != 14)
+    {
+        restored.Begin(0x04); restored.Data(0x06); restored.Release();
+        Check(status(restored) & 2, "Overlong WRDI was executed or its payload became a new WREN");
+        restored.Begin(0x04); restored.Release();
+        restored.Begin(0x06); restored.Data(0x06); restored.Release();
+        Check(!(status(restored) & 2), "Overlong WREN enabled writes");
+    }
+    if (type == 6)
+    {
+        // M25PE Flash is not an EEPROM status/BP register.
+        restored.EnableWrite(); restored.Begin(0x01); restored.Data(0x0C); restored.Release();
+        Check((status(restored) & 0x0E) == 2, "EEPROM protection bits leaked into Flash status");
+        restored.Expect(expected, "Status control changed Flash memory");
+        return;
+    }
+    restored.EnableWrite(); restored.Begin(0x01); restored.Data(0x04);
+    Savestate protect; restored.Save(protect, 8);
+    original.Restore(protect); original.Release();
+    Check((status(original) & 0x0E) == 4, "Restored WRSR lost BP or WEL completion");
+    const u32 boundary = type == 1 ? 0x180 : type == 14 ? 0x6000 : 0x1800;
+    const auto start = [&](FlashFixture& f, u32 address) {
+        f.EnableWrite(); f.Begin(type == 1 && address >= 256 ? 0x0A : 0x02);
+        if (type != 1) f.Data(u8(address >> 8));
+        f.Data(u8(address));
+    };
+    start(original, boundary); original.Data(0xA6); original.Release();
+    original.Expect(expected, "Protected WRITE changed memory through actual AUXSPI");
+    if (type == 14)
+    {
+        start(original, boundary - 1); original.Data(0xC3); original.Data(0xA6);
+        expected[boundary - 1] = 0xC3;
+        Savestate stopped; original.Save(stopped, 7);
+        restored.Restore(stopped); restored.Data(0x19); restored.Release();
+        restored.Expect(expected, "Restored FRAM resumed a burst blocked by BP");
+    }
+    else
+    {
+        start(original, boundary - 1); original.Data(0xC3); original.Release();
+        expected[boundary - 1] = 0xC3;
+        original.Expect(expected, "Unprotected neighbor stopped accepting writes");
+    }
+}
+
 static void TestFlashEraseState(u32 cpu, bool dsi)
 {
     const u8 command = cpu ? 0xDB : 0xD8;
@@ -421,6 +480,17 @@ try
 {
     if (argc != 2) return 2;
     const std::string mode = argv[1];
+    if (mode == "status-protection")
+    {
+        TestStatusProtection(1, 0, false, false);
+        TestStatusProtection(11, 1, false, true);
+        TestStatusProtection(14, 0, false, false);
+        TestStatusProtection(11, 1, true, false);
+        TestStatusProtection(14, 0, true, false);
+        TestStatusProtection(6, 0, false, false);
+        std::printf("Cart SPI status-protection: %u failures\n", Failures);
+        return Failures ? 1 : 0;
+    }
     if (mode == "profile-state")
     {
         TestProfileState(11, 0, false);

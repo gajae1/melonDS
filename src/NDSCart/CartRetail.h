@@ -74,6 +74,7 @@ public:
     u32 GetSaveMemoryLength() const override { return SRAMFileLength; }
 
 protected:
+    bool IsWriteProtected(u32 address) const;
     u8 SRAMWrite_EEPROMTiny(u8 val);
     u8 SRAMWrite_EEPROM(u8 val);
     u8 SRAMWrite_FLASH(u8 val);

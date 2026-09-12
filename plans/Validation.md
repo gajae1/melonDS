@@ -106,6 +106,8 @@ compiler profile을 학습한 workload와 평가 workload를 분리한다. 소�
 패키지는 생성된 실행 파일·필요 DLL/plugin·라이선스만 선별한다. 원본 저장 데이터는 보존한다.
 독립 PATH에서 실행 파일의 `--help`와 필요한 frontend·plugin 경로를 확인한다. `--help` 성공은 실제 게임·장치 수락을 대신하지 않는다.
 
+DS 저장 보호는 기존 `RetailEEPROM`의 `status-register/write-protection/status-state`, `CartSPI`의 `status-protection`, `CartReplacement`의 `ds-capacity-protection`을 사용한다. WREN 없는 상태 변경·보호 경계·FRAM 주소 중단·Reset 보존, 실제 AUXSPI/DSi/IR 전송과 cold 상태 복원, SaveManager 선행 Flush 후 전체 파일/여분 보존을 구분한다. 상태 제어가 전송 중일 때만14.8이며 실제1.1.75 reader/writer와 헤더 수정 없이 대조한다. 구버전의 이미 반영된 WRSR은 재실행하지 않고, 데이터 전 상태는 이어받는다. 물리WP·쓰기 지연·재삽입 후 보호 상태·Flash 보호 변종은 미검증이며 FRAM의 비정상 추가 바이트 거부는 실기 계약으로 세지 않는다.
+
 ## 구버전 이관·통신과 보안 후속
 
 [1.1.31](releases/1.1.31.md)의 `fat-storage-`는 실제 생성 FAT 이미지와 현재 Qt I/O/FatFs에서 마운트 읽기·탐색·길이 오류, 비정상 파일과 새 포맷 실패를 주입한다. 이미지·인덱스·폴더의 바이트 보존, handle 닫기, 같은 이미지 재시도를 확인하며 `cart-replacement-invalid-sd`는 실제 DSi/카트 소유자가 실패 객체를 삽입하지 않는지 검사한다. `core-dsi-btdmp`는 한-word checked STL 반례와 실제 I2S/DSP 호출을 확인한다. 부족 채널 0은 명시한 안전정책이며 실기 oracle이 아니다. Compute 초기화는 기존 frame/capture 세 실행의 전후 출력이 같았고 성능 향상으로 세지 않는다.

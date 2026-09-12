@@ -737,6 +737,69 @@ static int DSSaveCapacity(const string& test)
             RequireDSCapacity(ambiguous.Cart().GetROMParams().SaveMemType == 2,
                 "A 32KiB file alone must not identify FRAM");
         }
+        else if (test == "ds-capacity-protection")
+        {
+            for (u32 type : {11u, 14u})
+            {
+                std::printf("DS save protection profile %u\n", type);
+                DSSaveFixture f(524288 + 17);
+                f.Load(type);
+                auto& cart = f.Cart();
+                auto* manager = f.loader.ndsSave.get();
+                const u32 protectedStart = type == 11 ? 0x1800 : 0x6000;
+                auto writeStatus = [&](u8 value)
+                {
+                    cart.SPISelect(); cart.SPITransmitReceive(0x06); cart.SPIRelease();
+                    cart.SPISelect(); cart.SPITransmitReceive(0x01);
+                    cart.SPITransmitReceive(value); cart.SPIRelease();
+                };
+                auto readStatus = [&]()
+                {
+                    cart.SPISelect(); cart.SPITransmitReceive(0x05);
+                    const u8 value = cart.SPITransmitReceive(0); cart.SPIRelease();
+                    return value;
+                };
+                writeStatus(0x04); // BP=01 protects the physical chip's upper quarter.
+                RequireDSCapacity((readStatus() & 0x0C) == 0x04, "WRSR did not enable upper-quarter protection");
+                f.Flush();
+
+                // Prime the real manager before testing any subsequent dirty range.
+                DSWrite(cart, 0x02, 2, 0x27, QByteArray::fromHex("96"));
+                f.expected[0x27] = char(0x96); f.Flush();
+                QByteArray blocked = f.expected.mid(protectedStart, 3);
+                for (char& byte : blocked) byte = char(u8(byte) ^ 0xFF);
+                const auto calls = ndsSaveCalls;
+                DSWrite(cart, 0x02, 2, protectedStart, blocked);
+                RequireDSCapacity(ndsSaveCalls == calls, "protected write published a save callback");
+                f.Flush(); // Full live/file comparison includes all opaque padding.
+                RequireDSCapacity(DSRead(cart, 0x03, 2, protectedStart, blocked.size()) ==
+                                  f.expected.mid(protectedStart, blocked.size()), "protected bytes changed on SPI readback");
+
+                const QByteArray boundary = QByteArray::fromHex("6d3c");
+                DSWrite(cart, 0x02, 2, protectedStart - 2, boundary);
+                f.expected.replace(protectedStart - 2, boundary.size(), boundary); f.Flush();
+                if (type == 14)
+                {
+                    DSWrite(cart, 0x02, 2, 0x5FFF, QByteArray::fromHex("a619c3"));
+                    f.expected[0x5FFF] = char(0xA6); f.Flush();
+                }
+                RequireDSCapacity(DSRead(cart, 0x03, 2, protectedStart - 2, 5) ==
+                                  f.expected.mid(protectedStart - 2, 5), "protection boundary lost writable bytes or changed protected neighbors");
+
+                f.loader.nds->Reset();
+                RequireDSCapacity(&f.Cart() == &cart && f.loader.ndsSave.get() == manager &&
+                                  (readStatus() & 0x0C) == 0x04, "console Reset lost inserted cart, save manager or BP bits");
+                DSWrite(cart, 0x02, 2, protectedStart, blocked);
+                f.Flush(); // Protection must still reject writes after Reset.
+                writeStatus(0);
+                RequireDSCapacity(!(readStatus() & 0x0C), "WREN/WRSR could not clear protection after Reset");
+                DSWrite(cart, 0x02, 2, protectedStart, blocked);
+                f.expected.replace(protectedStart, blocked.size(), blocked); f.Flush();
+                f.Load(type);
+                RequireDSCapacity(DSRead(f.Cart(), 0x03, 2, protectedStart, blocked.size()) == blocked,
+                                  "unprotected write did not survive actual save reload");
+            }
+        }
         else if (test == "ds-capacity-flash")
         {
             DSSaveFixture f(524288 + 17);

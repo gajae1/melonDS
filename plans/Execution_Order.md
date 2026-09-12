@@ -515,3 +515,12 @@ NP-18의 기존512바이트 긴 주소 판별 실패는 고정6비트 칩에서 
 수정 전 칩3/소비자4그룹 실패를 보존했고 후보 관련41/41, JIT OFF26/26 및 실제DS/DSi·ARM9/7·IR의5전송 경로가 통과했다. Windows 전체는877/878(97.81초)이며 변경하지 않은 `save-manager-replace`에서 Qt10 commit 접근 거부가 재발했다. 단독1회는 통과했으나 FS-06 원인은 미해결이다. SMC69개와 현행/원본1.1 블랙600프레임×3 renderer가 통과했고 마지막 화면은1.1.74와 같다. WIP/WP·칩 변종·검증된 자동 식별·NAND·실기/native ARM 등 남은 계획을 이어간다. GitHub Actions·macOS 빌드는 사용하지 않았다.
 
 실제 앱6그룹·39흐름은 첫 실행 모두 통과했다. 10개 종류 선택→실제 준비/큐 소비, EEPROM3종과FRAM의 선행 Flush 후 페이지/칩 끝 쓰기·재로드·512KiB 파일 여분 및 Auto/취소/재선택/최근/드롭을 확인했다. 입력1,097개를 현행/고정 복사본과 대조했고 개인 registry 경로만 격리했다. 이는 offscreen Qt와 실제 카트SPI→Platform→SaveManager 검사이며 guest MMIO5경로와 구분한다. 검증 기록 수집기의 `worktree:` 소스 식별자 경로 해석 실패는 기록을 남기고 처리만 수정했으며 성공한 실행을 반복하지 않았다.
+
+
+2026-09-13, 1.1.76: EEPROM/FRAM의 WRSR가 WREN 없이 보호 비트를 바꾸고, BP 설정 후에도 보호된 메모리에 쓰던 결함을 수정했다. [ST M95640 §5.5/6.4/6.6](https://www.st.com/resource/en/datasheet/m95640-w.pdf)의 상위1/4·1/2·전체 보호와 명령 종료 조건을 반영한다. WREN/WRDI를 포함해 같은CS의 추가 바이트를 새 opcode로 실행하지 않으며, 상태 제어는CS 해제에서 완료한다. [FM25W256 pp6–8](https://www.infineon.com/assets/row/public/documents/10/49/infineon-fm25w256-256-kbit-32k-x-8-serial-spi-f-ram-datasheet-en.pdf)에 따라 연속 쓰기가 보호 주소에 닿으면 주소 증가도 중단한다. 같은 카트의Reset은BP/SRWD·WPEN을 유지하지만 원시sav에 별도 상태를 저장하지 않으므로 재삽입 후 영속성은 남는다. 물리WP 입력·WIP 지연은 이번 구현 범위에 포함하지 않는다.
+
+전송 중인 상태 제어만14.8을 사용하고 별도 payload는 추가하지 않는다. 기존 일반14.2·명시매체14.7은 유지한다. 실제1.1.75와현재 코드를 연결해 상태25회를 실행했다. 구형writer의WREN/WRDI/WRSR 및 데이터 전WRSR을 새reader가 읽고, 새 미완료14.8은 구형reader가 명시적으로 거부하며 일반idle14.2는 양방향으로 읽는다. 구버전 자체에는BP 쓰기 차단 구현이 없으며, 상태 파일을 읽을 수 있다는 사실이 그 결함을 해결하지 않는다.
+
+FRAM의 비정상 추가 바이트 거부와 보호 거부 시WEL 처리는 명시한 에뮬레이터 정책/자료에 따른 추론이며 실기 측정으로 세지 않는다. [M25PE40 pp12–13/23–24](https://www.farnell.com/datasheets/2215260.pdf)의BP/sector lock은 EEPROM과 다르고 자료에도 변종/비트 설명 차이가 있어, Flash 보호를 EEPROM 규칙으로 대체하지 않는다. 이들 후속과 자동 식별·NAND·실기/native ARM·전체 콘솔 복원 실패 원자성을 계속 남긴다.
+
+수정 전 칩3그룹 실패와 최초 테스트 helper 호출의 컴파일 오류를 보존했다. 최종 Windows 전체883/883(218.33초, 실패·skip0), 포함된SMC69개 및JIT OFF27/27이 통과했다. 새 실제MMIO6경로와실제SaveManager의EEPROM/FRAM2종 보호·선행Flush·파일 여분·Reset·보호 해제 후 재삽입도 통과했다. 현행/원본1.1 블랙 상태600프레임×3 renderer의 마지막 화면은1.1.75와 같고 개인 입력을 보존했다. 이번 성공으로 기존FS-06 간헐적 Windows 파일 교체 거부가 해결된 것은 아니다. GitHub Actions·macOS 빌드는 사용하지 않았다.

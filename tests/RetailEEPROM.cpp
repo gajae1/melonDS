@@ -754,6 +754,133 @@ static void ProfileState()
     }
 }
 
+// ST M95640 DS6633 sections 5.5/6.4 and FM25W256 Rev H pp7-8:
+// WRSR needs WREN; BP protects the upper quarter/half/all of the array.
+static void WriteStatus(CartRetail& cart, u8 value, bool enable = true)
+{
+    if (enable) Command(cart, 0x06);
+    cart.SPISelect(); Send(cart, {0x01, value}); cart.SPIRelease();
+}
+
+static void StatusRegister()
+{
+    for (u32 type : {1u, 2u, 11u, 14u})
+    {
+        Fixture f(type, 17);
+        auto& cart = *f.Cart;
+        const auto before = f.Sink.Persisted;
+        WriteStatus(cart, 0x0C, false);
+        Check(!(Status(cart) & 0x0E), "WRSR without WREN changed protection or WEL");
+        WriteStatus(cart, 0xFF);
+        const u8 writable = type == 1 ? 0x0C : 0x8C;
+        Check((Status(cart) & (type == 1 ? 0x0F : 0xFF)) == writable,
+              "WRSR lost writable protection bits or wrote reserved/WEL/WIP bits");
+        cart.Reset();
+        Check((Status(cart) & writable) == writable && !(Status(cart) & 2),
+              "Reset erased nonvolatile protection or retained volatile WEL");
+        WriteStatus(cart, 0);
+        Check(!(Status(cart) & 0x0E), "WREN did not permit protection to be cleared");
+        CheckImage(f, before);
+        Check(f.Sink.Notices == 0, "Status-only commands notified save-array changes");
+    }
+    // EEPROM status writes need exactly one data byte and a CS rising edge.
+    Fixture f(11);
+    Command(*f.Cart, 0x06);
+    f.Cart->SPISelect(); Send(*f.Cart, {0x01, 0x0C});
+    // Starting another selection abandons a held transaction without release.
+    Check((Status(*f.Cart) & 0x0E) == 2, "WRSR committed before CS release");
+    f.Cart->SPISelect(); Send(*f.Cart, {0x01, 0x0C, 0x00}); f.Cart->SPIRelease();
+    Check((Status(*f.Cart) & 0x0E) == 2, "Overlong EEPROM WRSR changed status or consumed WEL");
+    Command(*f.Cart, 0x01);
+    Check((Status(*f.Cart) & 0x0E) == 2, "Truncated WRSR consumed WEL");
+}
+
+static void WriteProtection()
+{
+    struct Medium { u32 Type, Capacity, AddressBytes; };
+    for (const auto& medium : {Medium{1, 512, 1}, {2, 8192, 2}, {11, 8192, 2},
+                               {12, 65536, 2}, {13, 131072, 3}, {14, 32768, 2}})
+    for (const auto& protection : {std::pair<u8, u32>{0, medium.Capacity},
+                                   {4, medium.Capacity * 3 / 4}, {8, medium.Capacity / 2}, {12, 0}})
+    {
+        Fixture f(medium.Type, 17);
+        auto expected = f.Sink.Persisted;
+        auto& cart = *f.Cart;
+        WriteStatus(cart, protection.first);
+        for (u32 address : {protection.second ? protection.second - 1 : 0,
+                            protection.second < medium.Capacity ? protection.second : 0})
+        {
+            Command(cart, 0x06);
+            if (medium.Type == 1) StartTinyWrite(cart, u16(address));
+            else RegularStart(cart, medium.AddressBytes, 0x02, address);
+            cart.SPITransmitReceive(0xA6); cart.SPIRelease();
+            if (address < protection.second) expected[address] = 0xA6;
+            CheckImage(f, expected);
+        }
+        // Read access remains available even when the whole array is protected.
+        if (medium.Type == 1) CheckRead(cart, u16(medium.Capacity - 1), {expected[medium.Capacity - 1]});
+        else RegularRead(cart, medium.AddressBytes, medium.Capacity - 1, {expected[medium.Capacity - 1]});
+    }
+    // FRAM stops its address counter at the protected boundary. Even a burst
+    // long enough to wrap the chip must never resume writes at address zero.
+    Fixture fram(14, 17);
+    auto expected = fram.Sink.Persisted;
+    WriteStatus(*fram.Cart, 4);
+    Command(*fram.Cart, 0x06); RegularStart(*fram.Cart, 2, 0x02, 0x5FFF);
+    Send(*fram.Cart, {0xA6}); expected[0x5FFF] = 0xA6;
+    CheckMemory(fram, expected, "Unprotected FRAM byte was not written immediately");
+    for (unsigned i = 0; i <= 32768; ++i) fram.Cart->SPITransmitReceive(0xC3);
+    CheckMemory(fram, expected, "FRAM continued or wrapped a burst after entering protection");
+    fram.Cart->SPIRelease(); CheckImage(fram, expected);
+    Check(!(Status(*fram.Cart) & 2), "FRAM burst completion failed to clear WEL");
+}
+
+static void StatusState()
+{
+    for (u32 type : {1u, 11u, 14u, 6u})
+    for (u8 command : {0x06, 0x04, 0x01})
+    {
+        if (type == 6 && command == 0x01) continue; // Not a generic EEPROM status register.
+        Fixture source(type, 17), receiver(type, 17);
+        auto& cart = *source.Cart;
+        if (command != 0x06) Command(cart, 0x06);
+        cart.SPISelect(); Send(cart, {command});
+        if (command == 0x01) Send(cart, {0x0C});
+        Savestate saved; cart.DoSavestate(&saved); saved.Finish();
+        Check(!saved.Error && saved.MinorVersion() == 8, "Pending status control must require 14.8");
+        Savestate load(saved.Buffer(), saved.Length(), false); receiver.Cart->DoSavestate(&load);
+        Check(!load.Error, "Pending status command could not be restored");
+        receiver.Cart->SPIRelease();
+        const u8 expected = command == 0x06 ? 2 : command == 0x01 ? 0x0C : 0;
+        Check((Status(*receiver.Cart) & 0x0E) == expected, "Restored status control lost its CS completion");
+        Savestate idle; receiver.Cart->DoSavestate(&idle); idle.Finish();
+        Check(!idle.Error && idle.MinorVersion() == (type >= 11 ? 7 : 2),
+              "Completed status command unnecessarily raised the idle state version");
+    }
+    Fixture source(11, 17);
+    Command(*source.Cart, 0x06); source.Cart->SPISelect(); Send(*source.Cart, {0x01, 0x0C});
+    Savestate common; source.Cart->CartCommon::DoSavestate(&common);
+    const u32 addressOffset = common.Length() + 4 + 8192 + 4 + 1;
+    const u32 saveLenOffset = addressOffset + 4 + 1 + 4;
+    Savestate saved; source.Cart->DoSavestate(&saved); saved.Finish();
+    for (auto defect : {std::pair<u32, u32>{addressOffset, 0x100},
+                        {saveLenOffset, 0x40000001}, {saveLenOffset, 0xC0000000}})
+    {
+        Bytes broken(static_cast<const u8*>(saved.Buffer()), static_cast<const u8*>(saved.Buffer()) + saved.Length());
+        std::memcpy(broken.data() + defect.first, &defect.second, 4);
+        Fixture receiver(11, 17);
+        Command(*receiver.Cart, 0x06); receiver.Cart->SPISelect(); Send(*receiver.Cart, {0x01, 4});
+        auto* memory = receiver.Cart->GetSaveMemory();
+        const auto before = receiver.Sink.Persisted;
+        Savestate load(broken.data(), broken.size(), false); receiver.Cart->DoSavestate(&load);
+        Check(load.Error && receiver.Cart->GetSaveMemory() == memory && receiver.Sink.Notices == 0,
+              "Malformed status command replaced retail SRAM or notified persistence");
+        receiver.Cart->SPIRelease();
+        Check((Status(*receiver.Cart) & 0x0E) == 4, "Malformed status state disturbed the live command");
+        CheckImage(receiver, before);
+    }
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
@@ -766,6 +893,9 @@ int main(int argc, char** argv)
     else if (test == "profile-page") ProfilePage();
     else if (test == "profile-fram") ProfileFRAM();
     else if (test == "profile-state") ProfileState();
+    else if (test == "status-register") StatusRegister();
+    else if (test == "write-protection") WriteProtection();
+    else if (test == "status-state") StatusState();
     else if (test == "flash-program" || test == "flash-page" || test == "flash-erase" || test == "flash-state") Flash(test);
     else return 2;
     std::printf("%s: %s\n", argv[1], failures ? "FAIL" : "PASS");

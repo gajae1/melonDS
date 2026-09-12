@@ -26,7 +26,7 @@
 
 #define SAVESTATE_MAJOR 14
 #define SAVESTATE_MINOR 2
-#define SAVESTATE_MAX_MINOR 7
+#define SAVESTATE_MAX_MINOR 8
 
 // bitmask for the savestate config word
 enum
@@ -84,7 +84,9 @@ public:
     // Normal states remain 14.2. Pending migrated cart transfers need 14.3;
     // inactive audio that older readers would discard needs 14.4;
     // a pending Slot-2 EEPROM transaction or programming deadline needs 14.5;
-    // an uncommitted Slot-1 Flash page/erase latch needs 14.6.
+    // an uncommitted Slot-1 Flash page/erase latch needs 14.6;
+    // explicit EEPROM/FRAM profiles need 14.7;
+    // a pending Slot-1 status-control command needs 14.8.
     void RequireMinorVersion(u16 minor);
 
     // TODO rewinds the stream
