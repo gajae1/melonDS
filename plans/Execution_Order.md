@@ -377,3 +377,9 @@ Windows 최종 빌드와 전체 CTest799/799(89.87초, 실패/skip0), JIT OFF �
 고정1.1.59 대조의 교차 코드64조건에서 JIT/fastmem 각16개의 잘못된 레지스터/PC/플래그 상태가0이 됐고, 기존256개 guest timestamp/cycles는 유지됐다. interpreter와는 각64개의 기존 branch timing 차이가 남아 cycle 동등성을 주장하지 않는다. 추가 SCFG enable 재현에서 JIT50실패·fastmem51실패, private RAM 인접 읽기 재현에서 fastmem2실패를 확인했다. 최종 기존 실행 fixture의73사례/실행모드가 통과했고, Windows 전체802/802(73.98초, 실패/skip0), JIT OFF 영향 범위25/25도 통과했다. 현행14.2 및 원본1.1 slot2 블랙 상태를 세 renderer에서 각600프레임 재생한 마지막 화면은 같은 renderer의1.1.59와 같고 개인 파일 hash도 유지됐다.
 
 far 코드 버퍼의 실제 용량 소진/자동 리셋 후 SMC는1.1.59 고정 코어에서 받은 근거를 보존했다. 1.1.60 연결 재실행은 서브에이전트 자동 안전검사가 차단하여 미실행이며 현재 버전 통과에 포함하지 않는다. native A64, 실기 절대 timing 및 나머지 공개 계획은 남는다. GitHub Actions와 macOS 빌드는 사용하지 않는다.
+
+2026-09-12, 1.1.61: CJ-14의 ARM9/7 Timer0~3 기반 NDMA 시작을 구현했다. 기본·연쇄 타이머 overflow에서 같은 CPU의 선택된 NDMA 채널을 시작하며 타이머 IRQ enable과 분리한다. NDMA 채널을 켜기 전에 경과한 타이머 이벤트를 기존 비활성 상태로 먼저 처리해 과거 이벤트로 소급 시작하지 않게 한다. 기존 DMA 전송·완료 IRQ·우선순위 소비자를 재사용하고 새 저장 필드나 이벤트 슬롯은 추가하지 않았다. 계약은 [GBATEK DSi NDMA](https://problemkaputt.de/gbatek.htm#dsinewdmandma)의 timer 시작 모드와 총/논리 블록 정의를 따른다.
+
+기준1.1.60의 생성56조건에서448검사 실패를 확인했고, 시작만 연결한 중간 후보의 과거 overflow 재현에서는112검사가 실패했다. 최종60사례/실행모드에서 양 CPU·타이머4개·연쇄·IRQ on/off·ARM9 클록 전환·짧은 최종 블록·완료/비활성·pending 저장/복원을 확인했다. 실제 guest STR로 채널과 타이머를 켜서 RunFrame으로 전송했으며 JIT/fastmem의 warm 재실행은 기존 블록 보존·코드 추가 생성 없음과 데이터/PC/IRQ를 확인했다. 전체 Windows805/805(80.58초, 실패/skip0), JIT OFF 영향 범위3/3이 통과했다.
+
+현행14.2 및 원본1.1 slot2 블랙 상태를 세 renderer에서 각각600프레임 재생한 마지막 화면은 같은 renderer의1.1.60과 같고 개인 입력 hash를 보존했다. 타이머 요청은 기존 scheduler 단위로 처리하며 물리 DSi 시작 지연·subblock interval·round-robin·버스 중재·native ARM/실기 timing은 완료하지 않았다. CJ-04 겹친 MPU 갱신 후보는 분석 근거만 확보했고 제품 통합은 남는다. GitHub Actions·macOS 빌드는 사용하지 않는다.

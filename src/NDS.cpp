@@ -1757,6 +1757,8 @@ void NDS::HandleTimerOverflow(u32 tid)
     timer->Counter += (timer->Reload << 10);
     if (timer->Cnt & (1<<6))
         SetIRQ(tid >> 2, IRQ_Timer0 + (tid & 0x3));
+    if (ConsoleType == 1)
+        static_cast<DSi&>(*this).CheckNDMAs(tid >> 2, (tid & 3) | ((tid >> 2) << 5));
 
     if ((tid & 0x3) == 3)
         return;
@@ -1777,6 +1779,8 @@ void NDS::HandleTimerOverflow(u32 tid)
         timer->Counter = timer->Reload << 10;
         if (timer->Cnt & (1<<6))
             SetIRQ(tid >> 2, IRQ_Timer0 + (tid & 0x3));
+        if (ConsoleType == 1)
+            static_cast<DSi&>(*this).CheckNDMAs(tid >> 2, (tid & 3) | ((tid >> 2) << 5));
 
         if ((tid & 0x3) == 3)
             break;

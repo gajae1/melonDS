@@ -949,6 +949,178 @@ int TestDSiNDMAExecution(NDSArgs&& args)
     return failures ? 1 : 0;
 }
 
+// GBATEK: both CPUs' NDMA startup modes 0..3 select their timer overflows.
+// Timer IRQ enable is independent from the DMA request. Use actual timer MMIO
+// and the production timer/DMA consumers, never a direct CheckNDMAs request.
+// https://problemkaputt.de/gbatek.htm#dsinewdmandma
+int TestDSiNDMATimers(NDSArgs&& args)
+{
+    const bool native = args.JIT.has_value();
+    DSiArgs dsiArgs;
+    static_cast<NDSArgs&>(dsiArgs) = std::move(args);
+    auto dsi = std::make_unique<DSi>(std::move(dsiArgs));
+    constexpr u32 Source = 0x02020000, Dest = 0x02021000, Enable = 1u << 31;
+    unsigned cases = 0, failures = 0;
+    for (unsigned cpu : {0u, 1u})
+    for (unsigned clock : {0u, 1u})
+    for (unsigned timer = 0; timer < 4; ++timer)
+    for (bool cascade : {false, true})
+    for (bool irq : {false, true})
+    {
+        if (cascade && !timer) continue;
+        ++cases;
+        const unsigned before = failures, channel = (timer + 1) & 3;
+        auto check = [&](bool ok, const char* detail) {
+            if (!ok)
+            {
+                ++failures;
+                std::fprintf(stderr, "ndma-timer cpu=%u clock=%u timer=%u chain=%d irq=%d: FAIL %s\n",
+                             cpu, clock, timer, cascade, irq, detail);
+            }
+        };
+        auto write = [&](u32 address, u32 value) {
+            if (cpu) dsi->ARM7Write32(address, value);
+            else dsi->ARM9Write32(address, value);
+        };
+        dsi->Reset();
+        dsi->CurCPU = cpu;
+        dsi->ARM9Write16(0x04004004, clock);
+        for (u32 i = 0; i < 3; ++i) write(Source + 4 * i, 0x12340000 + i);
+        const u32 reg = 0x04004104 + channel * 0x1C;
+        write(reg, Source);
+        write(reg + 4, Dest);
+        write(reg + 8, 3); // Short final logical block, total length three.
+        write(reg + 12, 2);
+        write(reg + 16, 0);
+        auto now = [&]() -> u64 { return cpu ? dsi->ARM7Timestamp : dsi->ARM9Timestamp >> dsi->ARM9ClockShift; };
+        auto advance = [&](u64 cycles) {
+            if (cpu) dsi->ARM7Timestamp += cycles;
+            else dsi->ARM9Timestamp += cycles << dsi->ARM9ClockShift;
+            dsi->RunTimers(cpu);
+        };
+        // A 256-bus-cycle base timer clocks each selected count-up timer.
+        // With no timer IRQ enabled the matching NDMA must still receive it.
+        if (cascade)
+            for (unsigned t = 1; t <= timer; ++t)
+                write(0x04000100 + 4 * t, 0x0084FFFF | (irq ? 0x00400000 : 0));
+        write(0x04000100 + 4 * (cascade ? 0 : timer), 0x0080FF00 | (irq ? 0x00400000 : 0));
+        // CPU instructions can arm NDMA after an overflow but before the
+        // scheduler's next timer update. Past events must not arm new DMA.
+        if (cpu) dsi->ARM7Timestamp += 257;
+        else dsi->ARM9Timestamp += 257u << dsi->ARM9ClockShift;
+        write(reg + 24, Enable | (1u << 30) | (timer << 24));
+        dsi->RunTimers(cpu);
+        check(!dsi->NDMAsRunning(cpu), "past overflow started newly enabled channel");
+        const u64 start = now() - 1;
+        advance(254);
+        check(!dsi->NDMAsRunning(cpu) && dsi->ARM9Read32(Dest) == 0, "started before overflow");
+        advance(1);
+        check(dsi->NDMAs[cpu * 4 + channel].IsRunning(), "overflow did not start selected channel");
+        check(bool(dsi->IF[cpu] & (1u << (3 + timer))) == irq, "timer IRQ gating changed");
+        for (unsigned block = 0; block < 2; ++block)
+        {
+            if (cpu) dsi->ARM7Target = dsi->ARM7Timestamp + 64;
+            else dsi->ARM9Target = dsi->ARM9Timestamp + (64u << dsi->ARM9ClockShift);
+            dsi->RunNDMAs(cpu);
+            const unsigned count = block ? 3 : 2;
+            for (unsigned i = 0; i < count; ++i)
+                check(dsi->ARM9Read32(Dest + 4 * i) == 0x12340000 + i, "copied word missing");
+            check(dsi->ARM9Read32(Dest + 4 * count) == 0, "logical/total count overrun");
+            check(bool(dsi->IF[cpu] & (1u << (28 + channel))) == bool(block), "NDMA completion IRQ order");
+            check(!dsi->NDMAsRunning(cpu), "completed logical block held CPU");
+            if (!block)
+            {
+                check(dsi->NDMAs[cpu * 4 + channel].Cnt & Enable, "total count ended too early");
+                // Rescale a pending timer through the real clock register.
+                dsi->ARM9Write16(0x04004004, clock ^ 1);
+                if (timer == 3 && cascade && !clock && !irq)
+                {
+                    Savestate saved;
+                    const bool stored = dsi->NDS::DoSavestate(&saved) && !saved.Error;
+                    saved.Finish();
+                    check(stored && !saved.Error, "pending timer/DMA save failed");
+                    if (!stored || saved.Error) return 2;
+                    dsi->Reset();
+                    Savestate load(saved.Buffer(), saved.Length(), false);
+                    const bool restored = dsi->NDS::DoSavestate(&load) && !load.Error;
+                    check(restored, "pending timer/DMA load failed");
+                    if (!restored) return 2;
+                    dsi->CurCPU = cpu;
+                }
+                const u64 remaining = start + 512 - now();
+                check(remaining > 1 && remaining <= 256, "clock change lost timer progress");
+                if (remaining > 1 && remaining <= 256)
+                {
+                    advance(remaining - 1);
+                    check(!dsi->NDMAsRunning(cpu), "second request arrived early");
+                    advance(1);
+                }
+            }
+        }
+        check(!(dsi->NDMAs[cpu * 4 + channel].Cnt & Enable), "total count did not disable channel");
+        advance(256);
+        check(!dsi->NDMAsRunning(cpu), "disabled channel restarted");
+        std::printf("ndma-timer case=%u cpu=%u timer=%u chain=%d clock=%u irq=%d: %s\n",
+                    cases, cpu, timer, cascade, clock, irq, before == failures ? "PASS" : "FAIL");
+    }
+    // The normal frame loop must consume the requests from actual CPU stores.
+    for (unsigned num : {0u, 1u})
+    {
+        dsi->Reset();
+        dsi->ARM9Write32(Source, 0xABC00001);
+        dsi->ARM9Write32(Source + 4, 0xABC00002);
+        dsi->ARM9Write32(Source + 8, 0xABC00003);
+        auto write = [&](u32 address, u32 value) {
+            if (num) dsi->ARM7Write32(address, value);
+            else dsi->ARM9Write32(address, value);
+        };
+        write(0x04004104, Source);
+        write(0x04004108, Dest);
+        write(0x0400410C, 3);
+        write(0x04004110, 2);
+        constexpr u32 Code = 0x02008000, Idle = Code + 0x100;
+        dsi->ARM9Write32(Code, 0xE5810000); // STR r0,[r1]: arm NDMA timer0.
+        dsi->ARM9Write32(Code + 4, 0xE5832000); // STR r2,[r3]: start timer0.
+        dsi->ARM9Write32(Code + 8, 0xEAFFFFFE);
+        dsi->ARM9Write32(Idle, 0xEAFFFFFE);
+        dsi->ARM9.CPSR = dsi->ARM7.CPSR = 0xDF;
+        auto& cpu = num ? static_cast<ARM&>(dsi->ARM7) : static_cast<ARM&>(dsi->ARM9);
+        cpu.R[0] = 0xC0000000;
+        cpu.R[1] = 0x0400411C;
+        cpu.R[2] = 0x0080FF00;
+        cpu.R[3] = 0x04000100;
+        for (bool warm : {false, true})
+        {
+            write(0x04000100, 0);
+            write(0x04000214, 1u << 28);
+            for (u32 i = 0; i < 3; ++i) write(Dest + i * 4, 0);
+#ifdef JIT_ENABLED
+            const auto* codePtr = dsi->JIT.JITCompiler.GetCodePtr();
+            const bool cached = (num ? dsi->JIT.JitBlocks7 : dsi->JIT.JitBlocks9).contains(Code);
+#endif
+            dsi->ARM9.JumpTo(num ? Idle : Code);
+            dsi->ARM7.JumpTo(num ? Code : Idle);
+            dsi->Start();
+            const auto lines = dsi->RunFrame();
+            bool ok = lines && dsi->IsRunning() && (dsi->IF[num] & (1u << 28))
+                && !(dsi->NDMAs[num * 4].Cnt & Enable) && !dsi->NDMAsRunning(num)
+                && cpu.R[15] == Code + 12 && dsi->ARM9Read32(Dest + 12) == 0;
+            for (u32 i = 0; i < 3; ++i)
+                ok &= dsi->ARM9Read32(Dest + i * 4) == 0xABC00001 + i;
+#ifdef JIT_ENABLED
+            ok &= !native || !warm || (cached && codePtr == dsi->JIT.JITCompiler.GetCodePtr());
+#endif
+            failures += !ok;
+            ++cases;
+            std::printf("ndma-timer cpu=%u guest-frame warm=%d native=%d: %s\n",
+                        num, warm, native, ok ? "PASS" : "FAIL");
+        }
+        dsi->Stop(Platform::StopReason::External);
+    }
+    std::printf("ndma-timers: %u cases, %u failures\n", cases, failures);
+    return failures ? 1 : 0;
+}
+
 // Arisotura's hardware observations, 2021-06-03: the last halfword of each
 // 128 KiB GBA ROM block is nonsequential, including fixed/decrementing DMA.
 // https://melonds.kuribo64.net/board/thread.php?pid=3805#3805

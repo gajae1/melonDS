@@ -24,6 +24,7 @@ int TestMPUExecution(NDSArgs&& args, bool jit);
 int TestCacheMPUDisabled(NDSArgs&& args, bool jit);
 int TestDeviceExecution(NDSArgs&& args, bool jit);
 int TestDSiNDMAExecution(NDSArgs&& args);
+int TestDSiNDMATimers(NDSArgs&& args);
 int TestDMASlotTiming(NDSArgs&& args);
 int TestDSiResetI2C(NDSArgs&& args);
 int TestDSiBTDMP(NDSArgs&& args);
@@ -727,6 +728,8 @@ int main(int argc, char** argv) {
         return TestDMASlotTiming(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "dsi-ndma") == 0)
         return TestDSiNDMAExecution(std::move(args));
+    if (argc > 2 && std::strcmp(argv[2], "dsi-ndma-timers") == 0)
+        return TestDSiNDMATimers(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "dsi-reset-i2c") == 0)
         return TestDSiResetI2C(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "dsi-btdmp") == 0)

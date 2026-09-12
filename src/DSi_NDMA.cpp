@@ -99,6 +99,11 @@ void DSi_NDMA::DoSavestate(Savestate* file)
 
 void DSi_NDMA::WriteCnt(u32 val)
 {
+    // Deliver elapsed overflows while this timer-triggered channel is still
+    // disabled; enabling it must not consume a request from before the write.
+    if (!(Cnt & (1u << 31)) && (val & (1u << 31)) && ((val >> 24) & 0x1F) <= 3)
+        DSi.RunTimers(CPU);
+
     u32 oldcnt = Cnt;
     Cnt = val;
 
@@ -138,11 +143,10 @@ void DSi_NDMA::WriteCnt(u32 val)
             DSi.GPU.GPU3D.CheckFIFODMA();
 
         // TODO: unsupported start modes:
-        // * timers (00-03)
         // * NDS-wifi?? (ARM7 07, likely not working)
 
-        if (StartMode <= 0x03 || (StartMode >= 0x0C && StartMode <= 0x0F) ||
-            (StartMode >= 0x20 && StartMode <= 0x23) || StartMode == 0x27 || (StartMode >= 0x2D && StartMode <= 0x2F))
+        if ((StartMode >= 0x0C && StartMode <= 0x0F) ||
+            StartMode == 0x27 || (StartMode >= 0x2D && StartMode <= 0x2F))
             Log(LogLevel::Warn, "UNIMPLEMENTED ARM%d NDMA%d START MODE %02X, %08X->%08X LEN=%d BLK=%d CNT=%08X\n",
                    CPU?7:9, Num, StartMode, SrcAddr, DstAddr, TotalLength, BlockLength, Cnt);
     }
