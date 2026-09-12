@@ -326,7 +326,7 @@ int main(int argc, char** argv)
               thread.emuStatus == EmuThread::emuStatus_Running, "Failed reset/boot changed the running session");
     }
     instance.bootOK = true;
-    for (auto result : {StateLoadResult::Success, StateLoadResult::Failed})
+    for (auto result : {StateLoadResult::Success, StateLoadResult::SuccessLegacy, StateLoadResult::Failed})
     {
         instance.result = result;
         dispatch(EmuThread::msg_LoadState);
@@ -374,7 +374,7 @@ int main(int argc, char** argv)
         check(!thread.stateRecoveryFailed && thread.emuActive && instance.audio &&
               instance.console.running, "Successful boot/reset did not permit recovery");
     }
-    check(!instance.callbacksDuringLoad && instance.undos == 3,
+    check(!instance.callbacksDuringLoad && instance.undos == 4,
           "Audio callbacks were active during state transfer or undo was skipped");
     std::printf("state message results and recovery stop: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;

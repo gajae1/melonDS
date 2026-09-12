@@ -114,32 +114,47 @@ void CartRetail::DoSavestate(Savestate* file)
     // we reload the SRAM contents.
     // it should be the same file, but the contents may change
 
-    u32 oldlen = SRAMLength;
-
-    file->Var32(&SRAMLength);
-    if (SRAMLength != oldlen)
+    u32 length = SRAMLength;
+    file->Var32(&length);
+    if (file->Error) return;
+    if (!file->Saving && (length > 64 * 1024 * 1024 ||
+        length > file->BufferLength() - file->Length()))
     {
-        Log(LogLevel::Warn, "savestate: VERY BAD!!!! SRAM LENGTH DIFFERENT. %d -> %d\n", oldlen, SRAMLength);
-        Log(LogLevel::Warn, "oh well. loading it anyway. adsfgdsf\n");
-
-        SRAM = SRAMLength ? std::make_unique<u8[]>(SRAMLength) : nullptr;
+        file->Error = true;
+        return;
     }
-    if (SRAMLength)
+    if (length != SRAMLength)
+    {
+        // Validate the payload before replacing live save memory. This also
+        // keeps allocation failure inside the slot's noexcept load boundary.
+        std::unique_ptr<u8[]> restored;
+        try { if (length) restored = std::make_unique<u8[]>(length); }
+        catch (const std::bad_alloc&) { file->Error = true; return; }
+        if (length) file->VarArray(restored.get(), length);
+        if (file->Error) return;
+        SRAM = std::move(restored);
+        SRAMLength = length;
+    }
+    else if (SRAMLength)
     {
         file->VarArray(SRAM.get(), SRAMLength);
     }
 
     // SPI status shito
 
-    file->Var32(&SRAMPos);
+    const bool legacy = !file->Saving && file->MajorVersion() == 13;
+    if (!legacy) file->Var32(&SRAMPos);
     file->Var8(&SRAMCmd);
     file->Var32(&SRAMAddr);
     file->Var8(&SRAMStatus);
 
-    file->Var32(&SRAMSaveAddr);
-    file->Var32(&SRAMSaveLen);
+    if (!legacy)
+    {
+        file->Var32(&SRAMSaveAddr);
+        file->Var32(&SRAMSaveLen);
+    }
 
-    if ((!file->Saving) && SRAM)
+    if (!file->Saving && !file->Error && SRAM)
         Platform::WriteNDSSave(SRAM.get(), SRAMLength, 0, SRAMLength, UserData);
 }
 

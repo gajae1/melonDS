@@ -190,6 +190,7 @@ void ARM::Reset()
     FastBlockLookup = NULL;
     FastBlockLookupStart = 0;
     FastBlockLookupSize = 0;
+    JITPipelineDrain = 0;
 #endif
 
 #ifdef GDBSTUB_ENABLED
@@ -208,6 +209,11 @@ void ARMv5::Reset()
     ARM::Reset();
 }
 
+
+#ifdef JIT_ENABLED
+// Resolve this only after the whole console has restored its memory mappings.
+static constexpr u32 JITLoadedPipeline = 1u << 31;
+#endif
 
 void ARM::DoSavestate(Savestate* file)
 {
@@ -230,7 +236,7 @@ void ARM::DoSavestate(Savestate* file)
     file->VarArray(R_UND, 3*sizeof(u32));
     file->Var32(&CurInstr);
 #ifdef JIT_ENABLED
-    if (file->Saving && NDS.IsJITEnabled())
+    if (file->Saving && NDS.IsJITEnabled() && !JITPipelineDrain)
     {
         // hack, the JIT doesn't really pipeline
         // but we still want JIT save states to be
@@ -244,6 +250,12 @@ void ARM::DoSavestate(Savestate* file)
 
     if (!file->Saving)
     {
+#ifdef JIT_ENABLED
+        // NextInstr is already serialized. Consume that pipeline on JIT
+        // reentry too, including a save made while draining an old mapping.
+        JITPipelineDrain = JITLoadedPipeline
+            | (2 + (Num == 0 && (CPSR & 0x20) && !(R[15] & 2)));
+#endif
         CPSR |= 0x00000010;
         R_FIQ[7] |= 0x00000010;
         R_SVC[2] |= 0x00000010;
@@ -293,6 +305,9 @@ void ARM::SetupCodeMem(u32 addr)
 
 void ARMv5::JumpTo(u32 addr, bool restorecpsr)
 {
+#ifdef JIT_ENABLED
+    JITPipelineDrain = 0;
+#endif
     if (restorecpsr)
     {
         RestoreCPSR();
@@ -361,6 +376,9 @@ void ARMv5::JumpTo(u32 addr, bool restorecpsr)
 
 void ARMv4::JumpTo(u32 addr, bool restorecpsr)
 {
+#ifdef JIT_ENABLED
+    JITPipelineDrain = 0;
+#endif
     if (restorecpsr)
     {
         RestoreCPSR();
@@ -590,6 +608,32 @@ void ARM::CheckGdbIncoming()
     GdbCheckA();
 }
 
+#ifdef JIT_ENABLED
+static bool NeedsJITPipelineDrain(ARM& cpu)
+{
+    if (!(cpu.JITPipelineDrain & JITLoadedPipeline))
+        return true;
+
+    cpu.JITPipelineDrain &= ~JITLoadedPipeline;
+    const u32 saved0 = cpu.NextInstr[0], saved1 = cpu.NextInstr[1];
+    const auto codeCycles = cpu.CodeCycles;
+    cpu.FillPipeline();
+    const bool thumb = cpu.CPSR & 0x20;
+    const u32 mask0 = thumb ? 0xFFFFu : ~0u;
+    const u32 mask1 = thumb && (cpu.Num || (cpu.R[15] & 2)) ? 0xFFFFu : ~0u;
+    const bool unchanged = !((saved0 ^ cpu.NextInstr[0]) & mask0)
+        && !((saved1 ^ cpu.NextInstr[1]) & mask1);
+    cpu.NextInstr[0] = saved0;
+    cpu.NextInstr[1] = saved1;
+    cpu.CodeCycles = codeCycles;
+    // Ordinary states can resume through the existing JIT trace timing. Only
+    // prefetched opcodes that differ from restored memory need an exact drain.
+    if (unchanged)
+        cpu.JITPipelineDrain = 0;
+    return !unchanged;
+}
+#endif
+
 template <CPUExecuteMode mode>
 void ARMv5::Execute()
 {
@@ -618,7 +662,7 @@ void ARMv5::Execute()
     while (NDS.ARM9Timestamp < NDS.ARM9Target)
     {
 #ifdef JIT_ENABLED
-        if constexpr (mode == CPUExecuteMode::JIT)
+        if (mode == CPUExecuteMode::JIT && !JITPipelineDrain)
         {
             u32 instrAddr = R[15] - ((CPSR&0x20)?2:4);
             // Cached blocks must obey the current execution permission too.
@@ -643,7 +687,13 @@ void ARMv5::Execute()
             JitBlockEntry block = NDS.JIT.LookUpBlock(0, FastBlockLookup,
                 instrAddr - FastBlockLookupStart, instrAddr, CPSR & 0x20);
             if (block)
+            {
+                NDS.JIT.ExecutingCPU = this;
+                NDS.JIT.ExecutingNative = true;
                 ARM_Dispatch(this, block);
+                NDS.JIT.ExecutingNative = false;
+                NDS.JIT.ExecutingCPU = nullptr;
+            }
             else
                 NDS.JIT.CompileBlock(this);
 
@@ -668,6 +718,14 @@ void ARMv5::Execute()
         else
 #endif
         {
+#ifdef JIT_ENABLED
+            if constexpr (mode == CPUExecuteMode::JIT)
+            {
+                if (!NeedsJITPipelineDrain(*this)) continue;
+                --JITPipelineDrain;
+                NDS.JIT.ExecutingCPU = this;
+            }
+#endif
             if (CPSR & 0x20) // THUMB
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
@@ -709,6 +767,10 @@ void ARMv5::Execute()
                     AddCycles_C();
             }
 
+#ifdef JIT_ENABLED
+            if constexpr (mode == CPUExecuteMode::JIT)
+                NDS.JIT.ExecutingCPU = nullptr;
+#endif
             // TODO optimize this shit!!!
             if (Halted)
             {
@@ -768,7 +830,7 @@ void ARMv4::Execute()
     while (NDS.ARM7Timestamp < NDS.ARM7Target)
     {
 #ifdef JIT_ENABLED
-        if constexpr (mode == CPUExecuteMode::JIT)
+        if (mode == CPUExecuteMode::JIT && !JITPipelineDrain)
         {
             u32 instrAddr = R[15] - ((CPSR&0x20)?2:4);
 
@@ -783,7 +845,13 @@ void ARMv4::Execute()
             JitBlockEntry block = NDS.JIT.LookUpBlock(1, FastBlockLookup,
                 instrAddr - FastBlockLookupStart, instrAddr, CPSR & 0x20);
             if (block)
+            {
+                NDS.JIT.ExecutingCPU = this;
+                NDS.JIT.ExecutingNative = true;
                 ARM_Dispatch(this, block);
+                NDS.JIT.ExecutingNative = false;
+                NDS.JIT.ExecutingCPU = nullptr;
+            }
             else
                 NDS.JIT.CompileBlock(this);
 
@@ -807,6 +875,14 @@ void ARMv4::Execute()
         else
 #endif
         {
+#ifdef JIT_ENABLED
+            if constexpr (mode == CPUExecuteMode::JIT)
+            {
+                if (!NeedsJITPipelineDrain(*this)) continue;
+                --JITPipelineDrain;
+                NDS.JIT.ExecutingCPU = this;
+            }
+#endif
             if (CPSR & 0x20) // THUMB
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
@@ -843,6 +919,10 @@ void ARMv4::Execute()
                     AddCycles_C();
             }
 
+#ifdef JIT_ENABLED
+            if constexpr (mode == CPUExecuteMode::JIT)
+                NDS.JIT.ExecutingCPU = nullptr;
+#endif
             // TODO optimize this shit!!!
             if (Halted)
             {

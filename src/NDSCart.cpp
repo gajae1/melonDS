@@ -214,6 +214,7 @@ NDSCartSlot::~NDSCartSlot() noexcept
 
 void NDSCartSlot::Reset() noexcept
 {
+    ClearLegacyTransfer();
     SetLogicalNum(Num);
 
     // on DS, the cart interface is always powered on
@@ -235,6 +236,12 @@ void NDSCartSlot::Reset() noexcept
 
 void NDSCartSlot::DoSavestate(Savestate* file) noexcept
 {
+    if (!file->Saving && file->MajorVersion() == 13)
+    {
+        LoadLegacyState(file);
+        return;
+    }
+    if (!file->Saving) ClearLegacyTransfer();
     file->Section((Num==0) ? "NDSC" : "NC2i");
 
     file->Var8(&LogicalNum);
@@ -298,6 +305,150 @@ void NDSCartSlot::DoSavestate(Savestate* file) noexcept
         if (!Cart)
             CartActive = false;
     }
+    LegacyTransferState(file);
+}
+
+void NDSCartSlot::LoadLegacyState(Savestate* file) noexcept
+{
+    ClearLegacyTransfer();
+    for (auto& inter : Interfaces) inter.Reset();
+    SetLogicalNum(Num);
+    CPUSelect = (NDS.ExMemCnt[0] >> (Num ? 10 : 11)) & 1;
+    Key2_X = Key2_Y = 0;
+    if (Num)
+    {
+        // The original DSi implementation did not expose a second cart slot.
+        PowerState = 0;
+        CartActive = false;
+        if (Cart) file->Error = true;
+        return;
+    }
+
+    file->Section("NDSC");
+    auto& inter = Interfaces[CPUSelect];
+    u32 spiPos = 0, direction = 0, type = 0, checksum = 0;
+    bool spiHold = false;
+    std::array<u32, 0x1000> transfer {};
+    u8 command[8] {};
+    file->Var16(&inter.SPICnt);
+    file->Var32(&inter.ROMCnt);
+    file->Var8(&inter.SPIData);
+    file->Var32(&spiPos);
+    file->Bool32(&spiHold);
+    file->VarArray(inter.ROMCommand, sizeof(inter.ROMCommand));
+    file->Var32(&inter.ROMData[0]);
+    file->VarArray(transfer.data(), sizeof(transfer));
+    file->Var32(&inter.ROMTransferPos);
+    file->Var32(&inter.ROMTransferLen);
+    file->Var32(&direction);
+    file->VarArray(command, sizeof(command));
+    file->Var32(&type);
+    file->Var32(&checksum);
+    if (file->Error) return;
+    if (type != (Cart ? u32(Cart->Type()) : 0) || checksum != (Cart ? Cart->Checksum() : 0) ||
+        inter.ROMTransferPos > inter.ROMTransferLen || inter.ROMTransferLen > sizeof(transfer) ||
+        ((inter.ROMTransferPos | inter.ROMTransferLen) & 3) || direction > 1 || spiPos == UINT32_MAX)
+    {
+        file->Error = true;
+        return;
+    }
+    if ((inter.ROMCnt & (1u << 31)) && direction != ((inter.ROMCnt >> 30) & 1))
+    {
+        Log(LogLevel::Error, "savestate: legacy cartridge transfer directions disagree\n");
+        file->Error = true;
+        return;
+    }
+
+    // The old slot did not gate access by SCFG_MC/reset. Preserve its active
+    // transaction, while subsequent control writes use the current slot model.
+    PowerState = 2;
+    CartActive = Cart != nullptr;
+    inter.SPISelected = spiHold;
+    inter.ROMDataCount = !direction && (inter.ROMCnt & (1u << 23));
+    inter.ROMDataPosCart = inter.ROMDataCount;
+    inter.ROMDataLate = inter.ROMDataCount != 0;
+    if (Cart)
+    {
+        Cart->DoSavestate(file);
+        if (file->Error) return;
+        Cart->ResetState = false;
+        Cart->SPISelected = spiHold;
+        memcpy(Cart->ROMCmd, command, sizeof(command));
+        Cart->ROMAddr = 0;
+        if (auto* retail = dynamic_cast<CartRetail*>(Cart.get()))
+        {
+            bool sramSelected = spiHold;
+            if (auto* ir = dynamic_cast<CartRetailIR*>(retail))
+            {
+                ir->IRPos = spiHold ? spiPos + 1 : 0;
+                // The outer IR command consumes the first byte; the old
+                // pass-through used a position relative to the SRAM command.
+                sramSelected = spiHold && spiPos != 0 && ir->IRCmd == 0;
+                spiPos = sramSelected ? spiPos - 1 : 0;
+            }
+            retail->SRAMPos = sramSelected ? spiPos + 1 : 0;
+            const u32 addressBytes = retail->SRAMLength <= 0x200 ? 1 : retail->SRAMLength <= 0x10000 ? 2 : 3;
+            const bool writing = sramSelected && (retail->SRAMStatus & 2) &&
+                                 (retail->SRAMCmd == 2 || retail->SRAMCmd == 10);
+            retail->SRAMSaveLen = writing && spiPos > addressBytes ? spiPos - addressBytes : 0;
+            retail->SRAMSaveAddr = retail->SRAMSaveLen ? retail->SRAMAddr - retail->SRAMSaveLen : 0;
+            if (retail->SRAMSaveLen && retail->SRAMLength == 0x200 && retail->SRAMCmd == 10)
+                retail->SRAMSaveAddr += 0x100;
+        }
+        if (Cart->CmdEncMode == 1)
+            Key1_InitKeycode(Cart->DSiMode, Cart->GetHeader().GameCodeAsU32(), Cart->DSiMode ? 1 : 2, 2);
+    }
+    if ((inter.ROMCnt & (1u << 31)) && (direction || inter.ROMTransferPos < inter.ROMTransferLen))
+    {
+        try
+        {
+            LegacyROMData.assign(transfer.begin() + (direction ? 0 : inter.ROMTransferPos / 4),
+                                 transfer.begin() + inter.ROMTransferLen / 4);
+            LegacyROMCPU = CPUSelect;
+            LegacyROMWrite = direction != 0;
+        }
+        catch (const std::bad_alloc&) { file->Error = true; }
+    }
+}
+
+void NDSCartSlot::LegacyTransferState(Savestate* file) noexcept
+{
+    if (Num || file->Error) return;
+    const bool pending = LegacyROMWrite || LegacyROMPos < LegacyROMData.size();
+    if (file->Saving ? !pending : !file->IsAtLeastVersion(14, 3)) return;
+    if (file->Saving) file->RequireMinorVersion(3);
+    file->Section("NC13");
+    const u32 offset = LegacyROMWrite ? 0 : LegacyROMPos;
+    u32 count = pending ? static_cast<u32>(LegacyROMData.size() - offset) : 0;
+    // Bit 1 extends the original read-only NC13 record without changing it.
+    u8 mode = LegacyROMCPU | (LegacyROMWrite ? 2 : 0);
+    file->Var8(&mode);
+    file->Var32(&count);
+    if (file->Error) return;
+    if (!file->Saving)
+    {
+        LegacyROMCPU = mode & 1;
+        LegacyROMWrite = mode & 2;
+        if (mode > 3 || LegacyROMCPU != CPUSelect || PowerState != 2 ||
+            (!count && !LegacyROMWrite) || count > 0x1000)
+        {
+            file->Error = true;
+            return;
+        }
+        const auto& inter = Interfaces[LegacyROMCPU];
+        const u32 savedBytes = LegacyROMWrite ? inter.ROMTransferLen
+            : inter.ROMTransferLen - inter.ROMTransferPos;
+        if (!(inter.ROMCnt & (1u << 31)) || bool(inter.ROMCnt & (1u << 30)) != LegacyROMWrite ||
+            inter.ROMTransferPos > inter.ROMTransferLen ||
+            (inter.ROMTransferPos & 3) || savedBytes != count * 4)
+        {
+            file->Error = true;
+            return;
+        }
+        try { LegacyROMData.resize(count); }
+        catch (const std::bad_alloc&) { file->Error = true; return; }
+    }
+    if (count) file->VarArray(LegacyROMData.data() + offset, count * sizeof(u32));
 }
 
 
@@ -519,6 +670,7 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
 
 void NDSCartSlot::SetCart(std::unique_ptr<CartCommon>&& cart) noexcept
 {
+    ClearLegacyTransfer();
     if (Cart)
         EjectCart();
 
@@ -593,6 +745,7 @@ void NDSCartSlot::SetupDirectBoot(const std::string& romname) noexcept
 std::unique_ptr<CartCommon> NDSCartSlot::EjectCart() noexcept
 {
     if (!Cart) return nullptr;
+    ClearLegacyTransfer();
 
     // ejecting the cart triggers the gamecard IRQ
     RaiseCardIRQ();
@@ -608,6 +761,7 @@ std::unique_ptr<CartCommon> NDSCartSlot::EjectCart() noexcept
 
 void NDSCartSlot::SetCPUSelect(u32 sel)
 {
+    if (sel != CPUSelect) ClearLegacyTransfer();
     // TODO: what happens if this is changed during a transfer?
     CPUSelect = sel;
 
@@ -621,6 +775,7 @@ void NDSCartSlot::SetPowerState(u8 power)
 
     if (power == PowerState)
         return;
+    if (power != 2) ClearLegacyTransfer();
     PowerState = power;
 
     if (PowerState == 0)
@@ -793,6 +948,8 @@ void NDSCartSlot::Interface::WriteROMCnt(u32 val, u32 mask)
     if (SPICnt & (1<<13)) return;
     if (!xferstart) return;
 
+    if (Num == Parent.LegacyROMCPU) Parent.ClearLegacyTransfer();
+
     u32 datasize = (ROMCnt >> 24) & 0x7;
     if (datasize == 7)
         datasize = 4;
@@ -864,8 +1021,19 @@ void NDSCartSlot::Interface::WriteROMCnt(u32 val, u32 mask)
 
 void NDSCartSlot::Interface::ROMReceiveData(u32 param)
 {
+    if (Num == Parent.LegacyROMCPU && Parent.LegacyROMWrite)
+    {
+        // Format 13's callback requested a word; it did not transmit a FIFO.
+        RaiseDRQ();
+        return;
+    }
     u32 data = 0;
-    if (Parent.CartActive)
+    if (Num == Parent.LegacyROMCPU && Parent.LegacyROMPos < Parent.LegacyROMData.size())
+    {
+        data = Parent.LegacyROMData[Parent.LegacyROMPos++];
+        if (Parent.LegacyROMPos == Parent.LegacyROMData.size()) Parent.ClearLegacyTransfer();
+    }
+    else if (Parent.CartActive)
     {
         if (Parent.CPUSelect == Num)
             data = Parent.Cart->ROMCommandReceive();
@@ -956,6 +1124,10 @@ void NDSCartSlot::Interface::ROMAdvanceSend()
 
 void NDSCartSlot::Interface::ROMEndTransfer(u32 param)
 {
+    const bool legacyWrite = Num == Parent.LegacyROMCPU && Parent.LegacyROMWrite;
+    if (legacyWrite && Parent.CartActive && Parent.CPUSelect == Num)
+        Parent.Cart->ROMCommandFinishLegacy(Parent.LegacyROMData.data(), ROMTransferLen);
+    if (Num == Parent.LegacyROMCPU) Parent.ClearLegacyTransfer();
     ROMCnt &= ~(1<<31);
 
     ROMTransferPos = 0;
@@ -964,7 +1136,7 @@ void NDSCartSlot::Interface::ROMEndTransfer(u32 param)
     if (SPICnt & (1<<14))
         Parent.NDS.SetIRQ(Num, Parent.TransferIRQ);
 
-    if (Parent.CartActive && Parent.CPUSelect == Num)
+    if (!legacyWrite && Parent.CartActive && Parent.CPUSelect == Num)
         Parent.Cart->ROMCommandFinish();
 }
 
@@ -1012,7 +1184,7 @@ u32 NDSCartSlot::Interface::ReadROMData()
 {
     u32 ret = ROMData[ROMDataPosCPU];
     if (ROMCnt & (1<<30))
-        return ret;
+        return Num == Parent.LegacyROMCPU && Parent.LegacyROMWrite ? 0 : ret;
 
     ROMDataPosCPU ^= 1;
     if (ROMDataCount > 0)
@@ -1044,6 +1216,22 @@ void NDSCartSlot::Interface::WriteROMData(u32 val, u32 mask)
 {
     if (!(ROMCnt & (1<<30)))
         return;
+
+    if (Num == Parent.LegacyROMCPU && Parent.LegacyROMWrite)
+    {
+        ROMData[0] = (ROMData[0] & ~mask) | (val & mask);
+        if (!(mask & 0xFF000000) || !(ROMCnt & (1u << 23))) return;
+        if (ROMTransferPos < ROMTransferLen)
+            Parent.LegacyROMData[ROMTransferPos / 4] = ROMData[0];
+        ROMTransferPos += 4;
+        ROMCnt &= ~(1u << 23);
+        if (ROMTransferPos < ROMTransferLen)
+            Parent.NDS.ScheduleEvent(ROMTransferEvent, false,
+                (ROMCnt & (1u << 27)) ? 32 : 20, ROMTransfer_ReceiveData, 0);
+        else
+            ROMEndTransfer(0);
+        return;
+    }
 
     // FIFO is only advanced when writing to the MSB, same for DRQ logic
 

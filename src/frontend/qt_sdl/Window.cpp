@@ -1621,9 +1621,11 @@ void MainWindow::onLoadState()
     }
 
     const auto result = emuThread->loadState(filename);
-    if (result == StateLoadResult::Success)
+    if (StateLoadSucceeded(result))
     {
-        if (slot > 0) emuInstance->osdAddMessage(0, "State loaded from slot %d", slot);
+        if (result == StateLoadResult::SuccessLegacy)
+            emuInstance->osdAddMessage(0xFFA0A0, "1.1 state imported; some graphics may differ");
+        else if (slot > 0) emuInstance->osdAddMessage(0, "State loaded from slot %d", slot);
         else          emuInstance->osdAddMessage(0, "State loaded from file");
 
         actUndoStateLoad->setEnabled(true);
@@ -1642,7 +1644,7 @@ void MainWindow::onLoadState()
 void MainWindow::onUndoStateLoad()
 {
     const auto result = emuThread->undoStateLoad();
-    if (result == StateLoadResult::Success)
+    if (StateLoadSucceeded(result))
     {
         actUndoStateLoad->setEnabled(false);
         emuInstance->osdAddMessage(0, "State load undone");

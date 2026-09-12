@@ -68,10 +68,28 @@ void CartRetailNAND::DoSavestate(Savestate* file)
 
     file->VarArray(SRAMWriteBuffer, 0x800);
     file->Var32(&SRAMWritePos);
-    file->Var32(&SRAMWriteLen);
+    if (!file->Saving && file->MajorVersion() == 13)
+    {
+        if (SRAMWritePos > 0x800)
+        {
+            file->Error = true;
+            return;
+        }
+        SRAMWriteLen = SRAMWritePos;
+        SRAMWritePos &= 0x7FF;
+    }
+    else file->Var32(&SRAMWriteLen);
 
     if (!file->Saving)
+    {
+        if (SRAMWritePos >= 0x800 || SRAMWriteLen > 0x800 ||
+            ((SRAMWritePos | SRAMWriteLen) & 3))
+        {
+            file->Error = true;
+            return;
+        }
         BuildSRAMID();
+    }
 }
 
 void CartRetailNAND::SetSaveMemory(const u8* savedata, u32 savelen)
@@ -333,6 +351,20 @@ void CartRetailNAND::BuildSRAMID()
         memcpy(SRAMID, iddata2, 0x30);
         memcpy(&SRAMID[0x18], iddata, 16);
     }
+}
+
+void CartRetailNAND::ROMCommandFinishLegacy(const u32* data, u32 len)
+{
+    if (CmdEncMode != 2 || ROMCmd[0] != 0x81)
+        return CartCommon::ROMCommandFinishLegacy(data, len);
+    if (!SRAMAddr) return;
+
+    // The original NAND command appended once, saturating at the page size.
+    // Replaying it as streaming words would wrap and overwrite earlier chunks.
+    const u32 count = std::min(len, 0x800 - SRAMWriteLen);
+    if (count) memcpy(SRAMWriteBuffer + SRAMWriteLen, data, count);
+    SRAMWriteLen += count;
+    SRAMWritePos = SRAMWriteLen & 0x7FF;
 }
 
 

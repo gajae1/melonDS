@@ -189,6 +189,8 @@ public:
 #ifdef JIT_ENABLED
     u32 FastBlockLookupStart, FastBlockLookupSize;
     u64* FastBlockLookup;
+    // Instructions already fetched before an active WRAM remap.
+    u32 JITPipelineDrain = 0;
 #endif
 
     static const u32 ConditionTable[16];

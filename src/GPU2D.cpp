@@ -143,6 +143,12 @@ void GPU2D::DoSavestate(Savestate* file)
 {
     file->Section((char*)(Num ? "GP2B" : "GP2A"));
 
+    if (!file->Saving && file->MajorVersion() == 13)
+    {
+        LoadLegacySavestate(file);
+        return;
+    }
+
     file->Var32(&DispCnt);
     file->VarArray(DispCntLatch, sizeof(DispCntLatch));
     file->Var8(&LayerEnable);
@@ -184,6 +190,85 @@ void GPU2D::DoSavestate(Savestate* file)
 
     file->Var8(&Win0Active);
     file->Var8(&Win1Active);
+}
+
+void GPU2D::LoadLegacySavestate(Savestate* file)
+{
+    file->Var32(&DispCnt);
+    file->VarArray(BGCnt, 4*2);
+    file->VarArray(BGXPos, 4*2);
+    file->VarArray(BGYPos, 4*2);
+    // Old Ref is the register/reload value; old Internal is the accumulator
+    // for the next draw, not the current renderer's mosaic-latched position.
+    file->VarArray(BGXRefReload, 2*4);
+    file->VarArray(BGYRefReload, 2*4);
+    file->VarArray(BGXRef, 2*4);
+    file->VarArray(BGYRef, 2*4);
+    file->VarArray(BGRotA, 2*2);
+    file->VarArray(BGRotB, 2*2);
+    file->VarArray(BGRotC, 2*2);
+    file->VarArray(BGRotD, 2*2);
+    file->VarArray(Win0Coords, 4);
+    file->VarArray(Win1Coords, 4);
+    file->VarArray(WinCnt, 4);
+    file->VarArray(BGMosaicSize, 2);
+    file->VarArray(OBJMosaicSize, 2);
+    file->Var8(&BGMosaicY);
+    file->Var8(&BGMosaicYMax);
+    u8 objLine = 0, unusedOBJMax = 0;
+    file->Var8(&objLine); // source line in 1.1, not the OBJ mosaic counter
+    file->Var8(&unusedOBJMax); // unused even in the original renderer
+    OBJMosaicLine = objLine;
+    file->Var16(&BlendCnt);
+    file->Var16(&BlendAlpha);
+    file->Var8(&EVA);
+    file->Var8(&EVB);
+    file->Var8(&EVY);
+    file->Var16(Num ? &GPU.MasterBrightnessB : &GPU.MasterBrightnessA);
+    if (!Num)
+    {
+        file->VarArray(GPU.DispFIFO, sizeof(GPU.DispFIFO));
+        u32 read = 0, write = 0;
+        file->Var32(&read);
+        file->Var32(&write);
+        if (read >= 16 || write >= 16) file->Error = true;
+        GPU.DispFIFOReadPtr = u8(read);
+        GPU.DispFIFOWritePtr = u8(write);
+        file->VarArray(GPU.DispFIFOBuffer, sizeof(GPU.DispFIFOBuffer));
+        file->Var32(&GPU.CaptureCnt);
+    }
+    u32 win0 = 0, win1 = 0;
+    file->Var32(&win0);
+    file->Var32(&win1);
+    if (win0 > 3 || win1 > 3) file->Error = true;
+    Win0Active = u8(win0);
+    Win1Active = u8(win1);
+    if (file->Error) return;
+
+    // 1.1 applied DISPCNT immediately. Seed that behavior, without claiming
+    // to recover the two scanlines of history introduced by the current core.
+    for (auto& latch : DispCntLatch) latch = DispCnt;
+    LayerEnable = (DispCnt >> 8) & 0x1F;
+    OBJEnable = (DispCnt >> 12) & 1;
+    ForcedBlank = (DispCnt >> 7) & 1;
+    BGMosaicLatch = BGMosaicY == 0;
+    for (int i = 0; i < 2; ++i)
+    {
+        const u32 offset = (BGCnt[2+i] & (1<<6)) ? BGMosaicY : 0;
+        // Project the next sample that the old renderer would compute. This
+        // does not reconstruct a hardware latch if PB/PD changed mid-row.
+        BGXRefInternal[i] = u32(BGXRef[i]) - offset * u32(s32(BGRotB[i]));
+        BGYRefInternal[i] = u32(BGYRef[i]) - offset * u32(s32(BGRotD[i]));
+    }
+}
+
+void GPU2D::FinishLegacySavestateLoad(u32 nextLine)
+{
+    BGMosaicLine = nextLine - BGMosaicY;
+    // OBJMosaicYCount is absent in format 13. This inference is valid for an
+    // uninterrupted visible run; VCOUNT jumps/skipped draws lose that history.
+    OBJMosaicY = (nextLine - OBJMosaicLine) & 0xF;
+    OBJMosaicLatch = OBJMosaicY == 0;
 }
 
 u8 GPU2D::Read8(u32 addr)

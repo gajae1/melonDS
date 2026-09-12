@@ -326,6 +326,185 @@ void TestRemap(NDSArgs&& args, int bank, unsigned cpu, bool thumb)
     Run(*nds, cpu, thumb, WRAM + Neighbor, 42, "old-neighbor-return", true);
     Run(*nds, cpu, thumb, Load, 7, "load-old-backing-return", true, true);
 }
+
+void TestWRAMState(NDSArgs&& args)
+{
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    NDS::Current = nds.get();
+    nds->ARM9Write32(WRAM, 0x12345678);
+    Check(nds->ARM9Read8(0x04000247) == 0 && nds->ARM9Read32(WRAM) == 0x12345678,
+          "reset-installed-initial-WRAM-view");
+    for (unsigned saved = 0; saved < 4; ++saved)
+    {
+        nds->ARM9Write8(0x04000247, 1);
+        Program(*nds, 0, WRAM, 9);
+        nds->ARM9Write8(0x04000247, 0);
+        Program(*nds, 0, WRAM, 7);
+        Program(*nds, 1, WRAM, 11);
+        nds->ARM9Write8(0x04000247, saved);
+        Savestate state;
+        const bool stored = nds->DoSavestate(&state) && !state.Error;
+        state.Finish();
+        Check(stored && !state.Error, "WRAM-state-saved");
+        if (!stored || state.Error) return;
+        const unsigned live = (saved + 1) % 4;
+        nds->ARM9Write8(0x04000247, live);
+        for (unsigned cpu : {0u, 1u})
+        for (bool thumb : {false, true})
+        {
+            if (!cpu && live == 3) continue;
+            const u32 expected = cpu ? (live == 0 ? 11 : live == 2 ? 9 : 7) : live == 1 ? 9 : 7;
+            Warm(*nds, cpu, thumb, WRAM, expected);
+        }
+        Savestate load(state.Buffer(), state.Length(), false);
+        const bool loaded = !load.Error && nds->DoSavestate(&load) && !load.Error;
+        Check(loaded, "WRAM-state-loaded");
+        if (!loaded) return;
+        std::printf("STATE saved=%u live=%u\n", saved, live);
+        Check(nds->ARM9Read8(0x04000247) == saved, "WRAM-control-restored");
+        for (unsigned cpu : {0u, 1u})
+        for (bool thumb : {false, true})
+        {
+            const u32 expected = cpu ? (saved == 0 ? 11 : saved == 2 ? 9 : 7) : saved == 1 ? 9 : 7;
+            if (!cpu && saved == 3)
+            {
+                Check(Read(*nds, cpu, WRAM) == 0, "ARM9-unmapped-WRAM-restored");
+                continue;
+            }
+            Warm(*nds, cpu, thumb, WRAM, expected);
+        }
+    }
+}
+
+void TestActiveRemap(NDSArgs&& args, int bank, unsigned num, bool thumb, bool coldSwitch, bool linear)
+{
+    // The guest itself changes the mapping, then branches to flush the real
+    // prefetched instruction pipeline before observing the new backing.
+    std::unique_ptr<NDS> nds;
+    if (bank < 0) nds = std::make_unique<NDS>(std::move(args));
+    else
+    {
+        DSiArgs dsiArgs;
+        static_cast<NDSArgs&>(dsiArgs) = std::move(args);
+        nds = std::make_unique<DSi>(std::move(dsiArgs));
+    }
+    nds->Reset();
+    NDS::Current = nds.get();
+    const u32 reg = num ? 0x04004054 + bank * 4
+        : bank < 0 ? 0x04000247 : 0x04004040 + (bank == 0 ? 0 : bank == 1 ? 4 : 12);
+    const auto setting = [&](bool second) -> u32 {
+        if (num) return second ? (bank == 0 ? 0x00100000 : 0x00080000) : 0;
+        return bank < 0 ? u32(second) : second ? 0x00008000 : 0x00000080;
+    };
+    auto map = [&](bool second) {
+        if (num) nds->ARM7Write32(reg, setting(second));
+        else if (bank < 0) nds->ARM9Write8(reg, setting(second));
+        else nds->ARM9Write32(reg, setting(second));
+    };
+    auto targetOpcode = [&]() -> u32 {
+        const u32 addr = WRAM + (linear ? (thumb ? 2 : 4) : Data);
+        if (thumb) return num ? nds->ARM7Read16(addr) : nds->ARM9Read16(addr);
+        return Read(*nds, num, addr);
+    };
+    if (bank >= 0)
+    {
+        auto& dsi = static_cast<DSi&>(*nds);
+        dsi.ARM7Write32(0x04004008, dsi.SCFG_EXT[1] | (1u << 25));
+        if (num)
+        {
+            dsi.ARM9Write8(0x04000247, 3);
+            dsi.ARM9Write8(0x04004040 + (bank == 0 ? 0 : bank == 1 ? 4 : 12), 0x81);
+        }
+        else dsi.MapNWRAMRange(0, bank, bank == 0 ? 0x00100000 : 0x00080000);
+    }
+    for (bool second : {true, false})
+    {
+        map(second);
+        const unsigned width = thumb ? 2 : 4;
+        const u32 store = thumb ? (bank < 0 ? 0x7021 : 0x6021)
+                               : (bank < 0 ? 0xE5C41000 : 0xE5841000);
+        if (linear)
+        {
+            Write(*nds, num, WRAM, store, width);
+            const unsigned regs[] = {2, 3, 5, 6};
+            for (unsigned i = 0; i < 4; ++i)
+                Write(*nds, num, WRAM + (i + 1) * width,
+                    (thumb ? 0x2000u | (regs[i] << 8) : 0xE3A00000u | (regs[i] << 12))
+                    | (second ? 9 : 7), width);
+            Write(*nds, num, WRAM + 5 * width, thumb ? 0xE7FE : 0xEAFFFFFE, width);
+        }
+        else
+        {
+        if (thumb)
+        {
+            Write(*nds, num, WRAM, store, 2);
+            Write(*nds, num, WRAM + 2, 0xE01D, 2); // B WRAM+0x40
+            Write(*nds, num, WRAM + 4, 0x46C0, 2);
+            Write(*nds, num, WRAM + Data, second ? 0x2209 : 0x2207, 2);
+            Write(*nds, num, WRAM + Data + 2, 0xE7FE, 2);
+        }
+        else
+        {
+            Write(*nds, num, WRAM, store);
+            Write(*nds, num, WRAM + 4, 0xEA00000D); // B WRAM+0x40
+            Write(*nds, num, WRAM + 8, 0xE1A00000);
+            Write(*nds, num, WRAM + Data, second ? 0xE3A02009 : 0xE3A02007);
+            Write(*nds, num, WRAM + Data + 4, 0xEAFFFFFE);
+        }
+        }
+        Check(targetOpcode()
+            == (thumb ? 0x2200u : 0xE3A02000u) + (second ? 9 : 7), "active-backing-populated");
+    }
+    for (unsigned run = 0; run < 4; ++run)
+    {
+        map(false);
+        const bool second = bool(run & 1) != coldSwitch;
+        auto& cpu = num ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        nds->CurCPU = num;
+        cpu.CPSR = 0xA00000DF;
+        cpu.StopExecution = 0;
+        cpu.R[1] = setting(second);
+        cpu.R[2] = cpu.R[3] = cpu.R[5] = cpu.R[6] = 0;
+        cpu.R[4] = reg;
+        cpu.JumpTo(WRAM | u32(thumb));
+        cpu.Cycles = 0;
+        auto& timestamp = num ? nds->ARM7Timestamp : nds->ARM9Timestamp;
+        auto& target = num ? nds->ARM7Target : nds->ARM9Target;
+        timestamp = 0;
+        target = 4096;
+        bool cached = false;
+#ifdef JIT_ENABLED
+        cached = jit && Lookup(*nds, num, WRAM, thumb);
+        if (jit)
+        {
+            if (num) nds->ARM7.Execute<CPUExecuteMode::JIT>();
+            else nds->ARM9.Execute<CPUExecuteMode::JIT>();
+        }
+        else
+#endif
+        {
+            if (num) nds->ARM7.Execute<CPUExecuteMode::Interpreter>();
+            else nds->ARM9.Execute<CPUExecuteMode::Interpreter>();
+        }
+        const u32 expected = second ? 9 : 7;
+        const bool values = linear ? cpu.R[2] == 7 && cpu.R[3] == 7
+            && cpu.R[5] == (!num && thumb ? 7 : expected) && cpu.R[6] == expected
+            : cpu.R[2] == expected;
+        const u32 expectedPC = linear ? WRAM + 6 * (thumb ? 2 : 4)
+            : WRAM + Data + (thumb ? 4 : 8);
+        const bool ok = values && cpu.R[15] == expectedPC
+            && cpu.CPSR == (thumb ? 0x200000FFu : 0xA00000DFu)
+            && targetOpcode()
+                == (thumb ? 0x2200u : 0xE3A02000u) + expected;
+        ++checks;
+        failures += !ok;
+        std::printf("ACTIVE bank=%d cpu=%u isa=%s linear=%d coldSwitch=%d run=%u cached=%d r2=%u r3=%u r5=%u r6=%u expected=%u pc=%08X cpsr=%08X cycles=%llu result=%s\n",
+            bank, num, thumb ? "thumb" : "arm", linear, coldSwitch, run, cached,
+            cpu.R[2], cpu.R[3], cpu.R[5], cpu.R[6], expected,
+            cpu.R[15], cpu.CPSR, static_cast<unsigned long long>(timestamp), ok ? "PASS" : "FAIL");
+    }
+}
 }
 
 int main(int argc, char** argv)
@@ -345,11 +524,48 @@ int main(int argc, char** argv)
 #ifdef JIT_ENABLED
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
-    std::printf("MODE %s jit_build=1 BranchOptimizations=1 LiteralOptimizations=1 budget=128\n", argv[1]);
+    std::printf("MODE %s jit_build=1 LiteralOptimizations=1\n", argv[1]);
 #else
     std::printf("MODE %s jit_build=0 physical_index_diagnostics=unavailable budget=128\n", argv[1]);
 #endif
-    if (std::strcmp(argv[2], "dma") == 0) TestDMA(std::move(args));
+    if (std::strcmp(argv[2], "active-matrix") == 0)
+    {
+        for (unsigned num : {0u, 1u})
+        for (int bank = num ? 0 : -1; bank <= 2; ++bank)
+        for (bool thumb : {false, true})
+        for (bool coldSwitch : {false, true})
+        for (bool branch : {false, true})
+        for (bool linear : {false, true})
+        {
+            NDSArgs activeArgs;
+#ifdef JIT_ENABLED
+            if (!jit) activeArgs.JIT = std::nullopt;
+            else
+            {
+                activeArgs.JIT->FastMemory = fast;
+                activeArgs.JIT->BranchOptimizations = branch;
+            }
+#endif
+            std::printf("ACTIVE_CONFIG branch=%d budget=4096\n", branch);
+            TestActiveRemap(std::move(activeArgs), bank, num, thumb, coldSwitch, linear);
+        }
+    }
+    else if (std::strcmp(argv[2], "wram-state") == 0) TestWRAMState(std::move(args));
+    else if (std::strcmp(argv[2], "active") == 0 || std::strcmp(argv[2], "active-linear") == 0)
+    {
+        if (argc != 7 && argc != 8) return 2;
+        const int bank = std::strcmp(argv[3], "swram") == 0 ? -1 : argv[3][0] - 'a';
+        if (bank < -1 || bank > 2) return 2;
+        const unsigned num = argc == 8 && argv[7][0] == '7';
+        if (num && bank < 0) return 2;
+#ifdef JIT_ENABLED
+        if (args.JIT) args.JIT->BranchOptimizations = argv[6][0] == '1';
+#endif
+        std::printf("ACTIVE_CONFIG branch=%c budget=4096\n", argv[6][0]);
+        TestActiveRemap(std::move(args), bank, num, std::strcmp(argv[4], "thumb") == 0,
+            argv[5][0] == '1', std::strcmp(argv[2], "active-linear") == 0);
+    }
+    else if (std::strcmp(argv[2], "dma") == 0) TestDMA(std::move(args));
     else
     {
         if (argc != 5) return 2;

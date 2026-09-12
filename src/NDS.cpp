@@ -633,6 +633,8 @@ u32 NDS::GetSavestateConfig()
 
 bool NDS::DoSavestate(Savestate* file)
 {
+    const bool legacy = !file->Saving && file->MajorVersion() == 13;
+    u64 legacySeed0[2] {}, legacySeed1[2] {};
     file->Section("NDSG");
     if (file->Error) return false;
 
@@ -661,6 +663,11 @@ bool NDS::DoSavestate(Savestate* file)
     //file->VarArray(ARM7BIOS, 0x4000);
 
     file->VarArray(ExMemCnt, 2*sizeof(u16));
+    if (legacy)
+    {
+        file->VarArray(legacySeed0, sizeof(legacySeed0));
+        file->VarArray(legacySeed1, sizeof(legacySeed1));
+    }
 
     file->Var16(&WifiWaitCnt);
 
@@ -705,14 +712,14 @@ bool NDS::DoSavestate(Savestate* file)
 
     // Keep serialized event values separate from the live callbacks and mask
     // until the complete load has restored and validated their registrations.
-    struct
+    struct SavedEventState
     {
         u64 Timestamp;
         u32 FuncID;
         u32 Param;
-    } schedState[Event_MAX];
+    } schedState[Event_MAX] {};
     u32 schedMask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    for (int i = 0; i < (legacy ? 17 : Event_MAX); i++)
     {
         const SchedEvent& evt = SchedList[i];
         auto& state = schedState[i];
@@ -723,6 +730,28 @@ bool NDS::DoSavestate(Savestate* file)
         file->Var32(&state.Param);
     }
     file->Var32(&schedMask);
+    if (legacy)
+    {
+        if (file->Error || (schedMask >> 17)) return false;
+        const auto oldState = std::to_array(schedState);
+        const u32 oldMask = schedMask;
+        std::fill_n(schedState, Event_MAX, SavedEventState{});
+        schedMask = 0;
+        for (unsigned old = 0; old < 17; ++old)
+        {
+            // Format13 had one ROM/SPI interface shared by the selected CPU.
+            unsigned current = old < 7 ? old : old + 2;
+            if (old == 5 || old == 6) current = old + 2 * ((ExMemCnt[0] >> 11) & 1);
+            auto& state = schedState[current];
+            state = oldState[old];
+            if (old == 5)
+            {
+                if ((oldMask & (1u << old)) && state.FuncID > 1) return false;
+                if (state.FuncID == 1) state.FuncID = 2; // old end -> current end
+            }
+            if (oldMask & (1u << old)) schedMask |= 1u << current;
+        }
+    }
     if (!file->Saving)
     {
         if (file->Error) return false;
@@ -757,7 +786,8 @@ bool NDS::DoSavestate(Savestate* file)
     file->VarArray(KeyCnt, 2*sizeof(u16));
     file->Var16(&RCnt);
 
-    file->Var8(&WRAMCnt);
+    u8 savedWRAMCnt = WRAMCnt;
+    file->Var8(&savedWRAMCnt);
 
     file->Bool32(&RunningGame);
 
@@ -765,7 +795,7 @@ bool NDS::DoSavestate(Savestate* file)
     {
         // 'dept of redundancy dept'
         // but we do need to update the mappings
-        MapSharedWRAM(WRAMCnt);
+        MapSharedWRAM(savedWRAMCnt);
 
         InitTimings();
         SetGBASlotTimings();
@@ -780,6 +810,15 @@ bool NDS::DoSavestate(Savestate* file)
     ARM7.DoSavestate(file);
 
     NDSCartSlot.DoSavestate(file);
+    if (file->Error) return false;
+    if (legacy)
+    {
+        for (unsigned cpu = 0; cpu < 2; ++cpu)
+        {
+            NDSCartSlot.WriteKey2Seed0(cpu, legacySeed0[cpu], UINT64_MAX);
+            NDSCartSlot.WriteKey2Seed1(cpu, legacySeed1[cpu], UINT64_MAX);
+        }
+    }
     if (ConsoleType == 0)
         GBACartSlot.DoSavestate(file);
     GPU.DoSavestate(file);
@@ -814,6 +853,7 @@ bool NDS::DoSavestate(Savestate* file)
         SchedListMask = schedMask;
 
         GPU.SetPowerCnt(PowerControl9);
+        if (legacy) GPU.FinishLegacySavestateLoad(SchedListMask);
 
         SPU.SetPowerCnt(PowerControl7 & 0x0001);
         Wifi.SetPowerCnt(PowerControl7 & 0x0002);

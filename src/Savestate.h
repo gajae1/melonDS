@@ -26,6 +26,7 @@
 
 #define SAVESTATE_MAJOR 14
 #define SAVESTATE_MINOR 2
+#define SAVESTATE_MAX_MINOR 3
 
 // bitmask for the savestate config word
 enum
@@ -79,6 +80,10 @@ public:
     void VarArray(void* data, u32 len);
 
     void Finish();
+
+    // Normal states remain 14.2. A migrated legacy transfer can carry bytes
+    // that 14.2 cannot represent, so only those saves require a newer reader.
+    void RequireMinorVersion(u16 minor);
 
     // TODO rewinds the stream
     void Rewind(bool save);

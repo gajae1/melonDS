@@ -509,7 +509,7 @@ protected:
     void InitTimings();
     u32 SchedListMask;
     u64 SysTimestamp;
-    u8 WRAMCnt;
+    u8 WRAMCnt = 0xFF;
     u8 PostFlag9;
     u8 PostFlag7;
     u16 PowerControl7;

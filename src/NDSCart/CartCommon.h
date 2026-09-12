@@ -69,6 +69,8 @@ public:
     virtual u32 ROMCommandReceive();
     virtual void ROMCommandTransmit(u32 val) {}
     virtual void ROMCommandFinish() {}
+    // Format 13 buffered complete writes in the slot until command completion.
+    virtual void ROMCommandFinishLegacy(const u32* data, u32 len);
 
     virtual void SPISelect() { SPISelected = true; }
     virtual void SPIRelease() { SPISelected = false; };

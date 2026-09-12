@@ -23,6 +23,7 @@
 #include <string>
 #include <memory>
 #include <variant>
+#include <vector>
 
 #include "types.h"
 #include "Savestate.h"
@@ -144,6 +145,13 @@ public:
 
 private:
     friend class CartCommon;
+    void LoadLegacyState(Savestate* file) noexcept;
+    void LegacyTransferState(Savestate* file) noexcept;
+    void ClearLegacyTransfer() noexcept { LegacyROMData.clear(); LegacyROMPos = 0; LegacyROMWrite = false; }
+    std::vector<u32> LegacyROMData;
+    u32 LegacyROMPos = 0;
+    u8 LegacyROMCPU = 0;
+    bool LegacyROMWrite = false;
     melonDS::NDS& NDS;
     u8 Num;
     u8 LogicalNum;

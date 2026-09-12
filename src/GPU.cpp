@@ -211,6 +211,7 @@ void GPU::Stop() noexcept
 
 void GPU::DoSavestate(Savestate* file) noexcept
 {
+    const bool legacy = !file->Saving && file->MajorVersion() == 13;
     file->Section("GPUG");
 
     Rend->PreSavestate();
@@ -222,12 +223,27 @@ void GPU::DoSavestate(Savestate* file) noexcept
 
     memset(VRAMCaptureBlockFlags, 0, sizeof(VRAMCaptureBlockFlags));
 
-    file->VarBool(&ScreensEnabled);
-    file->VarBool(&ScreenSwap);
+    if (legacy)
+    {
+        u32 next = 0xFFFFFFFF;
+        file->Var16(&VCount);
+        file->Var32(&next);
+        if (VCount > 511 || (next != 0xFFFFFFFF && next > 511))
+            file->Error = true;
+        VCountOverride = next != 0xFFFFFFFF;
+        NextVCount = VCountOverride ? u16(next) : 0;
+        ScreensEnabled = !!(NDS.PowerControl9 & 1);
+        ScreenSwap = !!(NDS.PowerControl9 & (1<<15));
+    }
+    else
+    {
+        file->VarBool(&ScreensEnabled);
+        file->VarBool(&ScreenSwap);
 
-    file->Var16(&VCount);
-    file->VarBool(&VCountOverride);
-    file->Var16(&NextVCount);
+        file->Var16(&VCount);
+        file->VarBool(&VCountOverride);
+        file->Var16(&NextVCount);
+    }
     file->Var16(&TotalScanlines);
 
     file->Var16(&DispStat[0]);
@@ -235,16 +251,19 @@ void GPU::DoSavestate(Savestate* file) noexcept
     file->Var16(&VMatch[0]);
     file->Var16(&VMatch[1]);
 
-    file->VarArray(DispFIFO, sizeof(DispFIFO));
-    file->Var8(&DispFIFOReadPtr);
-    file->Var8(&DispFIFOWritePtr);
-    file->VarArray(DispFIFOBuffer, sizeof(DispFIFOBuffer));
+    if (!legacy)
+    {
+        file->VarArray(DispFIFO, sizeof(DispFIFO));
+        file->Var8(&DispFIFOReadPtr);
+        file->Var8(&DispFIFOWritePtr);
+        file->VarArray(DispFIFOBuffer, sizeof(DispFIFOBuffer));
 
-    file->Var16(&MasterBrightnessA);
-    file->Var16(&MasterBrightnessB);
+        file->Var16(&MasterBrightnessA);
+        file->Var16(&MasterBrightnessB);
 
-    file->Var32(&CaptureCnt);
-    file->VarBool(&CaptureEnable);
+        file->Var32(&CaptureCnt);
+        file->VarBool(&CaptureEnable);
+    }
 
     file->VarArray(Palette, 2*1024);
     file->VarArray(OAM, 2*1024);
@@ -316,6 +335,50 @@ void GPU::DoSavestate(Savestate* file) noexcept
     }
 
     Rend->PostSavestate();
+}
+
+void GPU::FinishLegacySavestateLoad(u32 schedMask) noexcept
+{
+    // NDS must call this only for a successful format-13 load, after committing
+    // the scheduler and restoring power. DoSavestate still sees live events.
+    const bool lcdPending = schedMask & (1u << Event_LCD);
+    const auto& lcd = NDS.SchedList[Event_LCD];
+    const bool frameEnd = !lcdPending || lcd.FuncID == LCD_FinishFrame;
+    u32 nextLine = VCount;
+    if (frameEnd)
+        nextLine = 0;
+    else if (lcdPending && lcd.FuncID == LCD_StartScanline)
+        nextLine = VCountOverride ? NextVCount : ((VCount + 1) & 0x1FF);
+
+    GPU2D_A.FinishLegacySavestateLoad(nextLine);
+    GPU2D_B.FinishLegacySavestateLoad(nextLine);
+
+    if (frameEnd)
+    {
+        // 1.1 reloads at StartScanline(0), discarding any pending VCOUNT write.
+        // Current cores reload at HBlank(262). The old frame can also end at
+        // any VCOUNT >= 262, so use the saved event, not just VCOUNT == 262.
+        VCountOverride = false;
+        NextVCount = 0;
+        GPU2D_A.UpdateRegistersPreDraw(true);
+        GPU2D_B.UpdateRegistersPreDraw(true);
+        GPU2D_A.UpdateRegistersPostDraw(true);
+        GPU2D_B.UpdateRegistersPostDraw(true);
+    }
+
+    // RunFIFO and CaptureLatch were not serialized. Use the saved registers and
+    // active FIFO event as a compatibility policy, not recovered latch history.
+    RunFIFO = UsesDisplayFIFO() || NDS.DMAsInMode(0, 0x04)
+              || (schedMask & (1u << Event_DisplayFIFO));
+    CaptureEnable = VCount < 192 && (CaptureCnt & (1u << 31));
+    if (CaptureEnable) CheckCaptureStart();
+
+    // Sprite pixels were not serialized either. Rebuild only the next visible
+    // line from saved OAM/VRAM; changes since its original prefetch are unknowable.
+    if (frameEnd)
+        Rend->DrawSprites(0);
+    else if (lcdPending && lcd.FuncID != LCD_FinishFrame && lcd.Param < 192 && nextLine < 192)
+        Rend->DrawSprites(lcd.Param);
 }
 
 

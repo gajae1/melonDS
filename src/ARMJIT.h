@@ -54,6 +54,9 @@ public:
     void JitEnableExecute() noexcept;
     void CompileBlock(ARM* cpu) noexcept;
     void ResetBlockCache() noexcept;
+    void PrepareCodeRemap() noexcept;
+    ARM* ExecutingCPU = nullptr;
+    bool ExecutingNative = false;
 
     template <u32 num, int region>
     void CheckAndInvalidate(u32 addr) noexcept
@@ -75,6 +78,7 @@ private:
     bool BranchOptimizations = false;
     bool FastMemory = false;
     bool CompilingBlock = false;
+    bool CompileMappingChanged = false;
     TinyVector<u32> CompileWriteAddrs {};
 
 public:

@@ -39,6 +39,7 @@ public:
     u32 ROMCommandReceive() override;
     void ROMCommandTransmit(u32 val) override;
     void ROMCommandFinish() override;
+    void ROMCommandFinishLegacy(const u32* data, u32 len) override;
 };
 
 }

@@ -539,6 +539,34 @@ static u32 MakeLookupTag(u32 addr, u32 num, bool thumb) noexcept
     return (addr & ~3u) | (num << 1) | u32(thumb);
 }
 
+static u32 PrefetchedInstructions(const ARM* cpu) noexcept
+{
+    // ARM9 fetches Thumb instructions in word pairs. NextInstr[1] can
+    // therefore still hold two halfwords after the mapping-writing store.
+    return 2 + (cpu->Num == 0 && (cpu->CPSR & 0x20) && !(cpu->R[15] & 2));
+}
+
+void ARMJIT::PrepareCodeRemap() noexcept
+{
+    if (CompilingBlock)
+    {
+        CompileMappingChanged = true;
+        return;
+    }
+    if (!ExecutingCPU)
+        return;
+
+    // Called before the mapping changes. Generated stores publish their
+    // pipelined PC, but do not otherwise maintain NextInstr. Capture it once
+    // even when one MMIO store updates several MBK registers.
+    if (ExecutingNative && !ExecutingCPU->JITPipelineDrain)
+    {
+        ExecutingCPU->FillPipeline();
+        ExecutingCPU->CodeMem.Mem = nullptr;
+    }
+    ExecutingCPU->JITPipelineDrain = PrefetchedInstructions(ExecutingCPU);
+}
+
 void ARMJIT::CompileBlock(ARM* cpu) noexcept
 {
     bool thumb = cpu->CPSR & 0x20;
@@ -638,6 +666,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     // Writes made by the tracing interpreter happen before this block is
     // indexed. Record their physical addresses at the existing write barrier.
     CompileWriteAddrs.Clear();
+    CompileMappingChanged = false;
     CompilingBlock = true;
     do
     {
@@ -737,6 +766,21 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
                 else
                     cpu->AddCycles_C();
             }
+        }
+
+        if (CompileMappingChanged)
+        {
+            // This trace spans a mapping transition. Do not publish it using
+            // the entry mapping or resample its literals in the exit mapping.
+            // Continue from the actual prefetched opcodes, not a fresh lookup.
+            if (cpu->R[15] == r15 && thumb == bool(cpu->CPSR & 0x20))
+            {
+                cpu->NextInstr[0] = nextInstr[0];
+                cpu->NextInstr[1] = nextInstr[1];
+                cpu->JITPipelineDrain = PrefetchedInstructions(cpu);
+            }
+            CompilingBlock = false;
+            return;
         }
 
         instrs[i].DataCycles = cpu->DataCycles;
@@ -864,6 +908,9 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
 
         bool canCompile = JITCompiler.CanCompile(thumb, instrs[i - 1].Info.Kind);
         bool secondaryFlagReadCond = !canCompile || (instrs[i - 1].BranchFlags & (branch_FollowCondTaken | branch_FollowCondNotTaken));
+        // A mapping-writing store can leave native code after this instruction.
+        if (instrs[i - 1].Info.SpecialKind == ARMInstrInfo::special_WriteMem)
+            FloodFillSetFlags(instrs, i - 2, 0xF);
         if (instrs[i - 1].Info.ReadFlags != 0 || secondaryFlagReadCond)
             FloodFillSetFlags(instrs, i - 2, !secondaryFlagReadCond ? instrs[i - 1].Info.ReadFlags : 0xF);
         // Also end sequential traces at the minimum MPU page boundary, even

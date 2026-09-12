@@ -27,6 +27,7 @@ namespace melonDS::NDSCart
 // CartRetail -- regular retail cart (ROM, SPI SRAM)
 class CartRetail : public CartCommon
 {
+    friend class NDSCartSlot;
 public:
     CartRetail(
             const u8* rom,

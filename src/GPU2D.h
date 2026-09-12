@@ -110,6 +110,10 @@ public:
 
 private:
     friend class Renderer2D;
+    friend class GPU;
+
+    void LoadLegacySavestate(Savestate* file);
+    void FinishLegacySavestateLoad(u32 nextLine);
 
     melonDS::GPU& GPU;
 };

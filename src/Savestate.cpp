@@ -95,22 +95,19 @@ Savestate::Savestate(void *buffer, u32 size, bool save) :
 
         u16 major = 0;
         Var16(&major);
-        if (major != SAVESTATE_MAJOR)
+        if (major != SAVESTATE_MAJOR && major != 13)
         {
-            // Legacy GPU, scheduler and cartridge layouts need explicit migration.
-            if (major == 13)
-                Log(LogLevel::Error, "savestate: legacy format 13.%d is unsupported by this build; load it with the emulator version that created it\n", MinorVersion());
-            else
-                Log(LogLevel::Error, "savestate: bad version major %d, expecting %d\n", major, SAVESTATE_MAJOR);
+            Log(LogLevel::Error, "savestate: bad version major %d, expecting %d\n", major, SAVESTATE_MAJOR);
             Error = true;
             return;
         }
 
         u16 minor = 0;
         Var16(&minor);
-        if (minor > SAVESTATE_MINOR)
+        const u16 maxMinor = major == 13 ? 0 : SAVESTATE_MAX_MINOR;
+        if (minor > maxMinor)
         {
-            Log(LogLevel::Error, "savestate: state from the future, %d > %d\n", minor, SAVESTATE_MINOR);
+            Log(LogLevel::Error, "savestate: state from the future, %d > %d\n", minor, maxMinor);
             Error = true;
             return;
         }
@@ -301,6 +298,18 @@ void Savestate::Finish()
         WriteStateLength();
     }
     finished = true;
+}
+
+void Savestate::RequireMinorVersion(u16 minor)
+{
+    if (Error || finished) return;
+    if (!Saving || !header_valid || minor > SAVESTATE_MAX_MINOR)
+    {
+        Error = true;
+        return;
+    }
+    if (minor > MinorVersion())
+        memcpy(buffer + 6, &minor, sizeof(minor));
 }
 
 void Savestate::Rewind(bool save)

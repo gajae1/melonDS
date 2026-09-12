@@ -94,6 +94,16 @@ void CartCommon::DoSavestate(Savestate* file)
 {
     file->Section("NDCS");
 
+    if (!file->Saving && file->MajorVersion() == 13)
+    {
+        file->Var32(&CmdEncMode);
+        file->Var32(&DataEncMode);
+        file->Bool32(&DSiMode);
+        // The slot restores the old command, reset and SPI context after all
+        // cart-specific sections have loaded.
+        return;
+    }
+
     file->VarBool(&ResetState);
 
     file->Var32(&CmdEncMode);
@@ -119,6 +129,13 @@ void CartCommon::SetResetState(bool reset)
     ROMAddr = 0;
 
     ResetState = reset;
+}
+
+void CartCommon::ROMCommandFinishLegacy(const u32* data, u32 len)
+{
+    for (u32 pos = 0; pos < len / 4; ++pos)
+        ROMCommandTransmit(data[pos]);
+    ROMCommandFinish();
 }
 
 u32 CartCommon::ROMRead32()

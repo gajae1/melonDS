@@ -41,6 +41,7 @@ public:
     void ROMCommandStart(NDSCart::NDSCartSlot& cartslot, const u8* cmd) override;
     u32 ROMCommandReceive() override;
     void ROMCommandTransmit(u32 val) override;
+    void ROMCommandFinishLegacy(const u32* data, u32 len) override;
 
     // NAND cartridges have no SPI interface
     void SPISelect() override {}

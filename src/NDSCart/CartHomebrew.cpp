@@ -192,6 +192,15 @@ void CartHomebrew::ROMCommandFinish()
     }
 }
 
+void CartHomebrew::ROMCommandFinishLegacy(const u32* data, u32 len)
+{
+    if (CmdEncMode != 2 || ROMCmd[0] != 0xC1)
+        return CartCommon::ROMCommandFinishLegacy(data, len);
+    const u32 sector = (ROMCmd[1]<<24) | (ROMCmd[2]<<16) | (ROMCmd[3]<<8) | ROMCmd[4];
+    if (SD && !SD->IsReadOnly() && len >= 512)
+        SD->WriteSectors(sector, len >> 9, reinterpret_cast<const u8*>(data));
+}
+
 
 }
 

@@ -875,6 +875,8 @@ StateLoadResult EmuInstance::loadState(const std::string& filename)
 StateLoadResult EmuInstance::applyState(Savestate& state, bool undo)
 {
     if (state.Error) return StateLoadResult::Failed;
+    // Successful undo releases the buffer referenced by state below.
+    const bool legacy = state.MajorVersion() == 13;
 
     // Device state can allocate while loading. An allocation error after RAM
     // was changed needs the same recovery as a malformed later section.
@@ -925,7 +927,7 @@ StateLoadResult EmuInstance::applyState(Savestate& state, bool undo)
     // intact: Rewind() changes the cursor used by Length().
     if (undo) backupState.reset();
     else backupState = std::move(backup);
-    return StateLoadResult::Success;
+    return legacy ? StateLoadResult::SuccessLegacy : StateLoadResult::Success;
 }
 
 bool EmuInstance::saveState(const std::string& filename)

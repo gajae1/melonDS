@@ -65,6 +65,8 @@ public:
     void Stop() noexcept;
 
     void DoSavestate(Savestate* file) noexcept;
+    // Format 13 only: call after NDS commits saved events and restores power.
+    void FinishLegacySavestateLoad(u32 schedMask) noexcept;
 
     void SetRenderer(std::unique_ptr<Renderer>&& renderer) noexcept;
     // Preserve capture pixels in VRAM and retire their GPU storage references.

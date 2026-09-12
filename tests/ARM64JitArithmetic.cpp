@@ -234,6 +234,12 @@ struct A64State
                 branch(s32(instr << 6) >> 6);
                 continue;
             }
+            else if ((instr & 0x7E000000) == 0x34000000) // CBZ/CBNZ Wt
+            {
+                const bool nonzero = d != 31 && w[d] != 0;
+                if (nonzero == bool(instr & (1u << 24))) branch(s32(instr << 8) >> 13);
+                continue;
+            }
             else if ((instr & 0x7E000000) == 0x36000000) // TBZ/TBNZ (bits 0..31)
             {
                 const bool set = w[d] & (1u << ((instr >> 19) & 31));

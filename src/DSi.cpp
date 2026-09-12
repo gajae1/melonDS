@@ -266,10 +266,26 @@ void DSi::DoSavestateExtra(Savestate* file)
     file->Var16(&SCFG_Clock9);
     file->Var16(&SCFG_Clock7);
     file->VarArray(&SCFG_EXT[0], sizeof(u32)*2);
-    file->Var16(&SCFG_MC);
-    file->Var16(&SCFG_CartInsertDelay);
-    file->Var16(&SCFG_CartPowerOffDelay);
+    if (!file->Saving && file->MajorVersion() == 13)
+    {
+        u32 legacyMC = 0;
+        file->Var32(&legacyMC);
+        if (file->Error) return;
+        // Legacy cartridge accesses were not gated by the SCFG power bits.
+        // Match the active first interface reconstructed from NDSC.
+        // The old 32-bit register also accepted writes to the unused high half.
+        SCFG_MC = static_cast<u16>((legacyMC & ~0x800C) | 8);
+        SCFG_CartInsertDelay = 0xFFFF;
+        SCFG_CartPowerOffDelay = 0;
+    }
+    else
+    {
+        file->Var16(&SCFG_MC);
+        file->Var16(&SCFG_CartInsertDelay);
+        file->Var16(&SCFG_CartPowerOffDelay);
+    }
     file->Var16(&SCFG_RST);
+    if (file->Error) return;
 
     //file->VarArray(ARM9iBIOS, 0x10000);
     //file->VarArray(ARM7iBIOS, 0x10000);
@@ -282,14 +298,22 @@ void DSi::DoSavestateExtra(Savestate* file)
     }
     else
     {
-        SetScfgClock9(SCFG_Clock9);
-        //SetScfgMC(SCFG_MC, 0xFFFF);
+        // NDSG timestamps already use the saved clock. A control write would
+        // rescale them using the pre-load clock and discard fractional cycles.
+        SCFG_Clock9 &= 0x0187;
+        ARM9ClockShift = (SCFG_Clock9 & 1) ? 2 : 1;
+        ARM9.UpdateRegionTimings(0x00000, 0x100000);
+
+        // ARM7 mirrors the effective size, including while the DSi loader has
+        // deferred the size requested by ARM9 until its IPC handshake finishes.
+        ApplyNewRAMSize((SCFG_EXT[1] >> 14) & 0x3);
 
         MBK[0][8] = 0;
         MBK[1][8] = 0;
 
         u32 mbk[12];
         file->VarArray(&mbk, sizeof(u32)*12);
+        if (file->Error) return;
 
         MapNWRAM_A(0, mbk[0] & 0xFF);
         MapNWRAM_A(1, (mbk[0] >> 8) & 0xFF);
@@ -328,6 +352,16 @@ void DSi::DoSavestateExtra(Savestate* file)
     }
 
     NDSCartSlot2.DoSavestate(file);
+    if (file->Error) return;
+
+    if (!file->Saving)
+    {
+        // Bind the restored interfaces without triggering power/reset writes
+        // that would discard a valid pending legacy cartridge transaction.
+        const unsigned first = (SCFG_MC >> 15) & 1;
+        NDSCartSlots[first] = &NDSCartSlot;
+        NDSCartSlots[first ^ 1] = &NDSCartSlot2;
+    }
 
     for (int i = 0; i < 8; i++)
         NDMAs[i].DoSavestate(file);

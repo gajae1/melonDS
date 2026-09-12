@@ -811,7 +811,7 @@ void EmuThread::handleMessages()
                     emuInstance->loadState(msg.param.value<QString>().toStdString()) :
                     emuInstance->undoStateLoad());
             msgResult = static_cast<int>(result);
-            if (result == StateLoadResult::Success) emuInstance->discardPreservedFrame();
+            if (StateLoadSucceeded(result)) emuInstance->discardPreservedFrame();
             if (result == StateLoadResult::RecoveryFailed)
             {
                 stateRecoveryFailed = true;

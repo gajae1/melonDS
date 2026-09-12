@@ -162,10 +162,27 @@ try
     const std::string mode = argv[1];
     for (u32 cpu : {0u, 1u})
     {
+        if (mode == "dsi-state") break;
         if (mode == "key1-state") { TestKey1State(cpu); continue; }
         if ((mode == "arm9-low" && cpu != 0) || (mode == "arm7-low" && cpu != 1)) continue;
         Fixture f(cpu);
-        if (mode == "control" || mode == "arm9-low" || mode == "arm7-low" || mode == "state-resume")
+        if (mode == "state-bounds")
+        {
+            auto* original = f.Cart->GetSaveMemory();
+            const u32 length = f.Cart->GetSaveMemoryLength();
+            original[0] = 0x5A;
+            Savestate malformed;
+            f.Cart->CartCommon::DoSavestate(&malformed);
+            u32 oversized = 1024 * 1024;
+            malformed.Var32(&oversized);
+            malformed.Finish();
+            Savestate load(malformed.Buffer(), malformed.Length(), false);
+            f.Cart->DoSavestate(&load);
+            Check(load.Error, "Truncated SRAM payload was accepted");
+            Check(f.Cart->GetSaveMemoryLength() == length && f.Cart->GetSaveMemory() == original
+                && original[0] == 0x5A, "Rejected SRAM payload replaced live save memory");
+        }
+        else if (mode == "control" || mode == "arm9-low" || mode == "arm7-low" || mode == "state-resume")
         {
             f.StartWrite();
             if (mode == "state-resume")
@@ -230,7 +247,7 @@ try
         }
         else return 2;
     }
-    if (mode == "key1-state")
+    if (mode == "key1-state" || mode == "dsi-state")
     {
         // A DSi-typed caller must reach the shared state loader and its DSi
         // section; a stale derived declaration previously failed to link.
@@ -238,14 +255,45 @@ try
         args.JIT = std::nullopt;
         auto dsi = std::make_unique<DSi>(std::move(args));
         dsi->Reset();
-        dsi->NWRAM_A[0x123] = 0x5A;
-        Savestate saved;
-        if (!dsi->DoSavestate(&saved) || saved.Error) throw std::runtime_error("DSi typed save failed");
-        saved.Finish();
-        dsi->NWRAM_A[0x123] = 0xC3;
-        Savestate load(saved.Buffer(), saved.Length(), false);
-        if (!dsi->DoSavestate(&load) || load.Error) throw std::runtime_error("DSi typed restore failed");
-        Check(dsi->NWRAM_A[0x123] == 0x5A, "DSi typed state roundtrip lost NWRAM");
+        for (u32 clock : {0u, 1u})
+        for (u32 ram : {0u, 2u})
+        {
+            // Distinct physical RAM words make a stale 4/16 MiB mirror visible
+            // through both CPUs' real memory reads after the whole-state load.
+            const u32 ext = dsi->SCFG_EXT[0] & ~0xC000u;
+            dsi->ARM9Write32(0x04004008, ext | 0x8000);
+            dsi->ARM9Write32(0x02000200, 0x11223344);
+            dsi->ARM9Write32(0x02400200, 0x55667788);
+            dsi->ARM9Write32(0x04004008, ext | (ram << 14));
+            dsi->ARM9Write16(0x04004004, 0x0186 | clock);
+            // Low timestamp bits must survive too, without clock-write rounding.
+            constexpr u64 timestamp = 0x12345, target = 0x23457;
+            dsi->ARM9Timestamp = timestamp;
+            dsi->ARM9Target = target;
+            dsi->NWRAM_A[0x123] = 0x5A;
+            Savestate saved;
+            if (!dsi->DoSavestate(&saved) || saved.Error) throw std::runtime_error("DSi typed save failed");
+            saved.Finish();
+
+            // Reuse a dirty receiver with the opposite clock and RAM size.
+            dsi->ARM9Write16(0x04004004, 0x0186 | (clock ^ 1));
+            dsi->ARM9Write32(0x04004008, ext | ((ram ^ 2) << 14));
+            dsi->ARM9Write32(0x02000200, 0xDEADBEEF);
+            dsi->NWRAM_A[0x123] = 0xC3;
+            Savestate load(saved.Buffer(), saved.Length(), false);
+            if (!dsi->DoSavestate(&load) || load.Error) throw std::runtime_error("DSi typed restore failed");
+            Check(dsi->SCFG_Clock9 == (0x0186 | clock) && dsi->ARM9ClockShift == clock + 1,
+                  "DSi whole-state load retained the receiver's clock");
+            Check(dsi->ARM9Timestamp == timestamp && dsi->ARM9Target == target,
+                  "DSi whole-state load rescaled or rounded saved ARM9 timestamps");
+            Check(dsi->MainRAMMask == (ram ? 0xFFFFFFu : 0x3FFFFFu),
+                  "DSi whole-state load retained the receiver's RAM size");
+            const u32 upper = ram ? 0x55667788 : 0x11223344;
+            Check(dsi->ARM9Read32(0x02000200) == 0x11223344 && dsi->ARM9Read32(0x02400200) == upper
+                && dsi->ARM7Read32(0x02000200) == 0x11223344 && dsi->ARM7Read32(0x02400200) == upper,
+                  "DSi whole-state load restored incorrect RAM data or CPU mirrors");
+            Check(dsi->NWRAM_A[0x123] == 0x5A, "DSi typed state roundtrip lost NWRAM");
+        }
     }
     std::printf("Cart SPI %s: %u failures\n", argv[1], Failures);
     return Failures ? 1 : 0;

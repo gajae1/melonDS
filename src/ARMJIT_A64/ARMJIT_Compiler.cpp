@@ -726,7 +726,9 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
         //printf("%x instr %x regs: r%x w%x n%x flags: %x %x %x\n", R15, CurInstr.Instr, CurInstr.Info.SrcRegs, CurInstr.Info.DstRegs, CurInstr.Info.ReadFlags, CurInstr.Info.NotStrictlyNeeded, CurInstr.Info.WriteFlags, CurInstr.SetFlags);
 
         bool isConditional = Thumb ? CurInstr.Info.Kind == ARMInstrInfo::tk_BCOND : CurInstr.Cond() < 0xE;
-        if (comp == NULL || (CurInstr.BranchFlags & branch_FollowCondTaken) || (i == instrsCount - 1 && (!CurInstr.Info.Branches() || isConditional)))
+        // SWP/SWPB use interpreter helpers and are classified as loads.
+        const bool canRemap = comp == nullptr || CurInstr.Info.SpecialKind == ARMInstrInfo::special_WriteMem;
+        if (canRemap || comp == NULL || (CurInstr.BranchFlags & branch_FollowCondTaken) || (i == instrsCount - 1 && (!CurInstr.Info.Branches() || isConditional)))
         {
             MOVI2R(W0, R15);
             STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, R[15]));
@@ -838,6 +840,17 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
         {
             LoadCycles();
             LoadCPSR();
+        }
+
+        if (canRemap)
+        {
+            LDR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, JITPipelineDrain));
+            FixupBranch unchanged = CBZ(W0);
+            RegCache.PrepareExit();
+            if (ConstantCycles)
+                ADD(RCycles, RCycles, ConstantCycles);
+            QuickTailCall(X0, ARM_Ret);
+            SetJumpTarget(unchanged);
         }
     }
 
