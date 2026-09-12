@@ -30,6 +30,9 @@ add_test(NAME gba-eeprom-chip COMMAND GBACartEEPROM)
 set_tests_properties(gba-eeprom-chip PROPERTIES TIMEOUT 10)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME gba-save-database-generator
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/GBASaveDatabase.py")
+set_tests_properties(gba-save-database-generator PROPERTIES TIMEOUT 15)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/FirmwareCRC16.inc"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/../src/SPI.cpp" "u16 CRC16(const u8* data, u32 len, u32 start)"
@@ -512,7 +515,7 @@ foreach(case IN ITEMS control page-ends page-overflow restore-write regular-cont
 endforeach()
 
 add_executable(GBARumble GBARumble.cpp ../src/GBACart.cpp ../src/GBACartMotionPak.cpp
-    ../src/GBACartEEPROM.cpp ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
+    ../src/GBACartEEPROM.cpp ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp ../src/sha1/sha1.c)
 target_include_directories(GBARumble PRIVATE ../src)
 foreach(case IN ITEMS control ad1-mask state-load)
     add_test(NAME gba-rumble-${case} COMMAND GBARumble ${case})
@@ -520,16 +523,16 @@ foreach(case IN ITEMS control ad1-mask state-load)
 endforeach()
 
 add_executable(GBASave GBASave.cpp ../src/GBACart.cpp ../src/GBACartMotionPak.cpp
-    ../src/GBACartEEPROM.cpp ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
+    ../src/GBACartEEPROM.cpp ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp ../src/sha1/sha1.c)
 target_include_directories(GBASave PRIVATE ../src)
-foreach(case IN ITEMS sector bank program chip state state-solar import detection)
+foreach(case IN ITEMS sector bank program chip state state-solar import detection database)
     add_test(NAME gba-save-${case} COMMAND GBASave ${case})
     set_tests_properties(gba-save-${case} PROPERTIES TIMEOUT 15)
 endforeach()
 
 add_executable(GBACartEEPROMCart GBACartEEPROMCart.cpp ../src/GBACart.cpp
     ../src/GBACartMotionPak.cpp ../src/GBACartEEPROM.cpp ../src/Savestate.cpp
-    ../src/CRC32.cpp ../src/Utils.cpp)
+    ../src/CRC32.cpp ../src/Utils.cpp ../src/sha1/sha1.c)
 target_include_directories(GBACartEEPROMCart PRIVATE ../src)
 foreach(case IN ITEMS bus import reset state rejected legacy solar)
     add_test(NAME gba-eeprom-cart-${case} COMMAND GBACartEEPROMCart ${case})

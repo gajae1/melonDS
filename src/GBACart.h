@@ -414,9 +414,10 @@ private:
 /// @param romlen The length of the ROM data in bytes.
 /// @returns A \c GBACart::CartCommon object representing the parsed ROM,
 /// or \c nullptr if the ROM data couldn't be parsed.
-/// With no supplied save, an unambiguous SRAM/Flash SDK identifier initializes
-/// erased storage. Unknown or conflicting identifiers leave save memory absent;
-/// an EEPROM identifier alone does not establish its capacity.
+/// With no supplied save, an exact whole-ROM database match or an unambiguous
+/// SRAM/Flash SDK identifier initializes erased storage. Unmatched EEPROM and
+/// conflicting identifiers leave save memory absent; the SDK version alone
+/// does not establish EEPROM capacity.
 std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, void* userdata = nullptr);
 std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen, void* userdata = nullptr);
 std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, const u8* sramdata, u32 sramlen, void* userdata = nullptr);

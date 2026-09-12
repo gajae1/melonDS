@@ -2,6 +2,7 @@
 // Real GBA Flash command decoder and save notifications; generated data only.
 #include "NDS.h"
 #include "GBACart.h"
+#include "GBASaveDatabase.h"
 #include "Platform.h"
 #include <algorithm>
 #include <cstdarg>
@@ -393,11 +394,30 @@ static bool Detection()
     return passed;
 }
 
+static bool Database()
+{
+    // Independent reference rows from MAME's pinned CC0 gba.xml (007eon and
+    // holybibl). The catalog contains no ROM bytes; these validate lookup and
+    // the original-length guard, not execution of the commercial games.
+    // https://github.com/mamedev/mame/blob/1a326ed01c3629259abcf61a2a6bebf25858d376/hash/gba.xml
+    const std::array<u8, 20> small {0xFC,0x61,0x63,0xF9,0x9B,0x71,0xB0,0x5C,0x10,0x68,
+        0x6A,0x0D,0x29,0x01,0x0B,0x31,0x27,0x4E,0x1D,0xC4};
+    const std::array<u8, 20> large {0xE2,0xDD,0x02,0xDE,0xD6,0x17,0xF7,0x00,0x2C,0xA8,
+        0x87,0x63,0x9C,0xF9,0x1B,0x9C,0xAC,0x8C,0xD7,0x45};
+    const auto lookup = GBACart::SaveDatabase::Lookup;
+    const bool passed = lookup(small, 8388608) == 512 && lookup(large, 33554432) == 8192 &&
+        lookup(small, 8388607) == 0 && lookup(small, 8388609) == 0 &&
+        lookup(large, 33554433) == 0 && lookup({}, 8388608) == 0;
+    std::printf("gba-save/database: %s\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
     if (!std::strcmp(argv[1], "import")) return Import() ? 0 : 1;
     if (!std::strcmp(argv[1], "detection")) return Detection() ? 0 : 1;
+    if (!std::strcmp(argv[1], "database")) return Database() ? 0 : 1;
     bool passed = true;
     for (u32 length : {0x10000u, 0x20000u, 0x20010u})
         passed &= !std::strcmp(argv[1], "state") ? State(length) :

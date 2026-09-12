@@ -22,9 +22,11 @@
 #include <string_view>
 #include "NDS.h"
 #include "GBACart.h"
+#include "GBASaveDatabase.h"
 #include "CRC32.h"
 #include "Platform.h"
 #include "Utils.h"
+#include "sha1/sha1.hpp"
 
 namespace melonDS
 {
@@ -988,6 +990,9 @@ void GBACartSlot::DoSavestate(Savestate* file) noexcept
     }
 }
 
+static std::unique_ptr<CartCommon> ParseROMWithOriginalLength(std::unique_ptr<u8[]>&& romdata,
+    u32 romlen, std::unique_ptr<u8[]>&& sramdata, u32 sramlen, void* userdata, u32 originalLength);
+
 std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen, void* userdata)
 {
     return ParseROM(std::move(romdata), romlen, nullptr, 0, userdata);
@@ -1001,7 +1006,8 @@ std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, const u8* sr
 
     auto [romcopy, romcopylen] = PadToPowerOf2(romdata, romlen);
 
-    return ParseROM(std::move(romcopy), romcopylen, CopyToUnique(sramdata, sramlen), sramlen, userdata);
+    return ParseROMWithOriginalLength(std::move(romcopy), romcopylen,
+        CopyToUnique(sramdata, sramlen), sramlen, userdata, romlen);
 }
 
 std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, void* userdata)
@@ -1011,6 +1017,16 @@ std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, void* userda
 
 static u32 DetectSaveLength(std::string_view rom)
 {
+    // Match the complete input, before emulated ROM padding. The header game
+    // code and header CRC cannot distinguish revisions, patches or trimmed ROMs.
+    std::array<u8, 20> digest;
+    SHA1_CTX hash;
+    SHA1Init(&hash);
+    SHA1Update(&hash, reinterpret_cast<const u8*>(rom.data()), u32(rom.size()));
+    SHA1Final(digest.data(), &hash);
+    if (const u32 known = SaveDatabase::Lookup(digest, u32(rom.size())))
+        return known;
+
     // Nintendo SDK identifiers describe SRAM/Flash capacities, but EEPROM_V
     // does not distinguish 512 bytes from 8 KiB. See ares' GBA media analyzer.
     // This is a fallback for a missing save, not a ROM identity database.
@@ -1048,7 +1064,8 @@ static u32 DetectSaveLength(std::string_view rom)
     return length;
 }
 
-std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen, std::unique_ptr<u8[]>&& sramdata, u32 sramlen, void* userdata)
+static std::unique_ptr<CartCommon> ParseROMWithOriginalLength(std::unique_ptr<u8[]>&& romdata,
+    u32 romlen, std::unique_ptr<u8[]>&& sramdata, u32 sramlen, void* userdata, u32 originalLength)
 {
     if (romdata == nullptr)
     {
@@ -1057,7 +1074,7 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
     }
 
     // The game code occupies bytes 0xAC..0xAF; do not read a short header.
-    if (romlen < 0xB0 || romlen > (u32{1} << 31))
+    if (originalLength < 0xB0 || originalLength > romlen || romlen > (u32{1} << 31))
     {
         Log(LogLevel::Error, "GBACart: ROM length is outside the supported range\n");
         return nullptr;
@@ -1065,10 +1082,10 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
 
     // Supplied save bytes always win, including unfamiliar sizes and RTC tails.
     // Detection only initializes erased storage; the first guest write owns the
-    // persistence notification. Padding contains zeros, never SDK identifiers.
+    // persistence notification. ROM padding is excluded from the identity.
     if (!sramdata && !sramlen)
     {
-        sramlen = DetectSaveLength({reinterpret_cast<const char*>(romdata.get()), romlen});
+        sramlen = DetectSaveLength({reinterpret_cast<const char*>(romdata.get()), originalLength});
         if (sramlen)
         {
             sramdata = std::make_unique_for_overwrite<u8[]>(sramlen);
@@ -1102,6 +1119,13 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
     cart->Reset();
 
     return cart;
+}
+
+std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen,
+    std::unique_ptr<u8[]>&& sramdata, u32 sramlen, void* userdata)
+{
+    return ParseROMWithOriginalLength(std::move(romdata), romlen,
+        std::move(sramdata), sramlen, userdata, romlen);
 }
 
 std::unique_ptr<CartCommon> LoadAddon(int type, void* userdata)

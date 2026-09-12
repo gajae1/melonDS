@@ -16,3 +16,6 @@ src/net/libslirp/src/CMakeLists.txt          -linguist-vendored
 
 ## glib stub
 src/net/libslirp/src/glib/**                 -linguist-vendored
+
+# Preserve the offline generator's byte-for-byte output on Windows checkouts.
+src/GBASaveDatabase.h                       text eol=lf

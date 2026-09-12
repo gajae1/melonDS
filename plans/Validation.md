@@ -30,6 +30,8 @@ ROM 교체·종료 증분은 `CartReplacement`, `FrontendClose`, `SaveManagerIO`
 
 GBA 초기 저장 판별은 `GBASave`의 `gba-save-detection`으로 확인한다. 생성 ROM의 완전한 SDK 마커 다섯 종류, 첫 쓰기 프로토콜·저장 통지, 기존20개 저장 입력의 길이/바이트 보존과 불완전·상충·EEPROM 마커를 검사한다. 1.1.69는 수정 전 다섯 초기 용량 실패를 재현한 뒤 통과했고 JIT OFF의 GBA 저장8검사도 통과했다. 별도 실제 Qt 메시지·Slot-2·SaveManager 실행으로 저장 파일이 없는 삽입→첫 쓰기→파일 commit→재삽입, 기존 EEPROM 파일 우선과 새 저장 할당 실패의 기존 카트/manager 보존을 확인했다. 이 SDK fallback을 전체 ROM DB·실물 칩 식별이나 미등록 EEPROM 용량 판별 완료로 세지 않는다.
 
+1.1.70의 `gba-save-database`는 MAME 원본의512B/8KiB 참조 행과 길이 불일치를 검사한다. `gba-save-database-generator`는 ROM 없이 합성 XML의 고정 용량·전체 해시·중복·충돌·불완전 dump와 잘못된 pin/입력의 기존 출력 보존을 검증한다. 원본 XML은 공개 출처에서 별도 확보하고 `python tools/generate-gba-save-db.py path/to/gba.xml src/GBASaveDatabase.h --check`로 재현한다. 일반 빌드·CTest는 네트워크나 원본 XML을 요구하지 않는다. 카탈로그 변환/lookup 검증과 생성 식별표를 이용한 실제 factory·칩 실행, 실제 게임 ROM/실물 검증을 구분한다.
+
 ```sh
 ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 ```
