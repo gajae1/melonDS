@@ -113,6 +113,26 @@ melonDS provides a Nix flake with support for both macOS and Linux. The [Nix pac
 * To run melonDS, just type `nix run github:gajae1/melonDS`.
 * To get a shell for development, clone the melonDS repository and type `nix develop` in its directory.
 
+## Separate Windows debug symbols (optional)
+
+In a configured MSYS2 UCRT64 environment, use a separate build directory:
+
+```sh
+cmake -S . -B build/symbols -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMELONDS_PACKAGE_IDENTITY=ON
+cmake --build build/symbols --target melonDS
+python tools/split-debug-symbols.py build/symbols/melonDS.exe build/symbol-output --msys-prefix C:/msys64/ucrt64 --build-info
+```
+
+Use native Windows Python 3.11+ and the SDK that built the EXE. The output directory
+must be new, with an existing parent. The source EXE is preserved. The output pairs
+a stripped EXE with its `.debug` file through GNU debuglink and records both hashes
+in `debug-symbols.json`. The optional `--build-info` executes both EXEs and checks
+matching embedded melonDS metadata; without it, no input EXE is executed.
+A normal stripped Release EXE cannot recover missing debug information.
+Keep debug files separately: they may contain build/source paths and are not
+included by the normal runtime deployer. This tool currently supports Windows x64
+MSYS2 UCRT64 GNU binutils; it does not create PDB or dSYM files.
+
 ## Current dependency profile
 
 `release-current-deps` selects Clang, the audited current-toolchain version

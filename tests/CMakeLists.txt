@@ -56,6 +56,13 @@ if(WIN32 AND MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 8
             --msys-prefix "${_melonds_ucrt_prefix}")
     set_tests_properties(windows-runtime-deployment PROPERTIES TIMEOUT 120
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_melonds_ucrt_bin}")
+    if(Python3_VERSION VERSION_GREATER_EQUAL 3.11)
+        add_test(NAME windows-debug-symbols
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/DebugSymbols.py"
+                --msys-prefix "${_melonds_ucrt_prefix}")
+        set_tests_properties(windows-debug-symbols PROPERTIES TIMEOUT 120
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_melonds_ucrt_bin}")
+    endif()
 endif()
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/CaptureMethod.inc"

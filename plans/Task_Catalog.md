@@ -116,14 +116,14 @@
 | BV-03 | [Windows DLL/plugin 의존 폐쇄](workstreams/06-build-validation.md#BV-03) | 부분 실행 검증 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.44 기존 UCRT64 배포의 DLL64종 누락·잘못된 성공 재현; Qt 명시 목록+CMake 전이 import로 복사, 실제 PE129 누락0·clean PATH·배포 qwindows 로드; 다른 profile 후속 |
 | BV-04 | [로컬 build profile](workstreams/06-build-validation.md#BV-04) | 부분 실행 검증 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.44 UCRT64 x64 로컬 deploy CLI·기존 shell 진입점·새 출력만 생성·경로/hash manifest 연결; MSVC/static/다른 아키텍처 후속 |
 | BV-05 | [배포 allowlist·개인 자료 보존](workstreams/06-build-validation.md#BV-05) | 실행 재현/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 선별 배포; 1.1.34 소스 변경 후 오래된 EXE 거부·문서만 변경 재사용, 외부 DLL/재현 빌드 신원은 별도; 1.1.43 임의5파일 포함 재현→필수 경로/hash 목록만 압축·추가파일 제외/경고·입력/출력 경계·최종ZIP해시 대조; 신뢰된 deploy 입력으로 목록 생성 |
-| BV-06 | [C23/C++26 기능별 채택](workstreams/06-build-validation.md#BV-06) | 관찰/확장 | P2 | [1.1.36](Release_Plan.md#v36) | — | 미착수 |
+| BV-06 | [C23/C++26 기능별 채택](workstreams/06-build-validation.md#BV-06) | 관찰/확장 | P2 | [1.1.36](Release_Plan.md#v36) | — | GCC16.2/libstdc++ 실제 사용 기능 compile·8개 실행 통과, 현재 조합 제품 변경 없음; GCC14·Clang/libc++·MSVC·다른 OS 후속 |
 | BV-07 | [의존성·local patch·license](workstreams/06-build-validation.md#BV-07) | 부분 실행 검증 | P1 | [1.1.36](Release_Plan.md#v36) | — | 1.1.44 고지 입력 보존; 1.1.45 overlay 갱신 중 실패로 기존 patch 훼손 재현→검증 후 새 후보만 생성, 공식8입력/patch 적용 일치; 설치90패키지·128DLL·주요6개 runtime API 버전 대조, vendored7개 fork diff 보존; 각 원 upstream revision·대응 소스/고지 완전성은 후속 |
 | BV-08 | [LTO/ThinLTO guard 판정](workstreams/06-build-validation.md#BV-08) | 제한 빌드·실행 대조 | P2 | [1.1.38](Release_Plan.md#v38) | — | 1.1.39 GCC16.2 core/Qt LTO 빌드; 1.1.40 ARM.cpp 제외 진단으로 cold 비용 축소·2장면 출력 일치, 반복 변동으로 기본 OFF 유지; 전체 Qt 실행/장기 workload·compiler별 판정 후속 |
 | BV-09 | [PGO train/holdout](workstreams/06-build-validation.md#BV-09) | 미측정 가설 | P2 | [1.1.38](Release_Plan.md#v38) | — | 미착수 |
 | BV-10 | [paired median/tail 측정](workstreams/06-build-validation.md#BV-10) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.38 state 재생·frame CSV·한 장면 paired 대조; GPU/장치 분리·holdout 대기 |
 | BV-11 | [sanitizer·JIT fault 구분](workstreams/06-build-validation.md#BV-11) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
 | BV-12 | [CPU/OS feature·fallback](workstreams/06-build-validation.md#BV-12) | 관찰/확장 | P1 | [1.1.26](Release_Plan.md#v26) | — | 미착수 |
-| BV-13 | [분리 symbol·진단자료](workstreams/06-build-validation.md#BV-13) | 관찰/확장 | P2 | [1.1.43](Release_Plan.md#v43) | — | 미착수 |
+| BV-13 | [분리 symbol·진단자료](workstreams/06-build-validation.md#BV-13) | 관찰/확장 | P2 | [1.1.43](Release_Plan.md#v43) | — | 1.1.46 선택형 GNU debug 분리 도구: 원본/기존 출력 보존·debuglink/hash 연결, 5개 행동 그룹 및 실제 Qt 주소→함수/소스 줄·코드/시작 동등 확인; 실제 crash/ASLR/JIT unwind·다른 OS 후속 |
 | BV-14 | [Linux/BSD native 수락](workstreams/06-build-validation.md#BV-14) | 장치/조건부 | P2 | [1.1.42](Release_Plan.md#v42) | — | 미착수 |
 | BV-15 | [Windows/Linux ARM64 native](workstreams/06-build-validation.md#BV-15) | 장치/조건부 | P1 | [1.1.40](Release_Plan.md#v40) | — | 미착수 |
 | BV-16 | [고급 ARM/Apple 조건부 gate](workstreams/06-build-validation.md#BV-16) | 장치/조건부 | P2 | [1.1.41](Release_Plan.md#v41) | — | 미착수 |
