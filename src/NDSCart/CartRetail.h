@@ -21,6 +21,7 @@
 
 #include "CartCommon.h"
 #include <optional>
+#include <array>
 
 namespace melonDS::NDSCart
 {
@@ -56,6 +57,8 @@ public:
     void Reset() override;
 
     void DoSavestate(Savestate* file) override;
+    void PrepareSavestate(Savestate* file) const override
+    { if (file->Saving && FlashPending) file->RequireMinorVersion(6); }
 
     void SetSaveMemory(const u8* savedata, u32 savelen) override;
 
@@ -92,6 +95,11 @@ protected:
     //bool SRAMNeedsSaving = false;
     u32 SRAMSaveAddr = 0;
     u32 SRAMSaveLen = 0;
+
+    // SPI Flash latches a page before CS rises. Earlier laps do not program
+    // bits: only the last byte received for each page offset is committed.
+    std::array<u8, 256> FlashBuffer {};
+    bool FlashPending = false;
 };
 
 }

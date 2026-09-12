@@ -236,6 +236,7 @@ void NDSCartSlot::Reset() noexcept
 
 void NDSCartSlot::DoSavestate(Savestate* file) noexcept
 {
+    PrepareSavestate(file);
     if (!file->Saving && file->MajorVersion() == 13)
     {
         LoadLegacyState(file);

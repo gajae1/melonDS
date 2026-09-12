@@ -637,6 +637,8 @@ bool NDS::DoSavestate(Savestate* file)
     // on it. Normal audio states continue to use the older writer format.
     SPU.PrepareSavestate(file);
     if (ConsoleType == 0) GBACartSlot.PrepareSavestate(file);
+    for (auto* slot : NDSCartSlots)
+        if (slot) slot->PrepareSavestate(file);
     const bool legacy = !file->Saving && file->MajorVersion() == 13;
     u64 legacySeed0[2] {}, legacySeed1[2] {};
     file->Section("NDSG");

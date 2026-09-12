@@ -68,9 +68,10 @@ struct Fixture
     SaveSink Sink;
     std::unique_ptr<CartRetail> Cart;
 
-    explicit Fixture(u32 saveType = 1)
+    explicit Fixture(u32 saveType = 1, u32 padding = 0)
     {
-        const u32 size = saveType == 1 ? 512 : 8192;
+        constexpr u32 sizes[] = {0, 512, 8192, 65536, 131072, 262144, 524288, 1048576};
+        const u32 size = sizes[saveType] + padding;
         Sink.Persisted.resize(size);
         for (u32 i = 0; i < size; ++i)
             Sink.Persisted[i] = u8((i * 37 + (i >> 8) * 19) ^ 0x5A);
@@ -299,6 +300,168 @@ static void RegularControl()
     f.Cart->SPIRelease();
 }
 
+// Micron M25PE40 Rev B, pp29/31/34/36: 256-byte page latch, last data wins,
+// PROGRAM clears bits only, WRITE preserves untouched bytes, ERASE produces FF.
+// https://www.farnell.com/datasheets/2215260.pdf
+static void FlashStart(CartRetail& cart, u8 command, u32 address)
+{
+    cart.SPISelect();
+    Send(cart, {command, u8(address >> 16), u8(address >> 8), u8(address)});
+}
+
+static void Flash(const std::string_view test)
+{
+    for (u32 type : {5u, 6u, 7u})
+    {
+        Fixture f(type, 17);
+        auto& cart = *f.Cart;
+        Bytes expected = f.Sink.Persisted;
+        const u32 physical = expected.size() - 17;
+        if (test == "flash-program")
+        {
+            FlashStart(cart, 0x02, 0x127);
+            Send(cart, {0x3C, 0xFF}); cart.SPIRelease();
+            CheckImage(f, expected);
+            Check(f.Sink.Notices == 0, "PROGRAM without WREN changed the save");
+            for (u8 byte : {0x3C, 0xF0, 0xFF})
+            {
+                Command(cart, 0x06);
+                FlashStart(cart, 0x02, 0x127); Send(cart, {byte});
+                CheckImage(f, expected); // The memory array changes at CS release.
+                cart.SPIRelease(); expected[0x127] &= byte;
+                CheckImage(f, expected);
+                Check(!(Status(cart) & 2), "PROGRAM did not consume WEL");
+            }
+            Command(cart, 0x06);
+            FlashStart(cart, 0x0A, 0x127); Send(cart, {0xFF}); cart.SPIRelease();
+            expected[0x127] = 0xFF; CheckImage(f, expected);
+            const auto notices = f.Sink.Notices; cart.SPIRelease();
+            Check(f.Sink.Notices == notices, "Duplicate CS release repeated a Flash operation");
+        }
+        else if (test == "flash-page")
+        {
+            for (u8 command : {0x02, 0x0A})
+            {
+                const u32 page = physical - 256;
+                const auto before = expected;
+                Command(cart, 0x06);
+                // High unused address bits alias the same chip; never file padding.
+                FlashStart(cart, command, 0xF00000 | (physical - 1));
+                Send(cart, {0x55, 0xA6, 0x19});
+                CheckImage(f, expected); cart.SPIRelease();
+                expected[physical - 1] = command == 2 ? before[physical - 1] & 0x55 : 0x55;
+                expected[page] = command == 2 ? before[page] & 0xA6 : 0xA6;
+                expected[page + 1] = command == 2 ? before[page + 1] & 0x19 : 0x19;
+                CheckImage(f, expected);
+                // The first zero-filled lap must be discarded, including for PP.
+                const auto prior = expected;
+                Command(cart, 0x06); FlashStart(cart, command, page + 255);
+                for (unsigned i = 0; i < 256; ++i) cart.SPITransmitReceive(0);
+                for (unsigned i = 0; i < 256; ++i) cart.SPITransmitReceive(0xA5);
+                cart.SPITransmitReceive(0x3C);
+                CheckImage(f, expected); cart.SPIRelease();
+                for (u32 i = page; i < physical; ++i)
+                {
+                    const u8 last = i == physical - 1 ? 0x3C : 0xA5;
+                    expected[i] = command == 2 ? prior[i] & last : last;
+                }
+                CheckImage(f, expected);
+                // READ and FAST READ cross page boundaries instead of latching.
+                for (u8 read : {0x03, 0x0B})
+                {
+                    FlashStart(cart, read, physical - 1);
+                    if (read == 0x0B) cart.SPITransmitReceive(0);
+                    Check(cart.SPITransmitReceive(0) == expected[physical - 1] &&
+                          cart.SPITransmitReceive(0) == expected[0], "Flash READ did not wrap at physical capacity");
+                    cart.SPIRelease();
+                }
+            }
+        }
+        else if (test == "flash-erase")
+        {
+            for (u8 command : {0xDB, 0xD8})
+            {
+                const u32 start = command == 0xDB ? 0x12300 : 0x10000;
+                const u32 count = command == 0xDB ? 256 : 65536;
+                FlashStart(cart, command, 0x12345); cart.SPIRelease();
+                CheckImage(f, expected);
+                Command(cart, 0x06);
+                cart.SPISelect(); Send(cart, {command, 1, 0x23}); cart.SPIRelease();
+                CheckImage(f, expected);
+                Check(Status(cart) & 2, "Truncated ERASE consumed WEL");
+                FlashStart(cart, command, 0x12345); Send(cart, {0}); cart.SPIRelease();
+                CheckImage(f, expected); // Extra data invalidates an address-only command.
+                Check(Status(cart) & 2, "Overlong ERASE consumed WEL");
+                FlashStart(cart, command, 0x12345);
+                CheckImage(f, expected); cart.SPIRelease();
+                std::fill_n(expected.begin() + start, count, 0xFF);
+                CheckImage(f, expected);
+                Check(!(Status(cart) & 2), "ERASE did not consume WEL");
+            }
+        }
+        else if (test == "flash-state")
+        {
+            for (u8 command : {0x02, 0x0A, 0xDB, 0xD8})
+            {
+                Command(cart, 0x06); FlashStart(cart, command, 0x123FE);
+                if (command == 2 || command == 10) Send(cart, {0xA6, 0x19, 0xC3});
+                Savestate saved(physical + 1024); cart.DoSavestate(&saved);
+                saved.Section("TAIL"); u32 marker = 0x1234ABCD; saved.Var32(&marker); saved.Finish();
+                Check(!saved.Error && saved.MinorVersion() == 6, "Pending Flash latch must require 14.6");
+                if (command == 2)
+                {
+                    // Reject a truncated latch or an illegal pending length before
+                    // replacing the receiver's live save bytes and active command.
+                    Bytes broken(static_cast<const u8*>(saved.Buffer()),
+                                 static_cast<const u8*>(saved.Buffer()) + saved.Length());
+                    const u32 sectionBytes = physical + 61 + 255;
+                    const u32 total = 16 + sectionBytes;
+                    broken.resize(total);
+                    std::memcpy(broken.data() + 8, &total, 4);
+                    std::memcpy(broken.data() + 20, &sectionBytes, 4);
+                    const auto notices = f.Sink.Notices;
+                    auto* pointer = cart.GetSaveMemory();
+                    Savestate truncated(broken.data(), broken.size(), false);
+                    cart.DoSavestate(&truncated);
+                    Check(truncated.Error && cart.GetSaveMemory() == pointer && f.Sink.Notices == notices,
+                          "Truncated pending Flash replaced live save or notified persistence");
+                    CheckImage(f, expected);
+                    broken.assign(static_cast<const u8*>(saved.Buffer()),
+                                  static_cast<const u8*>(saved.Buffer()) + saved.Length());
+                    const u32 invalidLength = 0x80000101;
+                    std::memcpy(broken.data() + physical + 73, &invalidLength, 4);
+                    Savestate invalid(broken.data(), broken.size(), false);
+                    cart.DoSavestate(&invalid);
+                    Check(invalid.Error && cart.GetSaveMemory() == pointer && f.Sink.Notices == notices,
+                          "Invalid pending Flash length replaced live save or notified persistence");
+                    CheckImage(f, expected);
+                }
+                Fixture restored(type, 17);
+                Savestate load(saved.Buffer(), saved.Length(), false);
+                restored.Cart->DoSavestate(&load);
+                load.Section("TAIL"); marker = 0; load.Var32(&marker);
+                Check(!load.Error && marker == 0x1234ABCD, "Pending Flash state lost following section");
+                CheckImage(restored, expected);
+                if (command == 2 || command == 10)
+                {
+                    Send(*restored.Cart, {0x55});
+                    const u32 positions[] = {0x123FE, 0x123FF, 0x12300, 0x12301};
+                    const u8 values[] = {0xA6, 0x19, 0xC3, 0x55};
+                    for (unsigned i = 0; i < 4; ++i)
+                        expected[positions[i]] = command == 2 ? expected[positions[i]] & values[i] : values[i];
+                }
+                else std::fill_n(expected.begin() + (command == 0xDB ? 0x12300 : 0x10000),
+                                 command == 0xDB ? 256 : 65536, 0xFF);
+                restored.Cart->SPIRelease(); CheckImage(restored, expected);
+                // Continue with the restored owner; original pending bytes are abandoned by Reset.
+                cart.Reset(); cart.SetSaveMemory(expected.data(), expected.size());
+                Savestate idle(physical + 1024); cart.DoSavestate(&idle); idle.Finish();
+                Check(!idle.Error && idle.MinorVersion() == 2, "Idle Flash changed the normal 14.2 writer format");
+            }
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
@@ -308,6 +471,7 @@ int main(int argc, char** argv)
     else if (test == "page-overflow") PageOverflow();
     else if (test == "restore-write") RestoreWrite();
     else if (test == "regular-control") RegularControl();
+    else if (test == "flash-program" || test == "flash-page" || test == "flash-erase" || test == "flash-state") Flash(test);
     else return 2;
     std::printf("%s: %s\n", argv[1], failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;

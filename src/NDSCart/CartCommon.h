@@ -62,6 +62,7 @@ public:
     virtual void SetupDirectBoot(const std::string& romname, NDS& nds);
 
     virtual void DoSavestate(Savestate* file);
+    virtual void PrepareSavestate(Savestate* file) const {}
 
     virtual void SetResetState(bool reset);
 

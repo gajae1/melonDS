@@ -6,11 +6,15 @@
 #include "NDS.h"
 #include "DSi.h"
 #include "NDSCart/CartRetail.h"
+#include "NDSCart/CartRetailIR.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace melonDS;
 static unsigned Failures = 0;
@@ -155,11 +159,233 @@ static void TestKey1State(u32 cpu)
     std::printf("CPU%u encrypted chip ID before=%08X restored=%08X\n", cpu, before, after);
 }
 
+struct FlashFixture
+{
+    static constexpr u32 Length = 512 * 1024;
+    std::unique_ptr<NDS> Machine;
+    NDSCart::CartRetail* Cart;
+    u32 CPU;
+    bool Infrared;
+
+    FlashFixture(u32 cpu, bool dsi, bool infrared = false, u8 seed = 0x5A)
+        : CPU(cpu), Infrared(infrared)
+    {
+        if (dsi)
+        {
+            DSiArgs args;
+            args.JIT = std::nullopt;
+            Machine = std::make_unique<DSi>(std::move(args));
+        }
+        else
+        {
+            NDSArgs args;
+            args.JIT = std::nullopt;
+            Machine = std::make_unique<Console>(std::move(args));
+        }
+        Machine->Reset();
+        auto sram = std::make_unique<u8[]>(Length);
+        for (u32 i = 0; i < Length; ++i) sram[i] = seed ^ (i * 37 + (i >> 8));
+        std::unique_ptr<NDSCart::CartRetail> cart;
+        const ROMListEntry params {0, 0x10000, 6};
+        if (infrared)
+            cart = std::make_unique<NDSCart::CartRetailIR>(ObservedCart::MakeROM(false),
+                0x10000, 0, 1, false, params, std::move(sram), Length, nullptr);
+        else
+            cart = std::make_unique<NDSCart::CartRetail>(ObservedCart::MakeROM(false),
+                0x10000, 0, false, params, std::move(sram), Length, nullptr);
+        Cart = cart.get();
+        Machine->SetNDSCart(std::move(cart));
+        if (dsi)
+        {
+            // Generated DSi, no external NAND/BIOS. Power Slot-1 through SCFG_MC.
+            Machine->ARM7Write16(0x04004010, 0x0004);
+            Machine->ARM7Write16(0x04004010, 0x0008);
+            // DSi is final: use its public frame scheduler with both CPUs halted,
+            // rather than invoking the SPI callback or executing generated BIOS.
+            Machine->ARM9.Halt(1);
+            Machine->ARM7.Halt(1);
+            Machine->Start();
+        }
+        Machine->ARM9Write16(0x04000204, cpu ? 0x0800 : 0);
+        if (cpu) Machine->ARM7Write32(0x040001A4, 1u << 29);
+        else Machine->ARM9Write32(0x040001A4, 1u << 29);
+        Machine->ARM9Write32(0x02000200, 0x12340000 | seed);
+    }
+
+    void Control(u16 value)
+    {
+        if (CPU) Machine->ARM7Write16(0x040001A0, value);
+        else Machine->ARM9Write16(0x040001A0, value);
+    }
+    u8 Data(u8 value)
+    {
+        if (CPU) Machine->ARM7Write8(0x040001A2, value);
+        else Machine->ARM9Write8(0x040001A2, value);
+        const auto busy = [&] {
+            return (CPU ? Machine->ARM7Read16(0x040001A0)
+                        : Machine->ARM9Read16(0x040001A0)) & 0x80;
+        };
+        if (!busy()) throw std::runtime_error("Flash MMIO transfer did not become busy");
+        if (Machine->ConsoleType == 1) Machine->RunFrame();
+        else static_cast<Console*>(Machine.get())->Finish(CPU);
+        if (busy()) throw std::runtime_error("Flash scheduler did not complete MMIO transfer");
+        return CPU ? Machine->ARM7Read8(0x040001A2) : Machine->ARM9Read8(0x040001A2);
+    }
+    void Release() { Control(0x8040); } // AUXSPICNT bit 13 falling edge, actual CS high
+    void Begin(u8 command)
+    {
+        Control(0xA040);
+        if (Infrared) Data(0x00);
+        Data(command);
+    }
+    void EnableWrite() { Begin(0x06); Release(); }
+    void Expect(const std::vector<u8>& expected, const char* reason)
+    {
+        Check(Cart->GetSaveMemoryLength() == expected.size(), "Flash backing length changed");
+        if (Cart->GetSaveMemoryLength() != expected.size()) return;
+        const auto difference = std::mismatch(expected.begin(), expected.end(), Cart->GetSaveMemory());
+        if (difference.first != expected.end())
+        {
+            Check(false, reason);
+            std::fprintf(stderr, "Flash mismatch at %06X: expected %02X, actual %02X\n",
+                static_cast<unsigned>(difference.first - expected.begin()),
+                *difference.first, *difference.second);
+        }
+    }
+    void Save(Savestate& state, u16 minor)
+    {
+        if (!Machine->DoSavestate(&state) || state.Error)
+            throw std::runtime_error("Flash whole-console save failed");
+        state.Finish();
+        if (state.MajorVersion() != 14 || state.MinorVersion() != minor)
+        {
+            Check(false, "Flash whole-console state used an unexpected format version");
+            std::fprintf(stderr, "Expected 14.%u, wrote %u.%u\n",
+                minor, state.MajorVersion(), state.MinorVersion());
+        }
+    }
+    void Restore(Savestate& state)
+    {
+        Savestate load(state.Buffer(), state.Length(), false);
+        if (!Machine->DoSavestate(&load) || load.Error)
+            throw std::runtime_error("Flash cold whole-console restore failed");
+        Check(Machine->ARM9Read32(0x02000200) == 0x1234005A,
+            "Flash state did not restore the console's RAM marker");
+    }
+};
+
+static void TestFlashWriteState(u32 cpu, bool dsi, u8 command, bool infrared = false)
+{
+    std::printf("Flash state %s ARM%u command=%02X IR=%u\n", dsi ? "DSi" : "DS",
+        cpu ? 7 : 9, command, infrared);
+    std::fflush(stdout);
+    FlashFixture original(cpu, dsi, infrared);
+    const std::vector<u8> before(original.Cart->GetSaveMemory(),
+        original.Cart->GetSaveMemory() + FlashFixture::Length);
+    { Savestate idle; original.Save(idle, 2); }
+    original.EnableWrite();
+    original.Begin(command);
+    original.Data(0x00); // mid-address: two address bytes have not arrived yet
+    original.Expect(before, "Flash changed SRAM during its address phase");
+    Savestate address;
+    original.Save(address, 2);
+
+    // Matching ROM and chip, but different initial save bytes and no prior SPI.
+    FlashFixture addressed(cpu, dsi, infrared, 0xC3);
+    addressed.Restore(address);
+    addressed.Expect(before, "Cold mid-address restore lost the physical save bytes");
+    addressed.Data(0x12);
+    addressed.Data(0xFF);
+    addressed.Data(0xF0); // first payload byte, still held at the end of page 0x1200
+    addressed.Expect(before, "Flash committed its first payload before CS release");
+    Savestate payload;
+    addressed.Save(payload, 6);
+
+    FlashFixture restored(cpu, dsi, infrared, 0x3C);
+    restored.Restore(payload);
+    restored.Expect(before, "Cold pending-page restore prematurely committed the latch");
+    restored.Data(0x0F);
+    restored.Data(0xA5);
+    restored.Expect(before, "Restored held Flash write changed SRAM before CS release");
+    restored.Release();
+    auto expected = before;
+    // This transaction crosses the 256-byte page boundary, not the chip end.
+    for (const auto& byte : {std::pair<u32, u8>{0x12FF, 0xF0}, {0x1200, 0x0F}, {0x1201, 0xA5}})
+        expected[byte.first] = command == 0x02 ? before[byte.first] & byte.second : byte.second;
+    restored.Expect(expected, "Flash page continuation or its untouched neighbors were corrupted");
+    Savestate committed;
+    restored.Save(committed, 2); // an idle cart must not permanently raise the minor version
+    original.Restore(committed);
+    original.Release();
+    original.Expect(expected, "Idle 14.2 restore lost committed bytes or replayed an old latch");
+    if (infrared)
+    {
+        // Pass-through position is the derived-cart state tail after the latch.
+        original.Control(0xA040);
+        original.Data(0x08);
+        Check(original.Data(0) == 0xAA, "Flash latch state displaced the IR command tail");
+        original.Release();
+    }
+}
+
+static void TestFlashEraseState(u32 cpu, bool dsi)
+{
+    const u8 command = cpu ? 0xDB : 0xD8;
+    std::printf("Flash erase state %s ARM%u command=%02X\n", dsi ? "DSi" : "DS", cpu ? 7 : 9, command);
+    std::fflush(stdout);
+    FlashFixture original(cpu, dsi);
+    const std::vector<u8> before(original.Cart->GetSaveMemory(),
+        original.Cart->GetSaveMemory() + FlashFixture::Length);
+    // Bounded command-shape checks through MMIO, rather than a chip-size matrix.
+    for (unsigned shape = 0; shape < 3; ++shape)
+    {
+        if (shape) original.EnableWrite();
+        original.Begin(command);
+        original.Data(0x01);
+        original.Data(0x23);
+        if (shape != 1) original.Data(0x45); // shape 1: truncated address
+        if (shape == 2) original.Data(0); // extra byte cancels an otherwise valid erase
+        original.Release();
+        original.Expect(before, "Flash erase accepted missing WREN, truncation, or extra data");
+    }
+    original.EnableWrite();
+    original.Begin(command);
+    original.Data(0x01);
+    original.Data(0x23);
+    original.Data(0x45);
+    original.Expect(before, "Flash erase changed SRAM before address-ending CS release");
+    Savestate pending;
+    original.Save(pending, 6);
+    FlashFixture restored(cpu, dsi, false, 0xC3);
+    restored.Restore(pending);
+    restored.Expect(before, "Restoring a held erase committed it prematurely");
+    restored.Release();
+    auto expected = before;
+    const u32 first = command == 0xDB ? 0x12300 : 0x10000;
+    const u32 end = command == 0xDB ? 0x12400 : 0x20000;
+    std::fill(expected.begin() + first, expected.begin() + end, 0xFF);
+    restored.Expect(expected, "Restored erase missed alignment or changed neighboring data");
+    Savestate idle;
+    restored.Save(idle, 2);
+}
+
 int main(int argc, char** argv)
 try
 {
     if (argc != 2) return 2;
     const std::string mode = argv[1];
+    if (mode == "flash-state")
+    {
+        for (bool dsi : {false, true})
+        for (u32 cpu : {0u, 1u})
+        {
+            for (u8 command : {0x02, 0x0A}) TestFlashWriteState(cpu, dsi, command);
+            TestFlashEraseState(cpu, dsi);
+        }
+        TestFlashWriteState(1, false, 0x0A, true);
+        std::printf("Cart SPI flash-state: %u failures\n", Failures);
+        return Failures ? 1 : 0;
+    }
     for (u32 cpu : {0u, 1u})
     {
         if (mode == "dsi-state") break;

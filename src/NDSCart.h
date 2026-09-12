@@ -77,6 +77,8 @@ public:
     ~NDSCartSlot() noexcept;
     void Reset() noexcept;
     void DoSavestate(Savestate* file) noexcept;
+    void PrepareSavestate(Savestate* file) const noexcept
+    { if (Cart) Cart->PrepareSavestate(file); }
 
     void DecryptSecureArea(u8* out) noexcept;
 

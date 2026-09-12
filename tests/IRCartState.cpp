@@ -224,13 +224,15 @@ int main(int argc, char** argv)
         cart->SPIRelease();
         cart->SPISelect();
         Send(*cart, {0, 0x0A, 0, 0x12, 0x34, 0x77}, {0, 0xFF, 0, 0, 0, 0});
+        Check(cart->GetSaveMemory()[0x1234] == 0x4A, "IR Flash committed before chip select rose");
         Bytes state = Save(*cart);
+        Check(state[6] == 6 && state[7] == 0, "Pending IR Flash did not require state 14.6");
         Send(*cart, {0xEE}, {0});
         cart->SPIRelease();
         ID(*cart);
         Restore(*cart, state);
-        Check(cart->GetSaveMemory()[0x1234] == 0x77 && cart->GetSaveMemory()[0x1235] == 0x9C,
-              "Mid-write restore did not restore the saved SRAM snapshot");
+        Check(cart->GetSaveMemory()[0x1234] == 0x4A && cart->GetSaveMemory()[0x1235] == 0x9C,
+              "Mid-write restore committed the pending Flash byte too early");
         notices.clear(); // The base loader already notified the restored whole save.
         Send(*cart, {0x66}, {0});
         cart->SPIRelease();

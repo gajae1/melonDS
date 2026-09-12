@@ -581,7 +581,7 @@ struct DSSaveFixture
         auto& cart = Cart();
         return QByteArray(reinterpret_cast<const char*>(cart.GetSaveMemory()), cart.GetSaveMemoryLength());
     }
-    void Load()
+    void Load(std::optional<u32> saveType = std::nullopt)
     {
         auto prepared = std::make_shared<ROMPreparation::Data>();
         prepared->Source = {"capacity.nds"}; prepared->Name = "capacity.nds";
@@ -595,7 +595,7 @@ struct DSSaveFixture
                           "fixture ROM metadata must be real EEPROM8K A2DC or unknown retail ZZZA");
         QString error;
         loader.forbidROMRead = true;
-        RequireDSCapacity(loader.loadROM(prepared->Source, false, error, {}, prepared), "actual prepared DS loader");
+        RequireDSCapacity(loader.loadROM(prepared->Source, false, error, {}, prepared, saveType), "actual prepared DS loader");
         RequireDSCapacity(loader.ndsSave && loader.ndsSave->GetPath() == path && Bytes() == expected &&
                           loader.ndsSave->Flush() && ReadSaveFile(path) == expected,
                           "load/reload changed existing backing length, bytes or file tail");
@@ -609,7 +609,7 @@ struct DSSaveFixture
 };
 
 // Bus operations take explicit wire commands/widths, independent of the core's
-// SaveMemType inference. Flash uses page WRITE 0A, not zero-program command 02.
+// SaveMemType inference. Flash uses page WRITE 0A, not bit-clearing PROGRAM 02.
 static void DSWrite(NDSCart::CartRetail& cart, u8 command, unsigned addressBytes,
                     u32 address, const QByteArray& data)
 {
@@ -708,6 +708,32 @@ static int DSSaveCapacity(const string& test)
                 }
                 f.Load();
             }
+        }
+        else if (test == "ds-capacity-flash")
+        {
+            DSSaveFixture f(524288 + 17);
+            // Preserve a padded file while explicitly selecting its physical Flash.
+            f.Load(6);
+            const QByteArray prime = QByteArray::fromHex("96");
+            DSWrite(f.Cart(), 0x0A, 3, 0x27, prime);
+            f.expected[0x27] = prime[0]; f.Flush();
+            for (u8 command : {0x02, 0x0A})
+            {
+                const QByteArray data = QByteArray::fromHex("a619c3");
+                DSWrite(f.Cart(), command, 3, 0x1FF, data);
+                const u32 positions[] = {0x1FF, 0x100, 0x101};
+                for (unsigned i = 0; i < 3; ++i)
+                    f.expected[positions[i]] = char(command == 2 ? u8(f.expected[positions[i]]) & u8(data[i]) : u8(data[i]));
+                f.Flush(); // The manager already holds the earlier capture.
+            }
+            for (u8 command : {0xDB, 0xD8})
+            {
+                DSWrite(f.Cart(), command, 3, 0x12345, {});
+                const u32 offset = command == 0xDB ? 0x12300 : 0x10000;
+                const u32 length = command == 0xDB ? 256 : 65536;
+                f.expected.replace(offset, length, QByteArray(length, '\xFF')); f.Flush();
+            }
+            f.Load(); // Auto can use the legacy fallback, but must retain every file byte.
         }
         else if (test == "ds-capacity-state")
         {
