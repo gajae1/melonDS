@@ -19,6 +19,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <string_view>
 #include "NDS.h"
 #include "GBACart.h"
 #include "CRC32.h"
@@ -1008,6 +1009,45 @@ std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, void* userda
     return ParseROM(romdata, romlen, nullptr, 0, userdata);
 }
 
+static u32 DetectSaveLength(std::string_view rom)
+{
+    // Nintendo SDK identifiers describe SRAM/Flash capacities, but EEPROM_V
+    // does not distinguish 512 bytes from 8 KiB. See ares' GBA media analyzer.
+    // This is a fallback for a missing save, not a ROM identity database.
+    constexpr struct { std::string_view Prefix; u32 Length; } identifiers[] = {
+        {"SRAM_V", 32768}, {"SRAM_F_V", 32768}, {"EEPROM_V", 0},
+        {"FLASH_V", 65536}, {"FLASH512_V", 65536}, {"FLASH1M_V", 131072}
+    };
+    u32 length = 0;
+    bool eeprom = false;
+    for (const auto& identifier : identifiers)
+    {
+        for (auto pos = rom.find(identifier.Prefix); pos != std::string_view::npos;
+             pos = rom.find(identifier.Prefix, pos))
+        {
+            pos += identifier.Prefix.size();
+            const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+            if (rom.size() - pos < 3 || !digit(rom[pos]) || !digit(rom[pos + 1]) ||
+                !digit(rom[pos + 2]) || (rom.size() - pos > 3 && digit(rom[pos + 3])))
+                continue;
+            if (!identifier.Length) eeprom = true;
+            else if (length && length != identifier.Length)
+            {
+                Log(LogLevel::Warn, "GBA save identifiers conflict; capacity was not guessed.\n");
+                return 0;
+            }
+            else length = identifier.Length;
+            break;
+        }
+    }
+    if (eeprom)
+    {
+        Log(LogLevel::Warn, "GBA EEPROM capacity is unknown without an existing save; new storage was not initialized.\n");
+        return 0;
+    }
+    return length;
+}
+
 std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen, std::unique_ptr<u8[]>&& sramdata, u32 sramlen, void* userdata)
 {
     if (romdata == nullptr)
@@ -1021,6 +1061,19 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
     {
         Log(LogLevel::Error, "GBACart: ROM length is outside the supported range\n");
         return nullptr;
+    }
+
+    // Supplied save bytes always win, including unfamiliar sizes and RTC tails.
+    // Detection only initializes erased storage; the first guest write owns the
+    // persistence notification. Padding contains zeros, never SDK identifiers.
+    if (!sramdata && !sramlen)
+    {
+        sramlen = DetectSaveLength({reinterpret_cast<const char*>(romdata.get()), romlen});
+        if (sramlen)
+        {
+            sramdata = std::make_unique_for_overwrite<u8[]>(sramlen);
+            memset(sramdata.get(), 0xFF, sramlen);
+        }
     }
 
     auto [cartrom, cartromsize] = PadToPowerOf2(std::move(romdata), romlen);
@@ -1047,12 +1100,6 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
         cart = std::make_unique<CartGame>(std::move(cartrom), cartromsize, std::move(sramdata), sramlen, userdata);
 
     cart->Reset();
-
-    // save
-    //printf("GBA save file: %s\n", sram);
-
-    // TODO: have a list of sorts like in NDSCart? to determine the savemem type
-    //if (Cart) Cart->LoadSave(sram, 0);
 
     return cart;
 }

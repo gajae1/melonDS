@@ -414,6 +414,9 @@ private:
 /// @param romlen The length of the ROM data in bytes.
 /// @returns A \c GBACart::CartCommon object representing the parsed ROM,
 /// or \c nullptr if the ROM data couldn't be parsed.
+/// With no supplied save, an unambiguous SRAM/Flash SDK identifier initializes
+/// erased storage. Unknown or conflicting identifiers leave save memory absent;
+/// an EEPROM identifier alone does not establish its capacity.
 std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, void* userdata = nullptr);
 std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen, void* userdata = nullptr);
 std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, const u8* sramdata, u32 sramlen, void* userdata = nullptr);
@@ -421,9 +424,9 @@ std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, const u8* sr
 /// @param romdata The ROM data to parse. Will be moved-from.
 /// @param romlen Length of romdata in bytes.
 /// @param sramdata The save data to add to the cart.
-/// May be \c nullptr, in which case the cart will have no save data.
+/// May be \c nullptr with zero length to detect initial storage from the ROM.
 /// @param sramlen Length of sramdata in bytes.
-/// May be zero, in which case the cart will have no save data.
+/// Existing data and length take precedence over ROM identifiers and are preserved.
 /// @return Unique pointer to the parsed GBA cart,
 /// or \c nullptr if there was an error.
 std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen, std::unique_ptr<u8[]>&& sramdata, u32 sramlen, void* userdata = nullptr);

@@ -28,6 +28,8 @@ ROM 교체·종료 증분은 `CartReplacement`, `FrontendClose`, `SaveManagerIO`
 
 카트 SPI·EEPROM 증분은 `CartSPI`, `RetailEEPROM`과 `cart-spi-|retail-eeprom-`를 사용한다. CartSPI는 실제 NDS core의 ARM9/ARM7 MMIO·scheduler·retail cart·전체 savestate를 사용하며 SPI callback 관찰 뒤 생산 메서드에 그대로 위임한다. `cart-spi-key1-state`는 생성 BIOS/ROM의 암호화 명령을 새 console·cart에 복원해 두 CPU의 chip ID를 확인하고 DSi 타입의 상태 API로 NWRAM을 복원한다. CPU 명령 실행/JIT 검사는 별도다. RetailEEPROM은 실제 SPI 입력·SRAM·상태에 생성 저장 image를 연결해 통지 범위만 재생한다. 메모리 image 일치를 실제 디스크 commit이나 실물 chip timing의 증거로 확대하지 않는다.
 
+GBA 초기 저장 판별은 `GBASave`의 `gba-save-detection`으로 확인한다. 생성 ROM의 완전한 SDK 마커 다섯 종류, 첫 쓰기 프로토콜·저장 통지, 기존20개 저장 입력의 길이/바이트 보존과 불완전·상충·EEPROM 마커를 검사한다. 1.1.69는 수정 전 다섯 초기 용량 실패를 재현한 뒤 통과했고 JIT OFF의 GBA 저장8검사도 통과했다. 별도 실제 Qt 메시지·Slot-2·SaveManager 실행으로 저장 파일이 없는 삽입→첫 쓰기→파일 commit→재삽입, 기존 EEPROM 파일 우선과 새 저장 할당 실패의 기존 카트/manager 보존을 확인했다. 이 SDK fallback을 전체 ROM DB·실물 칩 식별이나 미등록 EEPROM 용량 판별 완료로 세지 않는다.
+
 ```sh
 ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 ```

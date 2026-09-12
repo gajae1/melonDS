@@ -328,10 +328,76 @@ static bool Import()
     return passed;
 }
 
+static bool Detection()
+{
+    SaveTrace trace;
+    bool passed = true;
+    const auto check = [&](bool ok, const char* reason) {
+        if (!ok) { passed = false; std::fprintf(stderr, "detection: %s\n", reason); }
+    };
+    // Exercise the public factory used by the frontend, including an unpadded
+    // ROM whose complete SDK identifier occupies its final bytes.
+    for (const auto& [marker, length] : {
+             std::pair{"SRAM_V110", 32768u}, {"SRAM_F_V103", 32768u},
+             {"FLASH_V126", 65536u}, {"FLASH512_V130", 65536u},
+             {"FLASH1M_V103", 131072u}})
+    {
+        std::vector<u8> rom(0x211, 0);
+        std::memcpy(rom.data() + 0xAC, "TEST", 4);
+        std::memcpy(rom.data() + rom.size() - std::strlen(marker), marker, std::strlen(marker));
+        trace = {};
+        auto cart = GBACart::ParseROM(rom.data(), u32(rom.size()), &trace);
+        check(cart && cart->GetSaveMemoryLength() == length,
+              "missing save was not initialized from a complete, unambiguous SDK identifier");
+        if (cart && cart->GetSaveMemoryLength() == length)
+        {
+            check(std::all_of(cart->GetSaveMemory(), cart->GetSaveMemory() + length,
+                              [](u8 value) { return value == 0xFF; }), "new chip was not erased");
+            check(trace.Calls == 0, "detection published a save before a guest write");
+            if (length == 32768) cart->SRAMWrite(0x1234, 0x52);
+            else
+            {
+                cart->SRAMWrite(0x5555, 0xAA);
+                cart->SRAMWrite(0x2AAA, 0x55);
+                cart->SRAMWrite(0x5555, 0xA0);
+                cart->SRAMWrite(0x1234, 0x52);
+            }
+            check(cart->SRAMRead(0x1234) == 0x52 && trace.Calls == 1 &&
+                  trace.Capacity == length && trace.Offset == 0x1234 && trace.Length == 1,
+                  "detected chip did not execute its write protocol and save notification");
+        }
+        // Supplied saves retain their complete length and contents even when
+        // metadata disagrees; include the existing RTC tail and odd lengths.
+        for (u32 oldLength : {512u, 8192u, 131088u, 37u})
+        {
+            std::vector<u8> old(oldLength, 0x39);
+            trace = {};
+            auto supplied = GBACart::ParseROM(rom.data(), u32(rom.size()), old.data(), oldLength, &trace);
+            check(supplied && supplied->GetSaveMemoryLength() == oldLength &&
+                  std::equal(old.begin(), old.end(), supplied->GetSaveMemory()) && !trace.Calls,
+                  "detection replaced, resized or published an existing save");
+        }
+    }
+    for (const char* marker : {"", "EEPROM_V124", "FLASH1M_V10", "FLASH1M_V10x",
+                              "SRAM_V110 FLASH1M_V103", "SRAM_V110 EEPROM_V124"})
+    {
+        std::vector<u8> rom(0x211, 0);
+        std::memcpy(rom.data() + 0xAC, "TEST", 4);
+        std::memcpy(rom.data() + rom.size() - std::strlen(marker), marker, std::strlen(marker));
+        trace = {};
+        auto cart = GBACart::ParseROM(rom.data(), u32(rom.size()), &trace);
+        check(cart && cart->GetSaveMemoryLength() == 0 && !trace.Calls,
+              "unknown, incomplete or conflicting metadata guessed a chip capacity");
+    }
+    std::printf("gba-save/detection: %s\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
     if (!std::strcmp(argv[1], "import")) return Import() ? 0 : 1;
+    if (!std::strcmp(argv[1], "detection")) return Detection() ? 0 : 1;
     bool passed = true;
     for (u32 length : {0x10000u, 0x20000u, 0x20010u})
         passed &= !std::strcmp(argv[1], "state") ? State(length) :

@@ -522,7 +522,7 @@ endforeach()
 add_executable(GBASave GBASave.cpp ../src/GBACart.cpp ../src/GBACartMotionPak.cpp
     ../src/GBACartEEPROM.cpp ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
 target_include_directories(GBASave PRIVATE ../src)
-foreach(case IN ITEMS sector bank program chip state state-solar import)
+foreach(case IN ITEMS sector bank program chip state state-solar import detection)
     add_test(NAME gba-save-${case} COMMAND GBASave ${case})
     set_tests_properties(gba-save-${case} PROPERTIES TIMEOUT 15)
 endforeach()
