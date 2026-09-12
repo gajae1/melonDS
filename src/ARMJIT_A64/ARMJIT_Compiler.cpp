@@ -707,7 +707,7 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
     {
         CurInstr = instrs[i];
         R15 = CurInstr.Addr + (Thumb ? 4 : 8);
-        CodeRegion = R15 >> 24;
+        CodeRegion = CurInstr.Addr >> 24;
 
         CompileFunc comp = Thumb
             ? T_Comp[CurInstr.Info.Kind]

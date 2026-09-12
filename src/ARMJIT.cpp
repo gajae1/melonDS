@@ -792,11 +792,9 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
             && DecodeLiteral(thumb, instrs[i], literalAddr))
         {
             u32 translatedAddr = LocaliseCodeAddress(cpu->Num, literalAddr);
-            if (!translatedAddr)
-            {
-                Log(LogLevel::Warn,"literal in non executable memory?\n");
-            }
-            if (InvalidLiterals.Find(translatedAddr) == -1)
+            // DTCM, I/O and unmapped memory have no write-tracked code range.
+            // Keep those as runtime loads instead of indexing region zero.
+            if (translatedAddr && InvalidLiterals.Find(translatedAddr) == -1)
             {
                 u32 translatedAddrRounded = translatedAddr & ~0x1FF;
 
@@ -1049,7 +1047,39 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     }
 }
 
-void ARMJIT::InvalidateByAddr(u32 localAddr) noexcept
+void ARMJIT::InvalidateRemappedLiterals() noexcept
+{
+    if (!LiteralOptimizations) return;
+    // A block outside WRAM can contain a folded read of a remapped bank.
+    // Walk its existing physical dependencies, keeping literal-free code and
+    // unrelated regions. ARM7's private WRAM can be the old shared-window view.
+    for (int region : {ARMJIT_Memory::memregion_SharedWRAM, ARMJIT_Memory::memregion_WRAM7,
+                       ARMJIT_Memory::memregion_NewSharedWRAM_A,
+                       ARMJIT_Memory::memregion_NewSharedWRAM_B,
+                       ARMJIT_Memory::memregion_NewSharedWRAM_C})
+    {
+        if (!NDS.ConsoleType && region >= ARMJIT_Memory::memregion_NewSharedWRAM_A) break;
+        for (u32 offset = 0; offset < CodeRegionSizes[region]; offset += 512)
+        {
+            auto& range = CodeMemRegions[region][offset / 512];
+            for (u32 i = 0; i < range.Blocks.Length;)
+            {
+                const auto* block = range.Blocks[i];
+                u32 literal = 0;
+                for (u32 j = 0; j < block->NumLiterals; ++j)
+                    if ((block->Literals()[j] >> 27) == region)
+                    {
+                        literal = block->Literals()[j];
+                        break;
+                    }
+                if (literal) InvalidateByAddr(literal, false); // removes this block from all ranges
+                else ++i;
+            }
+        }
+    }
+}
+
+void ARMJIT::InvalidateByAddr(u32 localAddr, bool dataWrite) noexcept
 {
     JIT_DEBUGPRINT("invalidating by addr %x\n", localAddr);
 
@@ -1095,7 +1125,7 @@ void ARMJIT::InvalidateByAddr(u32 localAddr) noexcept
             u32 addr = block->Literals()[j];
             if (addr == localAddr)
             {
-                if (InvalidLiterals.Find(localAddr) == -1)
+                if (dataWrite && InvalidLiterals.Find(localAddr) == -1)
                 {
                     InvalidLiterals.Add(localAddr);
                     JIT_DEBUGPRINT("found invalid literal %d\n", InvalidLiterals.Length);

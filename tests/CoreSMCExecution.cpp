@@ -151,3 +151,111 @@ int TestSMCExecution(NDSArgs&& args, bool jit)
     std::printf("SMC checks=%u failures=%u\n", checks, failures);
     return failures ? 1 : 0;
 }
+
+
+int TestSMCLiteralRegions(NDSArgs&& args, bool jit)
+{
+    if (args.JIT)
+    {
+        args.JIT->LiteralOptimizations = true;
+        args.JIT->BranchOptimizations = false;
+    }
+    NDSArgs referenceArgs;
+    referenceArgs.JIT.reset();
+    auto reference = std::make_unique<NDS>(std::move(referenceArgs));
+    auto actual = std::make_unique<NDS>(std::move(args));
+    unsigned checks = 0, failures = 0;
+    for (unsigned region = 0; region < 5; ++region)
+    for (unsigned num = 0; num < 2; ++num)
+    for (bool thumb : {false, true})
+    {
+        if (region == 0 && num) continue; // DTCM belongs to ARM9.
+        const u32 boundary = region == 0 ? 0x02004000 : region == 1 ? 0x04000000
+            : region == 2 ? 0x02400000 : 0x03000000;
+        const u32 code = region == 3 ? boundary - 16 : boundary - (thumb ? 4 : 8);
+        const u32 literal = boundary + (region == 1 ? 0x210 : 0); // IE is a mutable I/O register.
+        constexpr u32 neighbor = 0x02020000;
+        for (NDS* nds : {reference.get(), actual.get()})
+        {
+            nds->Reset();
+            NDS::Current = nds;
+            if (region == 0)
+            {
+                nds->ARM9.CP15Write(0x910, boundary | 0xA);
+                nds->ARM9.CP15Write(0x100, nds->ARM9.CP15Read(0x100) | (1u << 16));
+            }
+            if (region >= 3)
+            {
+                // Populate both physical halves once, then change only their
+                // mapping: a data write would hide missing remap invalidation.
+                nds->ARM9Write8(0x04000247, 0);
+                nds->ARM9Write32(0x03000000, 0x1111);
+                nds->ARM9Write32(0x03004000, 0x2222);
+                if (num) nds->ARM9Write8(0x04000247, 3);
+            }
+            ARM& cpu = num ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+            if (thumb)
+            {
+                cpu.DataWrite16(code, 0x4800 | ((literal - ((code + 4) & ~3u)) >> 2));
+                cpu.DataWrite16(code + 2, 0xE7FE);
+            }
+            else
+            {
+                cpu.DataWrite32(code, 0xE59F0000 | (literal - (code + 8)));
+                cpu.DataWrite32(code + 4, 0xEAFFFFFE);
+            }
+            cpu.DataWrite32(neighbor, 0xE3A0A02A);
+            cpu.DataWrite32(neighbor + 4, 0xEAFFFFFE);
+            Execute(*nds, cpu, nds == actual.get() && jit, neighbor);
+            Execute(*nds, cpu, nds == actual.get() && jit, neighbor);
+        }
+#ifdef JIT_ENABLED
+        const auto neighborEntry = jit ? Lookup(*actual, num, neighbor, false) : nullptr;
+#endif
+        for (u32 value : {0x1111u, 0x2222u})
+        {
+            for (NDS* nds : {reference.get(), actual.get()})
+            {
+                NDS::Current = nds;
+                if (region >= 3)
+                    nds->ARM9Write8(0x04000247, num ? (value == 0x1111 ? 3 : 2) : (value == 0x1111 ? 0 : 1));
+                else if (num) nds->ARM7.DataWrite32(literal, value);
+                else nds->ARM9.DataWrite32(literal, value);
+            }
+            for (unsigned warm = 0; warm < 2; ++warm)
+            {
+                ARM& ref = num ? static_cast<ARM&>(reference->ARM7) : static_cast<ARM&>(reference->ARM9);
+                ARM& cpu = num ? static_cast<ARM&>(actual->ARM7) : static_cast<ARM&>(actual->ARM9);
+                ref.R[0] = cpu.R[0] = 0;
+                NDS::Current = reference.get();
+                const auto expectedCycles = Execute(*reference, ref, false, code | u32(thumb));
+                NDS::Current = actual.get();
+#ifdef JIT_ENABLED
+                const auto* before = actual->JIT.JITCompiler.GetCodePtr();
+                const bool cached = !jit || Lookup(*actual, num, code, thumb);
+#endif
+                const auto cycles = Execute(*actual, cpu, jit, code | u32(thumb));
+                bool ok = cpu.R[0] == value && cpu.R[0] == ref.R[0] && cpu.R[15] == ref.R[15]
+                    && cpu.CPSR == ref.CPSR && cycles == expectedCycles;
+#ifdef JIT_ENABLED
+                ok = ok && (!jit || (Lookup(*actual, num, neighbor, false) == neighborEntry
+                    && (!warm || (cached && actual->JIT.JITCompiler.GetCodePtr() == before))));
+                if (jit && region >= 3)
+                {
+                    const auto& blocks = num ? actual->JIT.JitBlocks7 : actual->JIT.JitBlocks9;
+                    const auto found = blocks.find(code | u32(thumb));
+                    ok = ok && found != blocks.end() && found->second->NumLiterals == 1
+                        && actual->JIT.InvalidLiterals.Length == 0;
+                }
+#endif
+                ++checks;
+                failures += !ok;
+                std::printf("literal region=%u ARM%d thumb=%d value=%04X warm=%u r0=%08X pc=%08X cycles=%llu expected=%llu %s\n",
+                    region, num ? 7 : 9, thumb, value, warm, cpu.R[0], cpu.R[15],
+                    static_cast<unsigned long long>(cycles), static_cast<unsigned long long>(expectedCycles), ok ? "PASS" : "FAIL");
+            }
+        }
+    }
+    std::printf("Literal regions checks=%u failures=%u\n", checks, failures);
+    return failures ? 1 : 0;
+}

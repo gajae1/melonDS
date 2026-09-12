@@ -1730,7 +1730,7 @@ void DSi::ARM9Write8(u32 addr, u8 val)
                         continue;
                     u8* ptr = &NWRAM_A[page * 0x10000];
                     *(u8*)&ptr[addr & 0xFFFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_A>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_A>(page * 0x10000 + (addr & 0xFFFF));
                 }
                 return;
             }
@@ -1748,7 +1748,7 @@ void DSi::ARM9Write8(u32 addr, u8 val)
                         continue;
                     u8* ptr = &NWRAM_B[page * 0x8000];
                     *(u8*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_B>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_B>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -1766,7 +1766,7 @@ void DSi::ARM9Write8(u32 addr, u8 val)
                         continue;
                     u8* ptr = &NWRAM_C[page * 0x8000];
                     *(u8*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_C>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_C>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -1827,7 +1827,7 @@ void DSi::ARM9Write16(u32 addr, u16 val)
                         continue;
                     u8* ptr = &NWRAM_A[page * 0x10000];
                     *(u16*)&ptr[addr & 0xFFFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_A>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_A>(page * 0x10000 + (addr & 0xFFFF));
                 }
                 return;
             }
@@ -1845,7 +1845,7 @@ void DSi::ARM9Write16(u32 addr, u16 val)
                         continue;
                     u8* ptr = &NWRAM_B[page * 0x8000];
                     *(u16*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_B>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_B>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -1863,7 +1863,7 @@ void DSi::ARM9Write16(u32 addr, u16 val)
                         continue;
                     u8* ptr = &NWRAM_C[page * 0x8000];
                     *(u16*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_C>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_C>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -1912,7 +1912,7 @@ void DSi::ARM9Write32(u32 addr, u32 val)
                         continue;
                     u8* ptr = &NWRAM_A[page * 0x10000];
                     *(u32*)&ptr[addr & 0xFFFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_A>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_A>(page * 0x10000 + (addr & 0xFFFF));
                 }
                 return;
             }
@@ -1930,7 +1930,7 @@ void DSi::ARM9Write32(u32 addr, u32 val)
                         continue;
                     u8* ptr = &NWRAM_B[page * 0x8000];
                     *(u32*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_B>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_B>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -1948,7 +1948,7 @@ void DSi::ARM9Write32(u32 addr, u32 val)
                         continue;
                     u8* ptr = &NWRAM_C[page * 0x8000];
                     *(u32*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_NewSharedWRAM_C>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_C>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -2211,7 +2211,7 @@ void DSi::ARM7Write8(u32 addr, u8 val)
                         continue;
                     u8* ptr = &NWRAM_A[page * 0x10000];
                     *(u8*)&ptr[addr & 0xFFFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_A>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_A>(page * 0x10000 + (addr & 0xFFFF));
                 }
                 return;
             }
@@ -2229,7 +2229,7 @@ void DSi::ARM7Write8(u32 addr, u8 val)
                         continue;
                     u8* ptr = &NWRAM_B[page * 0x8000];
                     *(u8*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_B>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_B>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -2247,7 +2247,7 @@ void DSi::ARM7Write8(u32 addr, u8 val)
                         continue;
                     u8* ptr = &NWRAM_C[page * 0x8000];
                     *(u8*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_C>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_C>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -2301,7 +2301,7 @@ void DSi::ARM7Write16(u32 addr, u16 val)
                         continue;
                     u8* ptr = &NWRAM_A[page * 0x10000];
                     *(u16*)&ptr[addr & 0xFFFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_A>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_A>(page * 0x10000 + (addr & 0xFFFF));
                 }
                 return;
             }
@@ -2319,7 +2319,7 @@ void DSi::ARM7Write16(u32 addr, u16 val)
                         continue;
                     u8* ptr = &NWRAM_B[page * 0x8000];
                     *(u16*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_B>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_B>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -2337,7 +2337,7 @@ void DSi::ARM7Write16(u32 addr, u16 val)
                         continue;
                     u8* ptr = &NWRAM_C[page * 0x8000];
                     *(u16*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_C>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_C>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -2391,7 +2391,7 @@ void DSi::ARM7Write32(u32 addr, u32 val)
                         continue;
                     u8* ptr = &NWRAM_A[page * 0x10000];
                     *(u32*)&ptr[addr & 0xFFFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_A>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_A>(page * 0x10000 + (addr & 0xFFFF));
                 }
                 return;
             }
@@ -2409,7 +2409,7 @@ void DSi::ARM7Write32(u32 addr, u32 val)
                         continue;
                     u8* ptr = &NWRAM_B[page * 0x8000];
                     *(u32*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_B>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_B>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }
@@ -2427,7 +2427,7 @@ void DSi::ARM7Write32(u32 addr, u32 val)
                         continue;
                     u8* ptr = &NWRAM_C[page * 0x8000];
                     *(u32*)&ptr[addr & 0x7FFF] = val;
-                    JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_NewSharedWRAM_C>(addr);
+                    JIT.CheckAndInvalidatePhysical<ARMJIT_Memory::memregion_NewSharedWRAM_C>(page * 0x8000 + (addr & 0x7FFF));
                 }
                 return;
             }

@@ -591,6 +591,7 @@ void ARMJIT_Memory::RemapNWRAM(int num) noexcept
         return;
 
     NDS.JIT.PrepareCodeRemap();
+    NDS.JIT.InvalidateRemappedLiterals();
 
     // A CPU may reenter the same virtual address after its backing changes.
     // Drop the cached view, not the physical blocks stored in that view.
@@ -624,6 +625,7 @@ void ARMJIT_Memory::RemapNWRAM(int num) noexcept
 void ARMJIT_Memory::RemapSWRAM() noexcept
 {
     NDS.JIT.PrepareCodeRemap();
+    NDS.JIT.InvalidateRemappedLiterals();
 
     if ((NDS.ARM9.FastBlockLookupStart >> 24) == 0x03)
         NDS.ARM9.FastBlockLookupSize = 0;

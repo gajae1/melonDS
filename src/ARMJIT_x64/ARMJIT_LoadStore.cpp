@@ -71,6 +71,7 @@ u8* Compiler::RewriteMemAccess(u8* pc)
 bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
 {
     u32 localAddr = NDS.JIT.LocaliseCodeAddress(Num, addr);
+    if (!localAddr) return false;
 
     int invalidLiteralIdx = NDS.JIT.InvalidLiterals.Find(localAddr);
     if (invalidLiteralIdx != -1)

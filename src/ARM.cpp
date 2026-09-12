@@ -964,25 +964,30 @@ template void ARMv4::Execute<CPUExecuteMode::JIT>();
 
 void ARMv5::FillPipeline()
 {
-    SetupCodeMem(R[15]);
+    // The pipelined PC can already be in the next mapping while the first
+    // prefetched instruction is still in the previous one.
+    const auto read = [this](u32 addr) {
+        SetupCodeMem(addr);
+        return CodeRead32(addr, false);
+    };
 
     if (CPSR & 0x20)
     {
         if ((R[15] - 2) & 0x2)
         {
-            NextInstr[0] = CodeRead32(R[15] - 4, false) >> 16;
-            NextInstr[1] = CodeRead32(R[15], false);
+            NextInstr[0] = read(R[15] - 4) >> 16;
+            NextInstr[1] = read(R[15]);
         }
         else
         {
-            NextInstr[0] = CodeRead32(R[15] - 2, false);
+            NextInstr[0] = read(R[15] - 2);
             NextInstr[1] = NextInstr[0] >> 16;
         }
     }
     else
     {
-        NextInstr[0] = CodeRead32(R[15] - 4, false);
-        NextInstr[1] = CodeRead32(R[15], false);
+        NextInstr[0] = read(R[15] - 4);
+        NextInstr[1] = read(R[15]);
     }
 }
 

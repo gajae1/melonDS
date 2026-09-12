@@ -46,7 +46,8 @@ class ARMJIT
 public:
     ARMJIT(melonDS::NDS& nds, std::optional<JITArgs> jit) noexcept;
     ~ARMJIT() noexcept;
-    void InvalidateByAddr(u32) noexcept;
+    void InvalidateByAddr(u32, bool dataWrite = true) noexcept;
+    void InvalidateRemappedLiterals() noexcept;
     void CheckAndInvalidateWVRAM(int) noexcept;
     void CheckAndInvalidateITCM() noexcept;
     void Reset() noexcept;
@@ -65,6 +66,17 @@ public:
         if (CompilingBlock)
             CompileWriteAddrs.Add(localAddr);
         if (CodeMemRegions[region][(localAddr & 0x7FFFFFF) / 512].Code & (1 << ((localAddr & 0x1FF) / 16)))
+            InvalidateByAddr(localAddr);
+    }
+    // Broadcast stores must invalidate each physical destination, including
+    // pages hidden by the current CPU read mapping.
+    template <int region>
+    void CheckAndInvalidatePhysical(u32 offset) noexcept
+    {
+        const u32 localAddr = (region << 27) | offset;
+        if (CompilingBlock)
+            CompileWriteAddrs.Add(localAddr);
+        if (CodeMemRegions[region][offset / 512].Code & (1u << ((offset & 0x1FF) / 16)))
             InvalidateByAddr(localAddr);
     }
     JitBlockEntry LookUpBlock(u32 num, u64* entries, u32 offset, u32 addr, bool thumb) noexcept;
@@ -194,7 +206,7 @@ class ARMJIT
 public:
     ARMJIT(melonDS::NDS& nds, std::optional<JITArgs>) noexcept : Memory(nds) {}
     ~ARMJIT() noexcept {}
-    void InvalidateByAddr(u32) noexcept {}
+    void InvalidateByAddr(u32, bool = true) noexcept {}
     void CheckAndInvalidateWVRAM(int) noexcept {}
     void CheckAndInvalidateITCM() noexcept {}
     void Reset() noexcept {}
@@ -204,6 +216,8 @@ public:
     void ResetBlockCache() noexcept {}
     template <u32, int>
     void CheckAndInvalidate(u32 addr) noexcept {}
+    template <int>
+    void CheckAndInvalidatePhysical(u32 offset) noexcept {}
 
     ARMJIT_Memory Memory;
 };

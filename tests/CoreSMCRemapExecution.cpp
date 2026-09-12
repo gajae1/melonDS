@@ -36,12 +36,14 @@ void Write(NDS& nds, unsigned cpu, u32 addr, u32 value, unsigned width = 4)
 {
     if (cpu)
     {
-        if (width == 2) nds.ARM7Write16(addr, value);
+        if (width == 1) nds.ARM7Write8(addr, value);
+        else if (width == 2) nds.ARM7Write16(addr, value);
         else nds.ARM7Write32(addr, value);
     }
     else
     {
-        if (width == 2) nds.ARM9Write16(addr, value);
+        if (width == 1) nds.ARM9Write8(addr, value);
+        else if (width == 2) nds.ARM9Write16(addr, value);
         else nds.ARM9Write32(addr, value);
     }
 }
@@ -197,6 +199,94 @@ void TestDMA(NDSArgs&& args)
         for (unsigned cpu : {0u, 1u})
         for (bool thumb : {false, true})
             Run(*nds, cpu, thumb, RAM, 9, "normal-DMA-kept-code", true);
+    }
+}
+
+void TestOverlap(NDSArgs&& args)
+{
+    DSiArgs dsiArgs;
+    static_cast<NDSArgs&>(dsiArgs) = std::move(args);
+    auto nds = std::make_unique<DSi>(std::move(dsiArgs));
+    for (unsigned bank = 0; bank < 3; ++bank)
+    for (unsigned writer : {0u, 1u})
+    for (unsigned width : {1u, 2u, 4u})
+    {
+        std::printf("CASE overlap bank=%c writer=%u width=%u\n", 'A' + bank, writer, width);
+        nds->Reset();
+        NDS::Current = nds.get();
+        nds->ARM7Write32(0x04004008, nds->ARM7Read32(0x04004008) | (1u << 25));
+        // Without a NAND image Reset leaves the previous MBK windows intact.
+        for (unsigned mbk = 0; mbk < 5; ++mbk) nds->ARM9Write32(0x04004040 + mbk * 4, 0);
+        for (unsigned cpu : {0u, 1u})
+        {
+            for (unsigned b = 0; b < 3; ++b) Write(*nds, cpu, 0x04004054 + b * 4, 0);
+            Write(*nds, cpu, 0x04004054 + bank * 4, 0x01003000);
+        }
+        const unsigned pages[] = {bank == 0 ? 1u : 4u, bank == 0 ? 3u : 7u};
+        const unsigned slot = pages[1], stride = bank == 0 ? 0x10000 : 0x8000;
+        const u32 dest = WRAM + slot * stride;
+        // Separate virtual keys keep both physical pages' compiled code alive.
+        const u32 addrs[] = {dest + 0x40000, dest};
+        const u32 reg = 0x04004040 + (bank == 0 ? 0 : bank == 1 ? 4 : 12);
+        auto map = [&](unsigned page, int cpu) {
+            nds->ARM9Write8(reg + page, cpu < 0 ? 0 : 0x80 | (slot << 2) | unsigned(cpu));
+        };
+#ifdef JIT_ENABLED
+        JitBlock* neighbors[2][2][2]{};
+#endif
+        for (unsigned p : {0u, 1u})
+        {
+            map(pages[p], writer);
+            Program(*nds, writer, addrs[p], p ? 7 : 5);
+            Program(*nds, writer, addrs[p] + Neighbor, 42);
+            for (unsigned cpu : {0u, 1u})
+            {
+                map(pages[p], cpu);
+                for (bool thumb : {false, true})
+                {
+                    Warm(*nds, cpu, thumb, addrs[p] + Neighbor, 42);
+                    Warm(*nds, cpu, thumb, addrs[p], p ? 7 : 5);
+#ifdef JIT_ENABLED
+                    neighbors[p][cpu][thumb] = Block(*nds, cpu, addrs[p] + Neighbor, thumb);
+                    Check(!jit || (neighbors[p][cpu][thumb] && Block(*nds, cpu, addrs[p], thumb)),
+                          "overlap-compiled-page-and-neighbor");
+#endif
+                }
+            }
+            map(pages[p], -1);
+        }
+        map(pages[0], writer);
+        map(pages[1], writer); // Lower physical page wins even when installed first.
+        Check(Read(*nds, writer, dest) == 0xE3A02005, "overlap-read-arbitration");
+        Write(*nds, writer, dest, 0xE3A02009, width);
+#ifdef JIT_ENABLED
+        for (unsigned p : {0u, 1u})
+        for (unsigned cpu : {0u, 1u})
+        for (bool thumb : {false, true})
+        {
+            Check(!jit || !Block(*nds, cpu, addrs[p], thumb),
+                  p ? "overlap-hidden-page-invalidated" : "overlap-read-page-invalidated");
+            Check(!jit || neighbors[p][cpu][thumb] == Block(*nds, cpu, addrs[p] + Neighbor, thumb),
+                  "overlap-kept-neighbor");
+        }
+#endif
+        map(pages[0], -1);
+        map(pages[1], -1);
+        // Reveal the hidden page first. Its old native block must not return 7.
+        for (unsigned p : {1u, 0u})
+        {
+            for (unsigned cpu : {0u, 1u})
+            {
+                map(pages[p], cpu);
+                Check(Read(*nds, cpu, addrs[p]) == 0xE3A02009, "overlap-broadcast-physical-opcode");
+                for (bool thumb : {false, true})
+                {
+                    Warm(*nds, cpu, thumb, addrs[p], 9);
+                    Run(*nds, cpu, thumb, addrs[p] + Neighbor, 42, "overlap-neighbor", true);
+                }
+            }
+            map(pages[p], -1);
+        }
     }
 }
 
@@ -566,6 +656,7 @@ int main(int argc, char** argv)
             argv[5][0] == '1', std::strcmp(argv[2], "active-linear") == 0);
     }
     else if (std::strcmp(argv[2], "dma") == 0) TestDMA(std::move(args));
+    else if (std::strcmp(argv[2], "overlap") == 0) TestOverlap(std::move(args));
     else
     {
         if (argc != 5) return 2;
