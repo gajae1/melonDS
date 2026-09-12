@@ -59,6 +59,8 @@
 #include "EmuInstance.h"
 #include <QMessageBox>
 #include <QPushButton>
+#include <QInputDialog>
+#include <QFileInfo>
 
 using namespace melonDS;
 
@@ -780,7 +782,8 @@ void EmuThread::handleMessages()
             msgResult = 0;
             if (!emuInstance->loadGBAROM(msg.param.value<CartLoadRequest>().Files, msgError,
                                         msg.param.value<CartLoadRequest>().Assets,
-                                     msg.param.value<CartLoadRequest>().Prepared))
+                                        msg.param.value<CartLoadRequest>().Prepared,
+                                        msg.param.value<CartLoadRequest>().InitialGBASaveLength))
                 break;
 
             msgResult = 1;
@@ -1075,7 +1078,7 @@ int EmuThread::bootFirmware(QString& errorstr)
     return msgResult;
 }
 
-int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)
+int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseGBASave)
 {
     MessageType msgtype = gba ? msg_InsertGBACart : msg_InsertCart;
 
@@ -1083,6 +1086,33 @@ int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errors
     if (stop.stop_requested()) { errorstr.clear(); return 0; }
     CartLoadRequest request{filename, {}, prepared};
     if (!prepareAssets(filename, gba, true, request.Assets, errorstr, stop)) return 0;
+    if (stop.stop_requested()) { errorstr.clear(); return 0; }
+    if (gba && chooseGBASave)
+    {
+        const QStringList choices{tr("Automatic"), tr("EEPROM - 512 bytes"),
+            tr("EEPROM - 8 KiB"), tr("SRAM - 32 KiB"),
+            tr("Flash - 64 KiB"), tr("Flash - 128 KiB")};
+        constexpr u32 lengths[] = {0, 512, 8192, 32768, 65536, 131072};
+        QInputDialog dialog(emuInstance->getMainWindow());
+        dialog.setWindowTitle(tr("GBA save type"));
+        dialog.setLabelText(tr("Initial save memory for %1.\n"
+            "Existing saves keep their current size and contents.\n"
+            "Automatic detects the save type when possible.")
+            .arg(QFileInfo(filename.last()).fileName()));
+        dialog.setComboBoxItems(choices);
+        dialog.setComboBoxEditable(false);
+        std::stop_callback cancelDialog(stop, [&dialog] {
+            QMetaObject::invokeMethod(&dialog, &QDialog::reject, Qt::QueuedConnection);
+        });
+        if (dialog.exec() != QDialog::Accepted || stop.stop_requested())
+        {
+            errorstr.clear();
+            return 0;
+        }
+        const auto selected = choices.indexOf(dialog.textValue());
+        if (selected < 0) { errorstr.clear(); return 0; }
+        request.InitialGBASaveLength = lengths[selected];
+    }
     if (stop.stop_requested()) { errorstr.clear(); return 0; }
     sendMessage({.type = msgtype, .param = QVariant::fromValue(request)});
     waitMessage();

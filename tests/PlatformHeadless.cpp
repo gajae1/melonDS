@@ -29,8 +29,8 @@ u64 FileLength(FileHandle*) { std::abort(); }
 #endif
 #ifndef MELONDS_TEST_CART_SAVE
 void WriteNDSSave(const u8*, u32, u32, u32, void*) {}
-#endif
 void WriteGBASave(const u8*, u32, u32, u32, void*) {}
+#endif
 void WriteFirmware(const Firmware&, u32, u32, void*) {}
 void WriteDateTime(int, int, int, int, int, int, void*) {}
 void MP_Begin(void*) {}

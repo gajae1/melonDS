@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -135,7 +136,7 @@ struct CartLoader
     string baseROMDir, baseROMName = "current.nds", baseAssetName = "current";
     string baseGBAROMDir, baseGBAROMName = "current.gba", baseGBAAssetName = "current";
     AssetIdentity::Selection dsAssetPaths, gbaAssetPaths;
-    string incomingDir, cheatAsset;
+    string incomingDir, cheatAsset, fileSuffix;
     unique_ptr<NDSCart::CartCommon> nextCart;
     unique_ptr<GBACart::CartCommon> nextGBACart;
     unique_ptr<SaveManager> ndsSave, gbaSave, firmwareSave;
@@ -155,7 +156,7 @@ struct CartLoader
     }
     ~CartLoader() { delete nds; }
     bool emuIsActive() { return active; }
-    string instanceFileSuffix() { return {}; }
+    string instanceFileSuffix() { return fileSuffix; }
     bool loadROMData(const QStringList& paths, unique_ptr<u8[]>& data, u32& length,
                      string& base, string& name) noexcept
     {
@@ -192,12 +193,13 @@ struct CartLoader
     string getAssetPath(bool gba, const string& configpath, const string& ext, const string& file);
     QString getSavErrorString(string& filepath, bool gba);
     bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
-    bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
+    bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, u32 initialSaveLength = 0);
     bool updateConsole(bool directBoot = false) noexcept;
     bool reset(const AssetIdentity::Selection& dsAssets = {}, const AssetIdentity::Selection& gbaAssets = {});
 };
 
 static bool captureCartSave = false;
+static unsigned gbaSaveCalls = 0;
 namespace melonDS::Platform
 {
 void WriteNDSSave(const u8* data, u32 length, u32 offset, u32 count, void* userdata)
@@ -206,6 +208,14 @@ void WriteNDSSave(const u8* data, u32 length, u32 offset, u32 count, void* userd
     auto* loader = static_cast<CartLoader*>(userdata);
     if (!loader || !loader->ndsSave) std::abort();
     loader->ndsSave->RequestFlush(data, length, offset, count);
+}
+void WriteGBASave(const u8* data, u32 length, u32 offset, u32 count, void* userdata)
+{
+    if (!captureCartSave) return;
+    ++gbaSaveCalls;
+    auto* loader = static_cast<CartLoader*>(userdata);
+    if (!loader || !loader->gbaSave) std::abort();
+    loader->gbaSave->RequestFlush(data, length, offset, count);
 }
 }
 
@@ -350,11 +360,187 @@ static int CaptureRecovery(const string& test)
     return failures ? 1 : 0;
 }
 
+static int InitialGBASave(const string& test)
+{
+    const auto require = [](bool ok, const char* why) {
+        if (!ok) throw std::runtime_error(why);
+    };
+    const auto bytes = [](GBACart::CartCommon* cart) {
+        return QByteArray(reinterpret_cast<const char*>(cart->GetSaveMemory()), cart->GetSaveMemoryLength());
+    };
+    try
+    {
+        QTemporaryDir directory;
+        require(directory.isValid(), "temporary save directory");
+        CartLoader loader;
+        loader.incomingDir = directory.path().toStdString();
+        loader.localCfg.savePath = loader.incomingDir;
+        captureCartSave = true;
+        QString error;
+        const auto prepared = [&](const QString& name) {
+            auto data = std::make_shared<ROMPreparation::Data>();
+            data->Source = {name}; data->Name = name.toStdString();
+            data->BasePath = loader.incomingDir;
+            data->Bytes = ROM(true, data->Length);
+            return data;
+        };
+        if (test == "gba-initial-roundtrip")
+        {
+            for (u32 length : {512u, 8192u, 32768u, 65536u, 131072u})
+            {
+                const QString name = QString("manual-%1.gba").arg(length);
+                const string save = directory.filePath(QString("manual-%1.sav").arg(length)).toStdString();
+                auto data = prepared(name);
+                const auto callbacks = gbaSaveCalls;
+                loader.forbidROMRead = true;
+                require(loader.loadGBAROM(data->Source, error, {}, data, length), "explicit prepared GBA load");
+                auto* cart = loader.nds->GetGBACart();
+                QByteArray expected(length, '\xFF');
+                require(cart && bytes(cart) == expected && !data->Bytes, "initial storage must be erased at selected capacity");
+                require(gbaSaveCalls == callbacks && loader.gbaSave->Flush() && !QFile::exists(QString::fromStdString(save)),
+                        "initial storage must not notify or create a file");
+                if (length <= 8192)
+                {
+                    // Real cart serial bus: one complete write at the final EEPROM block.
+                    const u32 block = length / 8 - 1;
+                    cart->ROMWriteBus(0x01000000, 1, 1000, true);
+                    cart->ROMWriteBus(0x01000000, 0, 1000, true);
+                    for (int bit = (length == 512 ? 6 : 14) - 1; bit >= 0; --bit)
+                        cart->ROMWriteBus(0x01000000, (block >> bit) & 1, 1000, true);
+                    for (u8 value : {0x52, 0xA6, 0x03, 0xFF, 0x00, 0x81, 0x37, 0xC4})
+                        for (int bit = 7; bit >= 0; --bit)
+                            cart->ROMWriteBus(0x01000000, (value >> bit) & 1, 1000, true);
+                    cart->ROMWriteBus(0x01000000, 0, 1000, true);
+                    expected.replace(length - 8, 8, QByteArray::fromHex("52a603ff008137c4"));
+                }
+                else
+                {
+                    loader.nds->ARM9Write16(0x04000204, loader.nds->ARM9Read16(0x04000204) & ~0x80);
+                    if (length != 32768)
+                    {
+                        loader.nds->ARM9Write8(0x0A005555, 0xAA);
+                        loader.nds->ARM9Write8(0x0A002AAA, 0x55);
+                        loader.nds->ARM9Write8(0x0A005555, 0xA0);
+                    }
+                    loader.nds->ARM9Write8(0x0A001234, 0x52);
+                    require(loader.nds->ARM9Read8(0x0A001234) == 0x52, "Slot-2 guest readback");
+                    expected[0x1234] = '\x52';
+                }
+                require(gbaSaveCalls == callbacks + 1 && bytes(cart) == expected &&
+                        loader.gbaSave->Flush() && ReadSaveFile(save) == expected,
+                        "first guest write must persist full storage through the real SaveManager");
+                loader.forbidROMRead = false;
+                require(loader.loadGBAROM({name}, error, {}, {}, length == 512 ? 131072 : 512) &&
+                        bytes(loader.nds->GetGBACart()) == expected && ReadSaveFile(save) == expected &&
+                        gbaSaveCalls == callbacks + 1, "existing save must win over a conflicting new choice without callbacks");
+            }
+            require(loader.loadGBAROM({"automatic.gba"}, error) && loader.nds->GetGBASaveLength() == 0 &&
+                    loader.gbaSave->Flush() && !QFile::exists(directory.filePath("automatic.sav")),
+                    "automatic unknown ROM must not inherit the previous explicit length");
+            loader.active = false;
+            require(loader.loadGBAROM({"queued.gba"}, error, {}, {}, 8192) && loader.changeGBACart &&
+                    loader.nextGBACart && bytes(loader.nextGBACart.get()) == QByteArray(8192, '\xFF') &&
+                    loader.nds->GetGBASaveLength() == 0 && loader.gbaSave->Flush() &&
+                    !QFile::exists(directory.filePath("queued.sav")), "inactive insertion must queue the selected erased storage");
+        }
+        else
+        {
+            require(loader.loadGBAROM({"owner.gba"}, error, {}, {}, 32768), "initial owner");
+            auto* oldCart = loader.nds->GetGBACart();
+            auto* oldManager = loader.gbaSave.get();
+            oldCart->SRAMWrite(9, 0x63);
+            require(oldManager->Flush(), "old owner persistence");
+            const string oldPath = oldManager->GetPath();
+            const auto oldBytes = ReadSaveFile(oldPath);
+            const auto callbacks = gbaSaveCalls;
+            const auto retained = [&] {
+                require(loader.nds->GetGBACart() == oldCart && loader.gbaSave.get() == oldManager &&
+                        loader.gbaSave->GetPath() == oldPath && loader.baseGBAROMName == "owner.gba" &&
+                        bytes(oldCart) == oldBytes && ReadSaveFile(oldPath) == oldBytes && gbaSaveCalls == callbacks,
+                        "rejected replacement changed the old cart, manager, identity, callback count or file");
+            };
+            if (test == "gba-initial-existing")
+            {
+                for (const auto& suffix : {string{}, string{".2"}})
+                {
+                    loader.fileSuffix = suffix;
+                    for (bool original : {false, true})
+                    {
+                        const QString name = QString("empty-%1-%2").arg(suffix.empty() ? 0 : 2).arg(original);
+                        const QString target = directory.filePath(name + ".sav" + (original ? QString{} : QString::fromStdString(suffix)));
+                        QFile file(target);
+                        require(file.open(QIODevice::WriteOnly | QIODevice::NewOnly), "new empty existing save"); file.close();
+                        require(!loader.loadGBAROM({name + ".gba"}, error, {}, {}, 65536) && !error.isEmpty(),
+                                "explicit initialization must reject an empty existing save");
+                        retained();
+                        require(QFile::exists(target) && ReadSaveFile(target.toStdString()).isEmpty(), "empty file must remain empty and present");
+                    }
+                }
+                loader.fileSuffix.clear();
+                const auto suppliedPath = directory.filePath("supplied.sav");
+                const QByteArray supplied(37, '\xA6');
+                QFile file(suppliedPath);
+                require(file.open(QIODevice::WriteOnly) && file.write(supplied) == supplied.size(), "nonstandard existing save"); file.close();
+                require(loader.loadGBAROM({"supplied.gba"}, error, {}, {}, 131072) &&
+                        bytes(loader.nds->GetGBACart()) == supplied && ReadSaveFile(suppliedPath.toStdString()) == supplied &&
+                        gbaSaveCalls == callbacks, "nonempty existing data must not be resized, initialized or rewritten");
+            }
+            else if (test == "gba-initial-rejects")
+            {
+                loader.forbidROMRead = true;
+                for (u32 length : {1u, 511u, 513u, 8191u, 8193u, 32767u, 65535u, 131073u, UINT32_MAX})
+                {
+                    // Both raw and prepared paths must reject before reading/consuming input.
+                    require(!loader.loadGBAROM({"unread.gba"}, error, {}, {}, length) && !error.isEmpty(), "invalid raw size accepted");
+                    auto data = prepared("unread.gba");
+                    auto* input = data->Bytes.get();
+                    require(!loader.loadGBAROM(data->Source, error, {}, data, length) && data->Bytes.get() == input,
+                            "invalid size consumed prepared bytes");
+                    retained();
+                }
+                require(!QFile::exists(directory.filePath("unread.sav")), "invalid size created a file");
+            }
+            else if (test == "gba-initial-prepared")
+            {
+                loader.forbidROMRead = true;
+                for (bool cancelled : {false, true})
+                {
+                    auto data = prepared("prepared.gba");
+                    std::stop_source stop; data->Stop = stop.get_token();
+                    if (cancelled) stop.request_stop();
+                    const auto source = cancelled ? data->Source : QStringList{"other.gba"};
+                    auto* input = data->Bytes.get();
+                    require(!loader.loadGBAROM(source, error, {}, data, 8192) && data->Bytes.get() == input,
+                            "stopped or mismatched source consumed prepared bytes");
+                    retained();
+                }
+                auto data = prepared("allocation.gba");
+                failCaptureSize = 65536;
+                require(!loader.loadGBAROM(data->Source, error, {}, data, 65536) && !error.isEmpty() &&
+                        failCaptureSize == 0 && captureAllocationFailures == 1, "manual allocation failure must reject");
+                retained();
+                require(!QFile::exists(directory.filePath("prepared.sav")) && !QFile::exists(directory.filePath("allocation.sav")),
+                        "failed preparation created a save file");
+            }
+            else return 2;
+        }
+        require(openFiles == 0, "save handles leaked");
+        std::printf("%s: PASS\n", test.c_str());
+        return 0;
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: %s\n", test.c_str(), error.what());
+        return 1;
+    }
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
     if (argc != 2) return 2;
     const string test = argv[1];
+    if (test.starts_with("gba-initial-")) return InitialGBASave(test);
     if (test.starts_with("capture-")) return CaptureRecovery(test);
     if (test == "invalid-sd")
     {

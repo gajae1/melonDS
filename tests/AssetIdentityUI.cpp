@@ -9,13 +9,17 @@
 #include <cstdio>
 #include <QApplication>
 #include <QDialogButtonBox>
+#include <QInputDialog>
+#include <QComboBox>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QDir>
 #include <QTemporaryDir>
 #include "EmuThread.h"
+using melonDS::u32;
 
 struct Settings
 {
@@ -72,6 +76,98 @@ static void Choose(const QString& label, bool mayAdopt)
 static bool Write(const QString& path, const QByteArray& bytes)
 { QFile file(path); return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(); }
 
+static int InitialSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const QString& mode)
+{
+    const QString first = root.filePath("a/manual.gba"), second = root.filePath("b/reselection.gba");
+    Check(Write(first, "generated first GBA") && Write(second, "generated second GBA"), "GBA sources");
+    const QStringList labels{"Automatic", "EEPROM - 512 bytes", "EEPROM - 8 KiB",
+                             "SRAM - 32 KiB", "Flash - 64 KiB", "Flash - 128 KiB"};
+    const u32 lengths[] = {0, 512, 8192, 32768, 65536, 131072};
+    int prompts = 0;
+    const auto choose = [&](int index, bool accept, std::stop_source* stop = nullptr, bool invalid = false) {
+        QTimer::singleShot(0, &thread, [&, index, accept, stop, invalid] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            Check(dialog && dialog->windowTitle() == "GBA save type", "Expected actual GBA save type dialog");
+            if (!dialog) { if (auto* other = qobject_cast<QDialog*>(QApplication::activeModalWidget())) other->reject(); return; }
+            ++prompts;
+            Check(QThread::currentThread() == qApp->thread(), "Save type dialog ran off the UI thread");
+            auto* combo = dialog->findChild<QComboBox*>();
+            Check(dialog->comboBoxItems() == labels && combo && !combo->isEditable(), "Missing or editable save choices");
+            Check(dialog->textValue() == labels.front(), "New request inherited a stale initial selection");
+            Check(!QDir(instance.registry).entryList(QDir::Files).isEmpty(), "Save chooser preceded asset preparation");
+            if (invalid) dialog->setComboBoxItems({"unsupported save"});
+            else dialog->setTextValue(labels[index]);
+            if (stop) stop->request_stop();
+            if (accept) dialog->accept(); else dialog->reject();
+        });
+    };
+    QString error;
+    if (mode == "gba-initial-choices")
+    {
+        for (int index = 0; index < 6; ++index)
+        {
+            const QString source = index % 2 ? second : first;
+            auto prepared = std::make_shared<ROMPreparation::Data>(); prepared->Source = {source};
+            choose(index, true);
+            Check(thread.insertCart({source}, true, error, prepared, true) == 1, "Accepted save choice did not dispatch");
+            Check(messages.size() == size_t(index + 1), "Save choice dispatched extra/missing messages");
+            if (messages.size() != size_t(index + 1)) break;
+            const auto request = messages.back().param.value<EmuThread::CartLoadRequest>();
+            Check(messages.back().type == EmuThread::msg_InsertGBACart && request.Files == QStringList{source} &&
+                  request.Assets.Source == request.Files && request.Prepared == prepared &&
+                  request.InitialGBASaveLength == lengths[index], "Source, prepared bytes or save size crossed requests");
+        }
+        Check(prompts == 6, "Each explicit insertion must have one chooser");
+    }
+    else
+    {
+        for (int action = 0; action < 3; ++action)
+        {
+            auto prepared = std::make_shared<ROMPreparation::Data>(); prepared->Source = {first};
+            std::stop_source stop; prepared->Stop = stop.get_token();
+            choose(5, action != 0, action == 1 ? &stop : nullptr, action == 2);
+            error = "old error";
+            Check(!thread.insertCart({first}, true, error, prepared, true) && error.isEmpty() && messages.empty(),
+                  "Cancel, stop-after-selection or invalid value dispatched a stale size");
+        }
+        auto prepared = std::make_shared<ROMPreparation::Data>();
+        std::stop_source stop; prepared->Stop = stop.get_token(); stop.request_stop();
+        Check(!thread.insertCart({first}, true, error, prepared, true) && error.isEmpty() && messages.empty(),
+              "Already stopped preparation reached a chooser/dispatch");
+        choose(1, true);
+        Check(thread.insertCart({second}, true, error, {}, true) == 1 && messages.size() == 1,
+              "Fresh reselection failed after cancellation");
+        if (messages.size() == 1)
+        {
+            const auto request = messages.front().param.value<EmuThread::CartLoadRequest>();
+            Check(request.Files == QStringList{second} && request.InitialGBASaveLength == 512,
+                  "Reselection reused cancelled source or size");
+        }
+        Check(prompts == 4, "Cancelled requests or reselection showed unexpected dialogs");
+    }
+    // The legacy automatic GBA path and DS insert, even with the flag, need no chooser.
+    messages.clear();
+    const QString ds = root.filePath("a/only-ds.nds");
+    Check(Write(ds, "generated DS"), "DS source");
+    for (bool gba : {true, false})
+    {
+        QObject timerOwner;
+        QTimer::singleShot(0, &timerOwner, [&] {
+            if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            { Check(false, "Automatic/DS insertion unexpectedly prompted"); dialog->reject(); }
+        });
+        const auto previous = messages.size();
+        Check(thread.insertCart({gba ? first : ds}, gba, error, {}, !gba) == 1, "Automatic/DS insertion failed");
+        QCoreApplication::processEvents();
+        Check(messages.size() == previous + 1 && messages.back().param.value<EmuThread::CartLoadRequest>().InitialGBASaveLength == 0,
+              "Automatic/DS request inherited an explicit size");
+    }
+    Check(!QFile::exists(instance.config.directory + "/manual.sav") &&
+          !QFile::exists(instance.config.directory + "/reselection.sav"), "Save chooser wrote a save file");
+    std::printf("%s: %d failures (actual Qt chooser; recorded consumer)\n", mode.toUtf8().constData(), failures);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
@@ -87,6 +183,7 @@ int main(int argc, char** argv)
     if (!Write(a, "source A") || !Write(b, "source B") ||
         !Write(instance.config.directory + "/game.sav", "legacy")) return 2;
     EmuThread thread(&instance);
+    if (mode.startsWith("gba-initial-")) return InitialSaveUI(thread, instance, root, mode);
     QString error;
     if (mode == "prepared-modal-cancel")
     {

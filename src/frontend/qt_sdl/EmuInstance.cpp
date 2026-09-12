@@ -2135,11 +2135,20 @@ QString EmuInstance::cartLabel()
 }
 
 
-bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)
+bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared, u32 initialSaveLength)
 {
     if (consoleType == 1)
     {
         errorstr = "The DSi doesn't have a GBA slot.";
+        return false;
+    }
+
+    switch (initialSaveLength)
+    {
+    case 0: case 512: case 8192: case 32768: case 65536: case 131072:
+        break;
+    default:
+        errorstr = "Unsupported initial GBA save size.";
         return false;
     }
 
@@ -2175,10 +2184,25 @@ bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const Asse
 
     if (!loadSaveRAM(savname, origsav, true, savedata, savelen, errorstr)) return false;
 
+    // An empty existing file is still user data, not permission to initialize
+    // storage. Nonempty saves below always take precedence over the selection.
+    if (initialSaveLength && !savedata && !savelen &&
+        (Platform::FileExists(savname) || Platform::FileExists(origsav)))
+    {
+        errorstr = "The existing GBA save file is empty. Initial save size selection only applies when no save file exists.";
+        return false;
+    }
+
     unique_ptr<GBACart::CartCommon> cart;
     unique_ptr<SaveManager> newSave;
     try
     {
+        if (initialSaveLength && !savedata && !savelen)
+        {
+            savedata = std::make_unique_for_overwrite<u8[]>(initialSaveLength);
+            memset(savedata.get(), 0xFF, initialSaveLength);
+            savelen = initialSaveLength;
+        }
         cart = GBACart::ParseROM(std::move(filedata), filelen, std::move(savedata), savelen, this);
         if (cart) newSave = std::make_unique<SaveManager>(savname);
     }

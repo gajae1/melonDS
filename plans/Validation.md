@@ -32,6 +32,8 @@ GBA 초기 저장 판별은 `GBASave`의 `gba-save-detection`으로 확인한다
 
 1.1.70의 `gba-save-database`는 MAME 원본의512B/8KiB 참조 행과 길이 불일치를 검사한다. `gba-save-database-generator`는 ROM 없이 합성 XML의 고정 용량·전체 해시·중복·충돌·불완전 dump와 잘못된 pin/입력의 기존 출력 보존을 검증한다. 원본 XML은 공개 출처에서 별도 확보하고 `python tools/generate-gba-save-db.py path/to/gba.xml src/GBASaveDatabase.h --check`로 재현한다. 일반 빌드·CTest는 네트워크나 원본 XML을 요구하지 않는다. 카탈로그 변환/lookup 검증과 생성 식별표를 이용한 실제 factory·칩 실행, 실제 게임 ROM/실물 검증을 구분한다.
 
+수동 초기 GBA 저장 선택은 `CartReplacement`의 실제 로더·카트·SaveManager 경로와 `AssetIdentityUI`/`ROMPreparationUI`의 Qt 선택·취소·메시지 전달을 구분해 검증한다. 기존 파일 우선, 없는 파일의 첫 게임 쓰기, 빈 기존 파일·잘못된 용량의 거부와 현재 카트 보존이 필수다. UI의 메시지 기록만으로 실제 저장 성공을 주장하지 않으며, 별도의 실제 앱 객체·에뮬레이션 스레드·선택창 실행으로 두 경로를 연결한다.
+
 ```sh
 ctest --test-dir build/windows-dev --no-tests=error --output-on-failure
 ```

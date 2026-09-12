@@ -101,6 +101,7 @@ public:
         QStringList Files;
         AssetIdentity::Selection Assets;
         std::shared_ptr<ROMPreparation::Data> Prepared;
+        melonDS::u32 InitialGBASaveLength = 0;
     };
     struct AssetResetRequest
     {
@@ -130,7 +131,7 @@ public:
 
     int bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
     int bootFirmware(QString& errorstr);
-    int insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
+    int insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, bool chooseGBASave = false);
     void ejectCart(bool gba);
     int insertGBAAddon(int type, QString& errorstr);
 

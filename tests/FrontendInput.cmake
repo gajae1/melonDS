@@ -253,7 +253,8 @@ target_include_directories(ROMPreparationUI PRIVATE "${CMAKE_SOURCE_DIR}/src" "$
 target_link_libraries(ROMPreparationUI PRIVATE PkgConfig::LibArchive PkgConfig::Zstd ${QT_LINK_LIBS})
 foreach(case IN ITEMS cancel-read cancel-extract cancel-list cancel-decode cancel-member
         reselect reselect-member late-completion close close-destruction os-blocked-close modal-close modal-reselect
-        success-read success-extract success-member success-zstd read-failure apply-failure)
+        success-read success-extract success-member success-zstd read-failure apply-failure
+        gba-save-route gba-save-reselect gba-save-cancel)
     add_test(NAME rom-preparation-${case} COMMAND ROMPreparationUI ${case})
     # Keep headless timing independent of native Windows dialog styling costs.
     set_tests_properties(rom-preparation-${case} PROPERTIES TIMEOUT 15
@@ -525,7 +526,7 @@ foreach(method IN ITEMS BuildPath RetryCapture FlushSave FlushAll AssetPath Save
     elseif (method STREQUAL "LoadROM")
         set(signature "bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)")
     elseif (method STREQUAL "LoadGBA")
-        set(signature "bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)")
+        set(signature "bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared, u32 initialSaveLength)")
     elseif (method STREQUAL "Reset")
         set(signature "bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIdentity::Selection& gbaAssets)")
     else()
@@ -554,7 +555,8 @@ foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existin
         ds-asset-path gba-asset-path asset-reset asset-reset-failure invalid-sd
         ds-prepared-success gba-prepared-success ds-prepared-cancel gba-prepared-cancel
         ds-prepared-queued-cancel gba-prepared-queued-cancel ds-prepared-failure gba-prepared-failure ds-prepared-queued-failure
-        capture-ds capture-gba capture-generated-firmware capture-raw-firmware)
+        capture-ds capture-gba capture-generated-firmware capture-raw-firmware
+        gba-initial-roundtrip gba-initial-existing gba-initial-rejects gba-initial-prepared)
     add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
     set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
 endforeach()
@@ -621,7 +623,7 @@ set(asset_ui_methods)
 foreach(pair IN ITEMS
         "assetPrepareUI|bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExisting, AssetIdentity::Selection& selection, QString& error, std::stop_token stop)"
         "assetBootUI|int EmuThread::bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)"
-        "assetInsertUI|int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)"
+        "assetInsertUI|int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseGBASave)"
         "assetResetUI|void EmuThread::emuReset()")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
@@ -641,7 +643,8 @@ if (USE_QT6)
 else()
     target_link_libraries(AssetIdentityUI PRIVATE Qt5::Widgets)
 endif()
-foreach(case IN ITEMS cancel existing separate other reset worker-reset prepared-modal-cancel)
+foreach(case IN ITEMS cancel existing separate other reset worker-reset prepared-modal-cancel
+        gba-initial-choices gba-initial-cancel)
     add_test(NAME asset-ui-${case} COMMAND AssetIdentityUI ${case})
     set_tests_properties(asset-ui-${case} PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()

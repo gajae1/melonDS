@@ -147,7 +147,7 @@ public:
     bool preserveFrame() { std::abort(); }
     int releaseGL() { std::abort(); }
     void ejectCart() { std::abort(); }
-    bool loadGBAROM(const QStringList&, QString&, const AssetIdentity::Selection&, const std::shared_ptr<ROMPreparation::Data>&) { std::abort(); }
+    bool loadGBAROM(const QStringList&, QString&, const AssetIdentity::Selection&, const std::shared_ptr<ROMPreparation::Data>&, u32) { std::abort(); }
     void loadGBAAddon(int, QString&) { std::abort(); }
     void ejectGBACart() { std::abort(); }
     void enableCheats(bool) { std::abort(); }

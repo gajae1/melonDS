@@ -24,6 +24,7 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 #include <zstd.h>
 #include "ROMPreparation.h"
 #include "ArchiveUtil.h"
@@ -100,21 +101,23 @@ struct FixtureConfig
 struct FixtureThread
 {
     int applies = 0;
-    bool gba = false, boot = false;
+    bool gba = false, boot = false, chooseGBASave = false;
+    std::vector<bool> saveChoices;
     QStringList source;
     QByteArray bytes;
     bool reject = false;
     std::function<void(const std::shared_ptr<ROMPreparation::Data>&)> beforeApply;
     int bootROM(const QStringList& path, QString& error, const std::shared_ptr<ROMPreparation::Data>& data)
     { boot = true; return insertCart(path, false, error, data); }
-    int insertCart(const QStringList& path, bool isGBA, QString& error, const std::shared_ptr<ROMPreparation::Data>& data)
+    int insertCart(const QStringList& path, bool isGBA, QString& error, const std::shared_ptr<ROMPreparation::Data>& data, bool chooseSave = false)
     {
+        saveChoices.push_back(chooseSave);
         if (beforeApply) beforeApply(data);
         if (data->Stop.stop_requested()) { error.clear(); return 0; }
         if (reject) { error = "Generated apply failure"; return 0; }
         Require(!data->Stop.stop_requested(), "Cancelled result reached apply");
         Require(QThread::currentThread() == qApp->thread(), "Apply ran off the UI thread");
-        ++applies; gba = isGBA; source = path;
+        ++applies; gba = isGBA; chooseGBASave = chooseSave; source = path;
         bytes = QByteArray(reinterpret_cast<const char*>(data->Bytes.get()), data->Length);
         data->Bytes.reset();
         return 1;
@@ -130,7 +133,7 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
-    enum class ROMAction { BootDS, InsertDS, InsertGBA, Drop };
+    enum class ROMAction { BootDS, InsertDS, InsertGBA, InsertGBAWithSave, Drop };
     FixtureInstance instance;
     FixtureInstance* emuInstance = &instance;
     FixtureThread thread;
@@ -219,6 +222,58 @@ static void ArchiveFile(const QString& path, const QByteArray& bytes, int member
     }
     Require(archive_write_free(writer) == ARCHIVE_OK, "Fixture archive close");
 }
+static int InitialSavePreparation(const QString& mode)
+{
+    QTemporaryDir directory;
+    const QString first = directory.filePath("first.gba"), second = directory.filePath("second.gba");
+    WriteFixture(first, "first generated GBA"); WriteFixture(second, "second generated GBA");
+    delayReads = false;
+    MainWindow window;
+    bool invalidated = false;
+    if (mode != "gba-save-route")
+        window.thread.beforeApply = [&](const std::shared_ptr<ROMPreparation::Data>& data) {
+            if (invalidated) return;
+            invalidated = true;
+            Require(window.romApplying && window.thread.applies == 0, "missed initial save choice boundary");
+            if (mode == "gba-save-reselect")
+                window.startROMPreparation({second}, MainWindow::ROMAction::InsertGBA, true);
+            else window.cancelROMPreparation();
+            Require(data->Stop.stop_requested(), "stale initial save request was not invalidated");
+        };
+    const auto finish = [&] {
+        QEventLoop loop;
+        QTimer ticker; ticker.setInterval(2);
+        QObject::connect(&ticker, &QTimer::timeout, &loop, [&] {
+            if (!window.romPreparation.busy() && !window.romApplying) loop.quit();
+        });
+        QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+        ticker.start(); loop.exec();
+        Require(!window.romPreparation.busy() && !window.romApplying, "initial save preparation timed out");
+    };
+    window.startROMPreparation({first}, MainWindow::ROMAction::InsertGBAWithSave, true);
+    finish();
+    if (mode == "gba-save-route")
+    {
+        Require(window.thread.applies == 1 && window.thread.gba && window.thread.chooseGBASave &&
+                window.thread.source == QStringList{first}, "new GBA action lost choose flag or source");
+        window.startROMPreparation({second}, MainWindow::ROMAction::InsertGBA, true);
+        finish();
+        Require(window.thread.applies == 2 && !window.thread.chooseGBASave &&
+                window.thread.saveChoices == std::vector<bool>{true, false}, "automatic action inherited choose flag");
+    }
+    else if (mode == "gba-save-reselect")
+        Require(invalidated && window.thread.applies == 1 && window.thread.source == QStringList{second} &&
+                window.thread.bytes == "second generated GBA" && !window.thread.chooseGBASave &&
+                window.thread.saveChoices == std::vector<bool>{true, false} && window.globalCfg.writes == 1,
+                "reselection reused stale choice, bytes or folder write");
+    else
+        Require(invalidated && window.thread.applies == 0 && window.cartUpdates == 0 && window.globalCfg.writes == 0,
+                "cancelled initial save action committed a cart or configuration");
+    Require(window.recentWrites == 0 && window.recentFileList.isEmpty(), "GBA action wrote DS recent files");
+    std::printf("%s: PASS (actual preparation/window handlers; recorded apply)\n", mode.toUtf8().constData());
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
@@ -240,6 +295,7 @@ int main(int argc, char** argv)
             QTimer::singleShot(0, &ready, &QEventLoop::quit);
             ready.exec();
         }
+        if (mode.startsWith("gba-save-")) return InitialSavePreparation(mode);
         QTemporaryDir dir;
         const auto path = dir.filePath("generated.nds"), zip = dir.filePath("generated.zip");
         const auto second = dir.filePath("second.gba");

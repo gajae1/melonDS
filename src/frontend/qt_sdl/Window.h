@@ -211,7 +211,7 @@ private:
     QStringList pickROM(bool gba);
     void updateCartInserted(bool gba);
 
-    enum class ROMAction { BootDS, InsertDS, InsertGBA, Drop };
+    enum class ROMAction { BootDS, InsertDS, InsertGBA, InsertGBAWithSave, Drop };
     ROMPreparation::Controller romPreparation{this};
     QPointer<QProgressDialog> romProgress;
     QPointer<QInputDialog> romMemberDialog;
@@ -266,6 +266,7 @@ public:
     QAction* actEjectCart;
     QAction* actCurrentGBACart;
     QAction* actInsertGBACart;
+    QAction* actInsertGBACartWithSave = nullptr;
     QList<QAction*> actInsertGBAAddon;
     QAction* actEjectGBACart;
     QAction* actImportSavefile;

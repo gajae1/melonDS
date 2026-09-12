@@ -169,6 +169,8 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
             actInsertGBACart = menu->addAction("Insert ROM cart...");
             connect(actInsertGBACart, &QAction::triggered, this, &MainWindow::onInsertGBACart);
+            actInsertGBACartWithSave = menu->addAction(tr("Insert ROM cart with save type..."));
+            connect(actInsertGBACartWithSave, &QAction::triggered, this, &MainWindow::onInsertGBACart);
 
             {
                 QMenu * submenu = menu->addMenu("Insert add-on cart");
@@ -564,6 +566,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
         if (globalCfg.GetInt("Emu.ConsoleType") == 1)
         {
             actInsertGBACart->setEnabled(false);
+            actInsertGBACartWithSave->setEnabled(false);
             for (auto act: actInsertGBAAddon)
                 act->setEnabled(false);
         }
@@ -1197,7 +1200,7 @@ void MainWindow::finishROMPreparation(const ROMPreparation::Result& result)
     {
         nextPreloadROM.clear();
         bootAfterPreload = false;
-        const bool gba = romAction == ROMAction::InsertGBA ||
+        const bool gba = romAction == ROMAction::InsertGBA || romAction == ROMAction::InsertGBAWithSave ||
             (romAction == ROMAction::Drop && result.Type == ROMPreparation::Kind::GBA);
         const auto error = result.ReadFailed ?
             (gba ? "Failed to load the GBA ROM." : "Failed to load the DS ROM.") : result.Error;
@@ -1237,10 +1240,10 @@ void MainWindow::finishROMPreparation(const ROMPreparation::Result& result)
         }
     });
     QString error;
-    const bool gba = action == ROMAction::InsertGBA;
+    const bool gba = action == ROMAction::InsertGBA || action == ROMAction::InsertGBAWithSave;
     const bool success = action == ROMAction::BootDS ?
         emuThread->bootROM(result.Source, error, result.ROM) :
-        emuThread->insertCart(result.Source, gba, error, result.ROM);
+        emuThread->insertCart(result.Source, gba, error, result.ROM, action == ROMAction::InsertGBAWithSave);
     if (result.Stop.stop_requested()) return;
     if (!success)
     {
@@ -1531,8 +1534,10 @@ void MainWindow::onEjectCart()
 
 void MainWindow::onInsertGBACart()
 {
+    const auto action = sender() && sender() == actInsertGBACartWithSave ?
+        ROMAction::InsertGBAWithSave : ROMAction::InsertGBA;
     const auto file = pickROM(true);
-    if (!file.isEmpty()) startROMPreparation(file, ROMAction::InsertGBA, true);
+    if (!file.isEmpty()) startROMPreparation(file, action, true);
 }
 
 void MainWindow::onInsertGBAAddon()
@@ -1885,6 +1890,7 @@ void MainWindow::onEmuSettingsDialogFinished(int res)
     if (globalCfg.GetInt("Emu.ConsoleType") == 1)
     {
         actInsertGBACart->setEnabled(false);
+        actInsertGBACartWithSave->setEnabled(false);
         for (auto act : actInsertGBAAddon)
             act->setEnabled(false);
         actEjectGBACart->setEnabled(false);
@@ -1892,6 +1898,7 @@ void MainWindow::onEmuSettingsDialogFinished(int res)
     else
     {
         actInsertGBACart->setEnabled(true);
+        actInsertGBACartWithSave->setEnabled(true);
         for (auto act : actInsertGBAAddon)
             act->setEnabled(true);
         actEjectGBACart->setEnabled(emuInstance->gbaCartInserted());
