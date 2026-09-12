@@ -571,8 +571,35 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
             return;
         }
 
-        // some memory has been remapped
-        RetireJitBlock(existingBlockIt->second);
+        // This virtual key now uses another physical backing. Detach only its
+        // old block before retirement: writes to the old backing must neither
+        // erase the replacement nor visit a freed restore candidate.
+        JitBlock* oldBlock = existingBlockIt->second;
+        for (u32 j = 0; j < oldBlock->NumAddresses; j++)
+        {
+            u32 addr = oldBlock->AddressRanges()[j];
+            AddressRange* region = CodeMemRegions[addr >> 27];
+            AddressRange& range = region[(addr & 0x7FFFFFF) / 512];
+            bool removed = range.Blocks.RemoveByValue(oldBlock);
+            assert(removed);
+            range.Code = 0;
+            for (u32 k = 0; k < range.Blocks.Length; k++)
+            {
+                JitBlock* neighbor = range.Blocks[k];
+                for (u32 l = 0; l < neighbor->NumAddresses; l++)
+                {
+                    if (neighbor->AddressRanges()[l] == addr)
+                        range.Code |= neighbor->AddressMasks()[l];
+                }
+            }
+            if (!PageContainsCode(&region[(addr & 0x7FFF000 & ~(Memory.PageSize - 1)) / 512], Memory.PageSize))
+                Memory.SetCodeProtection(addr >> 27, addr & 0x7FFFFFF, false);
+        }
+        u64& oldEntry = FastBlockLookupRegions[otherLocalAddr >> 27][(otherLocalAddr & 0x7FFFFFF) / 2];
+        if (oldEntry == ((u64(MakeLookupTag(blockAddr, cpu->Num, thumb)) << 32)
+                        | JITCompiler.SubEntryOffset(oldBlock->EntryPoint)))
+            oldEntry = (u64)UINT32_MAX << 32;
+        RetireJitBlock(oldBlock);
         map.erase(existingBlockIt);
     }
 

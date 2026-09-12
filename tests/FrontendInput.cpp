@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QApplication>
 #include <QTemporaryDir>
+#include <QDir>
 #include <QFileInfo>
 #include <QFile>
+#include <QRegularExpression>
+#include <fstream>
 #include <array>
 #include <cstdio>
 #include "EmuInstance.h"
 #include "InputConfig/KeyMapButton.h"
+#include "toml/toml.hpp"
 
 // Only host state is substituted. The event handlers are extracted from the
 // current production source at build time, not copied into this test.
@@ -44,13 +48,14 @@ struct WindowState
 #undef MainWindow
 
 static QString configDirectory;
+static bool configWritable = true;
 namespace melonDS::Platform
 {
 std::string GetLocalFilePath(const std::string& path)
 {
     return (configDirectory + '/' + QString::fromStdString(path)).toStdString();
 }
-bool CheckFileWritable(const std::string&) { return true; }
+bool CheckFileWritable(const std::string&) { return configWritable; }
 bool FileExists(const std::string& path) { return QFileInfo::exists(QString::fromStdString(path)); }
 }
 
@@ -70,7 +75,9 @@ int main(int argc, char** argv)
         QApplication::sendEvent(&button, &event);
     };
 
-    check(Config::Load(), "First run without a config failed");
+    QString loadError = "stale error";
+    check(Config::Load(&loadError), "First run without a config failed");
+    check(loadError.isEmpty(), "First-run load retained an earlier error");
     auto cfg = Config::GetLocalTable(0).GetTable("Keyboard");
     check(cfg.GetInt("A") == Qt::Key_X && cfg.GetInt("Start") == Qt::Key_Return &&
           cfg.GetInt("Left") == Qt::Key_Left, "Fresh config has no usable keyboard defaults");
@@ -185,8 +192,17 @@ int main(int argc, char** argv)
     if (!damaged.open(QIODevice::WriteOnly | QIODevice::Truncate)) return 2;
     if (damaged.write(malformed) != malformed.size()) return 2;
     damaged.close();
-    check(!Config::Load(), "Malformed TOML load was reported as successful");
-    Config::GetLocalTable(0).GetInt("Keyboard.A");
+    const int previousA = Config::GetLocalTable(0).GetInt("Keyboard.A");
+    const int previousB = Config::GetLocalTable(0).GetInt("Keyboard.B");
+    check(!Config::Load(&loadError), "Malformed TOML load was reported as successful");
+    check(loadError.contains(damaged.fileName()) &&
+          loadError.contains("missing closing bracket") &&
+          loadError.contains("reached EOF") &&
+          loadError.contains(QRegularExpression(R"(\n *[0-9]+ \|)")),
+          "Malformed TOML diagnostic lost the path, syntax reason or source location");
+    check(Config::GetLocalTable(0).GetInt("Keyboard.A") == previousA &&
+          Config::GetLocalTable(0).GetInt("Keyboard.B") == previousB,
+          "Malformed TOML load changed the current mappings");
     Config::GetLocalTable(0).SetInt("Keyboard.A", Qt::Key_L);
     QString saveError;
     check(!Config::Save(&saveError) && !saveError.isEmpty(), "Blocked save did not return its failure");
@@ -200,13 +216,40 @@ int main(int argc, char** argv)
     if (!damaged.open(QIODevice::WriteOnly | QIODevice::Truncate)) return 2;
     if (damaged.write(repaired) != repaired.size()) return 2;
     damaged.close();
-    check(Config::Load() && Config::GetLocalTable(0).GetInt("Keyboard.A") == Qt::Key_J,
+    check(Config::Load(&loadError) && Config::GetLocalTable(0).GetInt("Keyboard.A") == Qt::Key_J,
           "A repaired config could not be reloaded");
+    check(loadError.isEmpty(), "Successful retry retained the load error");
     Config::GetLocalTable(0).SetInt("Keyboard.A", Qt::Key_P);
     check(Config::Save(&saveError) && saveError.isEmpty(), "Successful save retained its earlier error");
     check(Config::Load() && Config::GetLocalTable(0).GetInt("Keyboard.A") == Qt::Key_P &&
           Config::GetLocalTable(0).GetInt("Keyboard.B") == -1,
           "Saving a repaired config lost settings or remained blocked");
+    // A directory at the config filename exercises both the writability guard
+    // and the parser's real open/read failure, without touching user settings.
+    configDirectory = directory.path() + "/blocked";
+    const QString blockedPath = configDirectory + "/melonDS.toml";
+    if (!QDir().mkpath(blockedPath)) return 2;
+    configWritable = false;
+    check(!Config::Load(&loadError) && loadError.contains(blockedPath) &&
+          loadError.contains("not writable"), "Unwritable config did not explain its path and failure");
+    configWritable = true;
+    loadError.clear();
+    try {
+        check(!Config::Load(&loadError), "Directory config load was reported as successful");
+    }
+    catch (const toml::file_io_error&) { check(false, "Config load leaked a parser file I/O exception"); }
+    catch (const std::ios_base::failure&) { check(false, "Config load leaked a stream I/O exception"); }
+    check(loadError.contains(blockedPath) &&
+          (loadError.contains("error opening file") || loadError.contains("ios")),
+          "Config I/O diagnostic lost the path or underlying failure");
+    check(Config::GetLocalTable(0).GetInt("Keyboard.A") == Qt::Key_P &&
+          Config::GetLocalTable(0).GetInt("Keyboard.B") == -1,
+          "Blocked-path load changed the current mappings");
+    check(!Config::Save(&saveError) && !saveError.isEmpty() && QFileInfo(blockedPath).isDir(),
+          "Saving after an I/O failure was not blocked");
+    configDirectory = directory.path();
+    check(Config::Load(&loadError) && loadError.isEmpty() && Config::Save(),
+          "Successful retry after an I/O failure retained an error or blocked saving");
     std::printf("Qt mapping, config persistence, input/release and focus: %d failures\n", failures);
     return failures ? 1 : 0;
 }

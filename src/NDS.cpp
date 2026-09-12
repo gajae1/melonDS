@@ -1352,6 +1352,11 @@ void NDS::MapSharedWRAM(u8 val)
     if (val == WRAMCnt)
         return;
 
+    // Same-region branches otherwise keep the old direct instruction view,
+    // including when JIT support is disabled at build time.
+    if ((ARM9.R[15] >> 24) == 0x03)
+        ARM9.CodeMem.Mem = nullptr;
+
     JIT.Memory.RemapSWRAM();
 
     WRAMCnt = val;

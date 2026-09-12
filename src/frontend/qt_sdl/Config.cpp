@@ -832,20 +832,30 @@ static void MakeTablesExplicit(toml::value& value)
     }
 }
 
-bool Load()
+bool Load(QString* error)
 {
+    if (error) error->clear();
     // Callers can still save on shutdown after a load failure.
     WriteBlocked = true;
     auto cfgpath = Platform::GetLocalFilePath(kConfigFile);
+    const auto failed = [&](const QString& reason) {
+        if (error) *error = QObject::tr("%1\n%2").arg(QString::fromStdString(cfgpath), reason);
+        Platform::Log(Platform::LogLevel::Error,
+                      "Config: load failed; saving is disabled until a successful reload.\n");
+        return false;
+    };
 
     if (!Platform::CheckFileWritable(cfgpath))
-        return false;
+        return failed(QObject::tr("The configuration file or folder is not writable."));
 
     if (!Platform::FileExists(cfgpath))
     {
         RootTable = toml::value();
         WriteBlocked = !LoadLegacy();
-        return !WriteBlocked;
+        if (WriteBlocked)
+            return failed(QObject::tr("Unable to load the legacy configuration:\n%1")
+                          .arg(QString::fromStdString(Platform::GetLocalFilePath(kLegacyConfigFile))));
+        return true;
     }
 
     try
@@ -857,11 +867,17 @@ bool Load()
         MakeTablesExplicit(parsed);
         RootTable = std::move(parsed);
     }
-    catch (const toml::syntax_error&)
+    catch (const toml::syntax_error& ex)
     {
-        Platform::Log(Platform::LogLevel::Error,
-                      "Config: invalid TOML; saving is disabled until a successful reload.\n");
-        return false;
+        return failed(QString::fromUtf8(ex.what()));
+    }
+    catch (const toml::file_io_error& ex)
+    {
+        return failed(QString::fromUtf8(ex.what()));
+    }
+    catch (const std::ios_base::failure& ex)
+    {
+        return failed(QString::fromUtf8(ex.what()));
     }
 
     WriteBlocked = false;

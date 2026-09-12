@@ -133,7 +133,7 @@ private:
 
 
 // A failed load blocks saving until a subsequent load succeeds.
-bool Load();
+bool Load(QString* error = nullptr);
 bool Save(QString* error = nullptr);
 // GUI callers can retry a failed write or keep the current session unsaved.
 bool SaveWithDialog(QWidget* parent = nullptr);

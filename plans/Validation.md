@@ -44,6 +44,8 @@ ALU·shift는 `CoreExecution`과 `core-.*-(alu-shift|thumb-shift-timing)`을 사
 
 DTCM은 `CoreExecution`의 `core-.*-dtcm-remap`에서 CP15 이동·해제와 실제 guest 재진입을 검사한다. Windows fastmem은 자신의 OS view를 조회해 예약/매핑·값·코드 보호를 독립 확인한다. 값만 일치하는 느린 helper 전환과 구분하며 다른 플랫폼의 실제 view 검증으로 확대하지 않는다. `core-scheduler-execution`은 실제 NDS의 ScheduleEvent/CancelEvent/RunSystem을 사용해 취소·재예약·교체·periodic·snapshot·정상 순서를 검사한다. 이 생성 callback 계약과 IRQ/DMA/sleep 장치 전체 타이밍은 별도다.
 
+SMC는 기존 `core-.*-smc-reentry`와 `CoreSMCRemapExecution`의 `core-.*-smc-(dma|remap-.*)`를 사용한다. 생성 명령·실제 DMA/MMIO로 코드 덮어쓰기, SWRAM/NWRAM A/B/C 재매핑 후 ARM9/7·ARM/Thumb 재진입, 이전 backing에 대한 후속 DMA, alias·이웃 코드 보존을 확인한다. JIT의 두 번째 실행은 추가 코드 생성이 없는지 검사한다. `ENABLE_JIT=OFF`에서도 같은 interpreter 회귀를 실행하며 미지원 fastmem은 성공으로 세지 않는다. 활성 블록 중 remap·겹친 NWRAM broadcast·교차 영역 literal·native A64와 실기 절대 cycle은 별도 수락 범위다.
+
 ## 진단 구성
 
 `gpu-gl-allocation-`은 실제 할당 오류와 모의 한도/OOM을 분리하고 캡처 보존·실제 software renderer·오류 통지·재선택을 확인한다. 실제 물리 OOM은 GL 상태를 보장하지 않으므로 core fallback을 전체 표시 context 복구로 보고하지 않는다. `gl-borrow-`는 현재 생산 메시지 case/완료 알림/반환과 실제 Qt 대기를 사용해 두 순서를 결정적으로 검사한다. GL release는 대역이며 실제 panel 파괴·GLAD 로딩·전체 GUI 수명은 후속 gate다.

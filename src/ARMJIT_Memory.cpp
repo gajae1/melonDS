@@ -590,6 +590,13 @@ void ARMJIT_Memory::RemapNWRAM(int num) noexcept
     if (NDS.ConsoleType == 0)
         return;
 
+    // A CPU may reenter the same virtual address after its backing changes.
+    // Drop the cached view, not the physical blocks stored in that view.
+    if ((NDS.ARM9.FastBlockLookupStart >> 24) == 0x03)
+        NDS.ARM9.FastBlockLookupSize = 0;
+    if ((NDS.ARM7.FastBlockLookupStart >> 24) == 0x03)
+        NDS.ARM7.FastBlockLookupSize = 0;
+
     auto* dsi = static_cast<DSi*>(&NDS);
     for (int i = 0; i < Mappings[memregion_SharedWRAM].Length;)
     {
@@ -614,6 +621,11 @@ void ARMJIT_Memory::RemapNWRAM(int num) noexcept
 
 void ARMJIT_Memory::RemapSWRAM() noexcept
 {
+    if ((NDS.ARM9.FastBlockLookupStart >> 24) == 0x03)
+        NDS.ARM9.FastBlockLookupSize = 0;
+    if ((NDS.ARM7.FastBlockLookupStart >> 24) == 0x03)
+        NDS.ARM7.FastBlockLookupSize = 0;
+
     Log(LogLevel::Debug, "remapping SWRAM\n");
     for (int i = 0; i < Mappings[memregion_WRAM7].Length;)
     {

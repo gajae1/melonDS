@@ -458,13 +458,19 @@ int main(int argc, char** argv)
     SDL_InitSubSystem(SDL_INIT_VIDEO);
     SDL_EnableScreenSaver(); SDL_DisableScreenSaver();
 
-    if (!Config::Load())
-        QMessageBox::critical(nullptr,
+    QString configError;
+    if (!Config::Load(&configError))
+    {
+        QMessageBox message(QMessageBox::Critical,
                               "melonDS",
                               "Unable to load the configuration file.\n"
                               "Settings will not be saved during this session.\n\n"
                               "Check that melonDS.toml is valid and the configuration folder is writable. "
-                              "Repair the file or move it aside, then restart melonDS.");
+                              "Repair the file or move it aside, then restart melonDS.",
+                              QMessageBox::Ok, nullptr);
+        message.setDetailedText(configError);
+        message.exec();
+    }
 
     camStarted[0] = false;
     camStarted[1] = false;
