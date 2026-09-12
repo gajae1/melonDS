@@ -302,3 +302,9 @@ GR-09는 software2D의 효과별 scanline 분기·정수 RGB6 합성과 불필�
 Windows 통합 빌드·전체 CTest693/693(93.02초, 실패/skip0)이 통과했다. 구형13.0 일반 가져오기·1.1 역방향 저장, 실기 AA·native A64·다른 OS·장기 게임 수락은 미완료다. 다음 독립 작업은 ARM9 cache/ITCM, x64 BMI, software3D·SPU 비용, libslirp 갱신이다. JIT 자기수정 코드의 추가 검증은 미완료다.
 
 1.1.50 배포는322파일의 원본/hash·PE129개 누락 import0·기존과 같은DLL128개와 clean PATH의 EXE/launcher·배포 qwindows 로드·버전/소스 식별 일치를 확인했다. 개인 입력은 보존하며 패키지에 포함하지 않는다.
+
+2026-09-12, 1.1.51: CJ-13은 ARM946E-S TRM 4.1.1에 따라 MPU를 끈 상태의 접근을 I/C enable bit와 무관하게 noncacheable로 처리한다. 실제 guest MCR·외부 fetch/load/store·MPU 전환·독립 TCM 대조60조건에서 interpreter/native x64 JIT/fastmem 각각26실패→0이다. 캐시 정책 변경을 가로지르는 기존 block·native A64·실기 절대 timing과 전체 cache 모델은 미완료다. GR-09는 software3D의 R/B 정수 합성을 묶어 곱셈6→4로 줄였다. 생성112프레임의 색/깊이/속성 및 같은 최종 core의 블랙600프레임이 기존 계산과 일치한다. 생성 AA 장면12쌍의 CPU cycle 중앙값8.13%, wall6.73% 감소는 해당 커널 조건의 결과이며 전체 게임 FPS 개선으로 확대하지 않는다.
+
+BV-07은 출처를 고정한 libslirp4.9.4를 통합했다. 기존23개 공개 symbol·이전 header consumer·61개 corpus packet을 보존하고, 마지막 IPv4 fragment의 header 길이가 다른 실제 echo 누락을 수정한다. 최종 생산 Net_Slirp object와 vendored archive의 두 fragment 입력·runtime4.9.4를 확인했다. 호스트 UDP loopback의 첫 datagram 미수신은 이전/현재 및 독립 송수신에서도 남아 있어 해결로 세지 않는다. 실제 게임 Internet·다른 OS 수락은 후속이다. SPU pan과 BMI1 BIC 후보는 출력 검증과 별개로 성능 근거가 불충분하여 제품에 넣지 않았다.
+
+Windows 통합 빌드·전체 CTest696/696(84.75초, 실패/skip0), 배포322파일·PE129개 누락 import0·기존과 같은DLL128개·clean PATH EXE/launcher/배포 qwindows·버전/소스 식별이 통과했다. 다음은 최대20개 독립 작업으로 오디오 전달/커널·입력/표시 지연·CPU/OS ISA dispatch·DSP·저장/플랫폼 호환을 분담하며, 원본1.1/현재 upstream과의 개선 및125개 계획의 구현·수락 상태를 별도로 대조한다. 개별 실행 검사 통과를 물리 지연·실기 일치·구형 상태 일반 호환이나 전체 계획 완료로 세지 않는다.

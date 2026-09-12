@@ -420,27 +420,25 @@ u32 SoftRenderer3D::AlphaBlend(u32 srccolor, u32 dstcolor, u32 alpha) const noex
     if (dstalpha == 0)
         return srccolor;
 
-    u32 srcR = srccolor & 0x3F;
+    u32 srcRB = srccolor & 0x003F003F;
     u32 srcG = (srccolor >> 8) & 0x3F;
-    u32 srcB = (srccolor >> 16) & 0x3F;
 
     if (GPU3D.RenderDispCnt & (1<<3))
     {
-        u32 dstR = dstcolor & 0x3F;
+        u32 dstRB = dstcolor & 0x003F003F;
         u32 dstG = (dstcolor >> 8) & 0x3F;
-        u32 dstB = (dstcolor >> 16) & 0x3F;
 
         alpha++;
-        srcR = ((srcR * alpha) + (dstR * (32-alpha))) >> 5;
+        // Each 16-bit lane sums to at most 63*32, so R and B cannot carry into each other.
+        srcRB = (((srcRB * alpha) + (dstRB * (32-alpha))) >> 5) & 0x003F003F;
         srcG = ((srcG * alpha) + (dstG * (32-alpha))) >> 5;
-        srcB = ((srcB * alpha) + (dstB * (32-alpha))) >> 5;
         alpha--;
     }
 
     if (alpha > dstalpha)
         dstalpha = alpha;
 
-    return srcR | (srcG << 8) | (srcB << 16) | (dstalpha << 24);
+    return srcRB | (srcG << 8) | (dstalpha << 24);
 }
 
 u32 SoftRenderer3D::RenderPixel(const Polygon* polygon, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const

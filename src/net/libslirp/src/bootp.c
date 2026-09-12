@@ -238,7 +238,7 @@ static void bootp_reply(Slirp *slirp,
     memcpy(rbp->bp_hwaddr, bp->bp_hwaddr, ETH_ALEN);
 
     rbp->bp_yiaddr = daddr.sin_addr; /* Client IP address */
-    rbp->bp_siaddr = saddr.sin_addr; /* Server IP address */
+    rbp->bp_siaddr = saddr.sin_addr; /* Next server IP address */
 
     q = rbp->bp_vend;
     end = rbp->bp_vend + DHCP_OPT_LEN;
@@ -320,6 +320,24 @@ static void bootp_reply(Slirp *slirp,
         }
 
         if (slirp->tftp_server_name) {
+            struct addrinfo hints = {
+                .ai_family = AF_INET,  /* must be IPv4 */
+            };
+            struct addrinfo *ai = NULL;
+            int gaierrno;
+
+            if ((gaierrno = getaddrinfo(slirp->tftp_server_name,
+                                        NULL, &hints, &ai))) {
+                g_warning("Failed to resolve tftp-server-name '%s': %s. "
+                          "Sending DHCP server as next server address.",
+                          slirp->tftp_server_name,
+                          gai_strerror(gaierrno));
+            } else {
+                /* only use the first candidate */
+                rbp->bp_siaddr = ((struct sockaddr_in*)ai->ai_addr)->sin_addr;
+            }
+            freeaddrinfo(ai);
+
             val = strlen(slirp->tftp_server_name);
             if (q + val + 2 >= end) {
                 g_warning("DHCP packet size exceeded, "
@@ -351,7 +369,8 @@ static void bootp_reply(Slirp *slirp,
            we assume that, if the bootfile parameter was configured as an http
            URL, the user intends to perform UEFI HTTP boot, so send this option
            automatically */
-        if (slirp->bootp_filename && g_str_has_prefix(slirp->bootp_filename, "http://")) {
+        if (slirp->bootp_filename && (g_str_has_prefix(slirp->bootp_filename, "http://") ||
+                                      g_str_has_prefix(slirp->bootp_filename, "https://"))) {
             val = strlen(UEFI_HTTP_VENDOR_CLASS_ID);
             if (q + val + 2 >= end) {
                 g_warning("DHCP packet size exceeded, "

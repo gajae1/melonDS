@@ -264,11 +264,9 @@ void ARMv5::UpdatePURegions(bool update_all)
 {
     if (!(CP15Control & (1<<0)))
     {
-        // PU disabled
-
-        u8 mask = 0x07;
-        if (CP15Control & (1<<2))  mask |= 0x30;
-        if (CP15Control & (1<<12)) mask |= 0x40;
+        // ARM946E-S TRM 4.1.1: disabling the PU makes all accesses
+        // noncacheable and nonbufferable, regardless of the I/C enable bits.
+        constexpr u8 mask = 0x07;
 
         memset(PU_UserMap, mask, 0x100000);
         memset(PU_PrivMap, mask, 0x100000);

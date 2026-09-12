@@ -150,3 +150,132 @@ int TestMPUExecution(NDSArgs&& args, bool jit)
     std::printf("MPU execution: %u/5 cases passed\n", 5 - failures);
     return failures ? 1 : 0;
 }
+
+// ARM DDI 0201D 4.1.1: with the MPU disabled, all instruction/data
+// accesses are noncacheable, regardless of the I/C enable bits.
+// Compare actual guest execution with the uncached control, without
+// asserting new absolute hardware timings. Setup/refill cycles are excluded.
+int TestCacheMPUDisabled(NDSArgs&& args, bool jit)
+{
+    if (args.JIT)
+    {
+        args.JIT->MaxBlockSize = 1;
+        args.JIT->BranchOptimizations = false;
+        args.JIT->LiteralOptimizations = false;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    NDS::Current = nds.get(); // Same context as RunFrame, needed by JIT callbacks.
+    auto& cpu = nds->ARM9;
+    constexpr u32 boot = 0x100, ramCode = 0x02008000, ramData = 0x02030000;
+    constexpr u32 dtcm = 0x03000000, tcmControl = (1u << 18) | (1u << 16);
+    constexpr u32 initial = 0x2468ACE0, stored = 0x13579BDF, sentinel = 0xDEADC0DE;
+    constexpr u32 cpsr = 0xA80000DF;
+    const struct { const char* name; u32 control; bool disable; } configs[] = {
+        {"uncached-control", 0, false},
+        {"mpu-off-i", 0x1000, false},
+        {"mpu-off-d", 0x0004, false},
+        {"mpu-off-id", 0x1004, false},
+        {"mpu-on-id-control", 0x1005, false},
+        {"disable-mpu-id", 0x1004, true},
+    };
+    const struct { const char* name; u32 code, data, instr, result, memory; bool external; } probes[] = {
+        {"fetch-ram", ramCode, ramData, 0xE3A0005A, 0x5A, initial, true}, // MOV r0,#0x5A
+        {"load-ram", 0x1000, ramData, 0xE5910000, initial, initial, true}, // LDR r0,[r1]
+        {"store-ram", 0x1020, ramData, 0xE5812000, sentinel, stored, true}, // STR r2,[r1]
+        {"fetch-load-ram", ramCode + 0x20, ramData, 0xE5910000, initial, initial, true},
+        {"itcm-dtcm-control", 0x1040, dtcm, 0xE5910000, initial, initial, false},
+    };
+    u64 reference[std::size(probes)][2] = {};
+    unsigned checked = 0, failures = 0;
+    for (unsigned config = 0; config < std::size(configs); ++config)
+    {
+        const auto& setting = configs[config];
+        nds->Reset();
+        nds->CurCPU = 0;
+        // A valid 4 GiB RWX region is required before the MPU-on control.
+        cpu.CP15Write(0x600, 0x3F);
+        cpu.CP15Write(0x502, 3);
+        cpu.CP15Write(0x503, 3);
+        cpu.CP15Write(0x200, 1);
+        cpu.CP15Write(0x201, 1);
+        cpu.CP15Write(0x300, 1);
+        cpu.CP15Write(0x911, 0x0C); // 32 KiB ITCM
+        cpu.CP15Write(0x910, dtcm | 0x0A); // 16 KiB DTCM
+        cpu.CP15Write(0x100, tcmControl);
+        cpu.DataWrite32(boot, 0xEE010F10); // MCR p15,0,r0,c1,c0,0
+        cpu.DataWrite32(boot + 4, 0xEAFFFFFE);
+        cpu.DataWrite32(boot + 8, 0xE1A00000);
+        auto setControl = [&](u32 value) {
+            cpu.CPSR = cpsr;
+            cpu.R[0] = value;
+            cpu.StopExecution = 0;
+            cpu.JumpTo(boot);
+            cpu.Cycles = 0;
+            nds->ARM9Timestamp = 0;
+            nds->ARM9Target = 1;
+#ifdef JIT_ENABLED
+            if (jit) cpu.Execute<CPUExecuteMode::JIT>();
+            else
+#endif
+                cpu.Execute<CPUExecuteMode::Interpreter>();
+            return (cpu.CP15Read(0x100) & 0x000FF085) == value && cpu.R[15] == boot + 8;
+        };
+        if (setting.disable && !setControl(tcmControl | 0x1005)) return 2;
+        if (!setControl(tcmControl | setting.control)) return 2;
+        for (unsigned p = 0; p < std::size(probes); ++p)
+        {
+            const auto& probe = probes[p];
+            cpu.DataWrite32(probe.code, probe.instr);
+            cpu.DataWrite32(probe.code + 4, 0xEAFFFFFE);
+            cpu.DataWrite32(probe.code + 8, 0xE1A00000);
+            for (unsigned run = 0; run < 2; ++run)
+            {
+                cpu.DataWrite32(probe.data, initial);
+                cpu.R[0] = sentinel;
+                cpu.R[1] = probe.data;
+                cpu.R[2] = stored;
+                cpu.CPSR = cpsr;
+                cpu.StopExecution = 0;
+                cpu.JumpTo(probe.code); // Refresh fetch region after guest MCR.
+                cpu.Cycles = 0;
+                nds->ARM9Timestamp = 0;
+                nds->ARM9Target = 1;
+#ifdef JIT_ENABLED
+                if (jit)
+                {
+                    if (run == 0) cpu.Execute<CPUExecuteMode::JIT>();
+                    else
+                    {
+                        if (!nds->JIT.JitBlocks9.contains(probe.code)) return 2;
+                        ARM_Dispatch(&cpu, nds->JIT.JitBlocks9.at(probe.code)->EntryPoint);
+                        nds->ARM9Timestamp = cpu.Cycles;
+                    }
+                }
+                else
+#endif
+                    cpu.Execute<CPUExecuteMode::Interpreter>();
+                const u64 cycles = nds->ARM9Timestamp;
+                if (config == 0) reference[p][run] = cycles;
+                // The enabled-cache control must distinguish the external bus.
+                const bool cached = (setting.control & 1) && probe.external;
+                const bool timing = cached ? cycles < reference[p][run] : cycles == reference[p][run];
+                u32 memory = 0;
+                cpu.DataRead32(probe.data, &memory);
+                const bool state = cpu.R[0] == probe.result && memory == probe.memory &&
+                    cpu.R[1] == probe.data && cpu.R[2] == stored &&
+                    cpu.R[15] == probe.code + 8 && cpu.CPSR == cpsr;
+                const bool ok = state && timing && cycles > 0;
+                ++checked;
+                failures += !ok;
+                std::printf("{\"config\":\"%s\",\"probe\":\"%s\",\"execution\":\"%s\","
+                    "\"run\":%u,\"control\":%u,\"cycles\":%llu,\"uncached_cycles\":%llu,"
+                    "\"r0\":%u,\"memory\":%u,\"pc\":%u,\"cpsr\":%u,\"state_ok\":%s,\"ok\":%s}\n",
+                    setting.name, probe.name, jit ? (run ? "jit-warm-dispatch" : "jit-cold") : "interpreter",
+                    run, cpu.CP15Read(0x100), cycles, reference[p][run], cpu.R[0], memory,
+                    cpu.R[15], cpu.CPSR, state ? "true" : "false", ok ? "true" : "false");
+            }
+        }
+    }
+    std::printf("{\"summary\":true,\"checked\":%u,\"failures\":%u}\n", checked, failures);
+    return failures ? 1 : 0;
+}

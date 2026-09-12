@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(libslirp VERSION 4.8.0 LANGUAGES C)
+project(libslirp VERSION 4.9.4 LANGUAGES C)
 
 set(SLIRP_MAJOR_VERSION "${libslirp_VERSION_MAJOR}")
 set(SLIRP_MINOR_VERSION "${libslirp_VERSION_MINOR}")

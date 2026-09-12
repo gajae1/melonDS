@@ -5,7 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.8.0] - TODO
+## [4.9.4] - 2026-08-25
+
+## Security
+
+  - Fix information leak on fragmented packets with different header lengths
+
+### Fixed
+
+  - Fix reporting oob output #95
+  - Fix buffer trimming to ip6-announced length #96
+
+## Changed
+
+  - slirp: permit guestfwd to vhost_addr/vnameserver_addr #81 #140
+
+## [4.9.3] - 2026-05-26
+
+### Fixed
+
+  - Fix migration break on incorrect vmstate retcode #94 !157
+
+## [4.9.2] - 2026-05-23
+
+## Security
+
+  - oob: cap urgent data count to what is actually available #93 (CVE-2026-9539)
+
+### Fixed
+
+  - honor dns server port number on macos !153
+  - cope with SO_ERROR possibly failing
+  - vmstate: pass on read/write errors for state
+  - fix port conflict #92
+  - tcp_sockclosed: Set linger timer on remaining closing states
+
+### Changed
+
+  - bootp: allow https for UEFI HTTP boot !156
+
+## [4.9.1] - 2025-05-28
+
+### Fixed
+
+  - meson: use boolean defaults for boolean options !149
+  - meson: specify that C++ is only used for host binaries !149
+  - meson: add dependency override for libslirp !150
+  - Do not link tests with libslirp.map #84
+  - apple: Fix getting IPv4 DNS server address when IPv4 and IPv4 are
+    interleaved #85
+  - Windows: Fix ICMP generation #87 #88
+  - tcp: Fix starting the linger2 timer on socket shutdown #86
+
+### Changed
+
+  - tcp: on input, reset TCPT_KEEP to TCPTV_KEEP_IDLE rather than
+    TCPTV_KEEPINTVL
+  - tcp: on input during init, reset TCPT_KEEP to TCPTV_KEEP_INIT
+  - tcp: Reduce linger time to two minutes
+
+## [4.9.0] - 2025-01-30
+
+### Added
+
+  - Add SlirpAddPollSocketCb and {,un}register_poll_socket that can be used from
+    SLIRP_CONFIG_VERSION_MAX 6 to properly support socket handles on win64.
+
+### Fixed
+
+  - bootp: Fill siaddr with tftp addr as per RFC2131 !135
+  - tcp_listen: Fix host forwarding on Windows !137
+  - tftp: Fix address returned in proxying #82 !147
+
+### Changed
+
+  - Fix build on mold #77
+  - Fix static linking !134
+  - slirp_os_socket abstraction for Windows !136
+  - cksum: Update implementation to include 64-bit computation support !144
+  - reduce compilation warnings on Windows !143
+
+## [4.8.0] - 2024-05-09
 
 ## Security
 
@@ -224,7 +304,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  - Standalone project, removing any QEMU dependency.
  - License clarifications.
 
-[Unreleased]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.8.0...master
+[Unreleased]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.9.4...master
+[4.9.4]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.9.3...v4.9.4
+[4.9.3]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.9.2...v4.9.3
+[4.9.2]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.9.1...v4.9.2
+[4.9.1]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.9.0...v4.9.1
+[4.9.0]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.8.0...v4.9.0
 [4.8.0]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.7.0...v4.8.0
 [4.7.0]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.6.1...v4.7.0
 [4.6.1]: https://gitlab.freedesktop.org/slirp/libslirp/compare/v4.6.0...v4.6.1
