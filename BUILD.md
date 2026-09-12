@@ -238,3 +238,8 @@ Vendored libslirp is based on
 [`v4.8.0`, `ce314e39458223c2c42245fe536fbe1bcd94e9b1`](https://gitlab.freedesktop.org/slirp/libslirp/-/commit/ce314e39458223c2c42245fe536fbe1bcd94e9b1).
 Both include melonDS integration and subsequent local patches; these references
 identify their source bases, not unmodified upstream trees.
+The libslirp fuzz corpus aliases are materialized as regular packet files and
+directories so Windows checkouts and source ZIPs contain the same seeds.
+When updating upstream corpus data, update these copies together with their
+original targets; the original symlink relationships are recorded by the pinned
+upstream tree. This does not restore executable modes or validate an OSS-Fuzz run.

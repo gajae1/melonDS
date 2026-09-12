@@ -975,11 +975,11 @@ u32 ARM::ReadReg(Gdb::Register reg)
         r -= static_cast<int>(Register::sp_und);
         return ModeIs(0x1b) ? R[13 + r] : R_UND[r];
     }
-    else if (reg == Register::spsr_fiq) return ModeIs(0x11) ? CPSR : R_FIQ[7];
-    else if (reg == Register::spsr_irq) return ModeIs(0x12) ? CPSR : R_IRQ[2];
-    else if (reg == Register::spsr_svc) return ModeIs(0x13) ? CPSR : R_SVC[2];
-    else if (reg == Register::spsr_abt) return ModeIs(0x17) ? CPSR : R_ABT[2];
-    else if (reg == Register::spsr_und) return ModeIs(0x1b) ? CPSR : R_UND[2];
+    else if (reg == Register::spsr_fiq) return R_FIQ[7];
+    else if (reg == Register::spsr_irq) return R_IRQ[2];
+    else if (reg == Register::spsr_svc) return R_SVC[2];
+    else if (reg == Register::spsr_abt) return R_ABT[2];
+    else if (reg == Register::spsr_und) return R_UND[2];
 
     Log(LogLevel::Warn, "GDB reg read: unknown reg no %d\n", r);
     return 0xdeadbeef;
@@ -1035,23 +1035,23 @@ void ARM::WriteReg(Gdb::Register reg, u32 v)
     }
     else if (reg == Register::spsr_fiq)
     {
-        *(ModeIs(0x11) ? &CPSR : &R_FIQ[7]) = v;
+        R_FIQ[7] = v;
     }
     else if (reg == Register::spsr_irq)
     {
-        *(ModeIs(0x12) ? &CPSR : &R_IRQ[2]) = v;
+        R_IRQ[2] = v;
     }
     else if (reg == Register::spsr_svc)
     {
-        *(ModeIs(0x13) ? &CPSR : &R_SVC[2]) = v;
+        R_SVC[2] = v;
     }
     else if (reg == Register::spsr_abt)
     {
-        *(ModeIs(0x17) ? &CPSR : &R_ABT[2]) = v;
+        R_ABT[2] = v;
     }
     else if (reg == Register::spsr_und)
     {
-        *(ModeIs(0x1b) ? &CPSR : &R_UND[2]) = v;
+        R_UND[2] = v;
     }
     else Log(LogLevel::Warn, "GDB reg write: unknown reg no %d (write 0x%08x)\n", r, v);
 }

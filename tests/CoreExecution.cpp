@@ -606,6 +606,66 @@ static int TestConditionalCycles(NDSArgs&& args, bool jit)
     return failures ? 1 : 0;
 }
 
+#ifdef GDBSTUB_ENABLED
+static int TestGdbSPSR(NDSArgs&& args)
+{
+    auto nds = std::make_unique<NDS>(std::move(args));
+    constexpr u32 code = 0x02010000, returned = 0x02010100, idle = 0x02010200;
+    constexpr u32 initial = 0x200000DF, saved = 0x600000DF;
+    const Gdb::Register registers[] = {Gdb::Register::spsr_fiq, Gdb::Register::spsr_irq,
+        Gdb::Register::spsr_svc, Gdb::Register::spsr_abt, Gdb::Register::spsr_und};
+    constexpr u32 modes[] = {0x11, 0x12, 0x13, 0x17, 0x1B};
+    unsigned checks = 0, failures = 0;
+    for (bool arm7 : {false, true})
+    for (unsigned bank = 0; bank < std::size(registers); ++bank)
+    for (bool active : {false, true})
+    {
+        nds->Reset();
+        nds->ARM9Write32(code, 0xE14F2000); // MRS r2,SPSR
+        nds->ARM9Write32(code + 4, 0xE1B0F00E); // MOVS pc,lr: exception return
+        nds->ARM9Write32(returned, 0xE10F3000); // MRS r3,CPSR
+        nds->ARM9Write32(returned + 4, 0xE3A0405A); // MOV r4,#0x5A
+        nds->ARM9Write32(returned + 8, 0xEAFFFFFE);
+        nds->ARM9Write32(idle, 0xEAFFFFFE);
+        nds->ARM9.JumpTo(idle);
+        nds->ARM7.JumpTo(idle);
+        ARM& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        u32* banks[] = {&cpu.R_FIQ[7], &cpu.R_IRQ[2], &cpu.R_SVC[2],
+                       &cpu.R_ABT[2], &cpu.R_UND[2]};
+        for (auto* value : banks) *value = initial;
+        const u32 current = 0xA00000C0 | (active ? modes[bank] : 0x1F);
+        cpu.UpdateMode(cpu.CPSR, current);
+        cpu.CPSR = current;
+        const bool read = cpu.ReadReg(registers[bank]) == initial;
+        cpu.WriteReg(registers[bank], saved);
+        bool passed = read && cpu.CPSR == current;
+        for (unsigned other = 0; other < std::size(banks); ++other)
+            passed &= *banks[other] == (other == bank ? saved : initial);
+        if (passed)
+        {
+            // An inactive bank edit must be visible when that exception mode runs.
+            const u32 handler = 0xA00000C0 | modes[bank];
+            cpu.UpdateMode(cpu.CPSR, handler);
+            cpu.CPSR = handler;
+            cpu.R[14] = returned;
+            cpu.R[2] = cpu.R[3] = cpu.R[4] = 0;
+            cpu.JumpTo(code);
+            nds->Start();
+            nds->RunFrame();
+            passed = cpu.R[2] == saved && cpu.R[3] == saved &&
+                     cpu.R[4] == 0x5A && cpu.CPSR == saved;
+        }
+        ++checks;
+        failures += !passed;
+        std::printf("GDB ARM%d SPSR mode=%02x active=%d read=%d CPSR=%08x saved=%08x result=%s\n",
+                    arm7 ? 7 : 9, modes[bank], active, read, cpu.CPSR, *banks[bank],
+                    passed ? "pass" : "fail");
+    }
+    std::printf("GDB SPSR: %u checks, %u failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
+#endif
+
 int main(int argc, char** argv) {
     const bool jit = argc > 1 && std::strcmp(argv[1], "interpreter") != 0;
     const bool fast = argc > 1 && std::strcmp(argv[1], "fastmem") == 0;
@@ -618,6 +678,10 @@ int main(int argc, char** argv) {
     NDSArgs args;
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
+#ifdef GDBSTUB_ENABLED
+    if (argc > 2 && std::strcmp(argv[2], "gdb-spsr") == 0)
+        return TestGdbSPSR(std::move(args));
+#endif
     if (argc > 2 && std::strcmp(argv[2], "unaligned-memory") == 0)
         return TestUnalignedMemory(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "thumb-push-timing") == 0)

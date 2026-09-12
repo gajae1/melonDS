@@ -286,3 +286,7 @@ GR-08의 새 편지 상태는 DSi·DSP HLE였다. 같은 입력의 3모드600프
 2026-09-12, 1.1.47: GR-10의 16비트 bitmap 변경 감시 범위가 실제 바이트 수의 절반이어서 뒤쪽을 바꿔도 GL 화면이 이전 내용을 유지했다. guest VRAMC와 flat cache는 정상인 반례를 확보하고 2바이트 단위를 반영했다. 128/256 크기·1x/2x·8비트 대조 및 네 면 홈브루의 첫 실행/재실행 출력이 일치한다. GR-08 홈브루는 게임과 같은 깊이 차이112/AA6/32 경로를 재현하며 Software/Compute의 AA OFF FFFF·ON94FD와 Classic FFFF·FFFF를 표시한다. 실기 값과 캐시 비용/상주량은 별도 미완료다. BV-07은 BUILD에 Teakra/libslirp 원본 revision을 연결했고 상속/fork patch6단계가 현재 tree와 일치한다. 이후 libslirp fuzz 입력31개의 잃어버린 symlink 의미 복원을 검토하며, 이는 runtime C 버전 갱신 근거가 아니다.
 
 1.1.47 검증: Windows 빌드·전체677/677(57.67초, 실패/skip0), 실제 블랙 편지→선택600프레임의 세 모드별 이전 출력 일치와 개인 입력9개 hash 보존을 확인했다. 최종 core의 홈브루 첫 출력도 정상 재실행 기준과 일치한다. 배포322파일·PE129개 누락0, 같은DLL128개 import 근거 재사용, clean PATH의 EXE/launcher·배포 qwindows 및 버전/소스 식별이 통과했다. 실기 결과·다른 GPU/OS·장기 게임은 미완료다.
+
+2026-09-12, 1.1.48: CJ-11 활성 예외 모드의 debugger SPSR 접근이 CPSR를 읽고 쓰던 결함을 수정했다. ARM9/7·5 bank·활성/비활성20조건은 interpreter/JIT에서 각각10/20→20/20이며 MRS와 MOVS 예외 복귀로 저장 상태의 실제 사용을 확인했다. p/P의 XML wire 번호와 내부 enum 불일치도 수정하고 완전한 길이·hex 검증 뒤에만 접근한다. 기존 XML/g/G 순서는 유지한다. 실제 TCP RSP의 XML 조회·p/P·g 교차 검증은 양 CPU에서 실패→통과했고 GNU ARM GDB UI 수락은 남는다.
+
+BV-07은 원본 libslirp v4.8.0 alias31개를 실제 packet 사본/디렉터리로 저장해 소스 ZIP 소비 대상8/16→16/16, 전체19 corpus·61 packet 바이트 일치를 확인했다. source identity의 symlink 거절은 유지하며 향후 원본/사본을 함께 갱신해야 한다. POSIX 실행·fuzz campaign·스크립트 실행 bit 복원은 수행하지 않았다. Windows 전체 빌드와 CTest682/682(59.78초, 실패/skip0)가 통과했다. 다음은 실기 AA 값 판정과 CJ-12 DMA 타이밍의 실제 입력/기준 대조이며 native A64·다른 OS·장기 게임과 앞선 미완료 과제는 계속 남는다.

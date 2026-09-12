@@ -16,7 +16,7 @@
 | CJ-08 | [IRQ·DMA·sleep 경계](workstreams/01-core-jit.md#CJ-08) | 실행 재현 | P2 | [1.1.15](Release_Plan.md#v15) | — | 1.1.19 Timer0/HALT/ARM9 IRQ의 F 보존 수정·IME/IE/CPSR 대조와 warmed guest 검증; ARM7/Thumb·DMA/sleep·실기 latency 후속 |
 | CJ-09 | [savestate event 값 검증](workstreams/01-core-jit.md#CJ-09) | 정적 후보 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.03 구현·로컬 회귀; DSi HLE 실사용 후속 |
 | CJ-10 | [부분 load 실패 복원](workstreams/01-core-jit.md#CJ-10) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | FS-01 | 1.1.04 load·undo 복원·정지; 1.1.32 짧은 section의 이웃 읽기·NDSG 선검사, 원본 14.0 생성 상태 이관; 카트·DSi·전체 게임 후속 |
-| CJ-11 | [GDB SPSR bank 접근](workstreams/01-core-jit.md#CJ-11) | 정적 후보 | P1 | [1.1.10](Release_Plan.md#v10) | — | 미착수 |
+| CJ-11 | [GDB SPSR bank 접근](workstreams/01-core-jit.md#CJ-11) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.48 활성 예외 모드의 SPSR/CPSR 혼동 수정; ARM9/7·5 bank·활성/비활성 20조건에서 interpreter/JIT의 MRS·예외 복귀 대조 통과; GNU ARM GDB 실제 UI 수락 후속 |
 | CJ-12 | [DMA 버스 타이밍](workstreams/01-core-jit.md#CJ-12) | 정적 후보 | P2 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
 | CJ-13 | [ARM9 cache·ITCM 타이밍](workstreams/01-core-jit.md#CJ-13) | 관찰/확장 | P2 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
 | CJ-14 | [DSi clock·NDMA 순서](workstreams/01-core-jit.md#CJ-14) | 정적 후보 | P2 | [1.1.20](Release_Plan.md#v20) | AD-16 | 미착수 |
@@ -99,7 +99,7 @@
 | NP-07 | [Slirp IPv4/UDP/DNS 경계](workstreams/05-connectivity-peripherals.md#NP-07) | 실행 재현 | P1 | [1.1.11](Release_Plan.md#v11) | — | 1.1.08 IPv4/UDP 길이·옵션·DNS 단일 A/IN 질문 검증 후 조회; 생성 응답/보호 페이지 회귀, 실제 DS DNS 수락 후속 |
 | NP-08 | [DS/DSi Wi-Fi 실패 event](workstreams/05-connectivity-peripherals.md#NP-08) | 부분 실행 재현 | P2 | [1.1.12](Release_Plan.md#v12) | — | [1.1.27](releases/1.1.27.md) DSi CONNECT/scan 오류·기존 상태 보존·완전한 연결 본문과 IRQ/재연결; guest 자동 복구·DS retry/host 소실·실기 후속 |
 | NP-09 | [Netplay host/client 실제 게임](workstreams/05-connectivity-peripherals.md#NP-09) | 관찰/확장 | P2 | [1.1.31](Release_Plan.md#v31) | — | 미착수 |
-| NP-10 | [GDB packet/framing 용량](workstreams/05-connectivity-peripherals.md#NP-10) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 framing/escape/checksum·응답 용량·불량 패킷 뒤 회복 회귀; 정확히 찬 수신 버퍼의 NUL 제거는 정적 결함 수정 |
+| NP-10 | [GDB packet/framing 용량](workstreams/05-connectivity-peripherals.md#NP-10) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 framing/escape/checksum·응답 용량·불량 패킷 뒤 회복 회귀; 정확히 찬 수신 버퍼의 NUL 제거는 정적 결함 수정; 1.1.48 p/P wire 번호·길이/hex 검증, XML·bulk 일치와 ARM9/7 실제 TCP 대조 |
 | NP-11 | [GDB M/X 파싱·무부분쓰기](workstreams/05-connectivity-peripherals.md#NP-11) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 m/M/X 범위·본문/escape 검증 후 쓰기; 1.1.32 qCRC exact hex·주소 끝과 GNU xcrc32 oracle 일치; 공용 CRC/MMIO 폭 유지, 실제 ARM debugger 후속 |
 | NP-12 | [GDB 재접속·EOF·부분 송신](workstreams/05-connectivity-peripherals.md#NP-12) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.08 SOCKET 폭·EOF·부분/0-byte 전송·NoAck 초기화, 실제 Windows loopback 분할/재접속/해제 확인; Linux·양 CPU debugger 후속 |
 | NP-13 | [IR 미초기화 응답·복원](workstreams/05-connectivity-peripherals.md#NP-13) | 실행 재현 | P1 | [1.1.24](Release_Plan.md#v24) | — | 1.1.10 FF 호환성 fallback·IRPos/reset/14.1 상태·14.0 새 명령 경계·section 검증; 실제 IR 통신/응답값 후속 |
@@ -117,7 +117,7 @@
 | BV-04 | [로컬 build profile](workstreams/06-build-validation.md#BV-04) | 부분 실행 검증 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.44 UCRT64 x64 로컬 deploy CLI·기존 shell 진입점·새 출력만 생성·경로/hash manifest 연결; MSVC/static/다른 아키텍처 후속 |
 | BV-05 | [배포 allowlist·개인 자료 보존](workstreams/06-build-validation.md#BV-05) | 실행 재현/확장 | P1 | [1.1.43](Release_Plan.md#v43) | — | 1.1.03 선별 배포; 1.1.34 소스 변경 후 오래된 EXE 거부·문서만 변경 재사용, 외부 DLL/재현 빌드 신원은 별도; 1.1.43 임의5파일 포함 재현→필수 경로/hash 목록만 압축·추가파일 제외/경고·입력/출력 경계·최종ZIP해시 대조; 신뢰된 deploy 입력으로 목록 생성 |
 | BV-06 | [C23/C++26 기능별 채택](workstreams/06-build-validation.md#BV-06) | 관찰/확장 | P2 | [1.1.36](Release_Plan.md#v36) | — | GCC16.2/libstdc++ 실제 사용 기능 compile·8개 실행 통과, 현재 조합 제품 변경 없음; GCC14·Clang/libc++·MSVC·다른 OS 후속 |
-| BV-07 | [의존성·local patch·license](workstreams/06-build-validation.md#BV-07) | 부분 실행 검증 | P1 | [1.1.36](Release_Plan.md#v36) | — | 1.1.44 고지 입력 보존·1.1.45 overlay 후보 발행과 설치/runtime 대조; 1.1.47 Teakra 01db7cdd 선별83파일·libslirp v4.8.0/ce314e39 및 상속/fork patch6단계 현재 tree 일치; fuzz symlink31개 의미 복원·대응 소스/고지 완전성 후속 |
+| BV-07 | [의존성·local patch·license](workstreams/06-build-validation.md#BV-07) | 부분 실행 검증 | P1 | [1.1.36](Release_Plan.md#v36) | — | 1.1.44 고지 입력·1.1.45 overlay/설치/runtime 대조; 1.1.47 Teakra/libslirp 원본·patch6단계 연결; 1.1.48 fuzz alias31개를 실제 파일/디렉터리로 복원해 소스 ZIP의19 corpus·61 packet이 원본과 일치; 향후 사본 동시 갱신·POSIX/fuzz 실행·대응 소스/고지 완전성 후속 |
 | BV-08 | [LTO/ThinLTO guard 판정](workstreams/06-build-validation.md#BV-08) | 제한 빌드·실행 대조 | P2 | [1.1.38](Release_Plan.md#v38) | — | 1.1.39 GCC16.2 core/Qt LTO 빌드; 1.1.40 ARM.cpp 제외 진단으로 cold 비용 축소·2장면 출력 일치, 반복 변동으로 기본 OFF 유지; 전체 Qt 실행/장기 workload·compiler별 판정 후속 |
 | BV-09 | [PGO train/holdout](workstreams/06-build-validation.md#BV-09) | 미측정 가설 | P2 | [1.1.38](Release_Plan.md#v38) | — | 미착수 |
 | BV-10 | [paired median/tail 측정](workstreams/06-build-validation.md#BV-10) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.38 state 재생·frame CSV·한 장면 paired 대조; GPU/장치 분리·holdout 대기 |

@@ -148,6 +148,14 @@ if (TARGET core)
     add_test(NAME audio-core-clock COMMAND AudioResampling)
     set_tests_properties(audio-core-clock PROPERTIES TIMEOUT 30)
     add_test(NAME core-interpreter-execution COMMAND CoreExecution interpreter)
+    if (ENABLE_GDBSTUB)
+        add_test(NAME core-interpreter-gdb-spsr COMMAND CoreExecution interpreter gdb-spsr)
+        set_tests_properties(core-interpreter-gdb-spsr PROPERTIES TIMEOUT 30)
+        if (ENABLE_JIT)
+            add_test(NAME core-jit-gdb-spsr COMMAND CoreExecution jit gdb-spsr)
+            set_tests_properties(core-jit-gdb-spsr PROPERTIES TIMEOUT 30)
+        endif()
+    endif()
     add_test(NAME savestate-scheduler-values COMMAND CoreExecution interpreter savestate-scheduler)
     set_tests_properties(savestate-scheduler-values PROPERTIES TIMEOUT 30)
     add_test(NAME core-scheduler-execution COMMAND CoreExecution interpreter scheduler-execution)
@@ -506,7 +514,8 @@ foreach(case IN ITEMS memory-control binary-tail binary-escape last-address shor
         invalid-hex extra-hex wrap short-binary dangling-escape receive-limit checksum checksum-recovery
         coalesced response-limit response-chunks response-zero response-escape response-format memory-limit
         disconnect eof ack-eof poll-wait poll-error extra-binary stream-boundaries response-extra loopback q-xfer
-        split-resend listener-error crc-control crc-chunks crc-wrap crc-malformed)
+        split-resend listener-error crc-control crc-chunks crc-wrap crc-malformed
+        register-xml register-bulk register-malformed)
     add_test(NAME gdb-protocol-${case} COMMAND GdbProtocol ${case})
     set_tests_properties(gdb-protocol-${case} PROPERTIES TIMEOUT 15)
 endforeach()

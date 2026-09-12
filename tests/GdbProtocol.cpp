@@ -149,12 +149,24 @@ static int BindLoopback(TestSocket socket, const sockaddr* address, socklen_t le
 struct Memory : Gdb::StubCallbacks
 {
     struct Write { u32 address; int width; u32 value; };
+    struct RegisterWrite { Gdb::Register reg; u32 value; };
     std::map<u32, u8> bytes;
     std::vector<Write> writes;
+    std::array<u32, Gdb::GDB_ARCH_N_REG> registers{};
+    std::vector<Gdb::Register> registerReads;
+    std::vector<RegisterWrite> registerWrites;
     unsigned reads = 0;
     int GetCPU() const override { return 9; }
-    u32 ReadReg(Gdb::Register) override { return 0; }
-    void WriteReg(Gdb::Register, u32) override {}
+    u32 ReadReg(Gdb::Register reg) override
+    {
+        registerReads.push_back(reg);
+        return registers[size_t(reg)];
+    }
+    void WriteReg(Gdb::Register reg, u32 value) override
+    {
+        registerWrites.push_back({reg, value});
+        registers[size_t(reg)] = value;
+    }
     u32 ReadMem(u32 addr, int width) override
     {
         ++reads;
@@ -324,7 +336,140 @@ int main(int argc, char** argv)
         Gdb::GdbStub::Handle_q_CRC(&stub, reinterpret_cast<const u8*>(request.data()), visible);
     };
 
-    if (mode == "memory-control")
+    const auto exchangeRegister = [&](const std::string& request, const std::string& reply) {
+        sent.clear();
+        incoming = Frame(request);
+        readOffset = 0;
+        stub.Poll(false);
+        check(stub.IsConnected() && readOffset == incoming.size() && Response(reply),
+              "Framed register request returned the wrong response");
+    };
+
+    if (mode == "register-xml")
+    {
+        for (const char* xml : {Gdb::TARGET_XML_ARM7, Gdb::TARGET_XML_ARM9})
+            for (const char* declaration : {
+                "<reg name=\"cpsr\" bitsize=\"32\" regnum=\"25\"/>",
+                "<reg name=\"spsr_svc\" bitsize=\"32\" regnum=\"45\"/>",
+                "<reg name=\"spsr_und\" bitsize=\"32\" regnum=\"47\"/>"})
+                check(std::string_view(xml).find(declaration) != std::string_view::npos,
+                      "Advertised ARM XML register numbers changed");
+        const struct { const char* wire; Gdb::Register reg; } cases[] = {
+            {"0", Gdb::Register::r0}, {"f", Gdb::Register::pc},
+            {"19", Gdb::Register::cpsr}, {"1a", Gdb::Register::sp_usr},
+            {"21", Gdb::Register::sp_fiq}, {"2d", Gdb::Register::spsr_svc},
+            {"2f", Gdb::Register::spsr_und},
+        };
+        memory.registers.fill(0xfefefefe);
+        for (const auto& entry : cases)
+        {
+            memory.registers[size_t(entry.reg)] = 0x11223344;
+            memory.registerReads.clear();
+            memory.registerWrites.clear();
+            exchangeRegister(std::string("p") + entry.wire, "44332211");
+            check(memory.registerReads == std::vector<Gdb::Register>{entry.reg} && memory.registerWrites.empty(),
+                  "p did not read exactly the advertised register");
+            auto expected = memory.registers;
+            expected[size_t(entry.reg)] = 0x12345678;
+            memory.registerReads.clear();
+            exchangeRegister(std::string("P") + entry.wire + "=78563412", "OK");
+            check(memory.registerReads.empty() && memory.registerWrites.size() == 1 &&
+                  memory.registerWrites[0].reg == entry.reg && memory.registerWrites[0].value == 0x12345678 &&
+                  memory.registers == expected, "P changed the wrong register or more than one register");
+        }
+        memory.registerReads.clear();
+        exchangeRegister("p00002F", "78563412");
+        check(memory.registerReads == std::vector<Gdb::Register>{Gdb::Register::spsr_und},
+              "Zero-padded uppercase register number was not accepted");
+    }
+    else if (mode == "register-bulk")
+    {
+        std::string initial, replacement;
+        std::vector<Gdb::Register> order;
+        for (size_t i = 0; i < memory.registers.size(); ++i)
+        {
+            memory.registers[i] = 0x10203000 + u32(i);
+            order.push_back(static_cast<Gdb::Register>(i));
+            char bytes[9];
+            std::snprintf(bytes, sizeof(bytes), "%02x302010", unsigned(i));
+            initial += bytes;
+            std::snprintf(bytes, sizeof(bytes), "%02x030201", unsigned(i));
+            replacement += bytes;
+        }
+        exchangeRegister("g", initial);
+        check(memory.registerReads == order && memory.registerWrites.empty(),
+              "g no longer reads the existing dense register order");
+        memory.registerReads.clear();
+        exchangeRegister("G" + replacement, "OK");
+        check(memory.registerReads.empty() && memory.registerWrites.size() == order.size(),
+              "G changed its dense callback count");
+        for (size_t i = 0; i < order.size(); ++i)
+            check(i < memory.registerWrites.size() && memory.registerWrites[i].reg == order[i] &&
+                  memory.registerWrites[i].value == 0x01020300 + u32(i) &&
+                  memory.registers[i] == 0x01020300 + u32(i), "G changed its dense register sequence or values");
+        exchangeRegister("p19", "10030201");
+        exchangeRegister("p2d", "24030201");
+        exchangeRegister("p2f", "26030201");
+        exchangeRegister("P2f=EFCDAB89", "OK");
+        replacement.replace(replacement.size() - 8, 8, "efcdab89");
+        memory.registerReads.clear();
+        exchangeRegister("g", replacement);
+        check(memory.registerReads == order, "Single-register write altered the bulk register sequence");
+    }
+    else if (mode == "register-malformed")
+    {
+        memory.registers.fill(0xa5a5a5a5);
+        const auto original = memory.registers;
+        const auto rejected = [&](char kind, const std::string& body, ssize_t visible) {
+            sent.clear();
+            memory.registerReads.clear();
+            memory.registerWrites.clear();
+            std::string backing = body;
+            backing += '\0';
+            backing.append(64, 'B');
+            if (kind == 'p') Gdb::GdbStub::Handle_p(&stub, reinterpret_cast<const u8*>(backing.data()), visible);
+            else Gdb::GdbStub::Handle_P(&stub, reinterpret_cast<const u8*>(backing.data()), visible);
+            check(Response("E01") && memory.registerReads.empty() && memory.registerWrites.empty() &&
+                  memory.registers == original, "Invalid/bounded register request invoked a callback or changed state");
+            memory.registers = original;
+        };
+        for (unsigned wire = 16; wire <= 24; ++wire)
+        {
+            char number[8];
+            std::snprintf(number, sizeof(number), "%x", wire);
+            rejected('p', number, std::strlen(number));
+            const std::string write = std::string(number) + "=78563412";
+            rejected('P', write, write.size());
+        }
+        for (const char* body : {"", "30", "ffffffff", "100000000", "-1", "+1", "0x19", "19tail", "19 ", " 19"})
+            rejected('p', body, std::strlen(body));
+        rejected('p', "19", 0);
+        rejected('p', "19", -1);
+        rejected('p', std::string(Gdb::GDBPROTO_MAX_PAYLOAD + 1, '0'), Gdb::GDBPROTO_MAX_PAYLOAD + 1);
+        rejected('P', "19=78563412", 2);
+        rejected('P', "19=78563412", 10);
+        rejected('P', "19=78563412", -1);
+        rejected('P', std::string(Gdb::GDBPROTO_MAX_PAYLOAD + 1, '0'), Gdb::GDBPROTO_MAX_PAYLOAD + 1);
+        for (const char* body : {"", "=78563412", "30=78563412", "100000000=78563412", "-1=78563412",
+                                 "+1=78563412", "0x19=78563412", "19=7856341", "19=785634123", "19=78563412tail"})
+            rejected('P', body, std::strlen(body));
+        // A valid prefix may end before allocated suffix bytes; the declared field is authoritative.
+        sent.clear(); memory.registerReads.clear();
+        const std::string bounded = "19not-part-of-request";
+        Gdb::GdbStub::Handle_p(&stub, reinterpret_cast<const u8*>(bounded.data()), 2);
+        check(Response("a5a5a5a5") && memory.registerReads == std::vector<Gdb::Register>{Gdb::Register::cpsr},
+              "p parsed register bytes beyond the supplied length");
+        // Put invalid value bytes last: the old unvalidated decoder traps here.
+        for (const char* body : {"19=7856341g", "19= 8563412", "19=+8563412", "19==8563412", "19"})
+            rejected('P', body, std::strlen(body));
+        rejected('P', std::string("19=7856\0" "412", 11), 11);
+        memory.registerReads.clear(); memory.registerWrites.clear();
+        exchangeRegister("p18", "E01");
+        exchangeRegister("P30=78563412", "E01");
+        check(memory.registerReads.empty() && memory.registerWrites.empty() && memory.registers == original,
+              "Framed hole/out-of-range request touched registers");
+    }
+    else if (mode == "memory-control")
     {
         command('M', "101,7:01020304050607");
         check(Response("OK") && memory.writes.size() == 3, "Normal hex write did not finish");

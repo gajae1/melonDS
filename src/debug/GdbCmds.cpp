@@ -357,16 +357,29 @@ ExecResult GdbStub::Handle_s(GdbStub* stub, const u8* cmd, ssize_t len) {
 	return ExecResult::Step;
 }
 
+static bool ParseRegisterNumber(std::string_view input, Register& reg)
+{
+	if (input.empty()) return false;
+	u32 number;
+	const auto parsed = std::from_chars(input.data(), input.data() + input.size(), number, 16);
+	if (parsed.ec != std::errc{} || parsed.ptr != input.data() + input.size()) return false;
+	if (number > 15 && (number < 25 || number > 47)) return false;
+	// XML leaves numbers 16..24 unused; callbacks and g/G keep their dense order.
+	reg = static_cast<Register>(number <= 15 ? number : number - 9);
+	return true;
+}
+
 ExecResult GdbStub::Handle_p(GdbStub* stub, const u8* cmd, ssize_t len)
 {
-	int reg;
-	if (sscanf((const char*)cmd, "%x", &reg) != 1 || reg < 0 || reg >= GDB_ARCH_N_REG)
+	Register reg;
+	if (len <= 0 || size_t(len) > GDBPROTO_MAX_PAYLOAD ||
+		!ParseRegisterNumber(std::string_view(reinterpret_cast<const char*>(cmd), size_t(len)), reg))
 	{
 		stub->RespStr("E01");
 		return ExecResult::Ok;
 	}
 
-	u32 v = stub->Cb->ReadReg(static_cast<Register>(reg));
+	u32 v = stub->Cb->ReadReg(reg);
 	hexfmt32(tempdatabuf, v);
 	stub->Resp(tempdatabuf, 4*2);
 
@@ -375,17 +388,32 @@ ExecResult GdbStub::Handle_p(GdbStub* stub, const u8* cmd, ssize_t len)
 
 ExecResult GdbStub::Handle_P(GdbStub* stub, const u8* cmd, ssize_t len)
 {
-	int reg, dataoff;
-
-	if (sscanf((const char*)cmd, "%x=%n", &reg, &dataoff) != 1 || reg < 0
-			|| reg >= GDB_ARCH_N_REG || dataoff + 4*2 > len)
+	if (len < 10 || size_t(len) > GDBPROTO_MAX_PAYLOAD)
+	{
+		stub->RespStr("E01");
+		return ExecResult::Ok;
+	}
+	const std::string_view input(reinterpret_cast<const char*>(cmd), size_t(len));
+	const size_t equals = input.find('=');
+	Register reg;
+	if (equals == input.npos || input.size() - equals - 1 != 8 ||
+		!ParseRegisterNumber(input.substr(0, equals), reg))
 	{
 		stub->RespStr("E01");
 		return ExecResult::Ok;
 	}
 
-	u32 v = unhex32(&cmd[dataoff]);
-	stub->Cb->WriteReg(static_cast<Register>(reg), v);
+	u32 v;
+	const auto data = input.substr(equals + 1);
+	const auto parsed = std::from_chars(data.data(), data.data() + data.size(), v, 16);
+	if (parsed.ec != std::errc{} || parsed.ptr != data.data() + data.size())
+	{
+		stub->RespStr("E01");
+		return ExecResult::Ok;
+	}
+
+	v = unhex32(&cmd[equals + 1]);
+	stub->Cb->WriteReg(reg, v);
 
 	stub->RespStr("OK");
 
