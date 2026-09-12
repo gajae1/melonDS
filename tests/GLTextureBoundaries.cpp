@@ -423,6 +423,68 @@ bool RunTextureEnd(const char* backend, int scale, int width, bool crossing)
         backend, scale, width, start, crossing, initial ? "pass" : "fail", updated ? "pass" : "fail");
     return initial && updated;
 }
+
+u32 BitmapPixel(NDS& nds, bool software, int scale, int x, int y)
+{
+    void* top = nullptr;
+    void* bottom = nullptr;
+    nds.GetRenderer().GetFramebuffers(&top, &bottom);
+    if (software) return static_cast<u32*>(bottom)[y * 256 + x] & 0xFFFFFF;
+    GLuint framebuffer;
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
+    glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              *static_cast<GLuint*>(top), 0, 1);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    u32 pixel = 0;
+    glReadPixels(x * scale, y * scale, 1, 1, GL_BGRA, GL_UNSIGNED_BYTE, &pixel);
+    glDeleteFramebuffers(1, &framebuffer);
+    return pixel & 0xFFFFFF;
+}
+
+bool RunBitmap(const char* backend, int scale, int size, bool direct)
+{
+    auto nds = CreateNDS(backend, scale);
+    if (!nds) return false;
+    const bool software = !std::strcmp(backend, "software");
+    nds->ARM9Write16(0x04000304, 0x820F); // Sub engine on the bottom screen.
+    nds->ARM9Write8(0x04000242, 0x84); // Bank C -> sub BG.
+    for (u32 address = 0; address < 0x20000; address += 2)
+        nds->ARM9Write16(0x06200000 + address, direct ? Red : 0x0101);
+    nds->ARM9Write16(0x05000402, Red & 0x7FFF);
+    nds->ARM9Write16(0x05000404, Green & 0x7FFF);
+    nds->ARM9Write16(0x05000406, Blue & 0x7FFF);
+    nds->ARM9Write32(0x04001000, 0x10405); // Mode 5, BG2 bitmap.
+    nds->ARM9Write16(0x0400100C, 0x80 | (direct ? 4 : 0) | (size == 256 ? 0x4000 : 0));
+    nds->ARM9Write16(0x04001020, 0x100);
+    nds->ARM9Write16(0x04001026, 0x100);
+    nds->RunFrame();
+    const int boundary = size / 2;
+    // These literal colors follow the existing 2D RGB555 readback convention.
+    bool passed = BitmapPixel(*nds, software, scale, 8, boundary) == 0xFB0000;
+    constexpr u32 program[] = {0xE1C010B0, 0xEAFFFFFE}; // STRH r1,[r0]; B .
+    for (unsigned i = 0; i < std::size(program); ++i) nds->ARM9Write32(Code + i * 4, program[i]);
+    auto writePixel = [&](int y, u16 value) {
+        const u32 address = 0x06200000 + (y * size + 8) * (direct ? 2 : 1);
+        nds->ARM9.R[0] = address;
+        nds->ARM9.R[1] = value;
+        nds->ARM9.JumpTo(Code);
+        nds->RunFrame();
+        nds->ARM9.JumpTo(Idle);
+        return nds->ARM9Read16(address) == value;
+    };
+    passed &= writePixel(boundary - 1, direct ? Green : 0x0102);
+    const u32 before = BitmapPixel(*nds, software, scale, 8, boundary - 1);
+    passed &= writePixel(boundary, direct ? Blue : 0x0103);
+    const u32 after = BitmapPixel(*nds, software, scale, 8, boundary);
+    // A first-half write must not be needed to reveal the second-half change.
+    passed &= writePixel(boundary - 1, direct ? Green : 0x0102);
+    const u32 refreshed = BitmapPixel(*nds, software, scale, 8, boundary);
+    passed &= before == 0x00FB00 && after == 0x0000FB && after == refreshed;
+    std::printf("bitmap=%s scale=%d size=%d direct=%d y=%d before=%06x after=%06x refreshed=%06x result=%s\n",
+                backend, scale, size, direct, boundary, before, after, refreshed, passed ? "pass" : "fail");
+    return passed && glGetError() == GL_NO_ERROR;
+}
 }
 
 int CheckGLTextureBoundaries(const char* name)
@@ -432,8 +494,10 @@ int CheckGLTextureBoundaries(const char* name)
     const bool alpha = std::strncmp(name, "alpha-", 6) == 0;
     const bool blend = std::strncmp(name, "blend-", 6) == 0;
     const bool shading = std::strncmp(name, "shading-", 8) == 0;
+    const bool bitmap = std::strncmp(name, "bitmap-", 7) == 0;
     if (alpha || blend) backend = name + 6;
     else if (shading) backend = name + 8;
+    else if (bitmap) backend = name + 7;
     else if (std::strncmp(name, "capture-", 8) == 0) backend = name + 8;
     else return 2;
     if (std::strcmp(backend, "software") && std::strcmp(backend, "opengl") && std::strcmp(backend, "compute")) return 2;
@@ -446,6 +510,11 @@ int CheckGLTextureBoundaries(const char* name)
             for (bool wbuffer : {false, true}) passed &= RunBlend(backend, scale, wbuffer);
         else if (shading)
             passed &= RunShading(backend, scale);
+        else if (bitmap)
+        {
+            for (int size : {128, 256}) passed &= RunBitmap(backend, scale, size, true);
+            passed &= RunBitmap(backend, scale, 256, false);
+        }
         else
             for (int width : {128, 256})
                 for (bool crossing : {false, true}) passed &= RunTextureEnd(backend, scale, width, crossing);

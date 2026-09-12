@@ -263,7 +263,7 @@ if (MELONDS_TEST_GPU)
     add_test(NAME gpu-compute-frame-capture COMMAND GLFrameReadback compute)
     set_tests_properties(gpu-opengl-frame-capture gpu-compute-frame-capture
         PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
-    foreach(case IN ITEMS alpha-software alpha-opengl alpha-compute blend-software blend-opengl blend-compute shading-software shading-opengl shading-compute capture-software capture-opengl capture-compute dirty-wrap)
+    foreach(case IN ITEMS alpha-software alpha-opengl alpha-compute blend-software blend-opengl blend-compute shading-software shading-opengl shading-compute capture-software capture-opengl capture-compute bitmap-software bitmap-opengl bitmap-compute dirty-wrap)
         add_test(NAME gpu-gl-texture-${case} COMMAND GLFrameReadback gl-texture-boundaries ${case})
         set_tests_properties(gpu-gl-texture-${case}
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)

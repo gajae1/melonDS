@@ -1170,7 +1170,8 @@ void GLRenderer2D::UpdateLayerConfig()
                 BGVRAMRange[layer][0] = 0xFFFFFFFF;
                 BGVRAMRange[layer][1] = 0xFFFFFFFF;
                 BGVRAMRange[layer][2] = mapoffset;
-                BGVRAMRange[layer][3] = mapsz;
+                // Direct-color bitmaps consume two bytes per pixel.
+                BGVRAMRange[layer][3] = mapsz * ((bgcnt & (1<<2)) ? 2 : 1);
 
                 if (bgcnt & (1<<2))
                 {

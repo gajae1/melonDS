@@ -231,3 +231,10 @@ Matching content returns zero; differences or failed verification return nonzero
 Use `--output NEW_DIRECTORY` to create a verified candidate for review; its parent
 must exist and the output must not exist. Review local changes before replacing
 the maintained overlay. Normal configuration does not run this command.
+
+The vendored Teakra base is the 83 selected files from upstream commit
+[`01db7cdd00aabcce559a8dddce8798dabb71949b`](https://github.com/wwylele/teakra/commit/01db7cdd00aabcce559a8dddce8798dabb71949b).
+Vendored libslirp is based on
+[`v4.8.0`, `ce314e39458223c2c42245fe536fbe1bcd94e9b1`](https://gitlab.freedesktop.org/slirp/libslirp/-/commit/ce314e39458223c2c42245fe536fbe1bcd94e9b1).
+Both include melonDS integration and subsequent local patches; these references
+identify their source bases, not unmodified upstream trees.
