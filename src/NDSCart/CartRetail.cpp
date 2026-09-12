@@ -19,6 +19,7 @@
 #include "CartRetail.h"
 #include "../NDS.h"
 #include "../Utils.h"
+#include <array>
 
 // CartRetail: basic retail NDS cartridge (ROM + SRAM)
 
@@ -29,6 +30,35 @@ using Platform::LogLevel;
 
 namespace NDSCart
 {
+
+namespace
+{
+constexpr std::array<u32, 11> SaveLengths = {
+    0, 512, 8192, 65536, 128*1024, 256*1024, 512*1024, 1024*1024,
+    8192*1024, 16384*1024, 65536*1024
+};
+
+std::optional<u32> SaveTypeForLength(u32 length)
+{
+    for (u32 type = 0; type < SaveLengths.size(); ++type)
+        if (SaveLengths[type] == length) return type;
+    return std::nullopt;
+}
+
+u32 SaveProtocol(u32 type)
+{
+    if (type <= 1) return type; // None or tiny EEPROM.
+    if (type <= 4) return 2; // Regular EEPROM.
+    if (type <= 7) return 3; // SPI Flash.
+    return 4; // NAND.
+}
+}
+
+std::optional<u32> CartRetail::SPITypeForSaveLength(u32 length)
+{
+    const auto type = SaveTypeForLength(length);
+    return type && *type < 8 ? type : std::nullopt;
+}
 
 // SRAM TODO: emulate write delays???
 
@@ -43,52 +73,28 @@ CartRetail::CartRetail(std::unique_ptr<u8[]>&& rom, u32 len, u32 chipid, bool ba
     LenientAddressing = false;
 
     u32 savememtype = ROMParams.SaveMemType <= 10 ? ROMParams.SaveMemType : 0;
-    constexpr int sramlengths[] =
-    {
-        0,
-        512,
-        8192, 65536, 128*1024,
-        256*1024, 512*1024, 1024*1024,
-        8192*1024, 16384*1024, 65536*1024
-    };
-    SRAMLength = sramlengths[savememtype];
+    SRAMLength = SaveLengths[savememtype];
+    SRAMFileLength = std::max(SRAMLength, sram ? sramlen : 0);
 
-    if (SRAMLength)
+    if (SRAMFileLength)
     {
-        // If this cart should have any save data...
-        if (sram && sramlen == SRAMLength)
+        if (sram && sramlen == SRAMFileLength)
         {
-            // If we were given save data that already has the correct length...
             SRAM = std::move(sram);
         }
         else
         {
-            // Copy in what we can, truncate the rest.
-            SRAM = std::make_unique<u8[]>(SRAMLength);
-            memset(SRAM.get(), 0xFF, SRAMLength);
+            SRAM = std::make_unique<u8[]>(SRAMFileLength);
+            memset(SRAM.get(), 0xFF, SRAMFileLength);
 
             if (sram)
             {
-                // If we have anything to copy, that is.
-                memcpy(SRAM.get(), sram.get(), std::min(sramlen, SRAMLength));
+                memcpy(SRAM.get(), sram.get(), sramlen);
             }
         }
     }
 
-    switch (savememtype)
-    {
-    case 1: SRAMType = 1; break; // EEPROM, small
-    case 2:
-    case 3:
-    case 4: SRAMType = 2; break; // EEPROM, regular
-    case 5:
-    case 6:
-    case 7: SRAMType = 3; break; // FLASH
-    case 8:
-    case 9:
-    case 10: SRAMType = 4; break; // NAND
-    default: SRAMType = 0; break; // ...whatever else
-    }
+    SRAMType = SaveProtocol(savememtype);
 }
 
 CartRetail::~CartRetail() = default;
@@ -117,7 +123,9 @@ void CartRetail::DoSavestate(Savestate* file)
     u32 length = SRAMLength;
     file->Var32(&length);
     if (file->Error) return;
-    if (!file->Saving && (length > 64 * 1024 * 1024 ||
+    const auto restoredType = SaveTypeForLength(length);
+    if (!file->Saving && (!restoredType ||
+        (SRAMType == 4) != (*restoredType >= 8) ||
         length > file->BufferLength() - file->Length()))
     {
         file->Error = true;
@@ -127,18 +135,29 @@ void CartRetail::DoSavestate(Savestate* file)
     {
         // Validate the payload before replacing live save memory. This also
         // keeps allocation failure inside the slot's noexcept load boundary.
+        const u32 fileLength = std::max(SRAMFileLength, length);
         std::unique_ptr<u8[]> restored;
-        try { if (length) restored = std::make_unique<u8[]>(length); }
+        try { if (fileLength) restored = std::make_unique<u8[]>(fileLength); }
         catch (const std::bad_alloc&) { file->Error = true; return; }
+        if (SRAMFileLength) memcpy(restored.get(), SRAM.get(), SRAMFileLength);
+        if (fileLength > SRAMFileLength)
+            memset(restored.get() + SRAMFileLength, 0xFF, fileLength - SRAMFileLength);
         if (length) file->VarArray(restored.get(), length);
         if (file->Error) return;
         SRAM = std::move(restored);
         SRAMLength = length;
+        SRAMFileLength = fileLength;
     }
+
     else if (SRAMLength)
     {
         file->VarArray(SRAM.get(), SRAMLength);
     }
+
+    // The old format contains the physical capacity, not a protocol tag. A
+    // receiver inferred from a different save file must resume that capacity's
+    // address width and SPI commands as well as restoring its bytes.
+    if (!file->Saving && !file->Error) SRAMType = SaveProtocol(*restoredType);
 
     // SPI status shito
 
@@ -155,17 +174,17 @@ void CartRetail::DoSavestate(Savestate* file)
     }
 
     if (!file->Saving && !file->Error && SRAM)
-        Platform::WriteNDSSave(SRAM.get(), SRAMLength, 0, SRAMLength, UserData);
+        Platform::WriteNDSSave(SRAM.get(), SRAMFileLength, 0, SRAMLength, UserData);
 }
 
 void CartRetail::SetSaveMemory(const u8* savedata, u32 savelen)
 {
     if (!SRAM) return;
 
-    u32 len = std::min(savelen, SRAMLength);
+    u32 len = std::min(savelen, SRAMFileLength);
     memcpy(SRAM.get(), savedata, len);
     // An imported prefix updates part of the existing save, not its capacity.
-    Platform::WriteNDSSave(SRAM.get(), SRAMLength, 0, len, UserData);
+    Platform::WriteNDSSave(SRAM.get(), SRAMFileLength, 0, len, UserData);
 }
 
 void CartRetail::SPISelect()
@@ -175,13 +194,18 @@ void CartRetail::SPISelect()
 
 void CartRetail::SPIRelease()
 {
-    if ((SRAMStatus & (1<<1)) && (SRAMSaveLen > 0))
+    if (SRAMLength && (SRAMStatus & (1<<1)) && (SRAMSaveLen > 0))
     {
-        // Tiny EEPROM writes wrap inside a page, not across the whole save.
-        Platform::WriteNDSSave(SRAM.get(), SRAMLength,
-                               SRAMType == 1 ? SRAMSaveAddr & 0x1F0 : SRAMSaveAddr & (SRAMLength-1),
-                               SRAMType == 1 ? 16 : SRAMSaveLen & (SRAMLength-1),
-                               UserData);
+        // Dirty ranges wrap inside the emulated chip, never into file padding.
+        // A wrapped/full-chip write publishes the chip prefix in one callback.
+        u32 offset = SRAMType == 1 ? SRAMSaveAddr & 0x1F0 : SRAMSaveAddr & (SRAMLength-1);
+        u32 length = SRAMType == 1 ? 16 : std::min(SRAMSaveLen, SRAMLength);
+        if (length > SRAMLength - offset)
+        {
+            offset = 0;
+            length = SRAMLength;
+        }
+        Platform::WriteNDSSave(SRAM.get(), SRAMFileLength, offset, length, UserData);
 
         SRAMStatus &= ~(1<<1);
         SRAMSaveAddr = 0;

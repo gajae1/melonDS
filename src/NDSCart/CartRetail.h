@@ -20,6 +20,7 @@
 #define NDSCART_CARTRETAIL_H
 
 #include "CartCommon.h"
+#include <optional>
 
 namespace melonDS::NDSCart
 {
@@ -62,9 +63,13 @@ public:
     void SPIRelease() override;
     u8 SPITransmitReceive(u8 val) override;
 
+    // ROM metadata remains authoritative. This fallback only identifies the
+    // SPI capacities we emulate; a large file must not imply a NAND cartridge.
+    static std::optional<u32> SPITypeForSaveLength(u32 length);
+
     u8* GetSaveMemory() override { return SRAM.get(); }
     const u8* GetSaveMemory() const override { return SRAM.get(); }
-    u32 GetSaveMemoryLength() const override { return SRAMLength; }
+    u32 GetSaveMemoryLength() const override { return SRAMFileLength; }
 
 protected:
     u8 SRAMWrite_EEPROMTiny(u8 val);
@@ -72,7 +77,10 @@ protected:
     u8 SRAMWrite_FLASH(u8 val);
 
     std::unique_ptr<u8[]> SRAM = nullptr;
+    // The emulated chip wraps at SRAMLength. Extra bytes in an existing save
+    // belong to the backing file and must survive guest writes and state loads.
     u32 SRAMLength = 0;
+    u32 SRAMFileLength = 0;
     u32 SRAMType = 0;
 
     u32 SRAMPos = 0;

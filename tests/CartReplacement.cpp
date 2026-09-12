@@ -20,6 +20,7 @@
 #include "NDS.h"
 #include "DSi.h"
 #include "NDS_Header.h"
+#include "NDSCart/CartRetail.h"
 #include "NDSCart/CartSD.h"
 #include "SaveManager.h"
 #include "AssetIdentity.h"
@@ -30,6 +31,9 @@ using namespace melonDS::Platform;
 using std::string;
 using std::unique_ptr;
 using std::make_unique;
+
+// The database reader is defined by the real core, but is not a public header API.
+namespace melonDS::NDSCart { bool ReadROMParams(u32 gamecode, ROMListEntry* params); }
 
 // Fail only a size-matched array allocation on the RequestFlush caller. Core
 // setup, Qt allocations and the save worker run outside the injection scope.
@@ -199,12 +203,14 @@ struct CartLoader
 };
 
 static bool captureCartSave = false;
+static unsigned ndsSaveCalls = 0;
 static unsigned gbaSaveCalls = 0;
 namespace melonDS::Platform
 {
 void WriteNDSSave(const u8* data, u32 length, u32 offset, u32 count, void* userdata)
 {
     if (!captureCartSave) return;
+    ++ndsSaveCalls;
     auto* loader = static_cast<CartLoader*>(userdata);
     if (!loader || !loader->ndsSave) std::abort();
     loader->ndsSave->RequestFlush(data, length, offset, count);
@@ -535,11 +541,254 @@ static int InitialGBASave(const string& test)
     }
 }
 
+static void RequireDSCapacity(bool ok, const char* why)
+{
+    if (!ok) throw std::runtime_error(why);
+}
+
+struct DSSaveFixture
+{
+    QTemporaryDir directory;
+    CartLoader loader;
+    QByteArray expected;
+    bool registered;
+    string path;
+
+    explicit DSSaveFixture(u32 length, bool known = false, u8 seed = 0x25) :
+        expected(length, '\0'), registered(known)
+    {
+        RequireDSCapacity(directory.isValid(), "DS capacity temporary directory");
+        loader.incomingDir = loader.localCfg.savePath = directory.path().toStdString();
+        path = directory.filePath("capacity.sav").toStdString();
+        for (u32 i = 0; i < length; ++i)
+            expected[i] = char((i * 37 + (i >> 8) * 19 + seed) ^ (i >> 3));
+        QFile file(QString::fromStdString(path));
+        RequireDSCapacity(file.open(QIODevice::WriteOnly | QIODevice::NewOnly) &&
+                          file.write(expected) == expected.size(), "DS capacity patterned save input");
+        file.close();
+        Load();
+    }
+
+    NDSCart::CartRetail& Cart()
+    {
+        auto* cart = dynamic_cast<NDSCart::CartRetail*>(loader.nds->GetNDSCart());
+        RequireDSCapacity(cart && cart->Type() == NDSCart::CartType::Retail,
+                          "generated DS must remain an ordinary SPI retail cart, never NAND");
+        return *cart;
+    }
+    QByteArray Bytes()
+    {
+        auto& cart = Cart();
+        return QByteArray(reinterpret_cast<const char*>(cart.GetSaveMemory()), cart.GetSaveMemoryLength());
+    }
+    void Load()
+    {
+        auto prepared = std::make_shared<ROMPreparation::Data>();
+        prepared->Source = {"capacity.nds"}; prepared->Name = "capacity.nds";
+        prepared->BasePath = loader.incomingDir;
+        prepared->Bytes = ROM(false, prepared->Length);
+        auto* header = reinterpret_cast<NDSHeader*>(prepared->Bytes.get());
+        if (registered) std::memcpy(header->GameCode, "A2DC", 4);
+        ROMListEntry entry{};
+        const bool found = NDSCart::ReadROMParams(header->GameCodeAsU32(), &entry);
+        RequireDSCapacity(!header->IsHomebrew() && (registered ? found && entry.SaveMemType == 2 : !found),
+                          "fixture ROM metadata must be real EEPROM8K A2DC or unknown retail ZZZA");
+        QString error;
+        loader.forbidROMRead = true;
+        RequireDSCapacity(loader.loadROM(prepared->Source, false, error, {}, prepared), "actual prepared DS loader");
+        RequireDSCapacity(loader.ndsSave && loader.ndsSave->GetPath() == path && Bytes() == expected &&
+                          loader.ndsSave->Flush() && ReadSaveFile(path) == expected,
+                          "load/reload changed existing backing length, bytes or file tail");
+    }
+    void Flush()
+    {
+        RequireDSCapacity(Bytes() == expected, "SPI/import/state changed unintended cart backing bytes");
+        RequireDSCapacity(loader.ndsSave->Flush() && ReadSaveFile(path) == expected,
+                          "real SaveManager lost low/high physical bytes or opaque file padding");
+    }
+};
+
+// Bus operations take explicit wire commands/widths, independent of the core's
+// SaveMemType inference. Flash uses page WRITE 0A, not zero-program command 02.
+static void DSWrite(NDSCart::CartRetail& cart, u8 command, unsigned addressBytes,
+                    u32 address, const QByteArray& data)
+{
+    cart.SPISelect(); cart.SPITransmitReceive(0x06); cart.SPIRelease();
+    cart.SPISelect(); cart.SPITransmitReceive(command);
+    for (int shift = int(addressBytes - 1) * 8; shift >= 0; shift -= 8)
+        cart.SPITransmitReceive(u8(address >> shift));
+    for (char byte : data) cart.SPITransmitReceive(u8(byte));
+    cart.SPIRelease();
+}
+static QByteArray DSRead(NDSCart::CartRetail& cart, u8 command, unsigned addressBytes,
+                          u32 address, unsigned count)
+{
+    cart.SPISelect(); cart.SPITransmitReceive(command);
+    for (int shift = int(addressBytes - 1) * 8; shift >= 0; shift -= 8)
+        cart.SPITransmitReceive(u8(address >> shift));
+    QByteArray result;
+    for (unsigned i = 0; i < count; ++i) result.append(char(cart.SPITransmitReceive(0)));
+    cart.SPIRelease();
+    return result;
+}
+static QByteArray DSState(NDSCart::CartRetail& cart, u32 physical)
+{
+    Savestate state(physical + 128);
+    cart.DoSavestate(&state);
+    // Existing CartCommon+CartRetail wire record, also checked by RetailEEPROM.
+    // A padded save must not serialize its file-only tail or add another field.
+    RequireDSCapacity(!state.Error && state.Length() == physical + 77 &&
+                      state.MajorVersion() == 14 && state.MinorVersion() == 2,
+                      "DS capacity changed existing cartridge record length or minor version");
+    state.Section("TAIL");
+    u32 marker = 0x1234ABCD; state.Var32(&marker); state.Finish();
+    RequireDSCapacity(!state.Error, "cartridge-only state serialization");
+    QByteArray bytes(static_cast<const char*>(state.Buffer()), state.Length());
+    // Synthetic legacy-layout fixture: current writer, existing record shape,
+    // and a 14.1 header. This is not a preserved state from an older binary.
+    bytes[6] = 1; bytes[7] = 0;
+    return bytes;
+}
+
+static int DSSaveCapacity(const string& test)
+{
+    try
+    {
+        captureCartSave = true;
+        if (test == "ds-capacity-unknown")
+        {
+            for (u32 length : {512u, 8192u, 65536u, 131072u, 262144u, 524288u, 1048576u})
+            {
+                DSSaveFixture f(length);
+                const bool tiny = length == 512;
+                const bool flash = length >= 262144;
+                const unsigned width = tiny ? 1 : length <= 65536 ? 2 : 3;
+                const QByteArray first = QByteArray::fromHex("52");
+                DSWrite(f.Cart(), flash ? 0x0A : 0x02, width, 0x27, first);
+                f.expected.replace(0x27, first.size(), first); f.Flush();
+                const u32 high = length - 40; // Tiny EEPROM stays within its latched page.
+                const QByteArray second = QByteArray::fromHex("a619c3");
+                DSWrite(f.Cart(), tiny || flash ? 0x0A : 0x02, width, high, second);
+                f.expected.replace(high, second.size(), second); f.Flush();
+                f.Load();
+                RequireDSCapacity(DSRead(f.Cart(), tiny ? 0x0B : 0x03, width, high, second.size()) == second,
+                                  "reloaded cartridge lost proper-chip address width or high data");
+            }
+        }
+        else if (test == "ds-capacity-metadata" || test == "ds-capacity-unsupported")
+        {
+            const bool registered = test == "ds-capacity-metadata";
+            for (u32 length : registered ? std::vector<u32>{524288} : std::vector<u32>{12345, 8 * 1024 * 1024})
+            {
+                DSSaveFixture f(length, registered);
+                RequireDSCapacity(f.Cart().GetROMParams().SaveMemType == 2, "known metadata or unsupported-file fallback protocol changed");
+                // Prime the actual manager's capture buffer before the boundary write.
+                // Otherwise a first full capture could hide wrong wrapping notices.
+                const QByteArray first = QByteArray::fromHex("52");
+                DSWrite(f.Cart(), 0x02, 2, 0x27, first);
+                f.expected.replace(0x27, first.size(), first); f.Flush();
+                const QByteArray crossing = QByteArray::fromHex("a619c3");
+                DSWrite(f.Cart(), 0x02, 2, 8191, crossing);
+                f.expected[8191] = crossing[0]; f.expected[0] = crossing[1]; f.expected[1] = crossing[2];
+                f.Flush();
+                RequireDSCapacity(DSRead(f.Cart(), 0x03, 2, 8191, crossing.size()) == crossing,
+                                  "EEPROM16-bit protocol wrapped into file-only padding");
+                if (registered)
+                {
+                    const QByteArray fullChip(8192, '\x6B');
+                    DSWrite(f.Cart(), 0x02, 2, 0, fullChip);
+                    f.expected.replace(0, fullChip.size(), fullChip); f.Flush();
+                    DSState(f.Cart(), 8192); // Padded file remains absent from old state record.
+                    QByteArray prefix(8195, '\x3C');
+                    prefix.replace(8192, 3, QByteArray::fromHex("6da105"));
+                    f.loader.nds->SetNDSSave(reinterpret_cast<const u8*>(prefix.constData()), prefix.size());
+                    f.expected.replace(0, prefix.size(), prefix); f.Flush();
+                    RequireDSCapacity(DSRead(f.Cart(), 0x03, 2, 8190, 5) == prefix.mid(8190, 2) + prefix.left(3),
+                                      "prefix import across backing changed the physical chip boundary");
+                }
+                f.Load();
+            }
+        }
+        else if (test == "ds-capacity-state")
+        {
+            struct Transfer { u32 sourceFile, sourcePhysical, receiverFile; bool sourceKnown, receiverKnown; };
+            for (const auto spec : {
+                    Transfer{512, 512, 65536, false, true},        // EEPROM16 -> tiny, preserve receiver tail.
+                    Transfer{131072, 131072, 524288, false, true},// EEPROM16 -> EEPROM24, preserve receiver tail.
+                    Transfer{262144, 262144, 131072, false, false},// EEPROM24 -> Flash, grow allocation.
+                    Transfer{131072, 8192, 524288, true, false}}) // Flash -> EEPROM16; exclude source padding.
+            {
+                DSSaveFixture source(spec.sourceFile, spec.sourceKnown, 0x79);
+                DSSaveFixture target(spec.receiverFile, spec.receiverKnown, 0x25);
+                auto image = DSState(source.Cart(), spec.sourcePhysical);
+                auto* manager = target.loader.ndsSave.get();
+                if (spec.sourcePhysical > spec.receiverFile)
+                {
+                    // A short physical payload must fail before replacing the growing buffer.
+                    auto truncated = image.left(59 + spec.sourcePhysical - 1);
+                    u32 total = truncated.size(), sectionLength = total - 16;
+                    std::memcpy(truncated.data() + 8, &total, 4);
+                    std::memcpy(truncated.data() + 20, &sectionLength, 4);
+                    auto* prior = target.Cart().GetSaveMemory();
+                    const auto calls = ndsSaveCalls;
+                    Savestate malformed(truncated.data(), truncated.size(), false);
+                    RequireDSCapacity(!malformed.Error, "truncated fixture framing must reach cartridge reader");
+                    target.Cart().DoSavestate(&malformed);
+                    RequireDSCapacity(malformed.Error && target.Cart().GetSaveMemory() == prior && ndsSaveCalls == calls,
+                                      "truncated growing state replaced live storage or emitted a save callback");
+                    target.Flush();
+                    auto noncanonical = image;
+                    u32 invalidCapacity = spec.sourcePhysical - 1;
+                    std::memcpy(noncanonical.data() + 55, &invalidCapacity, 4);
+                    Savestate invalid(noncanonical.data(), noncanonical.size(), false);
+                    RequireDSCapacity(!invalid.Error, "noncanonical fixture framing must reach cartridge reader");
+                    target.Cart().DoSavestate(&invalid);
+                    RequireDSCapacity(invalid.Error && target.Cart().GetSaveMemory() == prior && ndsSaveCalls == calls,
+                                      "noncanonical state allocated or published a different save capacity");
+                    target.Flush();
+                }
+                Savestate state(image.data(), image.size(), false);
+                RequireDSCapacity(!state.Error && state.MajorVersion() == 14 && state.MinorVersion() == 1,
+                                  "old-format cartridge input framing");
+                target.Cart().DoSavestate(&state);
+                RequireDSCapacity(!state.Error && state.Length() == spec.sourcePhysical + 77,
+                                  "old-format cartridge restore consumed the wrong physical record length");
+                u32 marker = 0; state.Section("TAIL"); state.Var32(&marker);
+                RequireDSCapacity(!state.Error && marker == 0x1234ABCD && target.loader.ndsSave.get() == manager,
+                                  "cartridge-only restore lost following section or receiver save owner");
+                target.expected.replace(0, spec.sourcePhysical, source.expected.left(spec.sourcePhysical));
+                target.Flush(); // Restore callback primes backing before subsequent partial write.
+                DSState(target.Cart(), spec.sourcePhysical);
+                const bool tiny = spec.sourcePhysical == 512;
+                const bool flash = spec.sourcePhysical >= 262144;
+                const unsigned width = tiny ? 1 : spec.sourcePhysical <= 65536 ? 2 : 3;
+                const u32 high = spec.sourcePhysical - 40;
+                const QByteArray update = QByteArray::fromHex("6d3ca1");
+                DSWrite(target.Cart(), tiny || flash ? 0x0A : 0x02, width, high, update);
+                target.expected.replace(high, update.size(), update); target.Flush();
+                RequireDSCapacity(DSRead(target.Cart(), tiny ? 0x0B : 0x03, width, high, update.size()) == update,
+                                  "restored physical capacity failed to restore EEPROM/Flash wire protocol");
+                target.Load(); // Normal reload may use ROM metadata again; all file bytes must survive.
+            }
+        }
+        else return 2;
+        RequireDSCapacity(openFiles == 0, "DS capacity save handle leak");
+        std::printf("%s: PASS\n", test.c_str());
+        return 0;
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: %s\n", test.c_str(), error.what());
+        return 1;
+    }
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
     if (argc != 2) return 2;
     const string test = argv[1];
+    if (test.starts_with("ds-capacity-")) return DSSaveCapacity(test);
     if (test.starts_with("gba-initial-")) return InitialGBASave(test);
     if (test.starts_with("capture-")) return CaptureRecovery(test);
     if (test == "invalid-sd")

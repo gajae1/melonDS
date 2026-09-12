@@ -166,13 +166,13 @@ void CartRetailNAND::ROMCommandStart(NDSCart::NDSCartSlot& cartslot, const u8* c
                     memcpy(&SRAM[offset], SRAMWriteBuffer, len1);
                     memcpy(&SRAM[0], &SRAMWriteBuffer[len1], len2);
 
-                    Platform::WriteNDSSave(SRAM.get(), SRAMLength, offset, len1, UserData);
-                    Platform::WriteNDSSave(SRAM.get(), SRAMLength, 0, len2, UserData);
+                    Platform::WriteNDSSave(SRAM.get(), SRAMFileLength, offset, len1, UserData);
+                    Platform::WriteNDSSave(SRAM.get(), SRAMFileLength, 0, len2, UserData);
                 }
                 else
                 {
                     memcpy(&SRAM[offset], SRAMWriteBuffer, 0x800);
-                    Platform::WriteNDSSave(SRAM.get(), SRAMLength, offset, 0x800, UserData);
+                    Platform::WriteNDSSave(SRAM.get(), SRAMFileLength, offset, 0x800, UserData);
                 }
             }
 

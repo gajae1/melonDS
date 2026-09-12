@@ -556,7 +556,8 @@ foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existin
         ds-prepared-success gba-prepared-success ds-prepared-cancel gba-prepared-cancel
         ds-prepared-queued-cancel gba-prepared-queued-cancel ds-prepared-failure gba-prepared-failure ds-prepared-queued-failure
         capture-ds capture-gba capture-generated-firmware capture-raw-firmware
-        gba-initial-roundtrip gba-initial-existing gba-initial-rejects gba-initial-prepared)
+        gba-initial-roundtrip gba-initial-existing gba-initial-rejects gba-initial-prepared
+        ds-capacity-unknown ds-capacity-metadata ds-capacity-unsupported ds-capacity-state)
     add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
     set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
 endforeach()

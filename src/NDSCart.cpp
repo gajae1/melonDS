@@ -608,7 +608,21 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
         if (homebrew)
             romparams.SaveMemType = 0; // no saveRAM for homebrew
         else
-            romparams.SaveMemType = 2; // assume EEPROM 64k (TODO FIXME)
+        {
+            romparams.SaveMemType = 2; // Legacy default when capacity is unknown.
+            if (args && args->SRAM && args->SRAMLength)
+            {
+                if (const auto type = CartRetail::SPITypeForSaveLength(args->SRAMLength))
+                {
+                    romparams.SaveMemType = *type;
+                    Log(LogLevel::Info, "NDSCart: using existing save length %u for SPI type %u\n",
+                        args->SRAMLength, *type);
+                }
+                else
+                    Log(LogLevel::Warn, "NDSCart: unsupported save length %u; keeping 8 KiB EEPROM protocol and preserving file bytes\n",
+                        args->SRAMLength);
+            }
+        }
     }
 
     if (romparams.ROMSize != romlen)
