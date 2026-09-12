@@ -337,6 +337,7 @@ void EmuThread::run()
                 }
             }
 
+            emuInstance->retrySaveCapture();
             if (emuInstance->ndsSave)
                 emuInstance->ndsSave->CheckFlush();
 

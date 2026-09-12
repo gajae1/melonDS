@@ -46,6 +46,8 @@ public:
 
     void RequestFlush(const melonDS::u8* savedata, melonDS::u32 savelen, melonDS::u32 writeoffset, melonDS::u32 writelen);
     void CheckFlush();
+    // The producer must supply fresh full data; never retain its borrowed buffer.
+    bool NeedsCapture();
 
     // Finish original-file saves, including requests not yet published by CheckFlush.
     // No data or an already committed version succeeds without another file write.
@@ -70,6 +72,8 @@ private:
     std::unique_ptr<melonDS::u8[]> Buffer;
     melonDS::u32 Length;
     bool FlushRequested;
+    bool CaptureFailed = false;
+    bool PublicationFailed = false;
 
     std::unique_ptr<melonDS::u8[]> SecondaryBuffer;
     melonDS::u32 SecondaryBufferLength;

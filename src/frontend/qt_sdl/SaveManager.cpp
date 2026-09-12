@@ -110,11 +110,27 @@ void SaveManager::SetPath(const std::string& path)
 void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen)
 {
     QMutexLocker lock(&StateLock);
+    if (!savedata || !savelen) return;
     if (Length != savelen)
     {
-        Length = savelen;
-        Buffer = std::make_unique<u8[]>(Length);
-
+        try
+        {
+            auto buffer = std::make_unique<u8[]>(savelen);
+            memcpy(buffer.get(), savedata, savelen);
+            Buffer = std::move(buffer);
+            Length = savelen;
+        }
+        catch (const std::bad_alloc&)
+        {
+            if (!CaptureFailed)
+                Log(LogLevel::Error, "SaveManager: Not enough memory to capture save; waiting for producer retry\n");
+            CaptureFailed = true;
+            return;
+        }
+    }
+    else if (CaptureFailed)
+    {
+        // A later partial write cannot recover the bytes missed by a failed capture.
         memcpy(Buffer.get(), savedata, Length);
     }
     else
@@ -133,25 +149,33 @@ void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset,
         }
     }
 
+    CaptureFailed = false;
     FlushRequested = true;
 }
 
 void SaveManager::CheckFlush()
 {
     QMutexLocker lock(&StateLock);
-    CheckFlushLocked();
+    try
+    {
+        CheckFlushLocked();
+    }
+    catch (const std::bad_alloc&)
+    {
+        if (!PublicationFailed)
+            Log(LogLevel::Error, "SaveManager: Not enough memory to publish save; keeping request pending\n");
+        PublicationFailed = true;
+    }
 }
 
 void SaveManager::CheckFlushLocked()
 {
-    if (!FlushRequested) return;
+    if (CaptureFailed || !FlushRequested) return;
     if (!Buffer)
     {
         FlushRequested = false;
         return;
     }
-
-    Log(LogLevel::Info, "SaveManager: Flush requested\n");
 
     if (SecondaryBufferLength != Length)
     {
@@ -162,7 +186,9 @@ void SaveManager::CheckFlushLocked()
 
     if (Length) memcpy(SecondaryBuffer.get(), Buffer.get(), Length);
 
+    Log(LogLevel::Info, "SaveManager: Flush requested\n");
     FlushRequested = false;
+    PublicationFailed = false;
     FlushVersion++;
     TimeAtLastFlushRequest = time(nullptr);
 }
@@ -170,6 +196,7 @@ void SaveManager::CheckFlushLocked()
 bool SaveManager::Flush()
 {
     QMutexLocker lock(&StateLock);
+    if (CaptureFailed) return false;
     try
     {
         CheckFlushLocked();
@@ -185,7 +212,7 @@ bool SaveManager::Flush()
 bool SaveManager::SaveCopy(const std::string& path)
 {
     QMutexLocker lock(&StateLock);
-    if (path.empty() || !Buffer || Length == 0) return false;
+    if (CaptureFailed || path.empty() || !Buffer || Length == 0) return false;
     if (!Path.empty())
     {
 #ifdef _WIN32
@@ -229,6 +256,7 @@ void SaveManager::FlushSecondaryBuffer(u8* dst, u32 dstLength)
 
 bool SaveManager::FlushSecondaryBufferLocked(u8* dst, u32 dstLength)
 {
+    if (!dst && CaptureFailed) return false;
     if (!SecondaryBuffer) return true;
 
     // When flushing to a file, there's no point in re-writing the exact same data.
@@ -255,5 +283,11 @@ bool SaveManager::FlushSecondaryBufferLocked(u8* dst, u32 dstLength)
 bool SaveManager::NeedsFlush()
 {
     QMutexLocker lock(&StateLock);
-    return FlushRequested || FlushVersion != PreviousFlushVersion;
+    return CaptureFailed || FlushRequested || FlushVersion != PreviousFlushVersion;
+}
+
+bool SaveManager::NeedsCapture()
+{
+    QMutexLocker lock(&StateLock);
+    return CaptureFailed;
 }

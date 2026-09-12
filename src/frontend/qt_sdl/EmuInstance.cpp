@@ -579,8 +579,30 @@ string EmuInstance::getAssetPath(bool gba, const string& configpath, const strin
     return AssetPath(directory, name, ext);
 }
 
-static bool FlushSave(SaveManager* save, QString& errorstr)
+void EmuInstance::retrySaveCapture()
 {
+    if (!nds) return;
+    if (ndsSave && ndsSave->NeedsCapture())
+        ndsSave->RequestFlush(nds->GetNDSSave(), nds->GetNDSSaveLength(), 0, nds->GetNDSSaveLength());
+    if (gbaSave && gbaSave->NeedsCapture())
+        gbaSave->RequestFlush(nds->GetGBASave(), nds->GetGBASaveLength(), 0, nds->GetGBASaveLength());
+    if (firmwareSave && firmwareSave->NeedsCapture())
+    {
+        const auto& firmware = nds->GetFirmware();
+        const u8* buffer = firmware.Buffer();
+        u32 length = firmware.Length();
+        if (firmware.GetHeader().Identifier == GENERATED_FIRMWARE_IDENTIFIER)
+        {
+            buffer = firmware.GetExtendedAccessPointPosition();
+            length = sizeof(firmware.GetExtendedAccessPoints()) + sizeof(firmware.GetAccessPoints());
+        }
+        firmwareSave->RequestFlush(buffer, length, 0, length);
+    }
+}
+
+static bool FlushSave(EmuInstance* instance, SaveManager* save, QString& errorstr)
+{
+    instance->retrySaveCapture();
     if (!save || save->Flush()) return true;
     errorstr = QString("Unable to save current data. Retry, or close the window to save a recovery copy.\n\n%1")
         .arg(QString::fromStdString(save->GetPath()));
@@ -600,7 +622,7 @@ std::array<FATStorage*, 2> EmuInstance::getSDCards()
 bool EmuInstance::flushSaveData(QString& errorstr)
 {
     for (SaveManager* save : {ndsSave.get(), gbaSave.get(), firmwareSave.get()})
-        if (!FlushSave(save, errorstr)) return false;
+        if (!FlushSave(this, save, errorstr)) return false;
     return true;
 }
 
@@ -1960,7 +1982,7 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
 
     // Commit current bytes before reading a prospective save, including when
     // reopening the same game/path. Keep the current manager on any failure.
-    if (reset ? !flushSaveData(errorstr) : !FlushSave(ndsSave.get(), errorstr)) return false;
+    if (reset ? !flushSaveData(errorstr) : !FlushSave(this, ndsSave.get(), errorstr)) return false;
     string asset = assets.Valid() ? assets.Name.toStdString() : romname.substr(0, romname.rfind('.'));
     const string saveDir = assets.Valid() ? assets.SaveDirectory.toStdString() : localCfg.GetString("SaveFilePath");
 
@@ -2067,7 +2089,7 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
 void EmuInstance::ejectCart()
 {
     QString errorstr;
-    if (!FlushSave(ndsSave.get(), errorstr))
+    if (!FlushSave(this, ndsSave.get(), errorstr))
     {
         osdAddMessage(0xFFA0A0, "%s", errorstr.toUtf8().constData());
         return;
@@ -2140,7 +2162,7 @@ bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const Asse
         return false;
     }
 
-    if (!FlushSave(gbaSave.get(), errorstr)) return false;
+    if (!FlushSave(this, gbaSave.get(), errorstr)) return false;
     string asset = assets.Valid() ? assets.Name.toStdString() : romname.substr(0, romname.rfind('.'));
     const string saveDir = assets.Valid() ? assets.SaveDirectory.toStdString() : localCfg.GetString("SaveFilePath");
 
@@ -2199,7 +2221,7 @@ void EmuInstance::loadGBAAddon(int type, QString& errorstr)
         return;
     }
 
-    if (!FlushSave(gbaSave.get(), errorstr)) return;
+    if (!FlushSave(this, gbaSave.get(), errorstr)) return;
 
     auto cart = GBACart::LoadAddon(type, this);
     if (!cart)
@@ -2230,7 +2252,7 @@ void EmuInstance::loadGBAAddon(int type, QString& errorstr)
 void EmuInstance::ejectGBACart()
 {
     QString errorstr;
-    if (!FlushSave(gbaSave.get(), errorstr))
+    if (!FlushSave(this, gbaSave.get(), errorstr))
     {
         osdAddMessage(0xFFA0A0, "%s", errorstr.toUtf8().constData());
         return;

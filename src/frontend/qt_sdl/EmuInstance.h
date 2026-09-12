@@ -96,6 +96,8 @@ public:
     int getConsoleType() { return consoleType; }
     EmuThread* getEmuThread() { return emuThread; }
     melonDS::NDS* getNDS() { return nds; }
+    // Only on the emulation thread, or while that producer is paused.
+    void retrySaveCapture();
     std::array<melonDS::FATStorage*, 2> getSDCards();
 
     MainWindow* getMainWindow() { return mainWindow; }

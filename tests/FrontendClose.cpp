@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The close handler is extracted from the current Window.cpp at build time.
 // QMainWindow, message/file dialogs, close events and temporary file commits are
-// real Qt objects. EmuInstance/EmuThread and the planned SaveManager contract are
+// real Qt objects. EmuInstance/EmuThread and the SaveManager contract are
 // fixtures: they do not prove worker durability or producer acknowledgement.
-// Those integration boundaries are covered separately by SaveManagerIO and the
-// frontend build. No production SaveManager API is required for the baseline red.
+// Actual capture/flush recovery is covered by CartReplacement and SaveManagerIO.
 // SD cases reuse the full current FATStorage/FatFs and Qt file I/O fixture.
 #include <QApplication>
 #include <QAbstractButton>
@@ -68,16 +67,29 @@ class SaveManager
 public:
     SaveManager(QString path, EmuThread& producer) : path(std::move(path)), producer(producer) {}
     QByteArray latest = "latest pending save";
+    QByteArray captured = latest;
     bool pending = true, failFlush = false, failCopy = false;
+    bool capturePending = false, failCapture = false;
     bool usedWhileRunning = false;
-    int flushes = 0, copies = 0;
+    int flushes = 0, copies = 0, captures = 0;
 
-    bool NeedsFlush() { return pending; }
+    bool NeedsFlush() { return pending || capturePending; }
+    bool NeedsCapture() { return capturePending; }
+    void RetryCapture()
+    {
+        ++captures;
+        usedWhileRunning |= producer.depth <= 0;
+        if (failCapture) return;
+        captured = latest;
+        capturePending = false;
+        pending = true;
+    }
     std::string GetPath() { return path.toStdString(); }
     bool Flush()
     {
         ++flushes;
         usedWhileRunning |= producer.depth <= 0;
+        if (capturePending) return false;
         if (!pending) return true;
         if (failFlush || !write(path)) return false;
         pending = false;
@@ -87,14 +99,14 @@ public:
     {
         ++copies;
         usedWhileRunning |= producer.depth <= 0;
-        return !failCopy && write(QString::fromStdString(destination));
+        return !capturePending && !failCopy && write(QString::fromStdString(destination));
     }
 
 private:
     bool write(const QString& destination)
     {
         QSaveFile file(destination);
-        return file.open(QIODevice::WriteOnly) && file.write(latest) == latest.size() && file.commit();
+        return file.open(QIODevice::WriteOnly) && file.write(captured) == captured.size() && file.commit();
     }
     const QString path;
     EmuThread& producer;
@@ -108,12 +120,22 @@ struct EmuInstance
     bool deleting = false, destroyed = false;
     int deletions = 0, enabledWrites = 0;
     int keyReleases = 0;
+    int captureRetries = 0;
+    bool recapturedWhileRunning = false;
     void keyReleaseAll() { ++keyReleases; }
     std::array<MainWindow*, kMaxWindows> windows{};
     MainWindow* mainWindow = nullptr;
     std::unique_ptr<SaveManager> ndsSave, gbaSave, firmwareSave;
     std::array<std::unique_ptr<melonDS::FATStorage>, 2> sdCards;
     std::array<melonDS::FATStorage*, 2> getSDCards() { return {sdCards[0].get(), sdCards[1].get()}; }
+
+    void retrySaveCapture()
+    {
+        ++captureRetries;
+        recapturedWhileRunning |= thread.depth <= 0;
+        for (auto* save : {ndsSave.get(), gbaSave.get(), firmwareSave.get()})
+            if (save && save->NeedsCapture()) save->RetryCapture();
+    }
 
     EmuThread* getEmuThread() { return &thread; }
     MainWindow* getMainWindow() { return mainWindow; }
@@ -178,7 +200,10 @@ int main(int argc, char** argv)
     if (argc != 2) return 2;
     const std::string argument = argv[1];
     const bool sd = argument.starts_with("sd-");
-    const std::string scenario = sd ? argument.substr(3) : argument;
+    const bool capture = argument == "capture" || argument.starts_with("capture-");
+    const bool automaticCapture = argument == "capture";
+    const std::string scenario = sd ? argument.substr(3) :
+        capture && !automaticCapture ? argument.substr(8) : argument;
     if (scenario == "app-state")
     {
         EmuInstance instance;
@@ -192,7 +217,8 @@ int main(int argc, char** argv)
         window.onAppStateChanged(Qt::ApplicationInactive);
         window.onAppStateChanged(Qt::ApplicationActive);
         const bool passed = instance.destroyed && instance.keyReleases == 1 &&
-                            instance.thread.pauses == pauses && instance.thread.unpauses == 1;
+                            instance.thread.pauses == pauses && instance.thread.unpauses == 1 &&
+                            !instance.recapturedWhileRunning;
         std::printf("closed-window application-state delivery: %s\n", passed ? "PASS" : "FAIL");
         return passed ? 0 : 1;
     }
@@ -201,7 +227,7 @@ int main(int argc, char** argv)
     const bool clean = scenario == "clean" || (sd && scenario == "readonly");
     const bool retry = scenario == "retry" || (sd && scenario == "child-retry");
     const bool recovery = scenario == "recovery" || scenario == "recovery-cancel" || scenario == "recovery-failure";
-    const bool accepts = clean || retry || scenario == "recovery";
+    const bool accepts = clean || retry || scenario == "recovery" || automaticCapture;
     if (!childCancel && !secondary && !accepts && !recovery &&
         scenario != "cancel-ds" && scenario != "cancel-gba" && scenario != "cancel-firmware" && !(sd && scenario == "cancel-dldi")) return 2;
 
@@ -238,10 +264,21 @@ int main(int argc, char** argv)
     SaveManager* target = childCancel ? childInstance.ndsSave.get() :
                           scenario == "cancel-gba" ? parentInstance.gbaSave.get() :
                           scenario == "cancel-firmware" ? parentInstance.firmwareSave.get() : parentInstance.ndsSave.get();
-    target->failFlush = !clean;
+    target->failFlush = !clean && !capture;
     target->failCopy = scenario == "recovery-failure";
     const QString originalPath = QString::fromStdString(target->GetPath());
     const QString recoveryPath = directory.filePath("recovery.sav");
+    if (capture)
+    {
+        for (auto* save : {parentInstance.ndsSave.get(), parentInstance.gbaSave.get(), parentInstance.firmwareSave.get()})
+        {
+            save->capturePending = true;
+            save->captured = original;
+        }
+        // Retry/SaveCopy must reattempt capture even though the paused producer
+        // cannot issue another guest write while the recovery dialogs are open.
+        target->failCapture = !automaticCapture;
+    }
     if (clean)
         for (auto* manager : {parentInstance.ndsSave.get(), parentInstance.gbaSave.get(), parentInstance.firmwareSave.get()})
             manager->pending = false;
@@ -332,6 +369,7 @@ int main(int argc, char** argv)
             if (!timedOut && prompts == 1 && retry)
             {
                 target->failFlush = false;
+                target->failCapture = false;
                 if (sd) WriteBytes(hostPath, original);
                 auto* button = box->button(QMessageBox::Retry);
                 check(button != nullptr, "Save failure has no Retry action");
@@ -354,6 +392,7 @@ int main(int argc, char** argv)
             if (timedOut || scenario == "recovery-cancel") dialog->reject();
             else
             {
+                if (capture) target->failCapture = false;
                 dialog->selectFile(recoveryPath);
                 // Let this timer return before QFileDialog opens its nested
                 // overwrite confirmation, so the actor can answer that too.
@@ -372,6 +411,7 @@ int main(int argc, char** argv)
         check(accepted && root && !extra && !parentInstance.destroyed, "Closing a secondary view destroyed or blocked its instance");
         check(prompts == 0 && parentInstance.thread.pauses == 0 && target->pending,
               "Closing a surviving instance's secondary view changed pending data or paused it");
+        check(parentInstance.captureRetries == 0, "Secondary-view close attempted capture from a running producer");
     }
     else if (!accepts)
     {
@@ -401,10 +441,27 @@ int main(int argc, char** argv)
                   QString::fromStdString(target->GetPath()) == originalPath,
                   "Recovery copy was missing or treated as a successful original save");
     }
-    if (!clean && !secondary)
+    if (!clean && !secondary && !automaticCapture)
     {
         check(prompts >= 1, "Save failure did not offer the real Qt recovery choices");
         check(allProducersPaused && !target->usedWhileRunning, "Save recovery ran before every closing producer was paused");
+    }
+    check(!parentInstance.recapturedWhileRunning && !childInstance.recapturedWhileRunning,
+          "Save recapture ran without the closing instance's producer pause");
+    if (capture)
+    {
+        for (auto* save : {parentInstance.ndsSave.get(), parentInstance.gbaSave.get(), parentInstance.firmwareSave.get()})
+            check(save->captures >= 1 && !save->NeedsCapture() && !save->usedWhileRunning,
+                  "Close did not recapture every manager's current bytes while paused");
+        if (automaticCapture)
+        {
+            check(prompts == 0, "Recoverable capture failure still prompted on initial close");
+            for (auto* save : {parentInstance.ndsSave.get(), parentInstance.gbaSave.get(), parentInstance.firmwareSave.get()})
+                check(!save->NeedsFlush() && read(QString::fromStdString(save->GetPath())) == save->latest,
+                      "Initial close persisted stale data after recapture");
+        }
+        else
+            check(target->captures >= 2, "Retry or recovery copy did not reattempt the failed capture");
     }
     if (recovery) check(fileDialogs == 1, "Recovery path selection did not use one real Qt file dialog");
     if (scenario == "recovery-cancel" && !sd) check(target->copies == 0, "Cancelling the file picker still wrote a recovery copy");

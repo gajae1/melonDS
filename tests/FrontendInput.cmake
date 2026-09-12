@@ -343,7 +343,7 @@ else()
 endif()
 foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush buffer-resize
         unpublished-pending memory-copy-pending flush-latest recovery-copy same-copy-path copy-commit-failure
-        relocation-pending)
+        relocation-pending allocation-capture allocation-publish)
     add_test(NAME save-manager-${case} COMMAND SaveManagerIO ${case})
     set_tests_properties(save-manager-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()
@@ -500,19 +500,22 @@ set_property(TARGET FrontendClose PROPERTY AUTOGEN_TARGET_DEPENDS
     "${CMAKE_CURRENT_BINARY_DIR}/closeSaveManagers.inc")
 target_include_directories(FrontendClose PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FrontendClose PRIVATE ${QT_LINK_LIBS})
-foreach(case IN ITEMS cancel-ds cancel-gba cancel-firmware child-cancel clean secondary retry recovery recovery-cancel recovery-failure app-state)
+foreach(case IN ITEMS cancel-ds cancel-gba cancel-firmware child-cancel clean secondary retry recovery recovery-cancel recovery-failure app-state
+        capture capture-retry capture-recovery)
     add_test(NAME frontend-close-${case} COMMAND FrontendClose ${case})
     set_tests_properties(frontend-close-${case} PROPERTIES TIMEOUT 10 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
 
 set(cart_methods)
-foreach(method IN ITEMS BuildPath FlushSave FlushAll AssetPath SaveError ReadSave LoadROM LoadGBA UpdateConsole Reset)
+foreach(method IN ITEMS BuildPath RetryCapture FlushSave FlushAll AssetPath SaveError ReadSave LoadROM LoadGBA UpdateConsole Reset)
     if (method STREQUAL "AssetPath")
         set(signature "string EmuInstance::getAssetPath(bool gba, const string& configpath, const string& ext, const string& file = \"\")")
     elseif (method STREQUAL "BuildPath")
         set(signature "static string AssetPath(const string& directory, const string& name, const string& ext)")
+    elseif (method STREQUAL "RetryCapture")
+        set(signature "void EmuInstance::retrySaveCapture()")
     elseif (method STREQUAL "FlushSave")
-        set(signature "static bool FlushSave(SaveManager* save, QString& errorstr)")
+        set(signature "static bool FlushSave(EmuInstance* instance, SaveManager* save, QString& errorstr)")
     elseif (method STREQUAL "FlushAll")
         set(signature "bool EmuInstance::flushSaveData(QString& errorstr)")
     elseif (method STREQUAL "ReadSave")
@@ -550,7 +553,8 @@ foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existin
         ds-pending-failure gba-pending-failure ds-same-save read-short read-error read-oversize read-denied ds-import-partial
         ds-asset-path gba-asset-path asset-reset asset-reset-failure invalid-sd
         ds-prepared-success gba-prepared-success ds-prepared-cancel gba-prepared-cancel
-        ds-prepared-queued-cancel gba-prepared-queued-cancel ds-prepared-failure gba-prepared-failure ds-prepared-queued-failure)
+        ds-prepared-queued-cancel gba-prepared-queued-cancel ds-prepared-failure gba-prepared-failure ds-prepared-queued-failure
+        capture-ds capture-gba capture-generated-firmware capture-raw-firmware)
     add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
     set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
 endforeach()

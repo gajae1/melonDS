@@ -2,7 +2,9 @@
 #include <cstdarg>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <new>
 #include <QCoreApplication>
 #include <QDeadlineTimer>
 #include <QDir>
@@ -18,6 +20,25 @@
 #include "SaveManager.h"
 
 using namespace melonDS;
+
+// Fail one production save-buffer allocation on this calling thread. Qt/file
+// operations and worker allocations remain untouched; this is not real OOM.
+static thread_local size_t failArraySize = 0;
+static thread_local unsigned arrayFailures = 0;
+
+void* operator new[](size_t size)
+{
+    if (size && size == failArraySize)
+    {
+        failArraySize = 0;
+        ++arrayFailures;
+        throw std::bad_alloc();
+    }
+    if (void* data = std::malloc(size ? size : 1)) return data;
+    throw std::bad_alloc();
+}
+void operator delete[](void* data) noexcept { std::free(data); }
+void operator delete[](void* data, size_t) noexcept { std::free(data); }
 
 struct FlushGate
 {
@@ -225,6 +246,70 @@ int main(int argc, char** argv)
               "Relocation lost the latest pending bytes or adopted destination data");
         check(Read(oldPath) == previous, "Relocated flush changed the previous file");
         check(!manager.NeedsFlush(), "Committed relocation remained pending");
+    }
+    else if (!std::strcmp(argv[1], "allocation-capture"))
+    {
+        const QByteArray grown(8193, '\x5C');
+        const QByteArray restored(previous.size(), '\x3D');
+        for (int scenario = 0; scenario < 3; ++scenario)
+        {
+            const bool initial = scenario == 0;
+            const QByteArray& recovered = scenario == 2 ? restored : grown;
+            const QString path = directory.filePath(QString("capture-%1.bin").arg(scenario));
+            const QString copy = directory.filePath(QString("capture-copy-%1.bin").arg(scenario));
+            SaveManager manager("");
+            manager.SetPath(path.toStdString());
+            if (!initial) Queue(manager, previous);
+            const auto before = arrayFailures;
+            failArraySize = grown.size();
+            bool escaped = false;
+            try
+            {
+                manager.RequestFlush(reinterpret_cast<const u8*>(grown.constData()), grown.size(), 0, grown.size());
+            }
+            catch (const std::bad_alloc&) { escaped = true; }
+            check(arrayFailures == before + 1 && failArraySize == 0, "Capture allocation failure was not injected");
+            check(!escaped, "Save capture allocation failure escaped into the producer");
+            if (escaped) continue; // Old Length may exceed its allocation; never read that invalid buffer.
+            check(manager.NeedsFlush(), "Failed capture was reported as clean");
+            check(manager.NeedsCapture(), "Producer could not observe the missing capture");
+            manager.CheckFlush();
+            manager.FlushSecondaryBuffer(); // Exercise the same file path used by the worker.
+            check(!manager.Flush() && !QFile::exists(path), "Failed capture committed stale or missing data");
+            check(!manager.SaveCopy(copy.toStdString()) && !QFile::exists(copy),
+                  "Failed capture offered stale data as the latest recovery copy");
+            // The next callback may cover one byte only, but carries the full
+            // source snapshot. Recovery must capture all previously missed bytes.
+            manager.RequestFlush(reinterpret_cast<const u8*>(recovered.constData()), recovered.size(), 3, 1);
+            check(!manager.NeedsCapture(), "Successful recapture remained unavailable");
+            check(manager.Flush() && Read(path) == recovered && !manager.NeedsFlush(),
+                  "Capture recovery lost the complete latest save");
+        }
+    }
+    else if (!std::strcmp(argv[1], "allocation-publish"))
+    {
+        const QString path = directory.filePath("published-save.bin");
+        const QString copy = directory.filePath("published-copy.bin");
+        const QByteArray grown(8193, '\x5C');
+        SaveManager manager("");
+        manager.SetPath(path.toStdString());
+        Queue(manager, previous);
+        manager.RequestFlush(reinterpret_cast<const u8*>(grown.constData()), grown.size(), 0, grown.size());
+        const auto before = arrayFailures;
+        failArraySize = grown.size();
+        bool escaped = false;
+        try { manager.CheckFlush(); }
+        catch (const std::bad_alloc&) { escaped = true; }
+        check(!escaped, "Publication allocation failure escaped the frame boundary");
+        check(arrayFailures == before + 1 && failArraySize == 0 && manager.NeedsFlush(),
+              "Failed publication discarded the pending latest buffer");
+        check(manager.SaveCopy(copy.toStdString()) && Read(copy) == grown && manager.NeedsFlush(),
+              "Recovery copy did not retain the unpublished latest bytes");
+        failArraySize = grown.size();
+        check(!manager.Flush() && arrayFailures == before + 2 && !QFile::exists(path) && manager.NeedsFlush(),
+              "Explicit flush acknowledged a failed publication");
+        check(manager.Flush() && Read(path) == grown && !manager.NeedsFlush(),
+              "Publication retry lost the latest data or remained pending");
     }
     else if (!std::strcmp(argv[1], "buffer-resize"))
     {

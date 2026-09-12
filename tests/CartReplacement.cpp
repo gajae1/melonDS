@@ -2,9 +2,11 @@
 // Current frontend replacement/console methods, real core/carts/save manager.
 // Only resource selection and host files are scripted; no user ROM/BIOS.
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,6 +29,25 @@ using namespace melonDS::Platform;
 using std::string;
 using std::unique_ptr;
 using std::make_unique;
+
+// Fail only a size-matched array allocation on the RequestFlush caller. Core
+// setup, Qt allocations and the save worker run outside the injection scope.
+static thread_local size_t failCaptureSize = 0;
+static thread_local unsigned captureAllocationFailures = 0;
+
+void* operator new[](size_t size)
+{
+    if (size && size == failCaptureSize)
+    {
+        failCaptureSize = 0;
+        ++captureAllocationFailures;
+        throw std::bad_alloc();
+    }
+    if (void* data = std::malloc(size ? size : 1)) return data;
+    throw std::bad_alloc();
+}
+void operator delete[](void* data) noexcept { std::free(data); }
+void operator delete[](void* data, size_t) noexcept { std::free(data); }
 
 static bool denyNewSave = false;
 static bool denyRead = false;
@@ -164,6 +185,7 @@ struct CartLoader
     void clearBackupState() {}
     void osdAddMessage(unsigned, const char*, ...) {}
     void ejectGBACart() { std::abort(); } // DSi success is outside this fixture.
+    void retrySaveCapture();
     bool flushSaveData(QString& errorstr);
     bool loadSaveRAM(string path, string original, bool gba,
                      unique_ptr<u8[]>& data, u32& length, QString& errorstr);
@@ -198,6 +220,7 @@ void WriteNDSSave(const u8* data, u32 length, u32 offset, u32 count, void* userd
 #include "SaveManager.cpp"
 #define EmuInstance CartLoader
 #include "cartBuildPath.inc"
+#include "cartRetryCapture.inc"
 #include "cartFlushSave.inc"
 #include "cartFlushAll.inc"
 #include "cartAssetPath.inc"
@@ -227,11 +250,112 @@ static void Queue(SaveManager& manager, const QByteArray& bytes)
     manager.CheckFlush();
 }
 
+static int CaptureRecovery(const string& test)
+{
+    QTemporaryDir directory;
+    if (!directory.isValid()) return 2;
+    CartLoader loader; // No emulation thread: the real core's producer is paused.
+    const bool gba = test == "capture-gba";
+    const bool generated = test == "capture-generated-firmware";
+    const bool firmware = generated || test == "capture-raw-firmware";
+    if (!firmware && !gba && test != "capture-ds") return 2;
+
+    const u8* source;
+    QByteArray expected;
+    if (firmware)
+    {
+        auto& data = loader.nds->GetFirmware();
+        std::memset(data.GetExtendedAccessPointPosition(), 0x42, sizeof(data.GetExtendedAccessPoints()));
+        std::memset(data.GetWifiAccessPointPosition(), 0xC3, sizeof(data.GetAccessPoints()));
+        // Distinct bytes outside the settings region detect a wrong start/length.
+        data.GetExtendedAccessPointPosition()[-1] = 0x17;
+        data.GetWifiAccessPointPosition()[sizeof(data.GetAccessPoints())] = 0x29;
+        if (generated)
+        {
+            if (data.GetHeader().Identifier != GENERATED_FIRMWARE_IDENTIFIER) return 2;
+            source = data.GetExtendedAccessPointPosition();
+            expected = QByteArray(sizeof(data.GetExtendedAccessPoints()), '\x42') +
+                QByteArray(sizeof(data.GetAccessPoints()), '\xC3');
+        }
+        else
+        {
+            // Synthetic non-generated image; no private physical firmware dump.
+            data.GetHeader().Identifier = {'M', 'A', 'C', 'P'};
+            data.Buffer()[0x400] = 0x5A;
+            data.Buffer()[data.Length() - 1] = 0x6B;
+            source = data.Buffer();
+            expected = QByteArray(reinterpret_cast<const char*>(source), data.Length());
+        }
+    }
+    else
+    {
+        const u32 length = gba ? 32768 : loader.nds->GetNDSSaveLength();
+        if (length < 512) return 2;
+        expected.resize(length);
+        for (int i = 0; i < expected.size(); ++i)
+            expected[i] = static_cast<char>((i * 17 + (gba ? 91 : 37)) & 0xFF);
+        if (gba) loader.nds->SetGBASave(reinterpret_cast<const u8*>(expected.constData()), length);
+        else loader.nds->SetNDSSave(reinterpret_cast<const u8*>(expected.constData()), length);
+        if ((gba ? loader.nds->GetGBASaveLength() : loader.nds->GetNDSSaveLength()) != length) return 2;
+        source = gba ? loader.nds->GetGBASave() : loader.nds->GetNDSSave();
+    }
+    if (!source || std::memcmp(source, expected.constData(), expected.size())) return 2;
+
+    int failures = 0;
+    const auto check = [&](bool value, const char* message) {
+        if (!value) { ++failures; std::fprintf(stderr, "%s: %s\n", test.c_str(), message); }
+    };
+    auto& owner = firmware ? loader.firmwareSave : gba ? loader.gbaSave : loader.ndsSave;
+    for (bool existing : {false, true})
+    {
+        const string path = directory.filePath(existing ? "existing.sav" : "first.sav").toStdString();
+        owner = make_unique<SaveManager>(path);
+        const QByteArray original = existing ? QByteArray(16, '\xA5') : QByteArray();
+        if (existing)
+        {
+            Queue(*owner, original);
+            if (!owner->Flush()) return 2;
+        }
+
+        // Model one failed full callback after the core accepted its latest
+        // bytes. No guest write, import or reset occurs before either retry.
+        const unsigned before = captureAllocationFailures;
+        bool escaped = false;
+        failCaptureSize = expected.size();
+        try { owner->RequestFlush(source, expected.size(), 0, expected.size()); }
+        catch (const std::bad_alloc&) { escaped = true; }
+        failCaptureSize = 0;
+        check(!escaped && captureAllocationFailures == before + 1,
+              "RequestFlush did not contain the injected capture allocation failure");
+        check(owner->NeedsCapture() && owner->NeedsFlush() && !owner->Flush(),
+              "Failed capture was not pending or allowed a stale flush");
+        check(ReadSaveFile(path) == original, "Failed capture changed the original file");
+
+        QString error;
+        if (existing)
+            check(FlushSave(&loader, owner.get(), error) && error.isEmpty(),
+                  "Frontend flush did not recapture the current core bytes");
+        else
+        {
+            loader.retrySaveCapture();
+            owner->CheckFlush(); // Same producer-side ordering as the frame boundary.
+            check(owner->Flush(), "Producer retry could not flush the first captured save");
+        }
+        check(!owner->NeedsCapture() && !owner->NeedsFlush() && ReadSaveFile(path) == expected,
+              "Recovery before the next guest write did not persist every latest byte");
+        owner.reset(); // Join this worker before inspecting the next recovery path.
+        check(ReadSaveFile(path) == expected, "Teardown replaced the recovered save with stale data");
+    }
+    std::printf("core save capture recovery %s: %d failures\n", test.c_str(), failures);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
     if (argc != 2) return 2;
     const string test = argv[1];
+    if (test.starts_with("capture-")) return CaptureRecovery(test);
     if (test == "invalid-sd")
     {
         // The headless Platform refuses file opens. Use the real failed

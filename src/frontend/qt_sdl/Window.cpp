@@ -677,6 +677,7 @@ bool MainWindow::flushSaveManagers(EmuInstance* instance)
 {
     const auto flush = [&](auto* save, const QString& name, bool image)
     {
+        if (!image) instance->retrySaveCapture();
         if (!save || save->Flush()) return true;
 
         bool copyFailed = false;
@@ -708,6 +709,7 @@ bool MainWindow::flushSaveManagers(EmuInstance* instance)
 
             if (message.clickedButton() == message.button(QMessageBox::Retry))
             {
+                if (!image) instance->retrySaveCapture();
                 if (save->Flush()) break;
                 copyFailed = false;
                 continue;
@@ -727,6 +729,7 @@ bool MainWindow::flushSaveManagers(EmuInstance* instance)
 
             // A copy authorizes closing, without acknowledging the original
             // save or the SD folder sync. Cancel elsewhere can still resume it.
+            if (!image) instance->retrySaveCapture();
             if (save->SaveCopy(dialog.selectedFiles().first().toStdString())) break;
             copyFailed = true;
         }
