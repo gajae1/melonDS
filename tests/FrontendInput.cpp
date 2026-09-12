@@ -188,7 +188,8 @@ int main(int argc, char** argv)
     check(!Config::Load(), "Malformed TOML load was reported as successful");
     Config::GetLocalTable(0).GetInt("Keyboard.A");
     Config::GetLocalTable(0).SetInt("Keyboard.A", Qt::Key_L);
-    Config::Save();
+    QString saveError;
+    check(!Config::Save(&saveError) && !saveError.isEmpty(), "Blocked save did not return its failure");
     if (!damaged.open(QIODevice::ReadOnly)) return 2;
     check(damaged.readAll() == malformed,
           "Saving after a malformed TOML load overwrote the original file");
@@ -202,7 +203,7 @@ int main(int argc, char** argv)
     check(Config::Load() && Config::GetLocalTable(0).GetInt("Keyboard.A") == Qt::Key_J,
           "A repaired config could not be reloaded");
     Config::GetLocalTable(0).SetInt("Keyboard.A", Qt::Key_P);
-    Config::Save();
+    check(Config::Save(&saveError) && saveError.isEmpty(), "Successful save retained its earlier error");
     check(Config::Load() && Config::GetLocalTable(0).GetInt("Keyboard.A") == Qt::Key_P &&
           Config::GetLocalTable(0).GetInt("Keyboard.B") == -1,
           "Saving a repaired config lost settings or remained blocked");

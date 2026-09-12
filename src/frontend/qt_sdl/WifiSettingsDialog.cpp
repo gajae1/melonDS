@@ -120,7 +120,7 @@ void WifiSettingsDialog::done(int r)
             cfg.SetString("LAN.Device", adapters[sel].DeviceName);
         }
 
-        Config::Save();
+        Config::SaveWithDialog(this);
     }
 
     Config::Table cfg = Config::GetGlobalTable();

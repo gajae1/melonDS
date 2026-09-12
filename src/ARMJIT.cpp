@@ -608,6 +608,10 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
 
     bool hasMemoryInstr = false;
 
+    // Writes made by the tracing interpreter happen before this block is
+    // indexed. Record their physical addresses at the existing write barrier.
+    CompileWriteAddrs.Clear();
+    CompilingBlock = true;
     do
     {
         r15 += thumb ? 2 : 4;
@@ -841,6 +845,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
             && ((r15 - (thumb ? 2 : 4)) >> 12) != (blockAddr >> 12))
             instrs[i - 1].Info.EndBlock = true;
     } while(!instrs[i - 1].Info.EndBlock && i < MaxBlockSize && !cpu->Halted && (!cpu->IRQ || (cpu->CPSR & 0x80)));
+    CompilingBlock = false;
 
     if (numLiterals)
     {
@@ -957,6 +962,17 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     u64* entry = &FastBlockLookupRegions[(localAddr >> 27)][(localAddr & 0x7FFFFFF) / 2];
     *entry = u64(MakeLookupTag(blockAddr, cpu->Num, thumb)) << 32;
     *entry |= JITCompiler.SubEntryOffset(block->EntryPoint);
+
+    // A trace may have overwritten its own opcodes before being published.
+    // Replay only invalidation, not stores, now that its code ranges exist.
+    // This also covers every word of block stores and physical aliases.
+    for (u32 j = 0; j < CompileWriteAddrs.Length; j++)
+    {
+        u32 addr = CompileWriteAddrs[j];
+        if (CodeMemRegions[addr >> 27][(addr & 0x7FFFFFF) / 512].Code
+            & (1u << ((addr & 0x1FF) / 16)))
+            InvalidateByAddr(addr);
+    }
 }
 
 void ARMJIT::InvalidateByAddr(u32 localAddr) noexcept

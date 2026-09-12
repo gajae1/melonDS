@@ -136,7 +136,7 @@ void InterfaceSettingsDialog::done(int r)
         QString themeName = ui->cbxUITheme->currentData().toString();
         cfg.SetQString("UITheme", themeName);
 
-        Config::Save();
+        Config::SaveWithDialog(this);
 
         if (!themeName.isEmpty())
             qApp->setStyle(themeName);

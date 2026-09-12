@@ -18,6 +18,7 @@ int TestThumbShiftTiming(NDSArgs&& args, bool jit);
 int TestMultiplyTiming(NDSArgs&& args, bool jit);
 int TestBlockTransferExecution(NDSArgs&& args, bool jit);
 int TestDTCMExecution(NDSArgs&& args, bool jit);
+int TestSMCExecution(NDSArgs&& args, bool jit);
 int TestMPUExecution(NDSArgs&& args, bool jit);
 int TestCacheMPUDisabled(NDSArgs&& args, bool jit);
 int TestDeviceExecution(NDSArgs&& args, bool jit);
@@ -709,6 +710,8 @@ int main(int argc, char** argv) {
         return TestBlockTransferExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "dtcm-remap") == 0)
         return TestDTCMExecution(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "smc-reentry") == 0)
+        return TestSMCExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "cache-mpu-disabled") == 0)
         return TestCacheMPUDisabled(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-execution") == 0)

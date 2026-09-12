@@ -333,3 +333,15 @@ SPU 복사 비용은 모든 작업자·빌드/검사를 멈춘 구간에서 같�
 ARM 오디오에는 AArch64 FP64 두 lane으로 좌우 채널을 계산하는 명시적 NEON backend를 추가했다. 기존 enum 값·Auto 선택·scalar fallback·필터 단계/시간 순서·mute 및 coefficient ramp를 유지하며 streaming/SME 명령은 사용하지 않는다. 실제 Android Clang A64 ELF를 Unicorn에서 실행한 1,800개 전환 블록·952개 경계 사례에서 PCM 차이0, strict profile의 모든 FP64 state가 일치했다. 기본 compiler profile의 state는 미세한 차이가 있어 bit exact로 세지 않는다. ARMv7/비지원/ENABLE_SIMD=OFF에서는 제외되며 명시적 NEON 검사는 비지원 시77을 반환한다. native Apple ABI·기기 성능·물리 출력 검증은 남아 있고 자동 선택을 승격하지 않았다.
 
 Windows 전체 빌드·CTest700/700(73초, 실패/skip0)이 통과했다. 변경된 frontend 대기·x64 회귀를 확인했고 ARM runtime probe와 별도로 기록했다. 다음 우선순위는 실제256픽셀 호출 크기의 SIMD 측정, native ARM 오디오 및 입력/출력 장치 수락, 기존 ROM 취소·설정 저장 실패·13형식 상태 호환 과제다. 계획 ID 완료 수를 이번 후보 추가만으로 올리지 않으며 GitHub Actions·macOS 빌드는 사용하지 않는다.
+
+2026-09-12, 1.1.55: 사용자 승인 후 CJ-15의 기존 작업을 같은 에이전트에서 재개했다. CompileBlock이 해석 실행 중 자기 명령을 바꿔도 해당 블록은 아직 코드 감시 범위에 등록되지 않아 다음 실행에 이전 명령을 사용했다. 실제 물리 쓰기 주소를 tracing 중 기록하고 블록 게시 직후 기존16바이트 무효화 경로로 재확인한다. store 부작용·CPU/Thumb tag·hash guard를 유지하며 전체 cache flush는 추가하지 않았다. 현재1.1.54 기준의 interpreter/JIT/fastmem24조건에서 JIT와fastmem각8실패→0을 확인했다. 확장80조건씩에서 ARM9/7·ARM/Thumb·미러 쓰기/실행·STR/STRH/STM·일반 데이터 쓰기·이웃 블록 보존과 최적화OFF의 값/PC/CPSR/guest cycle이 일치한다. 두 최적화ON의100기능 조건도 통과했다. native A64·모든 remap/코드 writer·강제 코드 버퍼 소진과 전체 guest timing 인증은 남는다.
+
+FS-04는 Config::Save의 성공/오류 반환과 GUI 재시도/저장 없이 계속하기를 연결했다. 설정 창·LAN 설정·최근 목록·창/앱 종료는 같은 실패 안내를 사용하고, 배경 RTC 저장 함수에는 GUI를 넣지 않는다. 같은 실제 입력 설정 창에서 생성한 QSaveFile 실패가 기존2조건에서 조용히 닫히던 것을 재현하고, 원본 보존·재시도·현재 세션 유지·나중 저장·새 프로세스 재로드를 확인했다. 손상 TOML 저장 차단과 성공 시 오류 초기화도 유지한다. 전원 손실·디스크 소진·전체 설정 동시성 재설계를 완료로 세지 않는다.
+
+기존 PixelConvertBenchmark는 전체 프레임1회 호출과 실제 렌더러 크기인256픽셀×192회 호출을 분리한다. 동일한 생성 입력·프레임 memcpy를 포함하고, 모든 지원 backend의 두 출력 전체를 Scalar와 비교한다. timing 밖의 검사·9회 workload/backend 쌍 shuffle·검사 전용 실행을 사용한다. 이 변경 자체는 커널 최적화나 전체 게임 속도 개선이 아니며 Auto 선택을 바꾸지 않는다.
+
+Windows 전체 빌드 후 CTest는704/705가 통과했고, 변경하지 않은 SaveManagerIO의 recovery-copy1개는 Qt 파일 교체에서 액세스 거부로 실패했다. 그1개만 분리 실행해 통과했으며 원인 미확정인 최초 실패 로그와 전체 결과를 보존했다. 현재705개 모두 통과 증거가 있으나 최초 전체 실행을 무실패라고 쓰지 않는다. 최종 core로 블랙 편지→선택600프레임을 세 renderer에서 실행했고 마지막 화면은1.1.52의 대응 결과와 동일하다. 개인 파일 hash를 보존했다. 다음은 구형13상태 일반 이관·ROM 준비 취소·SMC의 나머지 remap 및 실제 장치/플랫폼 수락을 이어간다. GitHub Actions·macOS 빌드는 사용하지 않는다.
+
+최적화ON에서 interpreter와 다른35/100 cycle 관측은 같은 fixture·128cycle 예산의1.1.54 baseline에도 동일했다. 기준/후보의 cycle은 JIT·fastmem각100/100 일치하고 새 cycle 변화는0이다. 기대한 두 번째 SMC 실행의 r0 수정16조건 외 PC/CPSR/메모리 변화는 없다. 이것으로 기존 cycle 차이의 정확성까지 해결한 것은 아니다.
+
+측정은 작업자·컴파일·검사 종료 후 현재 Windows 빌드로 수행했다. 256픽셀×192회 호출과 memcpy를 합한 프레임 중앙값은 이 Ryzen7 9800X3D에서 Scalar10.90µs, AVX2 4.43µs, AVX512BW3.08µs, AVX512F4.02µs였다. 9회 섞은 순서의 생성 입력 측정이며 같은 코드 대조군·다른 CPU·native ARM·전체 게임/물리 지연의 성능 인증은 아니다.

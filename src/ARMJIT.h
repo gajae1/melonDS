@@ -59,6 +59,8 @@ public:
     void CheckAndInvalidate(u32 addr) noexcept
     {
         u32 localAddr = Memory.LocaliseAddress(region, num, addr);
+        if (CompilingBlock)
+            CompileWriteAddrs.Add(localAddr);
         if (CodeMemRegions[region][(localAddr & 0x7FFFFFF) / 512].Code & (1 << ((localAddr & 0x1FF) / 16)))
             InvalidateByAddr(localAddr);
     }
@@ -72,6 +74,8 @@ private:
     bool LiteralOptimizations = false;
     bool BranchOptimizations = false;
     bool FastMemory = false;
+    bool CompilingBlock = false;
+    TinyVector<u32> CompileWriteAddrs {};
 
 public:
     melonDS::NDS& NDS;

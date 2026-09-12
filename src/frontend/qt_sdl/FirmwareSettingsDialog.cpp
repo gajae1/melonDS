@@ -192,7 +192,7 @@ void FirmwareSettingsDialog::done(int r)
 
             firmcfg.SetQString("MAC", ui->txtMAC->text());
 
-            Config::Save();
+            Config::SaveWithDialog(this);
 
             needsReset = true;
         }

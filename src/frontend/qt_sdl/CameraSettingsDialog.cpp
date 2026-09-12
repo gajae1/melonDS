@@ -156,7 +156,7 @@ void CameraSettingsDialog::on_CameraSettingsDialog_accepted()
         camManager[i]->stop();
     }
 
-    Config::Save();
+    Config::SaveWithDialog(this);
 
     closeDlg();
 }

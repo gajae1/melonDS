@@ -475,8 +475,36 @@ int main(int argc, char** argv)
                 "Capturing a draft changed the live configuration before OK");
         auto* box = dialog->findChild<QDialogButtonBox*>("buttonBox");
         Require(box, "Dialog action buttons missing");
+        const bool saveFailure = name == "save-retry" || name == "save-continue";
+        bool reported = false;
+        QTimer savePrompt;
+        if (saveFailure)
+        {
+            // A directory at the destination forces an actual QSaveFile error.
+            // Keep a sentinel inside: failure handling must not remove it.
+            Require(QDir().mkdir(configDirectory + "/melonDS.toml"), "Failed to create save obstruction");
+            QFile sentinel(configDirectory + "/melonDS.toml/keep");
+            Require(sentinel.open(QIODevice::WriteOnly) && sentinel.write("preserve") == 8,
+                    "Failed to create obstruction sentinel");
+            sentinel.close();
+            QObject::connect(&savePrompt, &QTimer::timeout, [&] {
+                auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (!message) return;
+                reported = message->text().contains("settings", Qt::CaseInsensitive) &&
+                           message->detailedText().contains("melonDS.toml");
+                savePrompt.stop();
+                if (name == "save-retry")
+                {
+                    QFile::remove(configDirectory + "/melonDS.toml/keep");
+                    QDir().rmdir(configDirectory + "/melonDS.toml");
+                }
+                message->done(name == "save-retry" ? QMessageBox::Retry : QMessageBox::Ignore);
+            });
+            savePrompt.start(10);
+        }
         QTest::mouseClick(box->button(name == "cancel" ? QDialogButtonBox::Cancel : QDialogButtonBox::Ok), Qt::LeftButton);
         Pump();
+        if (saveFailure) Require(reported, "Settings save failed silently after OK");
         Require(!dialog->isVisible(), "OK/Cancel did not close the dialog");
         if (name == "cancel") expected = Qt::Key_X;
         const char* configKey = hotkey ? "Keyboard.HK_Pause" : "Keyboard.A";
@@ -497,6 +525,16 @@ int main(int argc, char** argv)
             Require(window.input.keyInputMask & 1, "Old default binding is still active");
         }
         dialog.reset();
+        if (name == "save-continue")
+        {
+            QFile sentinel(configDirectory + "/melonDS.toml/keep");
+            Require(sentinel.open(QIODevice::ReadOnly) && sentinel.readAll() == "preserve",
+                    "Continuing after failed save changed the obstructing data");
+            sentinel.close();
+            Require(QFile::remove(sentinel.fileName()) && QDir().rmdir(configDirectory + "/melonDS.toml"),
+                    "Could not remove test-owned obstruction");
+            Config::Save(); // A later ordinary save must persist the retained values.
+        }
         if (name == "cancel") Config::Save();
         Require(Config::Load(), "Saved configuration did not reload");
         InputState restarted;
@@ -504,7 +542,7 @@ int main(int argc, char** argv)
         Require(restarted.localCfg.GetInt(configKey) == expected &&
                 (hotkey ? restarted.hkKeyMapping[HK_Pause] : restarted.keyMapping[0]) == expected,
                 "Captured mapping was lost after configuration reload");
-        if (name == "controller")
+        if (name == "controller" || saveFailure)
         {
             QProcess child;
             child.start(QCoreApplication::applicationFilePath(), {"readback", configDirectory});

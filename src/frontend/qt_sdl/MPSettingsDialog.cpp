@@ -80,7 +80,7 @@ void MPSettingsDialog::done(int r)
         cfg.SetInt("MP.RecvTimeout", ui->sbReceiveTimeout->value());
         cfg.SetBool("MP.AutoRecvTimeout", ui->cbAutomaticTimeout->isChecked());
 
-        Config::Save();
+        Config::SaveWithDialog(this);
     }
 
     QDialog::done(r);

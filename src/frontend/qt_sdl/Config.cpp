@@ -26,6 +26,8 @@
 #include <utility>
 #include <climits>
 #include <QSaveFile>
+#include <QMessageBox>
+#include <QPushButton>
 #include "UTF8.h"
 #include <regex>
 #include "toml/toml.hpp"
@@ -866,14 +868,20 @@ bool Load()
     return true;
 }
 
-void Save()
+bool Save(QString* error)
 {
+    if (error) error->clear();
+    const auto failed = [&](const QString& reason) {
+        if (error) *error = reason;
+        Platform::Log(Platform::LogLevel::Error, "Config: save failed: %s\n", reason.toUtf8().constData());
+        return false;
+    };
     if (WriteBlocked)
-        return;
+        return failed(QObject::tr("The configuration did not load successfully. Repair the file and restart melonDS before saving settings."));
 
     auto cfgpath = Platform::GetLocalFilePath(kConfigFile);
     if (!Platform::CheckFileWritable(cfgpath))
-        return;
+        return failed(QObject::tr("The configuration file or folder is not writable:\n%1").arg(QString::fromStdString(cfgpath)));
 
     std::string contents;
     try
@@ -882,8 +890,7 @@ void Save()
     }
     catch (const toml::serialization_error& error)
     {
-        Platform::Log(Platform::LogLevel::Error, "Config: serialization failed: %s\n", error.what());
-        return;
+        return failed(QObject::tr("Unable to encode the settings:\n%1").arg(QString::fromUtf8(error.what())));
     }
 
     QSaveFile file(QString::fromStdString(cfgpath));
@@ -891,8 +898,27 @@ void Save()
         file.write(contents.data(), static_cast<qint64>(contents.size())) != static_cast<qint64>(contents.size()) ||
         !file.commit())
     {
-        Platform::Log(Platform::LogLevel::Error, "Config: save failed: %s\n", file.errorString().toUtf8().constData());
+        return failed(QObject::tr("%1\n%2").arg(QString::fromStdString(cfgpath), file.errorString()));
     }
+    return true;
+}
+
+bool SaveWithDialog(QWidget* parent)
+{
+    QString error;
+    while (!Save(&error))
+    {
+        QMessageBox message(QMessageBox::Warning, QObject::tr("melonDS"),
+            QObject::tr("Settings could not be saved.\n"
+                        "Changes remain active for this session. Retry after fixing the file or folder, "
+                        "or continue without saving."),
+            QMessageBox::Retry | QMessageBox::Ignore, parent);
+        message.setDetailedText(error);
+        message.button(QMessageBox::Ignore)->setText(QObject::tr("Continue without saving"));
+        message.setDefaultButton(QMessageBox::Retry);
+        if (message.exec() != QMessageBox::Retry) return false;
+    }
+    return true;
 }
 
 

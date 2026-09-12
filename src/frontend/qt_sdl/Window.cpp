@@ -959,7 +959,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     QByteArray geom = saveGeometry();
     QByteArray enc = geom.toBase64(QByteArray::Base64Encoding);
     windowCfg.SetString("Geometry", enc.toStdString());
-    Config::Save();
+    Config::SaveWithDialog(this);
 
     if (!emuInstance->deleteWindow(windowID, false))
     {
@@ -1580,7 +1580,7 @@ void MainWindow::updateRecentFilesMenu()
         recentroms.SetQString(i, recentFileList.at(i));
     }
 
-    Config::Save();
+    Config::SaveWithDialog(this);
     loadRecentFilesMenu(false);
 
     emuInstance->broadcastCommand(InstCmd_UpdateRecentFiles);

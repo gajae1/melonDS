@@ -31,7 +31,7 @@ struct Table
     void SetInt(const char*, int) {}
 };
 Table GetGlobalTable() { return {}; }
-void Save() { ++Saves; }
+bool SaveWithDialog(QWidget*) { ++Saves; return true; }
 }
 void setMPInterface(melonDS::MPInterfaceType type) { melonDS::MPInterface::Set(type); }
 #include "../src/frontend/qt_sdl/LANDialog.cpp"

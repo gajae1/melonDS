@@ -169,7 +169,7 @@ void VideoSettingsDialog::refreshRendererStatus()
 
 void VideoSettingsDialog::on_VideoSettingsDialog_accepted()
 {
-    Config::Save();
+    Config::SaveWithDialog(this);
 
     closeDlg();
 }

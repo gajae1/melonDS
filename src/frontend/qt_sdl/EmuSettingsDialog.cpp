@@ -304,7 +304,7 @@ void EmuSettingsDialog::done(int r)
             cfg.SetInt("Emu.ConsoleType", ui->cbxConsoleType->currentIndex());
             cfg.SetBool("Emu.DirectBoot", ui->chkDirectBoot->isChecked());
 
-            Config::Save();
+            Config::SaveWithDialog(this);
 
             needsReset = true;
         }

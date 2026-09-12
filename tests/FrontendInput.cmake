@@ -71,7 +71,7 @@ else()
 endif()
 foreach(case IN ITEMS letter controller space return tab hotkey escape unbind cancel missing-selection
         selection-reorder selection-migration selection-draft selection-ambiguous selection-stale
-        selection-no-device selection-malformed selection-shutdown)
+        selection-no-device selection-malformed selection-shutdown save-retry save-continue)
     add_test(NAME input-dialog-${case} COMMAND InputConfigUI ${case})
     set_tests_properties(input-dialog-${case} PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()

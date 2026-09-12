@@ -35,7 +35,7 @@
 namespace Config
 {
 int saves = 0;
-void Save() { ++saves; }
+bool SaveWithDialog(QWidget*) { ++saves; return true; }
 struct Table
 {
     void SetString(const std::string&, const std::string&) {}

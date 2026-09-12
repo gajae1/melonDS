@@ -25,6 +25,8 @@
 #include <unordered_map>
 #include <tuple>
 
+class QWidget;
+
 #include "toml/toml11/types.hpp"
 
 namespace Config
@@ -132,7 +134,9 @@ private:
 
 // A failed load blocks saving until a subsequent load succeeds.
 bool Load();
-void Save();
+bool Save(QString* error = nullptr);
+// GUI callers can retry a failed write or keep the current session unsaved.
+bool SaveWithDialog(QWidget* parent = nullptr);
 
 Table GetLocalTable(int instance);
 inline Table GetGlobalTable() { return GetLocalTable(-1); }

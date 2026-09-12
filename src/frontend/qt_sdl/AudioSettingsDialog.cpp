@@ -176,7 +176,7 @@ void AudioSettingsDialog::on_AudioSettingsDialog_accepted()
     cfg.SetQString("Mic.WavPath", ui->txtMicWavPath->text());
     cfg.SetInt("Audio.BufferSize", ui->cbBufferSize->currentData().toInt());
 
-    Config::Save();
+    Config::SaveWithDialog(this);
 
     closeDlg();
 }

@@ -113,7 +113,7 @@ void PathSettingsDialog::done(int r)
             cfg.SetQString("SavestatePath", ui->txtSavestatePath->text());
             cfg.SetQString("CheatFilePath", ui->txtCheatFilePath->text());
 
-            Config::Save();
+            Config::SaveWithDialog(this);
 
             needsReset = true;
         }

@@ -101,7 +101,7 @@ void LANStartHostDialog::done(int r)
         auto cfg = Config::GetGlobalTable();
         cfg.SetString("LAN.PlayerName", player);
         cfg.SetInt("LAN.HostNumPlayers", numplayers);
-        Config::Save();
+        Config::SaveWithDialog(this);
     }
     else
     {
@@ -278,7 +278,7 @@ void LANStartClientDialog::timerEvent(QTimerEvent *event)
         accepted = true;
         auto cfg = Config::GetGlobalTable();
         cfg.SetString("LAN.PlayerName", ui->txtPlayerName->text().toStdString());
-        Config::Save();
+        Config::SaveWithDialog(this);
         LANDialog::openDlg(parentWidget());
         QDialog::done(QDialog::Accepted);
     }

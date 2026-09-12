@@ -207,7 +207,7 @@ void InputConfigDialog::on_InputConfigDialog_accepted()
     // selection can remain missing/ambiguous while keyboard mappings are saved.
     emuInstance->setJoystickSelection(joystickSelection);
     emuInstance->saveJoystickConfig();
-    Config::Save();
+    Config::SaveWithDialog(this);
 
     emuInstance->inputLoadConfig();
 

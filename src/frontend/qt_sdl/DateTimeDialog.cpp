@@ -77,7 +77,7 @@ void DateTimeDialog::done(int r)
 
         cfg.SetBool("RTC.SyncToHost", ui->chkSyncTime->isChecked());
 
-        Config::Save();
+        Config::SaveWithDialog(this);
     }
 
     QDialog::done(r);

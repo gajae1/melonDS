@@ -533,7 +533,7 @@ int main(int argc, char** argv)
     delete camManager[0];
     delete camManager[1];
 
-    Config::Save();
+    Config::SaveWithDialog();
 
     SDL_Quit();
     return ret;
