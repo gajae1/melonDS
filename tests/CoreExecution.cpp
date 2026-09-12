@@ -29,6 +29,7 @@ int TestDMASlotTiming(NDSArgs&& args);
 int TestDSiResetI2C(NDSArgs&& args);
 int TestDSiBTDMP(NDSArgs&& args);
 int TestSchedulerExecution(NDSArgs&& args);
+int TestDSiHLESavestate(NDSArgs&& args);
 
 static int TestSchedulerSavestate(NDSArgs&& args)
 {
@@ -736,6 +737,8 @@ int main(int argc, char** argv) {
         return TestDSiBTDMP(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "scheduler-execution") == 0)
         return TestSchedulerExecution(std::move(args));
+    if (argc > 2 && std::strcmp(argv[2], "dsi-hle-savestate") == 0)
+        return TestDSiHLESavestate(std::move(args));
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
     RendererSettings settings{1, false, false, false};

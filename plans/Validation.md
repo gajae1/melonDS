@@ -72,6 +72,10 @@ MPU 실행 권한은 `CoreExecution`의 `core-.*-mpu-execution`에서 실제 gue
 
 `audio-one-shot-state`는 DS/DSi의 HOLD 중 설정 변경 전후·전체 저장/복원 후 실제 capture와 Busy를 확인한다. 일반14.2와 조건부14.4 저장을 구분하며,14.4에서 필수인 빈 NC13 레코드의 누락·잘못된 mode와14.3에서의 빈 레코드를 거부한다. 과거14.2 수동중지8상태는 별도 고정 입력으로 가져와 잔여 소리가 재생되지 않는지 대조한다. 14.4는1.1.62 이하에서 읽을 수 없고, 구형 수동중지의 모든 모호성을 복구했다는 뜻은 아니다.
 
+`core-dsi-hle-savestate`는 실제 G711 v0x10 serializer로 만든 DSP seed를 생산 factory에 로드하고 MMIO 명령을 시작한다. 실제 전체 상태의 callback 재생성과 범위 밖/미등록 FuncID 거부 뒤 정상 재시도, RunFrame의 PCM·응답·IRQ를 대조한다. seed의 core-ID 필드 교체를 공개하며 DSP 프로그램 CRC 인식/부팅·다른 HLE core·codec 정확도·전체 console rollback이나 실기 timing으로 확대하지 않는다.
+
+FS-08의1.1.64 비공개 대용량 검증은 생산 decoder와 실제1GiB 상한을 유지해 정상/초과/잘린·손상 frame10조건의 길이·전체 바이트·거부 시 입력 보존을 확인했다. 작은 공개 회귀와 별도 증거이며 실제 게임 부팅·UI 취소 시각 수락은 아니다. FS-06의 파일 교체 거부는 단계별 로그와 실패 후 읽기 전용 관측만 확보했다. 실패 뒤 점유자0건은 실패 순간의 일시 점유가 없었다는 증거가 아니며, 성공 결과만 남기기 위한 반복 실행·assertion 완화는 하지 않는다.
+
 루트 [Sanitizers.cmake](../cmake/Sanitizers.cmake)의 `SANITIZE` 설정은 도구와 runtime이 지원하는 조합에서 사용한다. 작은 parser·buffer 경계는 기존 독립 테스트를 우선한다.
 JIT fastmem의 의도된 fault와 실제 메모리 오류를 구분한다. sanitizer runtime이 없거나 충돌하면 실행하지 못한 이유를 남기며 전체 검사를 꺼서 통과로 바꾸지 않는다.
 ASan/UBSan/TSan의 지원 조합 표와 추가 JIT 통합은 BV-11의 후속 과제다. 이 문서 자체는 sanitizer 실행 증거가 아니다.

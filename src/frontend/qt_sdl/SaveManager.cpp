@@ -33,13 +33,14 @@ static bool WriteSaveFile(const std::string& path, const u8* bytes, u32 length)
 {
     QSaveFile file(QString::fromStdString(path));
     file.setDirectWriteFallback(false);
-    if (!file.open(QIODevice::WriteOnly) ||
-        file.write(reinterpret_cast<const char*>(bytes), length) != length ||
-        !file.commit())
-    {
-        Log(LogLevel::Error, "SaveManager: Failed to write save: %s\n", file.errorString().toUtf8().constData());
+    const auto failed = [&](const char* phase) {
+        Log(LogLevel::Error, "SaveManager: Failed to %s save %s (Qt error %d): %s\n",
+            phase, path.c_str(), int(file.error()), file.errorString().toUtf8().constData());
         return false;
-    }
+    };
+    if (!file.open(QIODevice::WriteOnly)) return failed("open");
+    if (file.write(reinterpret_cast<const char*>(bytes), length) != length) return failed("write");
+    if (!file.commit()) return failed("commit");
     Log(LogLevel::Info, "SaveManager: Wrote %u bytes to %s\n", length, path.c_str());
     return true;
 }

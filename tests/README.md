@@ -291,6 +291,15 @@ snapshot still determines eligible slots; each callback must also remain active.
 These six cases do not establish device IRQ/DMA/sleep or physical DS timing.
 See [1.1.17](../plans/releases/1.1.17.md).
 
+`core-dsi-hle-savestate` loads a generated G711 v0x10 DSP state through the
+production factory, then starts a real command through MMIO. A full-state
+reload must recreate callbacks before validating active registrations and
+match uninterrupted PCM, response and IRQ after `RunFrame()`. Out-of-range
+and unregistered function IDs must fail and allow a valid retry. The seed
+uses the real G711 serializer and a core-ID field replacement; it does not
+test DSP program CRC recognition/boot, other HLE cores, codec accuracy,
+physical timing, or frontend rollback of the whole console.
+
 `CoreExecution`'s `mpu-execution` group runs a generated ARM9 program which
 revokes target execution permission after warming its static branch. Normal
 cold/warm entry, dynamic BX denial and restored permission are controls. ARM
