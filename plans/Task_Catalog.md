@@ -45,7 +45,7 @@
 | GR-16 | [frame 종류·수명·반납 계약](workstreams/02-renderers.md#GR-16) | 관찰/확장 | P3 | [1.1.32](Release_Plan.md#v32) | — | 미착수 |
 | AD-01 | [마이크 보간 끝 sample 경계](workstreams/03-audio-dsi.md#AD-01) | 실행 재현 | P1 | [1.1.08](Release_Plan.md#v08) | — | 1.1.07 마지막 sample·빈 입력 보호와 생성 파형/보호 페이지 회귀; 실제 장치 수락 후속 |
 | AD-02 | [마이크 공유 count·장치 수명](workstreams/03-audio-dsi.md#AD-02) | 실행 재현 | P1 | [1.1.08](Release_Plan.md#v08) | — | 1.1.07 count 잠금·FPS 게시·열린 장치 재호출 보존 회귀; 실제 재연결·다중 인스턴스·TSan 후속 |
-| AD-03 | [최초 SPU bitdepth 정책](workstreams/03-audio-dsi.md#AD-03) | 정적 후보 | P1 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |
+| AD-03 | [최초 SPU bitdepth 정책](workstreams/03-audio-dsi.md#AD-03) | 실행 재현 | P1 | [1.1.09](Release_Plan.md#v09) | — | 1.1.49 생성자가 bitdepth 인자를 덮어쓰던 결함 수정; 기존 setter와 같은 정책으로 초기화. 실제 DS/DSi PCM의 Auto·10·16비트 및 재설정 대조가 3/6→6/6; 오디오 장치·청취 수락은 별도 |
 | AD-04 | [underrun·지연·장치 복구](workstreams/03-audio-dsi.md#AD-04) | 합성·장치 공급 재현 | P2 | [1.1.08](Release_Plan.md#v08) | — | 1.1.18 callback 부족/복귀 완화·진단과 생산 프레임 기준 동기화; 사용자 틱 원인 동일성·장기 청취·장치 재연결·물리 지연은 후속 |
 | AD-05 | [load/reset 오디오 이력 정책](workstreams/03-audio-dsi.md#AD-05) | 부분 실행 재현 | P2 | [1.1.08](Release_Plan.md#v08) | — | 1.1.30 성공 load/undo의 PCM/blip/filter/ramp 초기화·복원 신호 유지·실패 복귀 보존 구현; 실제 SDL dummy callback 검증, 물리 버퍼·청감·다른 frontend 후속 |
 | AD-06 | [SPU capture 소스·가산](workstreams/03-audio-dsi.md#AD-06) | 관찰/확장 | P2 | [1.1.09](Release_Plan.md#v09) | — | 미착수 |

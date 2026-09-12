@@ -290,3 +290,5 @@ GR-08의 새 편지 상태는 DSi·DSP HLE였다. 같은 입력의 3모드600프
 2026-09-12, 1.1.48: CJ-11 활성 예외 모드의 debugger SPSR 접근이 CPSR를 읽고 쓰던 결함을 수정했다. ARM9/7·5 bank·활성/비활성20조건은 interpreter/JIT에서 각각10/20→20/20이며 MRS와 MOVS 예외 복귀로 저장 상태의 실제 사용을 확인했다. p/P의 XML wire 번호와 내부 enum 불일치도 수정하고 완전한 길이·hex 검증 뒤에만 접근한다. 기존 XML/g/G 순서는 유지한다. 실제 TCP RSP의 XML 조회·p/P·g 교차 검증은 양 CPU에서 실패→통과했고 GNU ARM GDB UI 수락은 남는다.
 
 BV-07은 원본 libslirp v4.8.0 alias31개를 실제 packet 사본/디렉터리로 저장해 소스 ZIP 소비 대상8/16→16/16, 전체19 corpus·61 packet 바이트 일치를 확인했다. source identity의 symlink 거절은 유지하며 향후 원본/사본을 함께 갱신해야 한다. POSIX 실행·fuzz campaign·스크립트 실행 bit 복원은 수행하지 않았다. Windows 전체 빌드와 CTest682/682(59.78초, 실패/skip0)가 통과했다. 다음은 실기 AA 값 판정과 CJ-12 DMA 타이밍의 실제 입력/기준 대조이며 native A64·다른 OS·장기 게임과 앞선 미완료 과제는 계속 남는다.
+
+2026-09-12, 1.1.49: AD-03 생성자의 bitdepth 인자 덮어쓰기와 Auto 기종 조건 불일치를 기존 SetDegrade10Bit 경로 재사용으로 수정했다. 비공개 입력 없이 실제 DS/DSi 코어에 반복 PCM16을 공급하여 Auto/10/16비트의 최초 생성·재설정 출력을 setter 경로와 대조했고 3/6→6/6을 확인했다. Windows 전체 빌드·CTest682/682(79.95초, 실패/skip0)가 통과했다. 실제 오디오 장치와 청취 수락은 별도다. 구형 13.0 상태 가져오기는 GPU·scheduler·cart 구조와 과거 DSi 전원 의미의 변환 실험까지 진행했으며 제품에는 아직 넣지 않았다. 일반 저장 시점, DMA/SPI 진행 중 상태, 1.1로의 역방향 내보내기는 후속으로 남긴다.
