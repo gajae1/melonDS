@@ -44,6 +44,8 @@ public:
     bool Thumb;
     u16 NumAddresses;
     u16 NumLiterals;
+    // Remappable instruction windows not validated by the entry mapping.
+    bool HasRemapDependency = false;
 
     JitBlockEntry EntryPoint;
 

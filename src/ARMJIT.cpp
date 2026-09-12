@@ -546,6 +546,35 @@ static u32 PrefetchedInstructions(const ARM* cpu) noexcept
     return 2 + (cpu->Num == 0 && (cpu->CPSR & 0x20) && !(cpu->R[15] & 2));
 }
 
+void ARMJIT::RemoveBlock(JitBlock* block) noexcept
+{
+    for (u32 j = 0; j < block->NumAddresses; ++j)
+    {
+        const u32 addr = block->AddressRanges()[j];
+        AddressRange* region = CodeMemRegions[addr >> 27];
+        AddressRange& range = region[(addr & 0x7FFFFFF) / 512];
+        const bool removed = range.Blocks.RemoveByValue(block);
+        assert(removed);
+        range.Code = 0;
+        for (u32 k = 0; k < range.Blocks.Length; ++k)
+        {
+            const auto* neighbor = range.Blocks[k];
+            for (u32 l = 0; l < neighbor->NumAddresses; ++l)
+                if (neighbor->AddressRanges()[l] == addr)
+                    range.Code |= neighbor->AddressMasks()[l];
+        }
+        if (!PageContainsCode(&region[(addr & 0x7FFF000 & ~(Memory.PageSize - 1)) / 512], Memory.PageSize))
+            Memory.SetCodeProtection(addr >> 27, addr & 0x7FFFFFF, false);
+    }
+    const u32 local = block->StartAddrLocal;
+    u64& entry = FastBlockLookupRegions[local >> 27][(local & 0x7FFFFFF) / 2];
+    if (entry == ((u64(MakeLookupTag(block->StartAddr, block->Num, block->Thumb)) << 32)
+                  | JITCompiler.SubEntryOffset(block->EntryPoint)))
+        entry = (u64)UINT32_MAX << 32;
+    (block->Num ? JitBlocks7 : JitBlocks9).erase(block->StartAddr | u32(block->Thumb));
+    RetireJitBlock(block);
+}
+
 void ARMJIT::PrepareCodeRemap() noexcept
 {
     if (CompilingBlock)
@@ -602,33 +631,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         // This virtual key now uses another physical backing. Detach only its
         // old block before retirement: writes to the old backing must neither
         // erase the replacement nor visit a freed restore candidate.
-        JitBlock* oldBlock = existingBlockIt->second;
-        for (u32 j = 0; j < oldBlock->NumAddresses; j++)
-        {
-            u32 addr = oldBlock->AddressRanges()[j];
-            AddressRange* region = CodeMemRegions[addr >> 27];
-            AddressRange& range = region[(addr & 0x7FFFFFF) / 512];
-            bool removed = range.Blocks.RemoveByValue(oldBlock);
-            assert(removed);
-            range.Code = 0;
-            for (u32 k = 0; k < range.Blocks.Length; k++)
-            {
-                JitBlock* neighbor = range.Blocks[k];
-                for (u32 l = 0; l < neighbor->NumAddresses; l++)
-                {
-                    if (neighbor->AddressRanges()[l] == addr)
-                        range.Code |= neighbor->AddressMasks()[l];
-                }
-            }
-            if (!PageContainsCode(&region[(addr & 0x7FFF000 & ~(Memory.PageSize - 1)) / 512], Memory.PageSize))
-                Memory.SetCodeProtection(addr >> 27, addr & 0x7FFFFFF, false);
-        }
-        u64& oldEntry = FastBlockLookupRegions[otherLocalAddr >> 27][(otherLocalAddr & 0x7FFFFFF) / 2];
-        if (oldEntry == ((u64(MakeLookupTag(blockAddr, cpu->Num, thumb)) << 32)
-                        | JITCompiler.SubEntryOffset(oldBlock->EntryPoint)))
-            oldEntry = (u64)UINT32_MAX << 32;
-        RetireJitBlock(oldBlock);
-        map.erase(existingBlockIt);
+        RemoveBlock(existingBlockIt->second);
     }
 
     FetchedInstr instrs[MaxBlockSizeLimit];
@@ -639,6 +642,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     u32 addressMasks[MaxBlockSizeLimit];
     memset(addressMasks, 0, MaxBlockSize * sizeof(u32));
     u32 numAddressRanges = 0;
+    bool hasRemapDependency = false;
 
     u32 numLiterals = 0;
     u32 literalLoadAddrs[MaxBlockSizeLimit];
@@ -686,6 +690,22 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
 
         u32 translatedAddr = LocaliseCodeAddress(cpu->Num, instrs[i].Addr);
         assert(translatedAddr >> 27);
+        const u32 region = translatedAddr >> 27;
+        // Entry lookup validates only one instruction window. Static branches
+        // and sequential ARM7 traces can also embed another WRAM window.
+        u32 windowShift = 0;
+        switch (region)
+        {
+        case ARMJIT_Memory::memregion_SharedWRAM: windowShift = 14; break;
+        case ARMJIT_Memory::memregion_NewSharedWRAM_A: windowShift = 16; break;
+        // NWRAM B/C can overlay half of ARM7's 64 KiB private RAM window.
+        case ARMJIT_Memory::memregion_WRAM7:
+        case ARMJIT_Memory::memregion_NewSharedWRAM_B:
+        case ARMJIT_Memory::memregion_NewSharedWRAM_C: windowShift = 15; break;
+        }
+        if (windowShift && (region != (localAddr >> 27)
+            || (instrs[i].Addr >> windowShift) != (blockAddr >> windowShift)))
+            hasRemapDependency = true;
         u32 translatedAddrRounded = translatedAddr & ~0x1FF;
         if (i == 0 || translatedAddrRounded != addressRanges[numAddressRanges - 1])
         {
@@ -1009,6 +1029,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         block = prevBlock;
     }
 
+    block->HasRemapDependency = hasRemapDependency;
     assert((localAddr & 1) == 0);
     for (u32 j = 0; j < numAddressRanges; j++)
     {
@@ -1047,12 +1068,11 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     }
 }
 
-void ARMJIT::InvalidateRemappedLiterals() noexcept
+void ARMJIT::InvalidateRemappedCode() noexcept
 {
-    if (!LiteralOptimizations) return;
-    // A block outside WRAM can contain a folded read of a remapped bank.
-    // Walk its existing physical dependencies, keeping literal-free code and
-    // unrelated regions. ARM7's private WRAM can be the old shared-window view.
+    // A block's entry can stay mapped while a folded read or inlined
+    // instruction changes backing. Walk the existing physical dependencies;
+    // retain blocks whose instruction mapping is fully checked at entry.
     for (int region : {ARMJIT_Memory::memregion_SharedWRAM, ARMJIT_Memory::memregion_WRAM7,
                        ARMJIT_Memory::memregion_NewSharedWRAM_A,
                        ARMJIT_Memory::memregion_NewSharedWRAM_B,
@@ -1064,22 +1084,22 @@ void ARMJIT::InvalidateRemappedLiterals() noexcept
             auto& range = CodeMemRegions[region][offset / 512];
             for (u32 i = 0; i < range.Blocks.Length;)
             {
-                const auto* block = range.Blocks[i];
-                u32 literal = 0;
+                auto* block = range.Blocks[i];
+                bool dependent = block->HasRemapDependency;
                 for (u32 j = 0; j < block->NumLiterals; ++j)
                     if ((block->Literals()[j] >> 27) == region)
                     {
-                        literal = block->Literals()[j];
+                        dependent = true;
                         break;
                     }
-                if (literal) InvalidateByAddr(literal, false); // removes this block from all ranges
+                if (dependent) RemoveBlock(block);
                 else ++i;
             }
         }
     }
 }
 
-void ARMJIT::InvalidateByAddr(u32 localAddr, bool dataWrite) noexcept
+void ARMJIT::InvalidateByAddr(u32 localAddr) noexcept
 {
     JIT_DEBUGPRINT("invalidating by addr %x\n", localAddr);
 
@@ -1125,7 +1145,7 @@ void ARMJIT::InvalidateByAddr(u32 localAddr, bool dataWrite) noexcept
             u32 addr = block->Literals()[j];
             if (addr == localAddr)
             {
-                if (dataWrite && InvalidLiterals.Find(localAddr) == -1)
+                if (InvalidLiterals.Find(localAddr) == -1)
                 {
                     InvalidLiterals.Add(localAddr);
                     JIT_DEBUGPRINT("found invalid literal %d\n", InvalidLiterals.Length);

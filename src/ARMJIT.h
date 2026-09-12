@@ -46,8 +46,8 @@ class ARMJIT
 public:
     ARMJIT(melonDS::NDS& nds, std::optional<JITArgs> jit) noexcept;
     ~ARMJIT() noexcept;
-    void InvalidateByAddr(u32, bool dataWrite = true) noexcept;
-    void InvalidateRemappedLiterals() noexcept;
+    void InvalidateByAddr(u32) noexcept;
+    void InvalidateRemappedCode() noexcept;
     void CheckAndInvalidateWVRAM(int) noexcept;
     void CheckAndInvalidateITCM() noexcept;
     void Reset() noexcept;
@@ -92,6 +92,7 @@ private:
     bool CompilingBlock = false;
     bool CompileMappingChanged = false;
     TinyVector<u32> CompileWriteAddrs {};
+    void RemoveBlock(JitBlock* block) noexcept;
 
 public:
     melonDS::NDS& NDS;
@@ -206,7 +207,7 @@ class ARMJIT
 public:
     ARMJIT(melonDS::NDS& nds, std::optional<JITArgs>) noexcept : Memory(nds) {}
     ~ARMJIT() noexcept {}
-    void InvalidateByAddr(u32, bool = true) noexcept {}
+    void InvalidateByAddr(u32) noexcept {}
     void CheckAndInvalidateWVRAM(int) noexcept {}
     void CheckAndInvalidateITCM() noexcept {}
     void Reset() noexcept {}

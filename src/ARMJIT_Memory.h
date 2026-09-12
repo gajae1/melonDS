@@ -107,7 +107,7 @@ public:
     void Reset() noexcept;
     void RemapDTCM(u32 newBase, u32 newSize) noexcept;
     void RemapSWRAM() noexcept;
-    void RemapNWRAM(int num) noexcept;
+    void RemapNWRAM() noexcept;
     void SetCodeProtection(int region, u32 offset, bool protect) noexcept;
 
     [[nodiscard]] u8* GetMainRAM() noexcept { return MemoryBase + MemBlockMainRAMOffset; }
@@ -208,7 +208,7 @@ public:
     void Reset() noexcept {}
     void RemapDTCM(u32 newBase, u32 newSize) noexcept {}
     void RemapSWRAM() noexcept {}
-    void RemapNWRAM(int num) noexcept {}
+    void RemapNWRAM() noexcept {}
     void SetCodeProtection(int region, u32 offset, bool protect) noexcept {}
 
     [[nodiscard]] u8* GetMainRAM() noexcept { return MainRAM.data(); }

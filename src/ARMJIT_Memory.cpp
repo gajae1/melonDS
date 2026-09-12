@@ -585,13 +585,13 @@ void ARMJIT_Memory::RemapDTCM(u32 newBase, u32 newSize) noexcept
     Mappings[memregion_DTCM].Clear();
 }
 
-void ARMJIT_Memory::RemapNWRAM(int num) noexcept
+void ARMJIT_Memory::RemapNWRAM() noexcept
 {
     if (NDS.ConsoleType == 0)
         return;
 
     NDS.JIT.PrepareCodeRemap();
-    NDS.JIT.InvalidateRemappedLiterals();
+    NDS.JIT.InvalidateRemappedCode();
 
     // A CPU may reenter the same virtual address after its backing changes.
     // Drop the cached view, not the physical blocks stored in that view.
@@ -600,32 +600,23 @@ void ARMJIT_Memory::RemapNWRAM(int num) noexcept
     if ((NDS.ARM7.FastBlockLookupStart >> 24) == 0x03)
         NDS.ARM7.FastBlockLookupSize = 0;
 
-    auto* dsi = static_cast<DSi*>(&NDS);
-    for (int i = 0; i < Mappings[memregion_SharedWRAM].Length;)
+    // The new window/enable state is not installed yet. It may replace an
+    // existing SWRAM, private ARM7 RAM or another NWRAM bank's host view.
+    // Drop WRAM views so the next access resolves the new bank priority.
+    for (int region : {memregion_SharedWRAM, memregion_WRAM7,
+                       memregion_NewSharedWRAM_A, memregion_NewSharedWRAM_B,
+                       memregion_NewSharedWRAM_C})
     {
-        Mapping& mapping = Mappings[memregion_SharedWRAM][i];
-        if (dsi->NWRAMStart[mapping.Num][num] < mapping.Addr + mapping.Size
-            && dsi->NWRAMEnd[mapping.Num][num] > mapping.Addr)
-        {
-            mapping.Unmap(memregion_SharedWRAM, NDS);
-            Mappings[memregion_SharedWRAM].Remove(i);
-        }
-        else
-        {
-            i++;
-        }
+        for (int i = 0; i < Mappings[region].Length; ++i)
+            Mappings[region][i].Unmap(region, NDS);
+        Mappings[region].Clear();
     }
-    for (int i = 0; i < Mappings[memregion_NewSharedWRAM_A + num].Length; i++)
-    {
-        Mappings[memregion_NewSharedWRAM_A + num][i].Unmap(memregion_NewSharedWRAM_A + num, NDS);
-    }
-    Mappings[memregion_NewSharedWRAM_A + num].Clear();
 }
 
 void ARMJIT_Memory::RemapSWRAM() noexcept
 {
     NDS.JIT.PrepareCodeRemap();
-    NDS.JIT.InvalidateRemappedLiterals();
+    NDS.JIT.InvalidateRemappedCode();
 
     if ((NDS.ARM9.FastBlockLookupStart >> 24) == 0x03)
         NDS.ARM9.FastBlockLookupSize = 0;
@@ -1110,8 +1101,11 @@ bool ARMJIT_Memory::GetMirrorLocation(int region, u32 num, u32 addr, u32& memory
     case memregion_WRAM7:
         if (num == 1)
         {
-            mirrorStart = addr & ~(ARM7WRAMSize - 1);
-            mirrorSize = ARM7WRAMSize;
+            // DSi NWRAM B/C can replace either 32 KiB half independently.
+            // Neither fastmem nor instruction lookup may cover both halves.
+            mirrorSize = NDS.ConsoleType == 1 ? 0x8000 : ARM7WRAMSize;
+            mirrorStart = addr & ~(mirrorSize - 1);
+            memoryOffset = mirrorStart & (ARM7WRAMSize - 1);
             return true;
         }
         return false;
@@ -1297,7 +1291,7 @@ int ARMJIT_Memory::ClassifyAddress9(u32 addr) const noexcept
         case 0x02000000:
             return memregion_MainRAM;
         case 0x03000000:
-            if (NDS.ConsoleType == 1)
+            if (NDS.ConsoleType == 1 && (static_cast<DSi&>(NDS).SCFG_EXT[0] & (1u << 25)))
             {
                 auto& dsi = static_cast<DSi&>(NDS);
                 if (addr >= dsi.NWRAMStart[0][0] && addr < dsi.NWRAMEnd[0][0])
@@ -1349,7 +1343,8 @@ int ARMJIT_Memory::ClassifyAddress7(u32 addr) const noexcept
         case 0x02800000:
             return memregion_MainRAM;
         case 0x03000000:
-            if (NDS.ConsoleType == 1)
+        case 0x03800000:
+            if (NDS.ConsoleType == 1 && (static_cast<DSi&>(NDS).SCFG_EXT[1] & (1u << 25)))
             {
                 auto& dsi = static_cast<DSi&>(NDS);
                 if (addr >= dsi.NWRAMStart[1][0] && addr < dsi.NWRAMEnd[1][0])
@@ -1360,10 +1355,8 @@ int ARMJIT_Memory::ClassifyAddress7(u32 addr) const noexcept
                     return memregion_NewSharedWRAM_C;
             }
 
-            if (NDS.SWRAM_ARM7.Mem)
+            if (addr < 0x03800000 && NDS.SWRAM_ARM7.Mem)
                 return memregion_SharedWRAM;
-            return memregion_WRAM7;
-        case 0x03800000:
             return memregion_WRAM7;
         case 0x04000000:
             return memregion_IO7;

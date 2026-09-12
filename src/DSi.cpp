@@ -1211,7 +1211,7 @@ void DSi::MapNWRAM_A(u32 num, u8 val)
     u8 oldval = (MBK[0][mbkn] >> mbks) & 0xFF;
     if (oldval == val) return;
 
-    JIT.Memory.RemapNWRAM(0);
+    JIT.Memory.RemapNWRAM();
 
     MBK[0][mbkn] &= ~(0xFF << mbks);
     MBK[0][mbkn] |= (val << mbks);
@@ -1256,7 +1256,7 @@ void DSi::MapNWRAM_B(u32 num, u8 val)
     u8 oldval = (MBK[0][mbkn] >> mbks) & 0xFF;
     if (oldval == val) return;
 
-    JIT.Memory.RemapNWRAM(1);
+    JIT.Memory.RemapNWRAM();
 
     MBK[0][mbkn] &= ~(0xFF << mbks);
     MBK[0][mbkn] |= (val << mbks);
@@ -1303,7 +1303,7 @@ void DSi::MapNWRAM_C(u32 num, u8 val)
     u8 oldval = (MBK[0][mbkn] >> mbks) & 0xFF;
     if (oldval == val) return;
 
-    JIT.Memory.RemapNWRAM(2);
+    JIT.Memory.RemapNWRAM();
 
     MBK[0][mbkn] &= ~(0xFF << mbks);
     MBK[0][mbkn] |= (val << mbks);
@@ -1352,7 +1352,7 @@ void DSi::MapNWRAMRange(u32 cpu, u32 num, u32 val)
     u32 oldval = MBK[cpu][5+num];
     if (oldval == val) return;
 
-    JIT.Memory.RemapNWRAM(num);
+    JIT.Memory.RemapNWRAM();
 
     MBK[cpu][5+num] = val;
 
@@ -3611,6 +3611,8 @@ void DSi::ARM7IOWrite32(u32 addr, u32 val)
         SCFG_BIOS |= (val & 0x0703);
         return;
     case 0x04004008:
+        if ((SCFG_EXT[1] ^ val) & (1u << 25))
+            JIT.Memory.RemapNWRAM();
         SCFG_EXT[0] &= ~0x03000000;
         SCFG_EXT[0] |= (val & 0x03000000);
         SCFG_EXT[1] &= ~0x93FF0F07;

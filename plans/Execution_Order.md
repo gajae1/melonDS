@@ -371,3 +371,9 @@ Windows 최종 빌드·전체 CTest793/793(80.75초, 실패/skip0)을 통과했�
 상수 읽기72조건/실행모드, 겹침204사례/실행모드의27,720검사와17,424개 전체 레지스터·PC·플래그·사이클 상태가 통과했다. 겹침 기존 JIT/fastmem의 각2,448실패가0이 됐다. 실제 생성 코드를 실행하여 일반 JIT61,752·fastmem26,910블록 뒤 자동 캐시 리셋을 관찰했고, 리셋 뒤 양 CPU·ARM/Thumb의 재컴파일·SMC·이웃 블록 보존89검사씩 및24상태씩이 통과했다. 캐시 위치를 조작하거나 ResetBlockCache를 직접 호출하지 않았다. 이 검사는 far 버퍼와 native A64 소진을 인증하지 않는다.
 
 Windows 최종 빌드와 전체 CTest799/799(89.87초, 실패/skip0), JIT OFF 영향 범위14/14가 통과했다. 블랙의 현행14.2와 원본1.1 slot2를 세 renderer에서 각각600프레임 실행하여 같은 renderer의 마지막 화면이1.1.58과 같음을 확인했고 개인 입력 파일 hash를 보존했다. 새 성능 향상·모든 프레임/장치 timing 동등성을 주장하지 않는다. native A64·교차 영역 인라인 명령의 재매핑 의존성·실기 절대 timing 및 나머지 계획은 후속이며 GitHub Actions·macOS 빌드는 사용하지 않는다.
+
+2026-09-12, 1.1.60: CJ-15의 교차 영역 인라인 명령 재매핑 의존성을 추적한다. 진입점의 backing이 유지돼도 포함된 WRAM 명령의 backing이 바뀌면 해당 블록을 분리하며 이웃 블록과 상수/분기 최적화를 유지한다. DSi 확장 RAM enable 변경을 코드/host 매핑에 반영하고 ARM7 상위 private RAM에 겹치는 NWRAM을 분류한다. 64KiB private RAM host view가 다른32KiB backing을 덮지 않도록 DSi에서는 반쪽별로 매핑한다. 매핑 변경 때 WRAM host view를 다시 조회하며 전체 코드 캐시 flush는 하지 않는다.
+
+고정1.1.59 대조의 교차 코드64조건에서 JIT/fastmem 각16개의 잘못된 레지스터/PC/플래그 상태가0이 됐고, 기존256개 guest timestamp/cycles는 유지됐다. interpreter와는 각64개의 기존 branch timing 차이가 남아 cycle 동등성을 주장하지 않는다. 추가 SCFG enable 재현에서 JIT50실패·fastmem51실패, private RAM 인접 읽기 재현에서 fastmem2실패를 확인했다. 최종 기존 실행 fixture의73사례/실행모드가 통과했고, Windows 전체802/802(73.98초, 실패/skip0), JIT OFF 영향 범위25/25도 통과했다. 현행14.2 및 원본1.1 slot2 블랙 상태를 세 renderer에서 각600프레임 재생한 마지막 화면은 같은 renderer의1.1.59와 같고 개인 파일 hash도 유지됐다.
+
+far 코드 버퍼의 실제 용량 소진/자동 리셋 후 SMC는1.1.59 고정 코어에서 받은 근거를 보존했다. 1.1.60 연결 재실행은 서브에이전트 자동 안전검사가 차단하여 미실행이며 현재 버전 통과에 포함하지 않는다. native A64, 실기 절대 timing 및 나머지 공개 계획은 남는다. GitHub Actions와 macOS 빌드는 사용하지 않는다.

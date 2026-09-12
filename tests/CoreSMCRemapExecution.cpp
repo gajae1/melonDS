@@ -79,7 +79,7 @@ JitBlockEntry Lookup(NDS& nds, unsigned cpu, u32 addr, bool thumb)
 #endif
 
 void Run(NDS& nds, unsigned num, bool thumb, u32 addr, u32 expected,
-         const char* phase, bool native = false, bool load = false)
+         const char* phase, bool native = false, bool load = false, u32 body = 0)
 {
     auto& cpu = num ? static_cast<ARM&>(nds.ARM7) : static_cast<ARM&>(nds.ARM9);
     bool cached = false;
@@ -120,7 +120,7 @@ void Run(NDS& nds, unsigned num, bool thumb, u32 addr, u32 expected,
     const bool values = load ? cpu.R[3] == expected && cpu.R[0] == 0 && cpu.R[2] == 0
         : cpu.R[thumb ? 0 : 2] == expected && cpu.R[thumb ? 2 : 0] == 0;
     const bool ok = values
-        && cpu.R[15] == addr + (thumb ? (load ? 4 : 0x748) : 8)
+        && cpu.R[15] == (body ? body : addr) + (thumb ? (load ? 4 : 0x748) : 8)
         && cpu.CPSR == (thumb ? (load ? 0xA00000FFu : 0x200000FFu) : 0xA00000DFu)
         && (!jit || !native || emitted == 0);
     ++checks;
@@ -132,10 +132,10 @@ void Run(NDS& nds, unsigned num, bool thumb, u32 addr, u32 expected,
         ok ? "PASS" : "FAIL");
 }
 
-void Warm(NDS& nds, unsigned cpu, bool thumb, u32 addr, u32 value)
+void Warm(NDS& nds, unsigned cpu, bool thumb, u32 addr, u32 value, u32 body = 0)
 {
-    Run(nds, cpu, thumb, addr, value, "cold");
-    Run(nds, cpu, thumb, addr, value, "warm", true);
+    Run(nds, cpu, thumb, addr, value, "cold", false, false, body);
+    Run(nds, cpu, thumb, addr, value, "warm", true, false, body);
 }
 
 void DMAWrite(NDS& nds, DMA& dma, unsigned writer, u32 dest, u32 value, unsigned width)
@@ -417,6 +417,151 @@ void TestRemap(NDSArgs&& args, int bank, unsigned cpu, bool thumb)
     Run(*nds, cpu, thumb, Load, 7, "load-old-backing-return", true, true);
 }
 
+enum class CrossCode { MainRAM, Window, Boundary, PrivateHalf };
+
+void TestCrossCode(NDSArgs&& args, int bank, unsigned num, bool thumb, CrossCode shape)
+{
+    std::unique_ptr<NDS> nds;
+    if (bank < 0) nds = std::make_unique<NDS>(std::move(args));
+    else
+    {
+        DSiArgs dsiArgs;
+        static_cast<NDSArgs&>(dsiArgs) = std::move(args);
+        nds = std::make_unique<DSi>(std::move(dsiArgs));
+    }
+    nds->Reset();
+    NDS::Current = nds.get();
+    const bool window = shape == CrossCode::Window, linear = shape == CrossCode::Boundary;
+    const bool overlay = shape == CrossCode::PrivateHalf;
+    const unsigned stride = bank == 0 ? 0x10000 : 0x8000;
+    const u32 entry = overlay ? 0x03801000 : window ? WRAM : linear ? 0x02FFFFFC : 0x02FF0000;
+    const u32 body = overlay ? 0x03809000 : window ? WRAM + stride : linear ? 0x03000000 : WRAM;
+    const u32 reg = 0x04004040 + (bank == 0 ? 0 : bank == 1 ? 4 : 12);
+    const u32 range = overlay ? 0x08100808 : bank == 0 ? (window ? 0x00202000 : 0x00100000)
+                                                      : (window ? 0x00101000 : 0x00080000);
+    auto map = [&](unsigned backing, bool same = false) {
+        if (overlay)
+            // Only [0x03808000,0x03810000) is overlaid. An empty range changes
+            // the register without changing either private-WRAM half's view.
+            Write(*nds, num, 0x04004058, backing ? range : same ? 0x08080808 : 0);
+        else if (bank < 0)
+            nds->ARM9Write8(0x04000247, backing ? (num ? 2 : 1) : (same ? (num ? 1 : 2) : (num ? 3 : 0)));
+        else
+        {
+            // Slot zero stays fixed for the same-bank case; only slot one's
+            // backing changes. The MainRAM cases instead switch slot zero.
+            const unsigned page = window ? 1 : 0;
+            const u32 setting = 0x80 | (page << 2) | num;
+            nds->ARM9Write8(reg + page, backing ? 0 : setting);
+            nds->ARM9Write8(reg + page + 1, backing ? setting : 0);
+            if (same)
+                Write(*nds, num, 0x04004054 + bank * 4,
+                      range + (bank == 0 ? 0x00100000 : 0x00080000));
+        }
+    };
+    if (bank >= 0)
+    {
+        nds->ARM7Write32(0x04004008, nds->ARM7Read32(0x04004008) | (1u << 25));
+        Write(*nds, num, 0x04004054 + bank * 4, range);
+        if (window || overlay) nds->ARM9Write8(reg, 0x80 | num);
+        if (shape == CrossCode::MainRAM)
+        {
+            nds->ARM9Write8(0x04000247, num ? 3 : 0);
+            nds->ARM7Write32(0x04004008, nds->ARM7Read32(0x04004008) & ~(1u << 25));
+            Program(*nds, num, body, 5);
+            nds->ARM7Write32(0x04004008, nds->ARM7Read32(0x04004008) | (1u << 25));
+        }
+    }
+    // All guest writes precede warming: only production mapping MMIO changes
+    // the embedded instruction afterward, never a cache reset/invalidation.
+    for (unsigned backing : {1u, 0u})
+    {
+        map(backing);
+        Program(*nds, num, body, backing ? 9 : 7);
+    }
+    if (linear) Write(*nds, num, entry, thumb ? 0x46C046C0 : 0xE1A01001); // NOPs; fall through.
+    else if (thumb)
+    {
+        const u32 offset = body - entry - 4;
+        Write(*nds, num, entry, 0xF000 | ((offset >> 12) & 0x7FF), 2);
+        Write(*nds, num, entry + 2, 0xF800 | ((offset >> 1) & 0x7FF), 2); // BL body.
+    }
+    else Write(*nds, num, entry, 0xEA000000 | (((body - entry - 8) >> 2) & 0xFFFFFF));
+    constexpr u32 loadPC = RAM + 0x1000;
+    if (overlay)
+    {
+        Write(*nds, num, loadPC, 0xE59F4004); // LDR r4,[PC,#4]; LDR r3,[r4]; B .
+        Write(*nds, num, loadPC + 4, 0xE5943000);
+        Write(*nds, num, loadPC + 8, 0xEAFFFFFE);
+        Write(*nds, num, loadPC + 12, body);
+        Write(*nds, num, loadPC + 0x20, 0xE59F4004);
+        Write(*nds, num, loadPC + 0x24, 0xE5943000);
+        Write(*nds, num, loadPC + 0x28, 0xEAFFFFFE);
+        Write(*nds, num, loadPC + 0x2C, entry);
+        Run(*nds, num, false, loadPC + 0x20, Read(*nds, num, entry), "cross-overlay-entry-load", false, true, loadPC + 0x24);
+        Run(*nds, num, false, loadPC, 0xE3A02007, "cross-overlay-load-cold", false, true, loadPC + 4);
+        Run(*nds, num, false, loadPC, 0xE3A02007, "cross-overlay-load-warm", true, true, loadPC + 4);
+    }
+    Program(*nds, num, RAM, 42);
+    Warm(*nds, num, thumb, RAM, 42);
+    Warm(*nds, num, thumb, body, 7);
+    const u32 entryOpcode = Read(*nds, num, entry);
+#ifdef JIT_ENABLED
+    const auto normal = Block(*nds, num, RAM, thumb);
+    const auto direct = Block(*nds, num, body, thumb);
+    const u32 entryPhysical = nds->JIT.LocaliseCodeAddress(num, entry);
+    const u32 bodyPhysical = nds->JIT.LocaliseCodeAddress(num, body);
+#endif
+    Warm(*nds, num, thumb, entry, 7, body);
+    map(0, true); // Change mapping registers, keeping entry and target backing.
+    Check(Read(*nds, num, entry) == entryOpcode && Read(*nds, num, body) == 0xE3A02007
+#ifdef JIT_ENABLED
+          && entryPhysical == nds->JIT.LocaliseCodeAddress(num, entry)
+          && bodyPhysical == nds->JIT.LocaliseCodeAddress(num, body)
+#endif
+          , "cross-code-same-backing");
+#ifdef JIT_ENABLED
+    Check(!jit || (direct && Block(*nds, num, body, thumb) == direct),
+          "cross-code-kept-unchanged-direct-target");
+#endif
+    Run(*nds, num, thumb, body, 7, "cross-code-direct-unchanged", true);
+    Warm(*nds, num, thumb, entry, 7, body);
+    map(1);
+    Check(Read(*nds, num, entry) == entryOpcode && Read(*nds, num, body) == 0xE3A02009
+#ifdef JIT_ENABLED
+          && entryPhysical == nds->JIT.LocaliseCodeAddress(num, entry)
+          && bodyPhysical != nds->JIT.LocaliseCodeAddress(num, body)
+#endif
+          , "cross-code-fixed-entry-remapped-instruction");
+    // Run checks actual values, PC, CPSR and warm no-emission. The terminal
+    // idle loop's timestamp is diagnostic, not an exact interpreter/JIT oracle.
+    Warm(*nds, num, thumb, entry, 9, body);
+    if (overlay)
+    {
+        Run(*nds, num, false, loadPC + 0x20, entryOpcode, "cross-overlay-remapped-entry-load", true, true, loadPC + 0x24);
+        Run(*nds, num, false, loadPC, 0xE3A02009, "cross-overlay-remapped-load", true, true, loadPC + 4);
+        Write(*nds, num, body, 0xE3A0200B);
+        Warm(*nds, num, thumb, entry, 11, body);
+        Run(*nds, num, false, loadPC, 0xE3A0200B, "cross-overlay-smc-load", true, true, loadPC + 4);
+    }
+    if (bank >= 0 && (overlay || shape == CrossCode::MainRAM))
+    {
+        nds->ARM7Write32(0x04004008, nds->ARM7Read32(0x04004008) & ~(1u << 25));
+        Warm(*nds, num, thumb, entry, overlay ? 7 : 5, body);
+        if (overlay)
+            Run(*nds, num, false, loadPC, 0xE3A02007, "cross-overlay-disabled-load", true, true, loadPC + 4);
+        nds->ARM7Write32(0x04004008, nds->ARM7Read32(0x04004008) | (1u << 25));
+        Warm(*nds, num, thumb, entry, overlay ? 11 : 9, body);
+        if (overlay)
+            Run(*nds, num, false, loadPC, 0xE3A0200B, "cross-overlay-enabled-load", true, true, loadPC + 4);
+    }
+#ifdef JIT_ENABLED
+    Check(!jit || (normal && Block(*nds, num, RAM, thumb) == normal),
+          "cross-code-kept-unrelated-entry");
+#endif
+    Run(*nds, num, thumb, RAM, 42, "cross-code-unrelated-entry", true);
+}
+
 void TestWRAMState(NDSArgs&& args)
 {
     auto nds = std::make_unique<NDS>(std::move(args));
@@ -614,11 +759,44 @@ int main(int argc, char** argv)
 #ifdef JIT_ENABLED
     if (!jit) args.JIT = std::nullopt;
     else args.JIT->FastMemory = fast;
-    std::printf("MODE %s jit_build=1 LiteralOptimizations=1\n", argv[1]);
+    std::printf("MODE %s jit_build=1 LiteralOptimizations=%d\n", argv[1],
+                std::strcmp(argv[2], "cross-code") != 0);
 #else
     std::printf("MODE %s jit_build=0 physical_index_diagnostics=unavailable budget=128\n", argv[1]);
 #endif
-    if (std::strcmp(argv[2], "active-matrix") == 0)
+    if (std::strcmp(argv[2], "cross-code") == 0)
+    {
+        if (argc != 3) return 2;
+        unsigned cases = 0;
+        for (auto shape : {CrossCode::MainRAM, CrossCode::Window, CrossCode::Boundary, CrossCode::PrivateHalf})
+        for (int bank = -1; bank < 3; ++bank)
+        for (unsigned num : {0u, 1u})
+        for (bool thumb : {false, true})
+        for (bool branch : {false, true})
+        {
+            if ((shape == CrossCode::Window && bank < 0)
+                || (shape == CrossCode::Boundary && !num)
+                || (shape == CrossCode::PrivateHalf && (bank != 1 || !num || thumb || !branch))) continue;
+            NDSArgs crossArgs;
+#ifdef JIT_ENABLED
+            if (!jit) crossArgs.JIT = std::nullopt;
+            else
+            {
+                crossArgs.JIT->FastMemory = fast;
+                crossArgs.JIT->BranchOptimizations = branch;
+                crossArgs.JIT->LiteralOptimizations = false;
+            }
+#endif
+            std::printf("CASE cross-code case=%u shape=%s bank=%d cpu=%u isa=%s branch=%d literal=0\n",
+                ++cases, shape == CrossCode::MainRAM ? "mainram-branch"
+                    : shape == CrossCode::Window ? "nwram-window"
+                    : shape == CrossCode::Boundary ? "arm7-boundary" : "private-wram-overlay",
+                bank, num, thumb ? "thumb" : "arm", branch);
+            TestCrossCode(std::move(crossArgs), bank, num, thumb, shape);
+        }
+        std::printf("CROSS_CODE cases=%u\n", cases);
+    }
+    else if (std::strcmp(argv[2], "active-matrix") == 0)
     {
         for (unsigned num : {0u, 1u})
         for (int bank = num ? 0 : -1; bank <= 2; ++bank)
