@@ -7,6 +7,7 @@
 #include <vector>
 #include <zstd.h>
 #include "types.h"
+#include "ROMPreparation.h"
 
 using namespace melonDS;
 using std::make_unique;
@@ -47,7 +48,8 @@ static unique_ptr<T> AllocateResult(size_t size)
 
 struct EmuInstance
 {
-    u32 decompressROM(const u8* inContent, const u32 inSize, unique_ptr<u8[]>& outContent);
+    u32 decompressROM(const u8* inContent, const u32 inSize, unique_ptr<u8[]>& outContent)
+    { return ROMPreparation::Decompress(inContent, inSize, outContent); }
 };
 
 // ExtractFunction.py generates this from the current EmuInstance.cpp definition.

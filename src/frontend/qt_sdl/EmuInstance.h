@@ -18,6 +18,7 @@
 
 #ifndef EMUINSTANCE_H
 #define EMUINSTANCE_H
+#include "ROMPreparation.h"
 
 #include <SDL2/SDL.h>
 #include <atomic>
@@ -222,12 +223,12 @@ private:
                      std::unique_ptr<melonDS::u8[]>& data, melonDS::u32& length, QString& errorstr);
     bool flushSaveData(QString& errorstr);
     QString getSavErrorString(std::string& filepath, bool gba);
-    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {});
+    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
     void ejectCart();
     bool cartInserted();
     QString cartLabel();
 
-    bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {});
+    bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
     void loadGBAAddon(int type, QString& errorstr);
     void ejectGBACart();
     bool gbaCartInserted();

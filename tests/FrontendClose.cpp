@@ -151,6 +151,7 @@ public:
 private:
     void closeEvent(QCloseEvent* event) override;
     bool prepareClose();
+    bool deferROMClose() { return false; } // Actual worker close is covered by ROMPreparationUI.
     bool flushSaveManagers(EmuInstance* instance);
     bool closeInProgress = false;
     bool closeApproved = false;

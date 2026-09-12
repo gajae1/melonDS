@@ -4,6 +4,7 @@
 // Register contract: libnds v1.8.0 include/nds/card.h (AUXSPICNT 13/7/6).
 #include "Args.h"
 #include "NDS.h"
+#include "DSi.h"
 #include "NDSCart/CartRetail.h"
 #include <cstdio>
 #include <cstring>
@@ -21,7 +22,13 @@ static void Check(bool ok, const char* reason)
 struct ObservedCart : NDSCart::CartRetail
 {
     unsigned Selects = 0, Releases = 0;
-    ObservedCart() : CartRetail(std::make_unique<u8[]>(0x10000), 0x10000, 0, false,
+    static std::unique_ptr<u8[]> MakeROM(bool key1)
+    {
+        auto rom = std::make_unique<u8[]>(0x10000);
+        if (key1) std::memcpy(rom.get() + 0x0C, "KEYT", 4);
+        return rom;
+    }
+    explicit ObservedCart(bool key1 = false) : CartRetail(MakeROM(key1), 0x10000, key1 ? 0x1FC2 : 0, false,
                                {0, 0x10000, 1}, nullptr, 0, nullptr) {}
     void SPISelect() override { ++Selects; CartRetail::SPISelect(); }
     void SPIRelease() override { ++Releases; CartRetail::SPIRelease(); }
@@ -31,6 +38,15 @@ struct ObservedCart : NDSCart::CartRetail
 struct Console : NDS
 {
     using NDS::NDS;
+    void FinishROM(u32 cpu)
+    {
+        const auto event = cpu == 0 ? Event_CartROMTransfer9 : Event_CartROMTransfer7;
+        if (!(SchedListMask & (1u << event))) throw std::runtime_error("Missing ROM event");
+        const auto timestamp = SchedList[event].Timestamp;
+        RunSystem(timestamp);
+        ARM9Timestamp = timestamp << ARM9ClockShift;
+        ARM7Timestamp = timestamp;
+    }
     void Finish(u32 cpu)
     {
         const auto event = cpu == 0 ? Event_CartSPITransfer9 : Event_CartSPITransfer7;
@@ -48,13 +64,13 @@ struct Fixture
     std::unique_ptr<Console> Machine;
     ObservedCart* Cart;
     u32 CPU;
-    explicit Fixture(u32 cpu) : CPU(cpu)
+    explicit Fixture(u32 cpu, bool key1 = false) : CPU(cpu)
     {
         NDSArgs args;
         args.JIT = std::nullopt;
         Machine = std::make_unique<Console>(std::move(args));
         Machine->Reset();
-        auto cart = std::make_unique<ObservedCart>();
+        auto cart = std::make_unique<ObservedCart>(key1);
         Cart = cart.get();
         Machine->SetNDSCart(std::move(cart));
         // ARM9 owns EXMEMCNT's slot-selection bit even when testing ARM7 I/O.
@@ -104,6 +120,41 @@ struct Fixture
     }
 };
 
+static void TestKey1State(u32 cpu)
+{
+    auto start = [cpu](Fixture& f, const u8 (&command)[8], u32 size) {
+        f.Control(0xC000);
+        for (u32 i = 0; i < 8; i++) f.Write8(0x040001A8 + i, command[i], cpu);
+        const u32 control = (1u << 31) | (1u << 29) | (size << 24);
+        if (cpu) f.Machine->ARM7Write32(0x040001A4, control);
+        else f.Machine->ARM9Write32(0x040001A4, control);
+        f.Machine->FinishROM(cpu);
+    };
+    // Chip-ID command 10 00 00 00 00 00 00 00 encrypted for game code KEYT
+    // and the generated BIOS's zero KEY1 table. No firmware image is required.
+    constexpr u8 enter[8] = {0x3C};
+    constexpr u8 query[8] = {0x42, 0xD9, 0x97, 0x5C, 0x24, 0xE1, 0x99, 0x07};
+    auto readID = [cpu, &start, &query](Fixture& f) {
+        start(f, query, 7);
+        return cpu ? f.Machine->ARM7Read32(0x04100010) : f.Machine->ARM9Read32(0x04100010);
+    };
+    Fixture original(cpu, true);
+    start(original, enter, 0);
+    Savestate saved;
+    if (!original.Machine->DoSavestate(&saved) || saved.Error) throw std::runtime_error("KEY1 save failed");
+    saved.Finish();
+    const u32 before = readID(original);
+    Check(before == 0x1FC2, "Generated encrypted chip-ID command failed before saving");
+
+    // Reusing the first console would hide a missing key schedule in the save.
+    Fixture restored(cpu, true);
+    Savestate load(saved.Buffer(), saved.Length(), false);
+    if (!restored.Machine->DoSavestate(&load) || load.Error) throw std::runtime_error("KEY1 restore failed");
+    const u32 after = readID(restored);
+    Check(after == 0x1FC2, "Cold savestate load did not restore KEY1 command decryption");
+    std::printf("CPU%u encrypted chip ID before=%08X restored=%08X\n", cpu, before, after);
+}
+
 int main(int argc, char** argv)
 try
 {
@@ -111,6 +162,7 @@ try
     const std::string mode = argv[1];
     for (u32 cpu : {0u, 1u})
     {
+        if (mode == "key1-state") { TestKey1State(cpu); continue; }
         if ((mode == "arm9-low" && cpu != 0) || (mode == "arm7-low" && cpu != 1)) continue;
         Fixture f(cpu);
         if (mode == "control" || mode == "arm9-low" || mode == "arm7-low" || mode == "state-resume")
@@ -177,6 +229,23 @@ try
             Check(f.Cart->Selects == selects && f.Cart->Releases == releases, "Ejected cart received SPI callbacks");
         }
         else return 2;
+    }
+    if (mode == "key1-state")
+    {
+        // A DSi-typed caller must reach the shared state loader and its DSi
+        // section; a stale derived declaration previously failed to link.
+        DSiArgs args;
+        args.JIT = std::nullopt;
+        auto dsi = std::make_unique<DSi>(std::move(args));
+        dsi->Reset();
+        dsi->NWRAM_A[0x123] = 0x5A;
+        Savestate saved;
+        if (!dsi->DoSavestate(&saved) || saved.Error) throw std::runtime_error("DSi typed save failed");
+        saved.Finish();
+        dsi->NWRAM_A[0x123] = 0xC3;
+        Savestate load(saved.Buffer(), saved.Length(), false);
+        if (!dsi->DoSavestate(&load) || load.Error) throw std::runtime_error("DSi typed restore failed");
+        Check(dsi->NWRAM_A[0x123] == 0x5A, "DSi typed state roundtrip lost NWRAM");
     }
     std::printf("Cart SPI %s: %u failures\n", argv[1], Failures);
     return Failures ? 1 : 0;

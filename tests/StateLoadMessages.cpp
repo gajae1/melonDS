@@ -120,7 +120,7 @@ public:
         if (!bootOK) { if (stopOnBootFailure) nds->Stop(); return false; }
         nds->Start(); return true;
     }
-    bool loadROM(const QStringList&, bool, QString&, const AssetIdentity::Selection&)
+    bool loadROM(const QStringList&, bool, QString&, const AssetIdentity::Selection&, const std::shared_ptr<ROMPreparation::Data>&)
     {
         callbacksDuringLoad |= audio;
         if (!bootOK && stopOnBootFailure) nds->Stop();
@@ -147,7 +147,7 @@ public:
     bool preserveFrame() { std::abort(); }
     int releaseGL() { std::abort(); }
     void ejectCart() { std::abort(); }
-    bool loadGBAROM(const QStringList&, QString&, const AssetIdentity::Selection&) { std::abort(); }
+    bool loadGBAROM(const QStringList&, QString&, const AssetIdentity::Selection&, const std::shared_ptr<ROMPreparation::Data>&) { std::abort(); }
     void loadGBAAddon(int, QString&) { std::abort(); }
     void ejectGBACart() { std::abort(); }
     void enableCheats(bool) { std::abort(); }

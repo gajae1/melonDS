@@ -9,6 +9,8 @@ set(SOURCES_QT_SDL
     Screen.cpp
     Window.cpp
     EmuInstance.cpp
+    ROMPreparation.cpp
+    ROMPreparation.h
     AssetIdentity.cpp
     EmuInstanceAudio.cpp
     EmuInstanceInput.cpp

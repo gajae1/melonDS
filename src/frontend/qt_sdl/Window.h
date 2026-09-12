@@ -32,6 +32,8 @@
 #include <QMutex>
 #include <QScreen>
 #include <QCloseEvent>
+#include <QPointer>
+#include "ROMPreparation.h"
 
 #include "Screen.h"
 #include "Config.h"
@@ -40,6 +42,8 @@
 
 class EmuInstance;
 class EmuThread;
+class QProgressDialog;
+class QInputDialog;
 
 const int kMaxRecentROMs = 10;
 
@@ -203,9 +207,29 @@ private:
     void updateRecentFilesMenu();
 
     bool verifySetup();
-    QString pickFileFromArchive(QString archiveFileName);
+    void pickFileFromArchive(const ROMPreparation::Result& result);
     QStringList pickROM(bool gba);
     void updateCartInserted(bool gba);
+
+    enum class ROMAction { BootDS, InsertDS, InsertGBA, Drop };
+    ROMPreparation::Controller romPreparation{this};
+    QPointer<QProgressDialog> romProgress;
+    QPointer<QInputDialog> romMemberDialog;
+    QPointer<MainWindow> romCloseWaiter;
+    ROMAction romAction = ROMAction::BootDS;
+    bool romRememberFolder = false, romRememberRecent = false;
+    bool romApplying = false, romClosePending = false;
+    QStringList reselectedROM;
+    ROMAction reselectedAction = ROMAction::BootDS;
+    bool reselectedRememberFolder = false;
+    QStringList nextPreloadROM;
+    bool bootAfterPreload = false;
+    void cancelROMPreparation();
+    void cancelROMPreparations();
+    bool deferROMClose();
+    void showROMProgress();
+    void startROMPreparation(QStringList files, ROMAction action, bool rememberFolder = false);
+    void finishROMPreparation(const ROMPreparation::Result& result);
 
     void createScreenPanel();
 

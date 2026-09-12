@@ -36,6 +36,7 @@
 #include <zstd.h>
 #ifdef ARCHIVE_SUPPORT_ENABLED
 #include "ArchiveUtil.h"
+#include "ROMPreparation.h"
 #endif
 #include "EmuInstance.h"
 #include "Config.h"
@@ -1658,89 +1659,7 @@ bool EmuInstance::bootToMenu(QString& errorstr)
 
 u32 EmuInstance::decompressROM(const u8* inContent, const u32 inSize, unique_ptr<u8[]>& outContent)
 {
-    const u64 realSize = ZSTD_getFrameContentSize(inContent, inSize);
-    const u32 maxSize = 0x40000000;
-
-    if (realSize == ZSTD_CONTENTSIZE_ERROR || (realSize > maxSize && realSize != ZSTD_CONTENTSIZE_UNKNOWN))
-    {
-        return 0;
-    }
-
-    // A frame's declared size does not include any following frames.
-    if (realSize != ZSTD_CONTENTSIZE_UNKNOWN &&
-        ZSTD_findFrameCompressedSize(inContent, inSize) == inSize)
-    {
-        if (realSize == 0) return 0;
-
-        try
-        {
-            auto newOutContent = make_unique<u8[]>(realSize);
-            size_t decompressed = ZSTD_decompress(newOutContent.get(), realSize, inContent, inSize);
-
-            if (ZSTD_isError(decompressed) || decompressed != realSize) return 0;
-
-            outContent = std::move(newOutContent);
-            return static_cast<u32>(decompressed);
-        }
-        catch (const std::bad_alloc&)
-        {
-            return 0;
-        }
-    }
-
-    unique_ptr<ZSTD_DStream, decltype(&ZSTD_freeDStream)> dStream(ZSTD_createDStream(), ZSTD_freeDStream);
-    if (!dStream || ZSTD_isError(ZSTD_initDStream(dStream.get()))) return 0;
-
-    const u32 startSize = 1024 * 1024 * 16;
-    unique_ptr<void, decltype(&free)> partialOutContent(malloc(startSize), free);
-    if (!partialOutContent) return 0;
-
-    ZSTD_inBuffer inBuf = {inContent, inSize, 0};
-    ZSTD_outBuffer outBuf = {partialOutContent.get(), startSize, 0};
-
-    for (;;)
-    {
-        if (outBuf.pos == outBuf.size && outBuf.size < maxSize)
-        {
-            const size_t newSize = outBuf.size * 2;
-            void* grown = realloc(partialOutContent.get(), newSize);
-            if (!grown) return 0;
-            partialOutContent.release();
-            partialOutContent.reset(grown);
-            outBuf.dst = grown;
-            outBuf.size = newSize;
-        }
-
-        // At the cap, allow checksums/empty frames to finish, but reject another byte.
-        u8 overflowByte;
-        ZSTD_outBuffer overflow = {&overflowByte, 1, 0};
-        ZSTD_outBuffer* output = outBuf.pos == maxSize ? &overflow : &outBuf;
-        const size_t previousInput = inBuf.pos;
-        const size_t previousOutput = outBuf.pos;
-        size_t result = ZSTD_decompressStream(dStream.get(), output, &inBuf);
-
-        if (ZSTD_isError(result) || overflow.pos != 0) return 0;
-        if (result == 0 && inBuf.pos == inBuf.size) break;
-
-        // Exhausted input with an unfinished frame must not publish partial output.
-        if (inBuf.pos == previousInput && outBuf.pos == previousOutput) return 0;
-    }
-
-    if (outBuf.pos == 0) return 0;
-
-    try
-    {
-        auto newOutContent = make_unique<u8[]>(outBuf.pos);
-        memcpy(newOutContent.get(), outBuf.dst, outBuf.pos);
-
-        // inContent can belong to outContent, so replace it only after all decoding.
-        outContent = std::move(newOutContent);
-        return static_cast<u32>(outBuf.pos);
-    }
-    catch (const std::bad_alloc&)
-    {
-        return 0;
-    }
+    return ROMPreparation::Decompress(inContent, inSize, outContent);
 }
 
 void EmuInstance::clearBackupState()
@@ -1951,59 +1870,7 @@ void EmuInstance::customizeFirmware(Firmware& firmware, bool overridesettings) n
 // Loads ROM data without parsing it. Works for GBA and NDS ROMs.
 bool EmuInstance::loadROMData(const QStringList& filepath, std::unique_ptr<u8[]>& filedata, u32& filelen, string& basepath, string& romname) noexcept
 {
-    try
-    {
-        if (filepath.empty()) return false;
-        string filename = filepath.at(0).toStdString();
-        string membername = filename;
-        unique_ptr<u8[]> data;
-        u32 length = 0;
-
-        if (filepath.count() == 1)
-        {
-            const unique_ptr<FileHandle, decltype(&Platform::CloseFile)> file(
-                Platform::OpenFile(filename, FileMode::Read), Platform::CloseFile);
-            if (!file) return false;
-            const u64 size = Platform::FileLength(file.get());
-            if (!size || size > 0x40000000) return false;
-
-            data = std::make_unique_for_overwrite<u8[]>(static_cast<u32>(size));
-            if (Platform::FileRead(data.get(), 1, size, file.get()) != size) return false;
-            length = static_cast<u32>(size);
-
-            if (filename.length() > 4 && filename.ends_with(".zst"))
-            {
-                length = decompressROM(data.get(), length, data);
-                if (!length) return false;
-                filename.resize(filename.length() - 4);
-                membername = filename;
-            }
-        }
-#ifdef ARCHIVE_SUPPORT_ENABLED
-        else if (filepath.count() == 2)
-        {
-            const s32 read = Archive::ExtractFileFromArchive(filepath.at(0), filepath.at(1), data, &length);
-            if (read < 0 || !data || !length || length > 0x40000000 || static_cast<u32>(read) != length)
-                return false;
-            membername = filepath.at(1).toStdString();
-        }
-#endif
-        else return false;
-
-        const int separator = lastSep(filename);
-        string directory = separator < 0 ? "" : filename.substr(0, separator);
-        string name = membername.substr(lastSep(membername) + 1);
-        // Commit bytes and names together, after every read/decode/allocation.
-        filedata = std::move(data);
-        filelen = length;
-        basepath = std::move(directory);
-        romname = std::move(name);
-        return true;
-    }
-    catch (const std::bad_alloc&)
-    {
-        return false;
-    }
+    return ROMPreparation::Read(filepath, filedata, filelen, basepath, romname);
 }
 
 QString EmuInstance::getSavErrorString(std::string& filepath, bool gba)
@@ -2068,14 +1935,22 @@ bool EmuInstance::loadSaveRAM(string path, string original, bool gba, unique_ptr
     }
 }
 
-bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets)
+bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)
 {
     unique_ptr<u8[]> filedata = nullptr;
     u32 filelen;
     std::string basepath;
     std::string romname;
 
-    if (!loadROMData(filepath, filedata, filelen, basepath, romname))
+    if (prepared && !prepared->Stop.stop_requested() && prepared->Source == filepath &&
+        prepared->Bytes && prepared->Length && prepared->Length <= 0x40000000)
+    {
+        filedata = std::move(prepared->Bytes);
+        filelen = prepared->Length;
+        basepath = prepared->BasePath;
+        romname = prepared->Name;
+    }
+    else if (prepared || !loadROMData(filepath, filedata, filelen, basepath, romname))
     {
         errorstr = "Failed to load the DS ROM.";
         return false;
@@ -2236,7 +2111,7 @@ QString EmuInstance::cartLabel()
 }
 
 
-bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets)
+bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)
 {
     if (consoleType == 1)
     {
@@ -2249,7 +2124,15 @@ bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const Asse
     std::string basepath;
     std::string romname;
 
-    if (!loadROMData(filepath, filedata, filelen, basepath, romname))
+    if (prepared && !prepared->Stop.stop_requested() && prepared->Source == filepath &&
+        prepared->Bytes && prepared->Length && prepared->Length <= 0x40000000)
+    {
+        filedata = std::move(prepared->Bytes);
+        filelen = prepared->Length;
+        basepath = prepared->BasePath;
+        romname = prepared->Name;
+    }
+    else if (prepared || !loadROMData(filepath, filedata, filelen, basepath, romname))
     {
         errorstr = "Failed to load the GBA ROM.";
         return false;

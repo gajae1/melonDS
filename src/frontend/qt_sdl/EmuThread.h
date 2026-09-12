@@ -36,6 +36,7 @@
 #include "GBACart.h"
 #include "StateLoadResult.h"
 #include "AssetIdentity.h"
+#include "ROMPreparation.h"
 
 namespace melonDS
 {
@@ -99,6 +100,7 @@ public:
     {
         QStringList Files;
         AssetIdentity::Selection Assets;
+        std::shared_ptr<ROMPreparation::Data> Prepared;
     };
     struct AssetResetRequest
     {
@@ -126,9 +128,9 @@ public:
     void emuFrameStep();
     void emuReset();
 
-    int bootROM(const QStringList& filename, QString& errorstr);
+    int bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
     int bootFirmware(QString& errorstr);
-    int insertCart(const QStringList& filename, bool gba, QString& errorstr);
+    int insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
     void ejectCart(bool gba);
     int insertGBAAddon(int type, QString& errorstr);
 
@@ -196,7 +198,7 @@ private:
     std::atomic<int> glFailureWindow{-1};
     std::stop_token cheatStopToken();
     bool prepareAssets(const QStringList& source, bool gba, bool allowExisting,
-                       AssetIdentity::Selection& selection, QString& error);
+                       AssetIdentity::Selection& selection, QString& error, std::stop_token stop = {});
 
     void updateRenderer();
     void compileShaders();

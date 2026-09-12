@@ -20,6 +20,7 @@
 #include "NDSCart/CartSD.h"
 #include "SaveManager.h"
 #include "AssetIdentity.h"
+#include "ROMPreparation.h"
 #include "Platform.h"
 using namespace melonDS;
 using namespace melonDS::Platform;
@@ -108,6 +109,7 @@ struct CartLoader
     int consoleType = 0, audioFreq = 48000;
     int cartType = 0, gbaCartType = 0;
     bool active = true, resourcesOK = true;
+    bool forbidROMRead = false;
     bool changeCart = false, changeGBACart = false;
     string baseROMDir, baseROMName = "current.nds", baseAssetName = "current";
     string baseGBAROMDir, baseGBAROMName = "current.gba", baseGBAAssetName = "current";
@@ -136,6 +138,7 @@ struct CartLoader
     bool loadROMData(const QStringList& paths, unique_ptr<u8[]>& data, u32& length,
                      string& base, string& name) noexcept
     {
+        if (forbidROMRead) std::abort(); // Prepared apply must never re-open ROM input.
         const auto path = paths.front();
         if (path.startsWith("missing")) return false;
         data = ROM(path.endsWith(".gba"), length, path.startsWith("invalid"));
@@ -166,8 +169,8 @@ struct CartLoader
                      unique_ptr<u8[]>& data, u32& length, QString& errorstr);
     string getAssetPath(bool gba, const string& configpath, const string& ext, const string& file);
     QString getSavErrorString(string& filepath, bool gba);
-    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {});
-    bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {});
+    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
+    bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
     bool updateConsole(bool directBoot = false) noexcept;
     bool reset(const AssetIdentity::Selection& dsAssets = {}, const AssetIdentity::Selection& gbaAssets = {});
 };
@@ -299,6 +302,63 @@ int main(int argc, char** argv)
     if (test == "read-oversize") readFailure = ReadFailure::Oversize;
     if (test == "read-denied") denyRead = true;
     QString error;
+    if (test.find("-prepared-") != string::npos)
+    {
+        const bool cancelled = test.ends_with("cancel");
+        const bool queued = test.find("queued") != string::npos;
+        const bool failed = test.ends_with("failure");
+        if (queued)
+        {
+            loader.active = false;
+            u32 length;
+            auto ds = ROM(false, length);
+            loader.nextCart = NDSCart::ParseROM(std::move(ds), length, &loader);
+            auto gbaROM = ROM(true, length);
+            loader.nextGBACart = GBACart::ParseROM(std::move(gbaROM), length, &loader);
+            loader.changeCart = loader.changeGBACart = true;
+        }
+        const auto* queuedDS = loader.nextCart.get();
+        const auto* queuedGBA = loader.nextGBACart.get();
+        std::stop_source stop;
+        auto prepared = std::make_shared<ROMPreparation::Data>();
+        prepared->Source = {"generated-archive.zip", gba ? "folder/member.gba" : "folder/member.nds"};
+        prepared->Name = gba ? "member.gba" : "member.nds";
+        prepared->BasePath = loader.incomingDir;
+        prepared->Bytes = ROM(gba, prepared->Length, failed && !queued);
+        prepared->Stop = stop.get_token();
+        if (cancelled) stop.request_stop();
+        if (failed && queued) loader.resourcesOK = false;
+        loader.forbidROMRead = true;
+        const AssetIdentity::Selection selected{prepared->Source, "prepared-member", directory.path(), directory.path(), directory.path()};
+        const bool accepted = gba ? loader.loadGBAROM(prepared->Source, error, selected, prepared) :
+            loader.loadROM(prepared->Source, failed && queued, error, selected, prepared);
+        bool passed = accepted == (!cancelled && !failed);
+        if (!accepted)
+        {
+            passed &= manager.get() == oldManager && manager->GetPath() == oldPath &&
+                loader.nds == oldConsole && loader.nds->GetNDSCart() == oldDS && loader.nds->GetGBACart() == oldGBA &&
+                loader.nextCart.get() == queuedDS && loader.nextGBACart.get() == queuedGBA &&
+                loader.changeCart == queued && loader.changeGBACart == queued &&
+                loader.baseROMName == "current.nds" && loader.baseGBAROMName == "current.gba" &&
+                loader.nds->ARM9Read32(0x02001000) == 0xDEADBEEF;
+            const QByteArray continued(8192, '\x3C');
+            Queue(*manager, continued);
+            passed &= manager->Flush() && ReadSaveFile(oldPath) == continued &&
+                !QFile::exists(directory.filePath("prepared-member.sav"));
+        }
+        else
+        {
+            const auto& assets = gba ? loader.gbaAssetPaths : loader.dsAssetPaths;
+            passed &= manager.get() != oldManager && manager->GetPath() == directory.filePath("prepared-member.sav").toStdString() &&
+                assets.Source == selected.Source && assets.Name == selected.Name &&
+                ReadSaveFile(oldPath) == pending && !prepared->Bytes;
+            passed &= gba ? loader.baseGBAROMName == "member.gba" && loader.nds->GetGBACart() != oldGBA :
+                loader.baseROMName == "member.nds" && loader.nds->GetNDSCart() != oldDS;
+        }
+        std::printf("prepared cart %s: %s (queued DS/GBA, current cart, save callbacks, member identity; no ROM reread)\n",
+                    test.c_str(), passed ? "PASS" : "FAIL");
+        return passed ? 0 : 1;
+    }
     if (test == "ds-import-partial")
     {
         if (!loader.loadROM({"current.nds"}, false, error)) return 2;

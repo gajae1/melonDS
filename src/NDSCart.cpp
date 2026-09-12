@@ -287,6 +287,12 @@ void NDSCartSlot::DoSavestate(Savestate* file) noexcept
 
     if (!file->Saving)
     {
+        // The KEY1 schedule is derived from the loaded cart and BIOS, not
+        // serialized. A fresh slot otherwise decrypts resumed commands with zeros.
+        if (!file->Error && Cart && Cart->CmdEncMode == 1)
+            Key1_InitKeycode(Cart->DSiMode, Cart->GetHeader().GameCodeAsU32(),
+                             Cart->DSiMode ? 1 : 2, 2);
+
         SetLogicalNum(LogicalNum);
 
         if (!Cart)

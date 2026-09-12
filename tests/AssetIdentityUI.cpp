@@ -88,6 +88,32 @@ int main(int argc, char** argv)
         !Write(instance.config.directory + "/game.sav", "legacy")) return 2;
     EmuThread thread(&instance);
     QString error;
+    if (mode == "prepared-modal-cancel")
+    {
+        auto prepared = std::make_shared<ROMPreparation::Data>();
+        prepared->Source = {a};
+        std::stop_source stop;
+        prepared->Stop = stop.get_token();
+        bool visited = false;
+        QTimer::singleShot(0, [&] {
+            auto* conflict = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            Check(conflict != nullptr, "Cancellation missed the real save-conflict dialog");
+            visited = conflict != nullptr;
+            stop.request_stop();
+            // Even an affirmative click already queued by the user must not
+            // write ownership or dispatch after this result was invalidated.
+            if (conflict)
+                for (auto* button : conflict->buttons())
+                    if (button->text() == "Use existing files") { button->click(); break; }
+        });
+        const bool accepted = thread.bootROM({a}, error, prepared);
+        Check(visited && !accepted && error.isEmpty() && messages.empty(), "Invalidated modal result dispatched or raised an error");
+        Check(QDir(instance.registry).entryList(QDir::Files | QDir::NoDotAndDotDot).isEmpty(), "Cancelled modal wrote ownership metadata");
+        QFile legacy(root.filePath("saves/game.sav"));
+        Check(legacy.open(QIODevice::ReadOnly) && legacy.readAll() == "legacy", "Cancelled modal changed save bytes");
+        std::printf("Prepared result cancelled during actual ownership chooser: %d failures\n", failures);
+        return failures ? 1 : 0;
+    }
     Choose(mode == "cancel" ? "Cancel" : mode == "separate" ? "Use separate files" : "Use existing files", true);
     const auto accepted = thread.bootROM({a}, error);
     if (mode == "cancel")

@@ -20,6 +20,7 @@
 #include "NDS.h"
 #include "Platform.h"
 #include "ArchiveUtil.h"
+#include "ROMPreparation.h"
 using namespace melonDS;
 using namespace melonDS::Platform;
 using std::string;
@@ -141,6 +142,7 @@ struct FileLoader
 #define CheckFileWritable CheckFixtureFileWritable
 #include "fileLastSep.inc"
 #include "decompressROM.inc"
+#include "romRead.inc"
 #include "fileLoadROMData.inc"
 #include "fileLoadRTC.inc"
 #include "fileSaveRTC.inc"

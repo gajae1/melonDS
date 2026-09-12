@@ -89,8 +89,6 @@ public:
     void Reset() override;
     void Stop(Platform::StopReason reason) override;
 
-    bool DoSavestate(Savestate* file);
-
     void SetCartInserted(bool inserted);
 
     bool NeedsDirectBoot() const override;

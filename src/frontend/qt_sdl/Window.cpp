@@ -76,6 +76,9 @@
 
 #include "EmuInstance.h"
 #include "ArchiveUtil.h"
+#include "ROMFileTypes.h"
+#include <QProgressDialog>
+#include <QScopeGuard>
 #include "CameraManager.h"
 #include "Window.h"
 #include "AboutDialog.h"
@@ -87,129 +90,6 @@ using namespace melonDS;
 
 extern CameraManager* camManager[2];
 extern bool camStarted[2];
-
-
-QString NdsRomMimeType = "application/x-nintendo-ds-rom";
-QStringList NdsRomExtensions { ".nds", ".srl", ".dsi", ".ids" };
-
-QString GbaRomMimeType = "application/x-gba-rom";
-QStringList GbaRomExtensions { ".gba", ".agb" };
-
-
-// This list of supported archive formats is based on libarchive(3) version 3.6.2 (2022-12-09).
-QStringList ArchiveMimeTypes
-{
-#ifdef ARCHIVE_SUPPORT_ENABLED
-    "application/zip",
-    "application/x-7z-compressed",
-    "application/vnd.rar", // *.rar
-    "application/x-tar",
-
-    "application/x-compressed-tar", // *.tar.gz
-    "application/x-xz-compressed-tar",
-    "application/x-bzip-compressed-tar",
-    "application/x-lz4-compressed-tar",
-    "application/x-zstd-compressed-tar",
-
-    "application/x-tarz", // *.tar.Z
-    "application/x-lzip-compressed-tar",
-    "application/x-lzma-compressed-tar",
-    "application/x-lrzip-compressed-tar",
-    "application/x-tzo", // *.tar.lzo
-#endif
-};
-
-QStringList ArchiveExtensions
-{
-#ifdef ARCHIVE_SUPPORT_ENABLED
-    ".zip", ".7z", ".rar", ".tar",
-
-    ".tar.gz", ".tgz",
-    ".tar.xz", ".txz",
-    ".tar.bz2", ".tbz2",
-    ".tar.lz4", ".tlz4",
-    ".tar.zst", ".tzst",
-
-    ".tar.Z", ".taz",
-    ".tar.lz",
-    ".tar.lzma", ".tlz",
-    ".tar.lrz", ".tlrz",
-    ".tar.lzo", ".tzo"
-#endif
-};
-
-// AAAAAAA
-static bool FileExtensionInList(const QString& filename, const QStringList& extensions, Qt::CaseSensitivity cs = Qt::CaseInsensitive)
-{
-    return std::any_of(extensions.cbegin(), extensions.cend(), [&](const auto& ext) {
-        return filename.endsWith(ext, cs);
-    });
-}
-
-static bool MimeTypeInList(const QMimeType& mimetype, const QStringList& superTypeNames)
-{
-    return std::any_of(superTypeNames.cbegin(), superTypeNames.cend(), [&](const auto& superTypeName) {
-        return mimetype.inherits(superTypeName);
-    });
-}
-
-
-static bool NdsRomByExtension(const QString& filename)
-{
-    return FileExtensionInList(filename, NdsRomExtensions);
-}
-
-static bool GbaRomByExtension(const QString& filename)
-{
-    return FileExtensionInList(filename, GbaRomExtensions);
-}
-
-static bool SupportedArchiveByExtension(const QString& filename)
-{
-    return FileExtensionInList(filename, ArchiveExtensions);
-}
-
-
-static bool NdsRomByMimetype(const QMimeType& mimetype)
-{
-    return mimetype.inherits(NdsRomMimeType);
-}
-
-static bool GbaRomByMimetype(const QMimeType& mimetype)
-{
-    return mimetype.inherits(GbaRomMimeType);
-}
-
-static bool SupportedArchiveByMimetype(const QMimeType& mimetype)
-{
-    return MimeTypeInList(mimetype, ArchiveMimeTypes);
-}
-
-static bool ZstdNdsRomByExtension(const QString& filename)
-{
-    return filename.endsWith(".zst", Qt::CaseInsensitive) &&
-        NdsRomByExtension(filename.left(filename.size() - 4));
-}
-
-static bool ZstdGbaRomByExtension(const QString& filename)
-{
-    return filename.endsWith(".zst", Qt::CaseInsensitive) &&
-        GbaRomByExtension(filename.left(filename.size() - 4));
-}
-
-static bool FileIsSupportedFiletype(const QString& filename, bool insideArchive = false)
-{
-    if (ZstdNdsRomByExtension(filename) || ZstdGbaRomByExtension(filename))
-        return true;
-
-    if (NdsRomByExtension(filename) || GbaRomByExtension(filename) || SupportedArchiveByExtension(filename))
-        return true;
-
-    const auto matchmode = insideArchive ? QMimeDatabase::MatchExtension : QMimeDatabase::MatchDefault;
-    const QMimeType mimetype = QMimeDatabase().mimeTypeForFile(filename, matchmode);
-    return NdsRomByMimetype(mimetype) || GbaRomByMimetype(mimetype) || SupportedArchiveByMimetype(mimetype);
-}
-
 
 
 MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
@@ -224,6 +104,15 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
     focused(true)
 {
 
+    connect(&romPreparation, &ROMPreparation::Controller::ready, this, &MainWindow::finishROMPreparation);
+    connect(&romPreparation, &ROMPreparation::Controller::idle, this, [this] {
+        if (romCloseWaiter && !romApplying)
+        {
+            auto waiter = romCloseWaiter;
+            romCloseWaiter.clear();
+            waiter->close();
+        }
+    });
     showOSD = windowCfg.GetBool("ShowOSD");
 
     setWindowTitle("melonDS " MELONDS_VERSION);
@@ -763,6 +652,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
 MainWindow::~MainWindow()
 {
+    cancelROMPreparation();
     if (hasMenu)
     {
         delete[] actScreenAspectTop;
@@ -935,6 +825,11 @@ bool MainWindow::prepareClose()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (deferROMClose())
+    {
+        event->ignore();
+        return;
+    }
     if (closeInProgress || (!closeApproved && !prepareClose()))
     {
         event->ignore();
@@ -1117,58 +1012,11 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* event)
 void MainWindow::dropEvent(QDropEvent* event)
 {
     if (!event->mimeData()->hasUrls()) return;
-
-    QList<QUrl> urls = event->mimeData()->urls();
-    if (urls.count() > 1) return; // not handling more than one file at once
-
-    if (!verifySetup())
-        return;
-
-    const QStringList file = splitArchivePath(urls.at(0).toLocalFile(), false);
-    if (file.isEmpty())
-        return;
-
-    const QString filename = file.last();
-    const bool romInsideArchive = file.size() > 1;
-    const auto matchMode = romInsideArchive ? QMimeDatabase::MatchExtension : QMimeDatabase::MatchDefault;
-    const QMimeType mimetype = QMimeDatabase().mimeTypeForFile(filename, matchMode);
-
-    bool isNdsRom = NdsRomByExtension(filename) || NdsRomByMimetype(mimetype);
-    bool isGbaRom = GbaRomByExtension(filename) || GbaRomByMimetype(mimetype);
-    isNdsRom |= ZstdNdsRomByExtension(filename);
-    isGbaRom |= ZstdGbaRomByExtension(filename);
-
-    QString errorstr;
-    if (isNdsRom)
-    {
-        if (!emuThread->bootROM(file, errorstr))
-        {
-            if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-            return;
-        }
-
-        const QString barredFilename = file.join('|');
-        recentFileList.removeAll(barredFilename);
-        recentFileList.prepend(barredFilename);
-        updateRecentFilesMenu();
-
-        updateCartInserted(false);
-    }
-    else if (isGbaRom)
-    {
-        if (!emuThread->insertCart(file, true, errorstr))
-        {
-            if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-            return;
-        }
-
-        updateCartInserted(true);
-    }
-    else
-    {
-        QMessageBox::critical(this, "melonDS", "The file could not be recognized as a DS or GBA ROM.");
-        return;
-    }
+    const auto urls = event->mimeData()->urls();
+    if (urls.size() != 1) return;
+    cancelROMPreparations();
+    if (!verifySetup()) return;
+    startROMPreparation({urls.first().toLocalFile()}, ROMAction::Drop);
 }
 
 void MainWindow::focusInEvent(QFocusEvent* event)
@@ -1234,175 +1082,248 @@ bool MainWindow::verifySetup()
 
 bool MainWindow::preloadROMs(QStringList file, QStringList gbafile, bool boot)
 {
-    QString errorstr;
-
-    if (file.isEmpty() && gbafile.isEmpty() && !boot)
-        return false;
-
-    if (!verifySetup())
-    {
-        return false;
-    }
-
-    bool gbaloaded = false;
+    cancelROMPreparations();
+    if ((file.isEmpty() && gbafile.isEmpty() && !boot) || !verifySetup()) return false;
     if (!gbafile.isEmpty())
     {
-        if (!emuThread->insertCart(gbafile, true, errorstr))
-        {
-            if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-            return false;
-        }
-
-        gbaloaded = true;
+        startROMPreparation(std::move(gbafile), ROMAction::InsertGBA);
+        nextPreloadROM = std::move(file);
+        bootAfterPreload = boot;
     }
-
-    bool ndsloaded = false;
-    if (!file.isEmpty())
+    else if (!file.isEmpty())
     {
-        if (boot)
+        startROMPreparation(std::move(file), boot ? ROMAction::BootDS : ROMAction::InsertDS);
+        romRememberRecent = true;
+    }
+    else onBootFirmware();
+    // Startup/file-open callers enqueue preparation before entering the UI loop.
+    return true;
+}
+
+void MainWindow::cancelROMPreparation()
+{
+    romPreparation.cancel();
+    reselectedROM.clear();
+    nextPreloadROM.clear();
+    bootAfterPreload = false;
+    if (romProgress)
+    {
+        romProgress->hide();
+        romProgress->deleteLater();
+        romProgress.clear();
+    }
+    if (romMemberDialog)
+    {
+        romMemberDialog->hide();
+        romMemberDialog->deleteLater();
+        romMemberDialog.clear();
+    }
+}
+
+void MainWindow::cancelROMPreparations()
+{
+    if (emuInstance)
+        emuInstance->doOnAllWindows([](MainWindow* window) { window->cancelROMPreparation(); });
+}
+
+bool MainWindow::deferROMClose()
+{
+    auto windows = findChildren<MainWindow*>();
+    windows.prepend(this);
+    bool pending = false;
+    for (auto* window : windows)
+    {
+        window->cancelROMPreparation();
+        if (window->romPreparation.busy() || window->romApplying)
         {
-            if (!emuThread->bootROM(file, errorstr))
-            {
-                if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-                return false;
-            }
+            window->romCloseWaiter = this;
+            pending = true;
         }
+    }
+    // Keep the event loop alive while an OS read finishes. No wait(), event
+    // pumping or worker termination in the close handler.
+    romClosePending = pending;
+    return pending;
+}
+
+void MainWindow::showROMProgress()
+{
+    if (romProgress) return;
+    auto* progress = new QProgressDialog("Preparing ROM…", "Cancel", 0, 0, this);
+    romProgress = progress;
+    progress->setWindowTitle("melonDS");
+    progress->setWindowModality(Qt::NonModal);
+    progress->setMinimumDuration(0);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
+    connect(progress, &QProgressDialog::canceled, this, &MainWindow::cancelROMPreparation);
+    progress->show();
+}
+
+void MainWindow::startROMPreparation(QStringList files, ROMAction action, bool rememberFolder)
+{
+    if (!emuInstance || closeInProgress || romClosePending || files.isEmpty()) return;
+    cancelROMPreparations();
+    if (romApplying)
+    {
+        // A selection made inside the asset chooser's nested event loop cancels
+        // that chooser. Start it once the previous apply frame has unwound.
+        reselectedROM = std::move(files);
+        reselectedAction = action;
+        reselectedRememberFolder = rememberFolder;
+        return;
+    }
+    romAction = action;
+    romRememberFolder = rememberFolder;
+    romRememberRecent = action == ROMAction::BootDS || action == ROMAction::Drop;
+    romPreparation.start({std::move(files), true});
+    showROMProgress();
+}
+
+void MainWindow::finishROMPreparation(const ROMPreparation::Result& result)
+{
+    if (result.Stop.stop_requested() || !emuInstance || closeInProgress || romClosePending || romApplying) return;
+    if (romProgress)
+    {
+        romProgress->hide();
+        romProgress->deleteLater();
+        romProgress.clear();
+    }
+    if (!result.Members.isEmpty()) { pickFileFromArchive(result); return; }
+    if (result.ReadFailed || !result.Error.isEmpty())
+    {
+        nextPreloadROM.clear();
+        bootAfterPreload = false;
+        const bool gba = romAction == ROMAction::InsertGBA ||
+            (romAction == ROMAction::Drop && result.Type == ROMPreparation::Kind::GBA);
+        const auto error = result.ReadFailed ?
+            (gba ? "Failed to load the GBA ROM." : "Failed to load the DS ROM.") : result.Error;
+        if (result.Warning) QMessageBox::warning(this, "melonDS", error);
+        else QMessageBox::critical(this, "melonDS", error);
+        return;
+    }
+    if (!result.ROM) return;
+    auto action = romAction;
+    if (action == ROMAction::Drop)
+    {
+        if (result.ROM->Type == ROMPreparation::Kind::DS) action = ROMAction::BootDS;
+        else if (result.ROM->Type == ROMPreparation::Kind::GBA) action = ROMAction::InsertGBA;
         else
         {
-            if (!emuThread->insertCart(file, false, errorstr))
-            {
-                if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-                return false;
-            }
+            QMessageBox::critical(this, "melonDS", "The file could not be recognized as a DS or GBA ROM.");
+            return;
         }
-
-        recentFileList.removeAll(file.join("|"));
-        recentFileList.prepend(file.join("|"));
-        updateRecentFilesMenu();
-        ndsloaded = true;
     }
-    else if (boot)
-    {
-        if (!emuThread->bootFirmware(errorstr))
+
+    // This is the existing UI asset-choice and queued emulation-thread apply
+    // boundary. Only a completed, current preparation reaches it. Close waits
+    // if the ownership chooser's nested event loop is currently on this stack.
+    romApplying = true;
+    const auto finishApply = qScopeGuard([this] {
+        romApplying = false;
+        if (romCloseWaiter)
         {
-            QMessageBox::critical(this, "melonDS", errorstr);
-            return false;
+            auto waiter = romCloseWaiter;
+            romCloseWaiter.clear();
+            QTimer::singleShot(0, waiter, [waiter] { if (waiter) waiter->close(); });
         }
+        else if (!reselectedROM.isEmpty())
+        {
+            auto files = std::exchange(reselectedROM, {});
+            startROMPreparation(std::move(files), reselectedAction, reselectedRememberFolder);
+        }
+    });
+    QString error;
+    const bool gba = action == ROMAction::InsertGBA;
+    const bool success = action == ROMAction::BootDS ?
+        emuThread->bootROM(result.Source, error, result.ROM) :
+        emuThread->insertCart(result.Source, gba, error, result.ROM);
+    if (result.Stop.stop_requested()) return;
+    if (!success)
+    {
+        nextPreloadROM.clear();
+        bootAfterPreload = false;
+        if (!error.isEmpty()) QMessageBox::critical(this, "melonDS", error);
+        return;
     }
+    if (romRememberFolder)
+        globalCfg.SetQString("LastROMFolder", QFileInfo(result.Source.first()).dir().path());
+    if (!gba && romRememberRecent)
+    {
+        const auto filename = result.Source.join('|');
+        recentFileList.removeAll(filename);
+        recentFileList.prepend(filename);
+        updateRecentFilesMenu();
+    }
+    updateCartInserted(gba);
 
-    updateCartInserted(false);
-    if (gbaloaded)
-        updateCartInserted(true);
-
-    return true;
+    // Preserve CLI GBA-before-DS ordering, but cancel the remainder on any
+    // failure/reselection/close. No bytes or cartridge are queued by preparation.
+    auto next = std::exchange(nextPreloadROM, {});
+    const bool boot = std::exchange(bootAfterPreload, false);
+    if (!next.isEmpty() || (gba && boot))
+    {
+        QTimer::singleShot(0, this, [this, next, boot, stop = result.Stop] {
+            if (stop.stop_requested()) return;
+            if (!next.isEmpty())
+            {
+                startROMPreparation(next, boot ? ROMAction::BootDS : ROMAction::InsertDS);
+                romRememberRecent = true;
+            }
+            else onBootFirmware();
+        });
+    }
 }
 
 QStringList MainWindow::splitArchivePath(const QString& filename, bool useMemberSyntax)
 {
     if (filename.isEmpty()) return {};
-
 #ifdef ARCHIVE_SUPPORT_ENABLED
     if (useMemberSyntax)
     {
-        const QStringList filenameParts = filename.split('|');
-        if (filenameParts.size() > 2)
+        const auto parts = filename.split('|');
+        if (parts.size() > 2)
         {
             QMessageBox::warning(this, "melonDS", "This path contains too many '|'.");
             return {};
         }
-
-        if (filenameParts.size() == 2)
-        {
-            const QString archive = filenameParts.at(0);
-            if (!QFileInfo(archive).exists())
-            {
-                QMessageBox::warning(this, "melonDS", "This archive does not exist.");
-                return {};
-            }
-
-            const QString subfile = filenameParts.at(1);
-            if (!Archive::ListArchive(archive).contains(subfile))
-            {
-                QMessageBox::warning(this, "melonDS", "This archive does not contain the desired file.");
-                return {};
-            }
-
-            return filenameParts;
-        }
+        return parts;
     }
 #endif
-
-    if (!QFileInfo(filename).exists())
-    {
-        QMessageBox::warning(this, "melonDS", "This ROM file does not exist.");
-        return {};
-    }
-
-#ifdef ARCHIVE_SUPPORT_ENABLED
-    if (SupportedArchiveByExtension(filename)
-        || SupportedArchiveByMimetype(QMimeDatabase().mimeTypeForFile(filename)))
-    {
-        const QString subfile = pickFileFromArchive(filename);
-        if (subfile.isEmpty())
-            return {};
-
-        return { filename, subfile };
-    }
-#endif
-
-    return { filename };
+    // Only parse syntax here. Filesystem and archive validation run in preparation.
+    return {filename};
 }
 
-QString MainWindow::pickFileFromArchive(QString archiveFileName)
+void MainWindow::pickFileFromArchive(const ROMPreparation::Result& result)
 {
-    QVector<QString> archiveROMList = Archive::ListArchive(archiveFileName);
-
-    if (archiveROMList.size() <= 1)
+    if (result.Members.size() == 1)
     {
-        if (!archiveROMList.isEmpty() && archiveROMList.at(0) == "OK")
-            QMessageBox::warning(this, "melonDS", "This archive is empty.");
-        else
-            QMessageBox::critical(this, "melonDS", "This archive could not be read. It may be corrupt or you don't have the permissions.");
-        return QString();
+        romPreparation.start({{result.Source.first(), result.Members.first()}, false});
+        showROMProgress();
+        return;
     }
-
-    archiveROMList.removeFirst();
-
-    const auto notSupportedRom = [&](const auto& filename){
-        if (NdsRomByExtension(filename) || GbaRomByExtension(filename))
-            return false;
-        const QMimeType mimetype = QMimeDatabase().mimeTypeForFile(filename, QMimeDatabase::MatchExtension);
-        return !(NdsRomByMimetype(mimetype) || GbaRomByMimetype(mimetype));
-    };
-
-    archiveROMList.erase(std::remove_if(archiveROMList.begin(), archiveROMList.end(), notSupportedRom),
-                         archiveROMList.end());
-
-    if (archiveROMList.isEmpty())
-    {
-        QMessageBox::warning(this, "melonDS", "This archive does not contain any supported ROMs.");
-        return QString();
-    }
-
-    if (archiveROMList.size() == 1)
-        return archiveROMList.first();
-
-    bool ok;
-    const QString toLoad = QInputDialog::getItem(
-        this, "melonDS",
-        "This archive contains multiple files. Select which ROM you want to load.",
-        archiveROMList.toList(), 0, false, &ok
-    );
-
-    if (ok) return toLoad;
-
-    // User clicked on cancel
-
-    return QString();
+    auto* dialog = new QInputDialog(this);
+    romMemberDialog = dialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle("melonDS");
+    dialog->setLabelText("This archive contains multiple files. Select which ROM you want to load.");
+    dialog->setComboBoxItems(result.Members);
+    dialog->setComboBoxEditable(false);
+    connect(dialog, &QDialog::finished, this, [this, dialog, result](int accepted) {
+        if (romMemberDialog == dialog) romMemberDialog.clear();
+        if (result.Stop.stop_requested()) return;
+        if (accepted != QDialog::Accepted) { cancelROMPreparation(); return; }
+        romPreparation.start({{result.Source.first(), dialog->textValue()}, false});
+        showROMProgress();
+    });
+    dialog->setWindowModality(Qt::NonModal);
+    dialog->show();
 }
+
 
 QStringList MainWindow::pickROM(bool gba)
 {
+    cancelROMPreparations();
     emuThread->emuPause();
 
     const QString console = gba ? "GBA" : "DS";
@@ -1435,8 +1356,7 @@ QStringList MainWindow::pickROM(bool gba)
         return {};
     }
 
-    globalCfg.SetQString("LastROMFolder", QFileInfo(filename).dir().path());
-    auto ret = splitArchivePath(filename, false);
+    auto ret = QStringList{filename};
     emuThread->emuUnpause();
     return ret;
 }
@@ -1478,26 +1398,10 @@ void MainWindow::updateCartInserted(bool gba)
 
 void MainWindow::onOpenFile()
 {
-    if (!verifySetup())
-        return;
-
-    QStringList file = pickROM(false);
-    if (file.isEmpty())
-        return;
-
-    QString errorstr;
-    if (!emuThread->bootROM(file, errorstr))
-    {
-        if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-        return;
-    }
-
-    QString filename = file.join('|');
-    recentFileList.removeAll(filename);
-    recentFileList.prepend(filename);
-    updateRecentFilesMenu();
-
-    updateCartInserted(false);
+    cancelROMPreparations();
+    if (!verifySetup()) return;
+    const auto file = pickROM(false);
+    if (!file.isEmpty()) startROMPreparation(file, ROMAction::BootDS, true);
 }
 
 void MainWindow::onClearRecentFiles()
@@ -1588,32 +1492,16 @@ void MainWindow::updateRecentFilesMenu()
 
 void MainWindow::onClickRecentFile()
 {
-    QAction *act = (QAction *)sender();
-    QString filename = act->data().toString();
-
-    if (!verifySetup())
-        return;
-
-    const QStringList file = splitArchivePath(filename, true);
-    if (file.isEmpty())
-        return;
-
-    QString errorstr;
-    if (!emuThread->bootROM(file, errorstr))
-    {
-        if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-        return;
-    }
-
-    recentFileList.removeAll(filename);
-    recentFileList.prepend(filename);
-    updateRecentFilesMenu();
-
-    updateCartInserted(false);
+    const auto filename = static_cast<QAction*>(sender())->data().toString();
+    cancelROMPreparations();
+    if (!verifySetup()) return;
+    const auto file = splitArchivePath(filename, true);
+    if (!file.isEmpty()) startROMPreparation(file, ROMAction::BootDS);
 }
 
 void MainWindow::onBootFirmware()
 {
+    cancelROMPreparations();
     if (!verifySetup())
         return;
 
@@ -1627,44 +1515,26 @@ void MainWindow::onBootFirmware()
 
 void MainWindow::onInsertCart()
 {
-    QStringList file = pickROM(false);
-    if (file.isEmpty())
-        return;
-
-    QString errorstr;
-    if (!emuThread->insertCart(file, false, errorstr))
-    {
-        if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-        return;
-    }
-
-    updateCartInserted(false);
+    const auto file = pickROM(false);
+    if (!file.isEmpty()) startROMPreparation(file, ROMAction::InsertDS, true);
 }
 
 void MainWindow::onEjectCart()
 {
+    cancelROMPreparations();
     emuThread->ejectCart(false);
     updateCartInserted(false);
 }
 
 void MainWindow::onInsertGBACart()
 {
-    QStringList file = pickROM(true);
-    if (file.isEmpty())
-        return;
-
-    QString errorstr;
-    if (!emuThread->insertCart(file, true, errorstr))
-    {
-        if (!errorstr.isEmpty()) QMessageBox::critical(this, "melonDS", errorstr);
-        return;
-    }
-
-    updateCartInserted(true);
+    const auto file = pickROM(true);
+    if (!file.isEmpty()) startROMPreparation(file, ROMAction::InsertGBA, true);
 }
 
 void MainWindow::onInsertGBAAddon()
 {
+    cancelROMPreparations();
     QAction* act = (QAction*)sender();
     int type = act->data().toInt();
 
@@ -1680,6 +1550,7 @@ void MainWindow::onInsertGBAAddon()
 
 void MainWindow::onEjectGBACart()
 {
+    cancelROMPreparations();
     emuThread->ejectCart(true);
     updateCartInserted(true);
 }
@@ -1845,6 +1716,7 @@ void MainWindow::onPause(bool checked)
 
 void MainWindow::onReset()
 {
+    cancelROMPreparations();
     if (!emuThread->emuIsActive()) return;
 
     emuThread->emuReset();
@@ -1852,6 +1724,7 @@ void MainWindow::onReset()
 
 void MainWindow::onStop()
 {
+    cancelROMPreparations();
     if (!emuThread->emuIsActive()) return;
 
     emuThread->emuStop(true);

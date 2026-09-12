@@ -723,7 +723,8 @@ void EmuThread::handleMessages()
             emuInstance->audioDisable();
             msgResult = 0;
             if (!emuInstance->loadROM(msg.param.value<CartLoadRequest>().Files, true, msgError,
-                                     msg.param.value<CartLoadRequest>().Assets))
+                                     msg.param.value<CartLoadRequest>().Assets,
+                                     msg.param.value<CartLoadRequest>().Prepared))
             {
                 if (emuInstance->nds && !emuInstance->nds->IsRunning())
                 {
@@ -763,7 +764,8 @@ void EmuThread::handleMessages()
         case msg_InsertCart:
             msgResult = 0;
             if (!emuInstance->loadROM(msg.param.value<CartLoadRequest>().Files, false, msgError,
-                                     msg.param.value<CartLoadRequest>().Assets))
+                                     msg.param.value<CartLoadRequest>().Assets,
+                                     msg.param.value<CartLoadRequest>().Prepared))
                 break;
 
             msgResult = 1;
@@ -776,7 +778,8 @@ void EmuThread::handleMessages()
         case msg_InsertGBACart:
             msgResult = 0;
             if (!emuInstance->loadGBAROM(msg.param.value<CartLoadRequest>().Files, msgError,
-                                        msg.param.value<CartLoadRequest>().Assets))
+                                        msg.param.value<CartLoadRequest>().Assets,
+                                     msg.param.value<CartLoadRequest>().Prepared))
                 break;
 
             msgResult = 1;
@@ -989,8 +992,9 @@ void EmuThread::emuReset()
     waitMessage();
 }
 
-bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExisting, AssetIdentity::Selection& selection, QString& error)
+bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExisting, AssetIdentity::Selection& selection, QString& error, std::stop_token stop)
 {
+    if (stop.stop_requested()) { error.clear(); return false; }
     auto& cfg = emuInstance->getLocalConfig();
     const QStringList directories{cfg.GetQString("SaveFilePath"), cfg.GetQString("SavestatePath"), cfg.GetQString("CheatFilePath")};
     const auto& active = gba ? emuInstance->gbaAssetPaths : emuInstance->dsAssetPaths;
@@ -1001,7 +1005,7 @@ bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExi
         return true;
     }
     return AssetIdentity::Prepare(emuInstance->getAssetRegistryDirectory(), source, gba, directories,
-        allowExisting, [this](const AssetIdentity::Conflict& conflict) {
+        allowExisting, [this, stop](const AssetIdentity::Conflict& conflict) {
             QMessageBox dialog(QMessageBox::Question, "Choose game files",
                 conflict.CanUseExisting ?
                     "Files with this name already exist. Use them only if they belong to this ROM, or start with separate files." :
@@ -1012,7 +1016,11 @@ bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExi
             auto* existing = conflict.CanUseExisting ? dialog.addButton("Use existing files", QMessageBox::AcceptRole) : nullptr;
             dialog.addButton(QMessageBox::Cancel);
             dialog.setDefaultButton(separate);
+            std::stop_callback cancelDialog(stop, [&dialog] {
+                QMetaObject::invokeMethod(&dialog, &QDialog::reject, Qt::QueuedConnection);
+            });
             dialog.exec();
+            if (stop.stop_requested()) return AssetIdentity::Choice::Cancel;
             if (dialog.clickedButton() == separate) return AssetIdentity::Choice::Separate;
             if (existing && dialog.clickedButton() == existing) return AssetIdentity::Choice::Existing;
             return AssetIdentity::Choice::Cancel;
@@ -1029,10 +1037,13 @@ bool EmuThread::emuIsActive()
     return emuActive;
 }
 
-int EmuThread::bootROM(const QStringList& filename, QString& errorstr)
+int EmuThread::bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)
 {
-    CartLoadRequest request{filename, {}};
-    if (!prepareAssets(filename, false, true, request.Assets, errorstr)) return 0;
+    const auto stop = prepared ? prepared->Stop : std::stop_token{};
+    if (stop.stop_requested()) { errorstr.clear(); return 0; }
+    CartLoadRequest request{filename, {}, prepared};
+    if (!prepareAssets(filename, false, true, request.Assets, errorstr, stop)) return 0;
+    if (stop.stop_requested()) { errorstr.clear(); return 0; }
     sendMessage({.type = msg_BootROM, .param = QVariant::fromValue(request)});
     waitMessage();
     if (!msgResult)
@@ -1063,12 +1074,15 @@ int EmuThread::bootFirmware(QString& errorstr)
     return msgResult;
 }
 
-int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr)
+int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)
 {
     MessageType msgtype = gba ? msg_InsertGBACart : msg_InsertCart;
 
-    CartLoadRequest request{filename, {}};
-    if (!prepareAssets(filename, gba, true, request.Assets, errorstr)) return 0;
+    const auto stop = prepared ? prepared->Stop : std::stop_token{};
+    if (stop.stop_requested()) { errorstr.clear(); return 0; }
+    CartLoadRequest request{filename, {}, prepared};
+    if (!prepareAssets(filename, gba, true, request.Assets, errorstr, stop)) return 0;
+    if (stop.stop_requested()) { errorstr.clear(); return 0; }
     sendMessage({.type = msgtype, .param = QVariant::fromValue(request)});
     waitMessage();
     errorstr = msgResult ? "" : msgError;

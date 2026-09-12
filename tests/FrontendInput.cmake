@@ -192,13 +192,14 @@ endforeach()
 set(rom_decompressor "${CMAKE_CURRENT_BINARY_DIR}/decompressROM.inc")
 add_custom_command(OUTPUT "${rom_decompressor}"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstance.cpp"
-        "u32 EmuInstance::decompressROM(const u8* inContent, const u32 inSize, unique_ptr<u8[]>& outContent)"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ROMPreparation.cpp"
+        "u32 ROMPreparation::Decompress(const u8* inContent, const u32 inSize, unique_ptr<u8[]>& outContent, std::stop_token stop)"
         "${rom_decompressor}"
-    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstance.cpp VERBATIM)
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" ROMPreparation.cpp VERBATIM)
 add_executable(ROMDecompression "${CMAKE_SOURCE_DIR}/tests/ROMDecompression.cpp" "${rom_decompressor}")
 target_include_directories(ROMDecompression PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(ROMDecompression PRIVATE PkgConfig::Zstd)
+target_include_directories(ROMDecompression PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(ROMDecompression PRIVATE PkgConfig::Zstd $<IF:$<BOOL:${USE_QT6}>,Qt6::Core,Qt5::Core>)
 foreach(case IN ITEMS lengths completion framing trailing empty size-limit allocation)
     add_test(NAME rom-zstd-decompression-${case} COMMAND ROMDecompression ${case})
     set_tests_properties(rom-zstd-decompression-${case} PROPERTIES TIMEOUT 30)
@@ -216,6 +217,47 @@ foreach(case IN ITEMS formats locale missing empty corrupt-header truncated-data
         chunked-read early-eof read-error limits invalid-name null-name allocation)
     add_test(NAME archive-io-${case} COMMAND ArchiveIO ${case})
     set_tests_properties(archive-io-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+set(rom_reader "${CMAKE_CURRENT_BINARY_DIR}/romRead.inc")
+add_custom_command(OUTPUT "${rom_reader}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ROMPreparation.cpp"
+        "bool ROMPreparation::Read(const QStringList& filepath, std::unique_ptr<u8[]>& filedata, u32& filelen, string& basepath, string& romname, std::stop_token stop) noexcept"
+        "${rom_reader}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" ROMPreparation.cpp VERBATIM)
+set(rom_window_methods)
+foreach(pair IN ITEMS
+        "Cancel|void MainWindow::cancelROMPreparation()"
+        "CancelAll|void MainWindow::cancelROMPreparations()"
+        "Close|bool MainWindow::deferROMClose()"
+        "Progress|void MainWindow::showROMProgress()"
+        "Start|void MainWindow::startROMPreparation(QStringList files, ROMAction action, bool rememberFolder)"
+        "Finish|void MainWindow::finishROMPreparation(const ROMPreparation::Result& result)"
+        "Pick|void MainWindow::pickFileFromArchive(const ROMPreparation::Result& result)"
+        "Split|QStringList MainWindow::splitArchivePath(const QString& filename, bool useMemberSyntax)"
+        "Preload|bool MainWindow::preloadROMs(QStringList file, QStringList gbafile, bool boot)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/romWindow${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Window.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Window.cpp VERBATIM)
+    list(APPEND rom_window_methods "${output}")
+endforeach()
+add_executable(ROMPreparationUI "${CMAKE_SOURCE_DIR}/tests/ROMPreparationUI.cpp" ROMPreparation.h ${rom_window_methods})
+set_property(TARGET ROMPreparationUI PROPERTY AUTOGEN_TARGET_DEPENDS ${rom_window_methods})
+target_include_directories(ROMPreparationUI PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(ROMPreparationUI PRIVATE PkgConfig::LibArchive PkgConfig::Zstd ${QT_LINK_LIBS})
+foreach(case IN ITEMS cancel-read cancel-extract cancel-list cancel-decode cancel-member
+        reselect reselect-member late-completion close close-destruction os-blocked-close modal-close modal-reselect
+        success-read success-extract success-member success-zstd read-failure apply-failure)
+    add_test(NAME rom-preparation-${case} COMMAND ROMPreparationUI ${case})
+    # Keep headless timing independent of native Windows dialog styling costs.
+    set_tests_properties(rom-preparation-${case} PROPERTIES TIMEOUT 15
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_STYLE_OVERRIDE=Fusion")
 endforeach()
 
 set(file_methods)
@@ -257,7 +299,7 @@ foreach(pair IN ITEMS
 endforeach()
 add_executable(FrontendFileIO "${CMAKE_SOURCE_DIR}/tests/FrontendFileIO.cpp" ArchiveUtil.cpp
     "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp" "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
-    ${file_methods} "${rom_decompressor}")
+    ${file_methods} "${rom_decompressor}" "${rom_reader}")
 target_include_directories(FrontendFileIO PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FrontendFileIO PRIVATE core PkgConfig::LibArchive PkgConfig::Zstd Threads::Threads)
 if (USE_QT6)
@@ -478,9 +520,9 @@ foreach(method IN ITEMS BuildPath FlushSave FlushAll AssetPath SaveError ReadSav
     elseif (method STREQUAL "SaveError")
         set(signature "QString EmuInstance::getSavErrorString(std::string& filepath, bool gba)")
     elseif (method STREQUAL "LoadROM")
-        set(signature "bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets)")
+        set(signature "bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)")
     elseif (method STREQUAL "LoadGBA")
-        set(signature "bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets)")
+        set(signature "bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)")
     elseif (method STREQUAL "Reset")
         set(signature "bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIdentity::Selection& gbaAssets)")
     else()
@@ -506,7 +548,9 @@ endif()
 foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existing-writable gba-existing-writable
         ds-console-failure console-retain ds-queued-failure ds-success ds-reset-success gba-success gba-queued
         ds-pending-failure gba-pending-failure ds-same-save read-short read-error read-oversize read-denied ds-import-partial
-        ds-asset-path gba-asset-path asset-reset asset-reset-failure invalid-sd)
+        ds-asset-path gba-asset-path asset-reset asset-reset-failure invalid-sd
+        ds-prepared-success gba-prepared-success ds-prepared-cancel gba-prepared-cancel
+        ds-prepared-queued-cancel gba-prepared-queued-cancel ds-prepared-failure gba-prepared-failure ds-prepared-queued-failure)
     add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
     set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
 endforeach()
@@ -571,9 +615,9 @@ endforeach()
 
 set(asset_ui_methods)
 foreach(pair IN ITEMS
-        "assetPrepareUI|bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExisting, AssetIdentity::Selection& selection, QString& error)"
-        "assetBootUI|int EmuThread::bootROM(const QStringList& filename, QString& errorstr)"
-        "assetInsertUI|int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr)"
+        "assetPrepareUI|bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExisting, AssetIdentity::Selection& selection, QString& error, std::stop_token stop)"
+        "assetBootUI|int EmuThread::bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)"
+        "assetInsertUI|int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)"
         "assetResetUI|void EmuThread::emuReset()")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
@@ -593,7 +637,7 @@ if (USE_QT6)
 else()
     target_link_libraries(AssetIdentityUI PRIVATE Qt5::Widgets)
 endif()
-foreach(case IN ITEMS cancel existing separate other reset worker-reset)
+foreach(case IN ITEMS cancel existing separate other reset worker-reset prepared-modal-cancel)
     add_test(NAME asset-ui-${case} COMMAND AssetIdentityUI ${case})
     set_tests_properties(asset-ui-${case} PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()

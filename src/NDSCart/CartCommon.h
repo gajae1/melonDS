@@ -49,6 +49,7 @@ class NDSCartSlot;
 // CartCommon -- base code shared by all cart types
 class CartCommon
 {
+    friend class NDSCartSlot;
 public:
     CartCommon(const u8* rom, u32 len, u32 chipid, bool badDSiDump, ROMListEntry romparams, CartType type, void* userdata);
     CartCommon(std::unique_ptr<u8[]>&& rom, u32 len, u32 chipid, bool badDSiDump, ROMListEntry romparams, CartType type, void* userdata);
