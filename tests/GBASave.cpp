@@ -113,6 +113,9 @@ static bool State(u32 length, bool solar = false)
     };
     // Same-capacity and resized loads must both preserve all live fields when
     // the GBCS payload is incomplete, including its trailing command metadata.
+    // Target the original flash/solar payload, not an optional extension that
+    // a 13.x/14.2 reader intentionally ignores at the end of this section.
+    const std::size_t deviceEnd = 48 + length + (solar ? 4 : 0);
     for (u32 targetLength : {length, 0x8000u})
     for (unsigned corruption : {0u, 1u, 2u})
     {
@@ -121,8 +124,8 @@ static bool State(u32 length, bool solar = false)
         const auto* owner = target->GetSaveMemory();
         auto truncated = saved;
         if (corruption == 0) truncated.resize(42 + length / 2);
-        else if (corruption == 1) truncated.resize(saved.size() - 1);
-        else truncated[saved.size() - (solar ? 5 : 1)] = 0xFF; // Undefined device type.
+        else if (corruption == 1) truncated.resize(deviceEnd - 1);
+        else truncated[47 + length] = 0xFF; // Undefined device type.
         u32 size = static_cast<u32>(truncated.size());
         std::memcpy(truncated.data() + 8, &size, 4);
         size -= 16;

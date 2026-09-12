@@ -65,7 +65,7 @@ public:
     void StopIfNeeded(u32 mode)
     {
         if (mode == StartMode)
-            Cnt &= ~0x80000000;
+            WriteCnt(Cnt & ~0x80000000);
     }
 
     void StallIfRunning()

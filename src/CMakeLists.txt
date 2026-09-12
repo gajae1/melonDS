@@ -30,6 +30,7 @@ add_library(core STATIC
     FATStorage.cpp
     FIFO.h
     GBACart.cpp
+    GBACartEEPROM.cpp
     GBACartMotionPak.cpp
     GPU.cpp
     GPU_Soft.cpp
@@ -249,4 +250,3 @@ endif()
 #    BEFORE PUBLIC -fsanitize=undefined PUBLIC -fsanitize=address
 #  )
 #endif()
-

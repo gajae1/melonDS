@@ -24,6 +24,11 @@ foreach(case roundtrip invalid-length truncated-header zero-length-skip oversize
     set_tests_properties(savestate-${case} PROPERTIES TIMEOUT 5)
 endforeach()
 
+add_executable(GBACartEEPROM GBACartEEPROM.cpp ../src/GBACartEEPROM.cpp ../src/Savestate.cpp)
+target_include_directories(GBACartEEPROM PRIVATE ../src)
+add_test(NAME gba-eeprom-chip COMMAND GBACartEEPROM)
+set_tests_properties(gba-eeprom-chip PROPERTIES TIMEOUT 10)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/FirmwareCRC16.inc"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
@@ -507,7 +512,7 @@ foreach(case IN ITEMS control page-ends page-overflow restore-write regular-cont
 endforeach()
 
 add_executable(GBARumble GBARumble.cpp ../src/GBACart.cpp ../src/GBACartMotionPak.cpp
-    ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
+    ../src/GBACartEEPROM.cpp ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
 target_include_directories(GBARumble PRIVATE ../src)
 foreach(case IN ITEMS control ad1-mask state-load)
     add_test(NAME gba-rumble-${case} COMMAND GBARumble ${case})
@@ -515,11 +520,20 @@ foreach(case IN ITEMS control ad1-mask state-load)
 endforeach()
 
 add_executable(GBASave GBASave.cpp ../src/GBACart.cpp ../src/GBACartMotionPak.cpp
-    ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
+    ../src/GBACartEEPROM.cpp ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
 target_include_directories(GBASave PRIVATE ../src)
 foreach(case IN ITEMS sector bank program chip state state-solar import)
     add_test(NAME gba-save-${case} COMMAND GBASave ${case})
     set_tests_properties(gba-save-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
+add_executable(GBACartEEPROMCart GBACartEEPROMCart.cpp ../src/GBACart.cpp
+    ../src/GBACartMotionPak.cpp ../src/GBACartEEPROM.cpp ../src/Savestate.cpp
+    ../src/CRC32.cpp ../src/Utils.cpp)
+target_include_directories(GBACartEEPROMCart PRIVATE ../src)
+foreach(case IN ITEMS bus import reset state rejected legacy solar)
+    add_test(NAME gba-eeprom-cart-${case} COMMAND GBACartEEPROMCart ${case})
+    set_tests_properties(gba-eeprom-cart-${case} PROPERTIES TIMEOUT 15)
 endforeach()
 
 set(homebrew_methods)
@@ -641,6 +655,12 @@ endforeach()
 if(TARGET core)
     add_executable(CoreSMCRemapExecution CoreSMCRemapExecution.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(CoreSMCRemapExecution PRIVATE core Threads::Threads)
+    add_executable(CoreGBAEEPROM CoreGBAEEPROM.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(CoreGBAEEPROM PRIVATE core Threads::Threads)
+    foreach(case IN ITEMS consumer isolation boundaries arbitration model word-boundary busy state replacement)
+        add_test(NAME core-gba-eeprom-${case} COMMAND CoreGBAEEPROM ${case})
+        set_tests_properties(core-gba-eeprom-${case} PROPERTIES TIMEOUT 30)
+    endforeach()
     set(smc_backends interpreter)
     if(ENABLE_JIT)
         list(APPEND smc_backends jit fastmem)

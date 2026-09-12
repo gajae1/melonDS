@@ -129,6 +129,7 @@ u32 CartGame::Checksum() const
 void CartGame::Reset()
 {
     memset(&GPIO, 0, sizeof(GPIO));
+    SerialSave.Reset();
 }
 
 void CartGame::DoSavestate(Savestate* file)
@@ -140,10 +141,12 @@ void CartGame::DoSavestate(Savestate* file)
 
 void CartGame::DoSavestate(Savestate* file, u8* extra, u32 extraLength)
 {
+    PrepareSavestate(file);
     CartCommon::DoSavestate(file);
 
     auto gpio = GPIO;
     auto flash = SRAMFlashState;
+    auto serial = SerialSave;
     u32 length = SRAMLength;
     u8 type = static_cast<u8>(SRAMType);
     file->Var16(&gpio.control);
@@ -177,8 +180,20 @@ void CartGame::DoSavestate(Savestate* file, u8* extra, u32 extraLength)
     }
     // A derived cart's tail belongs to the same transaction as its save data.
     file->VarArray(extra, extraLength);
+    // Append even an idle payload: another device may require 14.5 later in
+    // the same file. Older readers ignore this section tail. Older files have
+    // no serial transaction, so loading one resets the chip to ready/idle.
+    if (file->Saving || file->IsAtLeastVersion(14, 5))
+    {
+        serial.DoSavestate(file, length);
+    }
+    else serial.Reset();
     if (file->Error || file->Saving) return;
-    if (length && type > S_FLASH1M)
+    if (!length) type = S_NULL;
+    if ((length && type > S_FLASH1M) ||
+        ((type == S_EEPROM4K || type == S_EEPROM64K) &&
+         length != (type == S_EEPROM4K ? 512u : 8192u)) ||
+        (serial.Active(0) && type != S_EEPROM4K && type != S_EEPROM64K))
     {
         file->Error = true;
         return;
@@ -189,6 +204,7 @@ void CartGame::DoSavestate(Savestate* file, u8* extra, u32 extraLength)
     SRAMLength = length;
     SRAMType = length ? static_cast<SaveType>(type) : S_NULL;
     SRAMFlashState = flash;
+    SerialSave = serial;
 }
 
 void CartGame::SetupSave(u32 type)
@@ -255,7 +271,48 @@ void CartGame::SetSaveMemory(const u8* savedata, u32 savelen)
 
     SRAM = std::move(imported);
     SetupSave(savelen);
+    SerialSave.Reset();
     Platform::WriteGBASave(SRAM.get(), SRAMLength, 0, SRAMLength, UserData);
+}
+
+bool CartGame::EEPROMSelected(u32 addr) const noexcept
+{
+    if (SRAMType != S_EEPROM4K && SRAMType != S_EEPROM64K) return false;
+    // EEPROM's address pin is A23 (byte address bit 24). On 32 MiB
+    // cartridges the ROM decoder leaves only the final 256 bytes for it.
+    return (addr & 0x01000000) &&
+        (ROMLength <= 0x01000000 || (addr & 0x01FFFF00) == 0x01FFFF00);
+}
+
+u16 CartGame::ROMReadBus(u32 addr, u64 timestamp, bool dma)
+{
+    if (!EEPROMSelected(addr))
+    {
+        SerialSave.Deselect(true);
+        return ROMRead(addr);
+    }
+    // An isolated CPU access can poll ready, but cannot continue the serial
+    // response of an earlier DMA. Reads during programming return busy.
+    if (!dma) SerialSave.Deselect(true);
+    return SerialSave.Read({SRAM.get(), SRAMLength}, timestamp);
+}
+
+void CartGame::ROMWriteBus(u32 addr, u16 val, u64 timestamp, bool dma)
+{
+    if (!EEPROMSelected(addr))
+    {
+        SerialSave.Deselect(true);
+        ROMWrite(addr, val);
+        return;
+    }
+    if (!dma)
+    {
+        SerialSave.Deselect(true);
+        return;
+    }
+    u32 offset = 0;
+    if (SerialSave.Write(val, {SRAM.get(), SRAMLength}, timestamp, offset))
+        Platform::WriteGBASave(SRAM.get(), SRAMLength, offset, 8, UserData);
 }
 
 u16 CartGame::ROMRead(u32 addr) const
@@ -853,11 +910,13 @@ GBACartSlot::GBACartSlot(melonDS::NDS& nds, std::unique_ptr<CartCommon>&& cart) 
 
 void GBACartSlot::Reset() noexcept
 {
+    Deselect();
     if (Cart) Cart->Reset();
 }
 
 void GBACartSlot::DoSavestate(Savestate* file) noexcept
 {
+    PrepareSavestate(file);
     file->Section("GBAC"); // Game Boy Advance Cartridge
 
     // little state here
@@ -887,7 +946,45 @@ void GBACartSlot::DoSavestate(Savestate* file) noexcept
         if (file->Error || savechk != cartchk) return;
     }
 
+    auto owner = DMAOwner;
+    auto reading = DMAReading;
+    auto aborted = DMAAborted;
+    if (file->Saving || file->IsAtLeastVersion(14, 5))
+    {
+        file->Var8(&owner);
+        file->VarBool(&reading);
+        file->VarBool(&aborted);
+        if (file->Error) return;
+        if ((owner != 0xFF && owner >= 8) ||
+            (owner == 0xFF && (reading || aborted)))
+        {
+            file->Error = true;
+            return;
+        }
+    }
+    else { owner = 0xFF; reading = false; aborted = false; }
+
+    const auto oldOwner = DMAOwner;
+    const auto oldReading = DMAReading;
+    const auto oldAborted = DMAAborted;
+    if (!file->Saving)
+    {
+        // The cart's persistence callback must observe its restored bus owner.
+        DMAOwner = owner;
+        DMAReading = reading;
+        DMAAborted = aborted;
+    }
     if (Cart) Cart->DoSavestate(file);
+    if (!file->Saving)
+    {
+        if (file->Error)
+        {
+            DMAOwner = oldOwner;
+            DMAReading = oldReading;
+            DMAAborted = oldAborted;
+        }
+        else DMAInUnit = false;
+    }
 }
 
 std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen, void* userdata)
@@ -1003,7 +1100,9 @@ std::unique_ptr<CartCommon> LoadAddon(int type, void* userdata)
 
 void GBACartSlot::SetCart(std::unique_ptr<CartCommon>&& cart) noexcept
 {
+    AbortDMA();
     Cart = std::move(cart);
+    if (Cart) Cart->ROMDeselect(true);
 
     if (!Cart)
     {
@@ -1029,12 +1128,17 @@ void GBACartSlot::SetSaveMemory(const u8* savedata, u32 savelen) noexcept
 {
     if (Cart)
     {
+        const auto* oldSave = Cart->GetSaveMemory();
         Cart->SetSaveMemory(savedata, savelen);
+        // Import stages the new allocation while the old one is still alive.
+        // A changed pointer proves success; failure must retain the live DMA.
+        if (oldSave != Cart->GetSaveMemory()) AbortDMA();
     }
 }
 
 std::unique_ptr<CartCommon> GBACartSlot::EjectCart() noexcept
 {
+    AbortDMA();
     return std::move(Cart);
     // Cart will be nullptr after this function returns, due to the move
 }
@@ -1048,20 +1152,92 @@ int GBACartSlot::SetInput(int num, bool pressed) noexcept
 }
 
 
-u16 GBACartSlot::ROMRead(u32 addr) const noexcept
+void GBACartSlot::Deselect() noexcept
 {
-    if (Cart) return Cart->ROMRead(addr);
+    if (Cart) Cart->ROMDeselect(true);
+    DMAOwner = 0xFF;
+    DMAReading = false;
+    DMAAborted = false;
+    DMAInUnit = false;
+}
+
+void GBACartSlot::AbortDMA() noexcept
+{
+    if (Cart) Cart->ROMDeselect(true);
+    DMAAborted = DMAOwner != 0xFF;
+    DMAInUnit = false;
+}
+
+void GBACartSlot::BeginDMAUnit(u32 cpu, u32 channel, u32 source, u32 destination,
+    u32 width, bool start, bool enabled) noexcept
+{
+    if (!Cart || !Cart->UsesSerialROM() || cpu != ((NDS.ExMemCnt[0] >> 7) & 1)) return;
+    const u8 owner = cpu * 4 + channel;
+    auto rom = [](u32 address) { return address >= 0x08000000 && address < 0x0A000000; };
+    const bool read = rom(source), write = rom(destination);
+    if (DMAOwner != 0xFF && (DMAOwner != owner || start)) Deselect();
+    if (!enabled || read == write)
+    {
+        if (DMAOwner != 0xFF) Deselect();
+        return;
+    }
+    // Reset, import, or owner loss must not reinterpret an old DMA's suffix
+    // as a fresh command. Only an actual new DMA burst can select it again.
+    if (DMAAborted) return;
+    // Memory handlers ignore the low address bits for a halfword/word DMA.
+    const u32 address = (read ? source : destination) & ~(width - 1);
+    if (start || (DMAOwner != 0xFF && read != DMAReading))
+        Cart->ROMDeselect(false);
+    DMAOwner = owner;
+    DMAReading = read;
+    DMAInUnit = true;
+    UnitAddress = address;
+    UnitWidth = width;
+}
+
+void GBACartSlot::EndDMA(u32 cpu, u32 channel, bool abort) noexcept
+{
+    if (DMAOwner != cpu * 4 + channel) return;
+    if (Cart) Cart->ROMDeselect(abort);
+    DMAOwner = 0xFF;
+    DMAReading = false;
+    DMAAborted = false;
+    DMAInUnit = false;
+}
+
+u16 GBACartSlot::ROMRead(u32 addr) noexcept
+{
+    if (Cart)
+    {
+        const bool dma = DMAInUnit && DMAReading &&
+            addr >= UnitAddress && addr - UnitAddress < UnitWidth;
+        if (!dma) AbortDMA();
+        else if ((addr & 0x1FFFF) == 0x1FFFE) Cart->ROMDeselect(false);
+        const auto timestamp = (NDS.ExMemCnt[0] & 0x80) ? NDS.ARM7Timestamp
+            : NDS.ARM9Timestamp >> NDS.ARM9ClockShift;
+        return Cart->ROMReadBus(addr, timestamp, dma);
+    }
 
     return ((addr >> 1) & 0xFFFF) | OpenBusDecay;
 }
 
 void GBACartSlot::ROMWrite(u32 addr, u16 val) noexcept
 {
-    if (Cart) Cart->ROMWrite(addr, val);
+    if (Cart)
+    {
+        const bool dma = DMAInUnit && !DMAReading &&
+            addr >= UnitAddress && addr - UnitAddress < UnitWidth;
+        if (!dma) AbortDMA();
+        else if ((addr & 0x1FFFF) == 0x1FFFE) Cart->ROMDeselect(false);
+        const auto timestamp = (NDS.ExMemCnt[0] & 0x80) ? NDS.ARM7Timestamp
+            : NDS.ARM9Timestamp >> NDS.ARM9ClockShift;
+        Cart->ROMWriteBus(addr, val, timestamp, dma);
+    }
 }
 
 u8 GBACartSlot::SRAMRead(u32 addr) noexcept
 {
+    AbortDMA();
     if (Cart) return Cart->SRAMRead(addr);
 
     return 0xFF;
@@ -1069,6 +1245,7 @@ u8 GBACartSlot::SRAMRead(u32 addr) noexcept
 
 void GBACartSlot::SRAMWrite(u32 addr, u8 val) noexcept
 {
+    AbortDMA();
     if (Cart) Cart->SRAMWrite(addr, val);
 }
 

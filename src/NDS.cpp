@@ -636,6 +636,7 @@ bool NDS::DoSavestate(Savestate* file)
     // Select the minor format before cart sections whose presence depends
     // on it. Normal audio states continue to use the older writer format.
     SPU.PrepareSavestate(file);
+    if (ConsoleType == 0) GBACartSlot.PrepareSavestate(file);
     const bool legacy = !file->Saving && file->MajorVersion() == 13;
     u64 legacySeed0[2] {}, legacySeed1[2] {};
     file->Section("NDSG");
@@ -1362,6 +1363,8 @@ void NDS::SetExMemCnt(u32 cpu, u16 val, u16 mask)
         ExMemCnt[0] = (ExMemCnt[0] & (~mask | 0x6000)) | (val & rwmask);
         ExMemCnt[1] = (ExMemCnt[0] & 0xFF80) | (ExMemCnt[1] & 0x007F);
         u16 diff = oldval ^ ExMemCnt[0];
+
+        if (diff & 0x80) GBACartSlot.AbortDMA();
 
         if (diff & 0xFF)
             SetGBASlotTimings();
@@ -2248,8 +2251,11 @@ u32 NDS::ARM9Read32(u32 addr)
     case 0x08000000:
     case 0x09000000:
         if (ExMemCnt[0] & (1<<7)) return 0x00000000; // deselected CPU is 00h-filled
-        return GBACartSlot.ROMRead(addr) |
-              (GBACartSlot.ROMRead(addr+2) << 16);
+        {
+            const u32 lo = GBACartSlot.ROMRead(addr);
+            const u32 hi = GBACartSlot.ROMRead(addr + 2);
+            return lo | (hi << 16);
+        }
 
     case 0x0A000000:
         if (ExMemCnt[0] & (1<<7)) return 0x00000000; // deselected CPU is 00h-filled
@@ -2642,8 +2648,11 @@ u32 NDS::ARM7Read32(u32 addr)
     case 0x09000000:
     case 0x09800000:
         if (!(ExMemCnt[0] & (1<<7))) return 0x00000000; // deselected CPU is 00h-filled
-        return GBACartSlot.ROMRead(addr) |
-              (GBACartSlot.ROMRead(addr+2) << 16);
+        {
+            const u32 lo = GBACartSlot.ROMRead(addr);
+            const u32 hi = GBACartSlot.ROMRead(addr + 2);
+            return lo | (hi << 16);
+        }
 
     case 0x0A000000:
     case 0x0A800000:

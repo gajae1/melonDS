@@ -48,6 +48,8 @@ SMC는 기존 `core-.*-smc-reentry`와 `CoreSMCRemapExecution`의 `core-.*-smc-(
 
 ## 진단 구성
 
+GBA EEPROM은 `gba-eeprom-chip`, `gba-eeprom-cart-*`, `core-gba-eeprom-*`로 칩 패킷·저장 통지/소유권·실제 ARM9/7 DMA를 각각 검사한다. 512B/8KiB·busy·yield/선점·32비트 beat 순서·전송 중14.5 복원과 reset/import/교체를 포함하며 JIT OFF에서도 실행한다. 초기 미지 용량, 칩 변종 및 CPU/폭/EXMEM 조합의 물리적 성공 범위는 생성 테스트의 수락으로 확대하지 않는다.
+
 `gpu-gl-allocation-`은 실제 할당 오류와 모의 한도/OOM을 분리하고 캡처 보존·실제 software renderer·오류 통지·재선택을 확인한다. 실제 물리 OOM은 GL 상태를 보장하지 않으므로 core fallback을 전체 표시 context 복구로 보고하지 않는다. `gl-borrow-`는 현재 생산 메시지 case/완료 알림/반환과 실제 Qt 대기를 사용해 두 순서를 결정적으로 검사한다. GL release는 대역이며 실제 panel 파괴·GLAD 로딩·전체 GUI 수명은 후속 gate다.
 
 `gl-presentation-runtime-current|runtime-swap|retire-current`는 초기화 이후 실패 반환·재시도와 root 해제 거부를 검사한다. `gl-state-message-gate`는 실패 중 core 소비 차단·오디오 중단·오류 통지·복구를 검사한다. [1.1.24](releases/1.1.24.md)의 전체 Qt 생성 DS 검증은 실제 창·worker에 WGL 오류만 주입한 별도 근거이며 물리 surface 상실·실기 입력·상용 게임 수락과 구분한다.

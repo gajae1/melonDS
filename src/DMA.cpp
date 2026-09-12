@@ -127,6 +127,8 @@ void DMA::WriteCnt(u32 val)
 {
     u32 oldcnt = Cnt;
     Cnt = val;
+    if ((oldcnt & 0x80000000) && !(val & 0x80000000))
+        NDS.GBACartSlot.EndDMA(CPU, Num, true);
 
     if ((!(oldcnt & 0x80000000)) && (val & 0x80000000))
     {
@@ -574,6 +576,7 @@ u32 DMA::UnitTimings7_32(bool burststart)
 void DMA::Run9()
 {
     if (NDS.ARM9Timestamp >= NDS.ARM9Target) return;
+    const bool serialROM = NDS.GBACartSlot.NeedsROMBus();
 
     Executing = true;
 
@@ -585,10 +588,13 @@ void DMA::Run9()
     {
         while (IterCount > 0 && !Stall)
         {
+            if (serialROM) NDS.GBACartSlot.BeginDMAUnit(CPU, Num, CurSrcAddr, CurDstAddr, 2,
+                burststart, Cnt & 0x80000000);
             NDS.ARM9Timestamp += (UnitTimings9_16(burststart) << NDS.ARM9ClockShift);
             burststart = false;
 
             NDS.ARM9Write16(CurDstAddr, NDS.ARM9Read16(CurSrcAddr));
+            if (serialROM) NDS.GBACartSlot.EndDMAUnit();
 
             CurSrcAddr += SrcAddrInc<<1;
             CurDstAddr += DstAddrInc<<1;
@@ -602,10 +608,13 @@ void DMA::Run9()
     {
         while (IterCount > 0 && !Stall)
         {
+            if (serialROM) NDS.GBACartSlot.BeginDMAUnit(CPU, Num, CurSrcAddr, CurDstAddr, 4,
+                burststart, Cnt & 0x80000000);
             NDS.ARM9Timestamp += (UnitTimings9_32(burststart) << NDS.ARM9ClockShift);
             burststart = false;
 
             NDS.ARM9Write32(CurDstAddr, NDS.ARM9Read32(CurSrcAddr));
+            if (serialROM) NDS.GBACartSlot.EndDMAUnit();
 
             CurSrcAddr += SrcAddrInc<<2;
             CurDstAddr += DstAddrInc<<2;
@@ -618,6 +627,8 @@ void DMA::Run9()
 
     Executing = false;
     Stall = false;
+
+    if (!IterCount) NDS.GBACartSlot.EndDMA(CPU, Num, false);
 
     if (RemCount)
     {
@@ -650,6 +661,7 @@ void DMA::Run9()
 void DMA::Run7()
 {
     if (NDS.ARM7Timestamp >= NDS.ARM7Target) return;
+    const bool serialROM = NDS.GBACartSlot.NeedsROMBus();
 
     Executing = true;
 
@@ -661,10 +673,13 @@ void DMA::Run7()
     {
         while (IterCount > 0 && !Stall)
         {
+            if (serialROM) NDS.GBACartSlot.BeginDMAUnit(CPU, Num, CurSrcAddr, CurDstAddr, 2,
+                burststart, Cnt & 0x80000000);
             NDS.ARM7Timestamp += UnitTimings7_16(burststart);
             burststart = false;
 
             NDS.ARM7Write16(CurDstAddr, NDS.ARM7Read16(CurSrcAddr));
+            if (serialROM) NDS.GBACartSlot.EndDMAUnit();
 
             CurSrcAddr += SrcAddrInc<<1;
             CurDstAddr += DstAddrInc<<1;
@@ -678,10 +693,13 @@ void DMA::Run7()
     {
         while (IterCount > 0 && !Stall)
         {
+            if (serialROM) NDS.GBACartSlot.BeginDMAUnit(CPU, Num, CurSrcAddr, CurDstAddr, 4,
+                burststart, Cnt & 0x80000000);
             NDS.ARM7Timestamp += UnitTimings7_32(burststart);
             burststart = false;
 
             NDS.ARM7Write32(CurDstAddr, NDS.ARM7Read32(CurSrcAddr));
+            if (serialROM) NDS.GBACartSlot.EndDMAUnit();
 
             CurSrcAddr += SrcAddrInc<<2;
             CurDstAddr += DstAddrInc<<2;
@@ -694,6 +712,8 @@ void DMA::Run7()
 
     Executing = false;
     Stall = false;
+
+    if (!IterCount) NDS.GBACartSlot.EndDMA(CPU, Num, false);
 
     if (RemCount)
     {

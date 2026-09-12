@@ -22,6 +22,7 @@
 #include <memory>
 #include "types.h"
 #include "Savestate.h"
+#include "GBACartEEPROM.h"
 
 namespace melonDS::GBACart
 {
@@ -69,11 +70,19 @@ public:
     virtual void Reset();
 
     virtual void DoSavestate(Savestate* file);
+    virtual void PrepareSavestate(Savestate* file) const {}
 
     virtual int SetInput(int num, bool pressed);
 
     virtual u16 ROMRead(u32 addr) const;
     virtual void ROMWrite(u32 addr, u16 val);
+
+    // Bus accesses carry the clock and whether /CS belongs to a DMA stream.
+    // Accessories keep their existing parallel ROM register interface.
+    virtual u16 ROMReadBus(u32 addr, u64 timestamp, bool dma) { return ROMRead(addr); }
+    virtual void ROMWriteBus(u32 addr, u16 val, u64 timestamp, bool dma) { ROMWrite(addr, val); }
+    virtual void ROMDeselect(bool abort) {}
+    virtual bool UsesSerialROM() const noexcept { return false; }
 
     virtual u8 SRAMRead(u32 addr);
     virtual void SRAMWrite(u32 addr, u8 val);
@@ -104,9 +113,16 @@ public:
     void Reset() override;
 
     void DoSavestate(Savestate* file) override;
+    void PrepareSavestate(Savestate* file) const override
+    { if (file->Saving && SerialSave.Active(0)) file->RequireMinorVersion(5); }
 
     u16 ROMRead(u32 addr) const override;
     void ROMWrite(u32 addr, u16 val) override;
+    u16 ROMReadBus(u32 addr, u64 timestamp, bool dma) override;
+    void ROMWriteBus(u32 addr, u16 val, u64 timestamp, bool dma) override;
+    void ROMDeselect(bool abort) override { SerialSave.Deselect(abort); }
+    bool UsesSerialROM() const noexcept override
+    { return SRAMType == S_EEPROM4K || SRAMType == S_EEPROM64K; }
 
     u8 SRAMRead(u32 addr) override;
     void SRAMWrite(u32 addr, u8 val) override;
@@ -169,6 +185,8 @@ protected:
     SaveType SRAMType = S_NULL;
 private:
     void SetupSave(u32 type);
+    bool EEPROMSelected(u32 addr) const noexcept;
+    EEPROM SerialSave;
 };
 
 // CartGameSolarSensor -- Boktai game cart
@@ -307,6 +325,11 @@ public:
     ~GBACartSlot() noexcept = default;
     void Reset() noexcept;
     void DoSavestate(Savestate* file) noexcept;
+    void PrepareSavestate(Savestate* file) const noexcept
+    {
+        if (file->Saving && DMAOwner != 0xFF) file->RequireMinorVersion(5);
+        if (Cart) Cart->PrepareSavestate(file);
+    }
 
     /// Ejects the cart in the GBA slot (if any)
     /// and inserts the given one.
@@ -332,8 +355,16 @@ public:
 
     void SetOpenBusDecay(u16 val) noexcept { OpenBusDecay = val; }
 
-    u16 ROMRead(u32 addr) const noexcept;
+    u16 ROMRead(u32 addr) noexcept;
     void ROMWrite(u32 addr, u16 val) noexcept;
+
+    void BeginDMAUnit(u32 cpu, u32 channel, u32 source, u32 destination,
+        u32 width, bool start, bool enabled) noexcept;
+    void EndDMAUnit() noexcept { DMAInUnit = false; }
+    bool NeedsROMBus() const noexcept { return Cart && Cart->UsesSerialROM(); }
+    void EndDMA(u32 cpu, u32 channel, bool abort) noexcept;
+    void Deselect() noexcept;
+    void AbortDMA() noexcept;
 
     u8 SRAMRead(u32 addr) noexcept;
     void SRAMWrite(u32 addr, u8 val) noexcept;
@@ -365,6 +396,14 @@ private:
     melonDS::NDS& NDS;
     std::unique_ptr<CartCommon> Cart = nullptr;
     u16 OpenBusDecay = 0;
+    // Persistent chip-select owner across scheduler yields; no host pointers.
+    u8 DMAOwner = 0xFF;
+    bool DMAReading = false;
+    bool DMAAborted = false;
+    // A unit cannot be suspended between its read and write bus callbacks.
+    bool DMAInUnit = false;
+    u32 UnitAddress = 0;
+    u32 UnitWidth = 0;
 };
 
 /// Parses the given ROM data and constructs a \c GBACart::CartCommon subclass
