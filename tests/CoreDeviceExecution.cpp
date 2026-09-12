@@ -71,6 +71,37 @@ int TestGBAFlashBus(NDSArgs&& args)
         const auto* cart = nds->GetGBACart();
         ok &= cart->GetSaveMemoryLength() == length &&
               std::equal(expected.begin(), expected.end(), cart->GetSaveMemory());
+        command(0x80);
+        write(cpu, 0x5555, 0xAA);
+        write(cpu, 0x2AAA, 0x55);
+        write(cpu ^ 1, 0x5555, 0x10); // Non-owner cannot complete the erase.
+        ok &= std::equal(expected.begin(), expected.end(), cart->GetSaveMemory());
+        write(cpu, 0x5555, 0x10);
+        std::fill_n(expected.data(), banked ? 0x20000 : 0x10000, 0xFF);
+        ok &= std::equal(expected.begin(), expected.end(), cart->GetSaveMemory());
+        ok &= read(cpu, 0xFFF0) == 0xFF;
+        Savestate saved(length + 128);
+        nds->GBACartSlot.DoSavestate(&saved);
+        saved.Finish();
+        command(0xA0);
+        write(cpu, 0x1234, 0x3C);
+        Savestate load(saved.Buffer(), saved.Length(), false);
+        nds->GBACartSlot.DoSavestate(&load);
+        ok &= !saved.Error && !load.Error &&
+              std::equal(expected.begin(), expected.end(), cart->GetSaveMemory());
+        for (bool withType : {false, true})
+        {
+            Savestate shortSlot(64);
+            shortSlot.Section("GBAC");
+            u32 type = cart->Type();
+            if (withType) shortSlot.Var32(&type);
+            shortSlot.Finish();
+            const auto* owner = cart->GetSaveMemory();
+            Savestate invalid(shortSlot.Buffer(), shortSlot.Length(), false);
+            nds->GBACartSlot.DoSavestate(&invalid);
+            ok &= invalid.Error && cart->GetSaveMemory() == owner &&
+                  std::equal(expected.begin(), expected.end(), cart->GetSaveMemory());
+        }
         failures += !ok;
         std::printf("gba-flash-bus/ARM%u/%u: %s\n", cpu ? 7 : 9, length, ok ? "PASS" : "FAIL");
     }

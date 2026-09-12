@@ -120,6 +120,7 @@ public:
     u32 GetSaveMemoryLength() const override;
     void SetSaveMemory(const u8* savedata, u32 savelen) override;
 protected:
+    void DoSavestate(Savestate* file, u8* extra, u32 extraLength);
     virtual void ProcessGPIO();
 
     u8 SRAMRead_EEPROM(u32 addr);

@@ -68,7 +68,7 @@ SMC는 기존 `core-.*-smc-reentry`와 `CoreSMCRemapExecution`의 `core-.*-smc-(
 
 MPU 실행 권한은 `CoreExecution`의 `core-.*-mpu-execution`에서 실제 guest MCR·정적/동적 분기·warmed block을 사용한다. 정상/금지/재허용, exception 상태와 register/RAM 부작용을 대조한다. 모든 data abort와 실제 silicon timing의 수락으로 확대하지 않는다.
 
-`gba-save-`는 실제 GBA Flash 명령·저장 callback을64/128KiB와 RTC trailer에서 검사한다. 여분의 소유 backing은 기존 범위 초과를 canary 불일치로 관찰하기 위한 것이며 device 크기에 포함하지 않는다. `core-gba-flash-bus`는 정확한 크기의 버퍼와 실제 ARM9/7 메모리 핸들러·슬롯 소유권을 별도로 확인한다. CPU 명령 실행·EEPROM ROM bus/DMA·모든 Flash 명령·실기 timing·일반 가져오기/상태 수락으로 확대하지 않는다.
+`gba-save-`는 실제 GBA Flash 명령·저장 callback을64/128KiB와 RTC trailer에서 검사한다. 전체 지우기·기본/태양광 카트의 불완전/잘못된 상태 거부·완전한 상태를 관찰하는 저장 callback·생성13/current 복원과 용량 변경/자기 참조 가져오기를 포함한다. 여분의 소유 backing은 기존 범위 초과를 canary 불일치로 관찰하기 위한 것이며 device 크기에 포함하지 않는다. `core-gba-flash-bus`는 정확한 크기의 버퍼와 실제 ARM9/7 메모리 핸들러·슬롯 소유권·slot 복원/잘린 header를 별도로 확인한다. CPU 명령 실행·EEPROM ROM bus/DMA·모든 Flash 명령·실기 timing·전체 콘솔의 복원 실패 원자성·일반 가져오기/상태 수락으로 확대하지 않는다.
 
 오디오 공급은 `FrontendAudio`의 `audio-callback-buffer`와 `AudioResampling`의 `audio-core-clock`으로 생성 PCM 부족/복귀와 코어 FIFO 덮어쓰기를 확인한다. 실제 장치 측정은 [ROMSmoke의 선택 환경변수](../tests/README.md)를 사용해 같은 구간의 보간·버퍼를 대조한다. 출력 제출은 무음이며 GUI presentation·장기 청취·물리 지연 검사를 대신하지 않는다. 일반 실행의 `MELONDS_AUDIO_DIAGNOSTICS=1`은 pause/종료 로그를 켜고 기본 비활성 상태에서는 callback 시간을 측정하지 않는다.
 

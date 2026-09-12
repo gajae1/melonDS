@@ -133,45 +133,62 @@ void CartGame::Reset()
 
 void CartGame::DoSavestate(Savestate* file)
 {
+    DoSavestate(file, nullptr, 0);
+    if (!file->Saving && !file->Error && SRAM)
+        Platform::WriteGBASave(SRAM.get(), SRAMLength, 0, SRAMLength, UserData);
+}
+
+void CartGame::DoSavestate(Savestate* file, u8* extra, u32 extraLength)
+{
     CartCommon::DoSavestate(file);
 
-    file->Var16(&GPIO.control);
-    file->Var16(&GPIO.data);
-    file->Var16(&GPIO.direction);
+    auto gpio = GPIO;
+    auto flash = SRAMFlashState;
+    u32 length = SRAMLength;
+    u8 type = static_cast<u8>(SRAMType);
+    file->Var16(&gpio.control);
+    file->Var16(&gpio.data);
+    file->Var16(&gpio.direction);
+    file->Var32(&length);
+    if (file->Error) return;
 
-    u32 oldlen = SRAMLength;
-
-    file->Var32(&SRAMLength);
-
-    if (SRAMLength != oldlen)
+    std::unique_ptr<u8[]> restored;
+    if (!file->Saving)
     {
-        // reallocate save memory
-        SRAM = SRAMLength ? std::make_unique<u8[]>(SRAMLength) : nullptr;
+        // Keep live bytes and command state until the whole payload validates,
+        // including same-capacity loads and the metadata after the save data.
+        if (length > file->BufferLength() - file->Length())
+        {
+            file->Error = true;
+            return;
+        }
+        try { if (length) restored = std::make_unique<u8[]>(length); }
+        catch (const std::bad_alloc&) { file->Error = true; return; }
     }
-    if (SRAMLength)
+    if (length)
     {
-        // fill save memory if data is present
-        file->VarArray(SRAM.get(), SRAMLength);
+        file->VarArray(file->Saving ? SRAM.get() : restored.get(), length);
+        file->Var8(&flash.bank);
+        file->Var8(&flash.cmd);
+        file->Var8(&flash.device);
+        file->Var8(&flash.manufacturer);
+        file->Var8(&flash.state);
+        file->Var8(&type);
     }
-    else
+    // A derived cart's tail belongs to the same transaction as its save data.
+    file->VarArray(extra, extraLength);
+    if (file->Error || file->Saving) return;
+    if (length && type > S_FLASH1M)
     {
-        // no save data, clear the current state
-        SRAMType = SaveType::S_NULL;
-        SRAM = nullptr;
+        file->Error = true;
         return;
     }
 
-    // persist some extra state info
-    file->Var8(&SRAMFlashState.bank);
-    file->Var8(&SRAMFlashState.cmd);
-    file->Var8(&SRAMFlashState.device);
-    file->Var8(&SRAMFlashState.manufacturer);
-    file->Var8(&SRAMFlashState.state);
-
-    file->Var8((u8*)&SRAMType);
-
-    if ((!file->Saving) && SRAM)
-        Platform::WriteGBASave(SRAM.get(), SRAMLength, 0, SRAMLength, UserData);
+    GPIO = gpio;
+    SRAM = std::move(restored);
+    SRAMLength = length;
+    SRAMType = length ? static_cast<SaveType>(type) : S_NULL;
+    SRAMFlashState = flash;
 }
 
 void CartGame::SetupSave(u32 type)
@@ -220,11 +237,25 @@ void CartGame::SetupSave(u32 type)
 
 void CartGame::SetSaveMemory(const u8* savedata, u32 savelen)
 {
-    SetupSave(savelen);
+    if (!savedata || !savelen) return;
 
-    u32 len = std::min(savelen, SRAMLength);
-    memcpy(SRAM.get(), savedata, len);
-    Platform::WriteGBASave(savedata, len, 0, len, UserData);
+    // Stage before replacing the old owner: savedata may alias its SRAM.
+    std::unique_ptr<u8[]> imported;
+    try
+    {
+        imported = std::make_unique<u8[]>(savelen);
+    }
+    catch (const std::bad_alloc&)
+    {
+        // GBACartSlot::SetSaveMemory is noexcept. Preserve the valid old save.
+        Log(LogLevel::Error, "Failed to allocate %u bytes for the GBA save. Previous save kept.\n", savelen);
+        return;
+    }
+    memcpy(imported.get(), savedata, savelen);
+
+    SRAM = std::move(imported);
+    SetupSave(savelen);
+    Platform::WriteGBASave(SRAM.get(), SRAMLength, 0, SRAMLength, UserData);
 }
 
 u16 CartGame::ROMRead(u32 addr) const
@@ -471,7 +502,16 @@ void CartGame::SRAMWrite_FLASH(u32 addr, u8 val)
             SRAMFlashState.state = 0;
             break;
         case 0x82:
-            if (val == 0x30)
+            if (val == 0x10 && addr == 0x5555)
+            {
+                // Chip erase covers both banks, but not appended RTC data.
+                if (flashLength <= SRAMLength)
+                {
+                    memset(SRAM.get(), 0xFF, flashLength);
+                    Platform::WriteGBASave(SRAM.get(), SRAMLength, 0, flashLength, UserData);
+                }
+            }
+            else if (val == 0x30)
             {
                 const u32 start = (addr & 0xF000) + 0x10000 * SRAMFlashState.bank;
                 if (start < flashLength && start <= SRAMLength && 0x1000 <= SRAMLength - start)
@@ -608,12 +648,15 @@ void CartGameSolarSensor::Reset()
 
 void CartGameSolarSensor::DoSavestate(Savestate* file)
 {
-    CartGame::DoSavestate(file);
-
-    file->Var8((u8*)&LightEdge);
-    file->Var8(&LightCounter);
-    file->Var8(&LightSample);
-    file->Var8(&LightLevel);
+    u8 sensor[] = {u8(LightEdge), LightCounter, LightSample, LightLevel};
+    CartGame::DoSavestate(file, sensor, sizeof(sensor));
+    if (file->Error || file->Saving) return;
+    LightEdge = sensor[0] != 0;
+    LightCounter = sensor[1];
+    LightSample = sensor[2];
+    LightLevel = sensor[3];
+    if (SRAM)
+        Platform::WriteGBASave(SRAM.get(), SRAMLength, 0, SRAMLength, UserData);
 }
 
 int CartGameSolarSensor::SetInput(int num, bool pressed)
@@ -835,13 +878,13 @@ void GBACartSlot::DoSavestate(Savestate* file) noexcept
     }
     else
     {
-        u32 savetype;
+        u32 savetype = 0;
         file->Var32(&savetype);
-        if (savetype != carttype) return;
+        if (file->Error || savetype != carttype) return;
 
-        u32 savechk;
+        u32 savechk = 0;
         file->Var32(&savechk);
-        if (savechk != cartchk) return;
+        if (file->Error || savechk != cartchk) return;
     }
 
     if (Cart) Cart->DoSavestate(file);

@@ -234,9 +234,18 @@ are not exercised here.
 `GBASave` drives the real Flash decoder and save notifications for 64KiB,
 128KiB and 128KiB plus an RTC trailer. It checks sector boundaries, unsupported
 bank rejection, and command-looking byte payloads with initially erased data.
+Chip erase covers both banks while retaining the RTC trailer and selected bank;
+incomplete command sequences cannot erase data. Base and solar-cart state loads
+retain their old owner, bytes, GPIO and command/sensor state on incomplete or
+invalid payloads. Generated format-13/current valid loads preserve pending byte
+programs, and persistence callbacks observe the complete restored device state.
+Save imports cover initially absent storage, capacity changes, caller-owned data
+and self-aliases; an independent private real-core probe also checks allocation
+failure without unwinding through the slot's noexcept boundary.
 Extra owned backing exposes old out-of-range accesses through canary changes;
 it is not part of the declared chip. `core-gba-flash-bus` separately checks the
 actual ARM9/ARM7 memory handlers and slot ownership with exact-size saves.
+It also restores through the real slot and rejects truncated slot headers.
 These do not establish EEPROM ROM-bus support, physical Flash timing,
 undefined bank-bit behavior, or general GBA savestate/import compatibility.
 

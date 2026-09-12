@@ -424,3 +424,13 @@ FS-03은 실제 Qt/EmuInstance/EmuThread 메시지와 생산 Platform 카트 저
 최종 Windows 전체812/812(90.76초, 실패·skip0), 기존 SMC69개와 JIT OFF의 GBA 버스 검증을 통과했다. 전체 검사는 한 번만 실행했고 GitHub Actions·macOS 빌드는 사용하지 않는다. 간헐적 Windows 파일 교체 거부는 이번 성공으로 해결 처리하지 않는다.
 
 현행/원본1.1 상태로 블랙600프레임을 각각 세 renderer에서 실행했고, 마지막 화면은1.1.64의 대응 결과와 일치했다. 최종 core와 개인 입력 파일의 hash를 확인했다. 전체 animation 픽셀·실기 timing 및 다른 게임의 상태 호환으로 확대하지 않는다.
+
+2026-09-13, 1.1.66: NP-18의 Flash chip erase 명령 누락을 재현하고 정상 unlock/erase 순서에서 물리64/128KiB 전체를 지우도록 구현했다. 선택한 은행과 RTC 부가 정보는 보존한다. 미완성 순서·잘못된 최종 주소는 지우지 않는다. [mGBA 구현](https://github.com/mgba-emu/mgba/blob/master/src/gba/savedata.c)의 명령과 범위를 대조했으며 실물 지우기 지연이나 WIP를 새로 구현한 것은 아니다.
+
+GBA 상태의 데이터/명령 metadata가 잘리면 기존 메모리와 GPIO를 바꾼 뒤 저장 통지까지 보내던 문제를 재현했다. 임시 메모리와 장치 필드를 먼저 읽고, 기본/태양광 카트의 전체 GBCS를 검증한 뒤 반영한다. 태양광 tail이 잘리는 경우와 저장 callback이 복원 전 센서 상태를 관찰하던 중간 후보도 별도로 실패를 확인했다. undefined save type·잘린 slot header를 거부하고 할당 실패는 noexcept 경계 안에서 처리한다. 생성13/current 정상 상태의 바이트 순서·pending A0·은행·RTC와 빈 상태 복원을 유지했다. [원본1.1 GBCS](https://github.com/melonDS-emu/melonDS/blob/1.1/src/GBACart.cpp)와 필드 순서를 대조했으며 전체 콘솔의 다른 section이 뒤늦게 실패하는 경우까지 원자적으로 복원한다고 주장하지 않는다.
+
+SetSaveMemory의 빈 버퍼 쓰기·기존 할당보다 큰 복사·겹친 자기 참조를 실제 NDS::SetGBASave→slot→cart 경로에서 재현했다. 새 버퍼를 먼저 할당/복사하고 성공 시에만 소유권과 길이를 바꾸며, 저장 callback에는 카트가 소유한 전체 데이터를 전달한다. bad_alloc은 기존 데이터와 통지를 보존한다. 기존 입력 길이별 SetupSave 판별과 미등록 길이의 경고/이전 type 유지 정책은 바꾸지 않았다. 종류 자동 추정·버퍼 크기에 맞춘 자동 절단으로 성공 처리하지 않는다. 비공개 관측은 실제 new[] 요청과 CRT 복사를 추적하며, 위험한 null/겹침은 기록 후 중단하고 범위 초과는 소유한 여분의 backing에서 관찰했다. 자연 발생 프로세스 crash나 실제 메모리 고갈로 확대하지 않는다.
+
+다음 작업은 FS-05의 save worker 할당 실패 전 길이 게시, FS-06의 간헐적 Windows 파일 교체 거부 원인, NP-18의 실제 EEPROM ROM bus/DMA 소비자와 판별 정책이다. native ARM/실물 장치·실제 두 PC 통신 및 나머지 공개 계획 수락은 계속 남는다. GitHub Actions·macOS 빌드는 사용하지 않는다.
+
+최종 Windows 전체 검사는814/816(88.75초)이 통과했고, 변경하지 않은 save-manager-replace/flush-latest가 commit 액세스 거부(Qt10)로 실패했다. 해당2개만 한 번 분리 실행하여 통과했으며 최초 실패와 원인 미확정 상태를 보존한다. 전체 무실패로 기록하지 않는다. GBA 관련8개·기존 SMC69개·JIT OFF의 GBA8개, 최종 실제 core에 연결한 import11조건과 상태 할당 실패1조건이 통과했다. 현행/원본1.1 블랙600프레임×3 renderer의 마지막 화면은1.1.65와 같고 개인 입력 파일 hash를 보존했다. 전체 animation·실기 latency나 기존 Windows 교체 거부의 해결을 뜻하지 않는다.
