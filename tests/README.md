@@ -304,6 +304,15 @@ the existing volume/filter/buffer boundaries. `AudioResampling` observes real
 core FIFO overwrites when consumption stops. These do not establish listening
 quality or the cause of an intermittent device fault.
 
+`AudioResampling one-shot-state` checks full DS/DSi state roundtrips after
+changing an inactive HOLD channel's length, loop position, format or repeat
+mode. It observes actual capture samples and Busy, with unchanged, volume,
+timer, source and released-output controls. Only states whose retained output
+older readers would discard require 14.4; normal states remain 14.2. The test
+also rejects missing/ambiguous NC13 records and a 14.3 empty record. Existing
+13/14.2/14.3 load normalization remains; a historical manual stop exactly at
+the final sample cannot be distinguished retrospectively from a natural end.
+
 `ROMSmoke` optionally opens the default SDL output device when
 `MELONDS_SMOKE_AUDIO_BUFFER` is 128, 256, 512 or 1024.
 `MELONDS_SMOKE_AUDIO_INTERPOLATION` selects 0=None, 1=Linear, 2=Cosine,

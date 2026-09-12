@@ -70,6 +70,8 @@ MPU 실행 권한은 `CoreExecution`의 `core-.*-mpu-execution`에서 실제 gue
 
 오디오 공급은 `FrontendAudio`의 `audio-callback-buffer`와 `AudioResampling`의 `audio-core-clock`으로 생성 PCM 부족/복귀와 코어 FIFO 덮어쓰기를 확인한다. 실제 장치 측정은 [ROMSmoke의 선택 환경변수](../tests/README.md)를 사용해 같은 구간의 보간·버퍼를 대조한다. 출력 제출은 무음이며 GUI presentation·장기 청취·물리 지연 검사를 대신하지 않는다. 일반 실행의 `MELONDS_AUDIO_DIAGNOSTICS=1`은 pause/종료 로그를 켜고 기본 비활성 상태에서는 callback 시간을 측정하지 않는다.
 
+`audio-one-shot-state`는 DS/DSi의 HOLD 중 설정 변경 전후·전체 저장/복원 후 실제 capture와 Busy를 확인한다. 일반14.2와 조건부14.4 저장을 구분하며,14.4에서 필수인 빈 NC13 레코드의 누락·잘못된 mode와14.3에서의 빈 레코드를 거부한다. 과거14.2 수동중지8상태는 별도 고정 입력으로 가져와 잔여 소리가 재생되지 않는지 대조한다. 14.4는1.1.62 이하에서 읽을 수 없고, 구형 수동중지의 모든 모호성을 복구했다는 뜻은 아니다.
+
 루트 [Sanitizers.cmake](../cmake/Sanitizers.cmake)의 `SANITIZE` 설정은 도구와 runtime이 지원하는 조합에서 사용한다. 작은 parser·buffer 경계는 기존 독립 테스트를 우선한다.
 JIT fastmem의 의도된 fault와 실제 메모리 오류를 구분한다. sanitizer runtime이 없거나 충돌하면 실행하지 못한 이유를 남기며 전체 검사를 꺼서 통과로 바꾸지 않는다.
 ASan/UBSan/TSan의 지원 조합 표와 추가 JIT 통합은 BV-11의 후속 과제다. 이 문서 자체는 sanitizer 실행 증거가 아니다.

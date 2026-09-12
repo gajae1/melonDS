@@ -281,6 +281,22 @@ void SPU::ResetOutputHistory()
     blip_add_delta(BlipRight, 0, OutputLastSamples[1]);
 }
 
+void SPU::PrepareSavestate(Savestate* file) const
+{
+    if (!file->Saving) return;
+    for (const SPUChannel& channel : Channels)
+    {
+        // Older readers infer inactive output from format/repeat/position.
+        // Registers can change during HOLD, invalidating that inference.
+        if (!(channel.Cnt & (1<<31)) && !channel.IsAtOneShotEnd() &&
+            (channel.CurSample || channel.PrevSample[0] || channel.PrevSample[1] || channel.PrevSample[2]))
+        {
+            file->RequireMinorVersion(4);
+            return;
+        }
+    }
+}
+
 void SPU::DoSavestate(Savestate* file)
 {
     file->Section("SPU.");
@@ -389,6 +405,16 @@ void SPUChannel::Reset()
     FIFOLevel = 0;
 }
 
+bool SPUChannel::IsAtOneShotEnd() const
+{
+    const u32 format = (Cnt >> 29) & 0x3;
+    u32 samples = LoopPos + Length;
+    if      (format == 1) samples >>= 1;
+    else if (format == 2) samples <<= 1;
+    return format < 3 && ((Cnt >> 27) & 0x3) == 2 &&
+        Pos >= 0 && u32(Pos) + 1 == samples;
+}
+
 void SPUChannel::DoSavestate(Savestate* file)
 {
     file->Var32(&Cnt);
@@ -420,22 +446,14 @@ void SPUChannel::DoSavestate(Savestate* file)
     file->Var32(&FIFOLevel);
     file->VarArray(FIFO, sizeof(FIFO));
 
-    if (!file->Saving && !file->Error && !(Cnt & (1<<31)))
+    if (!file->Saving && !file->Error && !file->IsAtLeastVersion(14, 4) &&
+        !(Cnt & (1<<31)) && !IsAtOneShotEnd())
     {
-        // Older manual stops left decoded samples in the savestate. Only a
-        // natural one-shot end can still have an audible final period/HOLD.
-        const u32 format = (Cnt >> 29) & 0x3;
-        u32 samples = LoopPos + Length;
-        if      (format == 1) samples >>= 1;
-        else if (format == 2) samples <<= 1;
-        const bool last = format < 3 && ((Cnt >> 27) & 0x3) == 2 &&
-            Pos >= 0 && u32(Pos) + 1 == samples;
-        if (!last)
-        {
-            KeyOn = false;
-            CurSample = 0;
-            PrevSample[0] = PrevSample[1] = PrevSample[2] = 0;
-        }
+        // Older manual stops left decoded samples in the savestate. 14.4
+        // explicitly preserves inactive output even after register changes.
+        KeyOn = false;
+        CurSample = 0;
+        PrevSample[0] = PrevSample[1] = PrevSample[2] = 0;
     }
 }
 

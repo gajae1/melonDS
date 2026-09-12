@@ -59,6 +59,8 @@ public:
     void Reset();
     void DoSavestate(Savestate* file);
 
+    bool IsAtOneShotEnd() const;
+
     static const s8 ADPCMIndexTable[8];
     static const u16 ADPCMTable[89];
     static const s16 PSGTable[8][8];
@@ -237,6 +239,7 @@ public:
     explicit SPU(melonDS::NDS& nds, AudioBitDepth bitdepth, AudioInterpolation interpolation, double outputSampleRate);
     ~SPU();
     void Reset();
+    void PrepareSavestate(Savestate* file) const;
     void DoSavestate(Savestate* file);
 
     void Stop();

@@ -415,18 +415,21 @@ void NDSCartSlot::LegacyTransferState(Savestate* file) noexcept
 {
     if (Num || file->Error) return;
     const bool pending = LegacyROMWrite || LegacyROMPos < LegacyROMData.size();
-    if (file->Saving ? !pending : !file->IsAtLeastVersion(14, 3)) return;
+    if (file->Saving ? !pending && !file->IsAtLeastVersion(14, 4) : !file->IsAtLeastVersion(14, 3)) return;
     if (file->Saving) file->RequireMinorVersion(3);
     file->Section("NC13");
     const u32 offset = LegacyROMWrite ? 0 : LegacyROMPos;
     u32 count = pending ? static_cast<u32>(LegacyROMData.size() - offset) : 0;
     // Bit 1 extends the original read-only NC13 record without changing it.
-    u8 mode = LegacyROMCPU | (LegacyROMWrite ? 2 : 0);
+    u8 mode = pending ? LegacyROMCPU | (LegacyROMWrite ? 2 : 0) : 0;
     file->Var8(&mode);
     file->Var32(&count);
     if (file->Error) return;
     if (!file->Saving)
     {
+        // Audio can require 14.4 without a migrated cart transfer. Unlike
+        // 14.3, it always writes NC13 and permits this neutral empty record.
+        if (file->IsAtLeastVersion(14, 4) && mode == 0 && count == 0) return;
         LegacyROMCPU = mode & 1;
         LegacyROMWrite = mode & 2;
         if (mode > 3 || LegacyROMCPU != CPUSelect || PowerState != 2 ||

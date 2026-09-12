@@ -26,7 +26,7 @@
 
 #define SAVESTATE_MAJOR 14
 #define SAVESTATE_MINOR 2
-#define SAVESTATE_MAX_MINOR 3
+#define SAVESTATE_MAX_MINOR 4
 
 // bitmask for the savestate config word
 enum
@@ -81,8 +81,8 @@ public:
 
     void Finish();
 
-    // Normal states remain 14.2. A migrated legacy transfer can carry bytes
-    // that 14.2 cannot represent, so only those saves require a newer reader.
+    // Normal states remain 14.2. Pending migrated cart transfers need 14.3;
+    // inactive audio that older readers would discard needs 14.4.
     void RequireMinorVersion(u16 minor);
 
     // TODO rewinds the stream

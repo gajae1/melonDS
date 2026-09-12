@@ -350,6 +350,113 @@ static bool TestOneShotHoldTiming()
     return passed;
 }
 
+static bool TestOneShotState()
+{
+    // Changing registers while Busy is clear must not discard the retained
+    // output on a full-state roundtrip. Observe actual channel capture RAM.
+    struct StateCase { const char* Name; u32 Address; u32 Value; u16 Minor; s16 Sample; };
+    constexpr StateCase cases[] = {
+        {"unchanged", 0x0400040C, 4, 2, 6144},
+        {"volume", 0x04000400, 0x30408040, 2, 3072},
+        {"timer", 0x04000408, 0xFE00, 2, 6144},
+        {"source", 0x04000404, 0x02004020, 2, 6144},
+        {"length", 0x0400040C, 8, 4, 6144},
+        {"zero-length", 0x0400040C, 0, 4, 6144},
+        {"loop-position", 0x04000408, 0x0001FC00, 4, 6144},
+        {"pcm8", 0x04000400, 0x1040807F, 4, 6144},
+        {"adpcm", 0x04000400, 0x5040807F, 4, 6144},
+        {"repeat", 0x04000400, 0x2840807F, 4, 6144},
+        {"manual", 0x04000400, 0x2040807F, 4, 6144},
+        {"released", 0x04000400, 0x3040007F, 2, 0},
+    };
+    constexpr u32 source = 0x02004000, dest = 0x02008000, guard = 0x5A5A5A5A;
+    bool passed = true;
+    for (bool dsi : {false, true})
+    for (const auto& test : cases)
+    {
+        NDSArgs args;
+        args.JIT.reset();
+        std::unique_ptr<NDS> nds;
+        if (dsi)
+        {
+            DSiArgs dsiArgs;
+            static_cast<NDSArgs&>(dsiArgs) = std::move(args);
+            nds = std::make_unique<DSi>(std::move(dsiArgs));
+        }
+        else nds = std::make_unique<NDS>(std::move(args));
+        nds->Reset();
+        nds->SPU.SetInterpolation(AudioInterpolation::None);
+        nds->ARM7Write16(0x04000304, 1);
+        nds->ARM7Write16(0x04000500, 0x807F);
+        for (unsigned i = 0; i < 8; ++i) nds->ARM7Write16(source + i * 2, 6144);
+        nds->ARM7Write32(0x04000404, source);
+        nds->ARM7Write32(0x04000408, 0xFC00);
+        nds->ARM7Write32(0x0400040C, 4);
+        nds->ARM7Write32(0x04000400, 0xB040807F);
+        auto tick = [&] {
+            nds->CancelEvent(Event_SPU);
+            nds->SPU.Mix(512);
+        };
+        for (unsigned i = 0; i < 24; ++i) tick();
+        if (nds->ARM7Read32(0x04000400) & 0x80000000) return false;
+        nds->ARM7Write32(test.Address, test.Value);
+        auto capture = [&] {
+            for (unsigned i = 0; i < 24; i += 4) nds->ARM7Write32(dest - 4 + i, guard);
+            nds->ARM7Write16(0x04000418, 0xFE00);
+            nds->ARM7Write32(0x04000510, dest);
+            nds->ARM7Write16(0x04000514, 4);
+            nds->ARM7Write8(0x04000508, 0x86);
+            for (unsigned i = 0; i < 8; ++i) tick();
+            bool ok = nds->ARM7Read32(dest - 4) == guard && nds->ARM7Read32(dest + 16) == guard &&
+                !(nds->ARM7Read32(0x04000400) & 0x80000000) && !(nds->ARM7Read8(0x04000508) & 0x80);
+            for (unsigned i = 0; i < 8; ++i) ok &= s16(nds->ARM7Read16(dest + i * 2)) == test.Sample;
+            return ok;
+        };
+        const bool before = capture();
+        Savestate saved;
+        if (!nds->DoSavestate(&saved)) return false;
+        saved.Finish();
+        if (saved.Error) return false;
+        nds->Reset();
+        Savestate restored(saved.Buffer(), saved.Length(), false);
+        const bool loaded = nds->DoSavestate(&restored) && !restored.Error;
+        const bool after = loaded && capture();
+        const bool version = saved.MajorVersion() == 14 && saved.MinorVersion() == test.Minor;
+        std::printf("HOLD state %s %s minor=%u expected=%u before=%u loaded=%u after=%u sample=%d: %s\n",
+            dsi ? "DSi" : "DS", test.Name, saved.MinorVersion(), test.Minor, before, loaded, after,
+            s16(nds->ARM7Read16(dest)), before && after && version ? "PASS" : "FAIL");
+        passed &= before && after && version;
+
+        if (dsi || std::strcmp(test.Name, "length") || saved.MinorVersion() != 4) continue;
+        // 14.4 needs an explicit empty legacy-cart record even when audio
+        // alone raised the version. Missing/ambiguous records must fail;
+        // 14.3 retains its strict pending-transfer-only contract.
+        Savestate cart(saved.Buffer(), saved.Length(), false);
+        cart.Section("NC13");
+        if (cart.Error) return false;
+        const u32 cartHeader = cart.Length() - 16;
+        u8 mode = 0xFF;
+        u32 count = ~0u;
+        cart.Var8(&mode);
+        cart.Var32(&count);
+        if (cart.Error || mode || count) return false;
+        const auto* bytes = static_cast<const u8*>(saved.Buffer());
+        for (unsigned malformed = 0; malformed < 3; ++malformed)
+        {
+            std::vector<u8> invalid(bytes, bytes + saved.Length());
+            if (malformed == 0) std::memcpy(invalid.data() + cartHeader, "MISS", 4);
+            else if (malformed == 1) invalid[cartHeader + 16] = 1;
+            else invalid[6] = 3;
+            nds->Reset();
+            Savestate rejected(invalid.data(), u32(invalid.size()), false);
+            const bool refused = !nds->DoSavestate(&rejected) && rejected.Error;
+            std::printf("HOLD state invalid-cart-record=%u: %s\n", malformed, refused ? "PASS" : "FAIL");
+            passed &= refused;
+        }
+    }
+    return passed;
+}
+
 static bool TestOneShotHold()
 {
     // GBATEK DS Sound Notes: one-shot HOLD keeps the final decoded sample
@@ -482,6 +589,7 @@ static bool TestOneShotHold()
 int main(int argc, char** argv)
 {
     if (argc == 2 && std::strcmp(argv[1], "one-shot-hold") == 0) return TestOneShotHold() ? 0 : 6;
+    if (argc == 2 && std::strcmp(argv[1], "one-shot-state") == 0) return TestOneShotState() ? 0 : 7;
     if (!TestCaptureSource()) return 5;
     if (!TestInitialBitDepth()) return 4;
     NDSArgs args;

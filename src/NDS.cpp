@@ -633,6 +633,9 @@ u32 NDS::GetSavestateConfig()
 
 bool NDS::DoSavestate(Savestate* file)
 {
+    // Select the minor format before cart sections whose presence depends
+    // on it. Normal audio states continue to use the older writer format.
+    SPU.PrepareSavestate(file);
     const bool legacy = !file->Saving && file->MajorVersion() == 13;
     u64 legacySeed0[2] {}, legacySeed1[2] {};
     file->Section("NDSG");
