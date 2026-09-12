@@ -26,17 +26,22 @@ static void Check(bool ok, const char* reason)
 struct ObservedCart : NDSCart::CartRetail
 {
     unsigned Selects = 0, Releases = 0;
+    std::vector<u8> Delivered;
+    size_t DeliveredAtRelease = 0;
     static std::unique_ptr<u8[]> MakeROM(bool key1)
     {
         auto rom = std::make_unique<u8[]>(0x10000);
         if (key1) std::memcpy(rom.get() + 0x0C, "KEYT", 4);
         return rom;
     }
-    explicit ObservedCart(bool key1 = false) : CartRetail(MakeROM(key1), 0x10000, key1 ? 0x1FC2 : 0, false,
-                               {0, 0x10000, 1}, nullptr, 0, nullptr) {}
+    explicit ObservedCart(bool key1 = false, u32 saveType = 1) : CartRetail(MakeROM(key1), 0x10000, key1 ? 0x1FC2 : 0, false,
+                               {0, 0x10000, saveType}, nullptr, 0, nullptr) {}
     void SPISelect() override { ++Selects; CartRetail::SPISelect(); }
-    void SPIRelease() override { ++Releases; CartRetail::SPIRelease(); }
-    void ClearCounts() { Selects = Releases = 0; }
+    void SPIRelease() override
+    { ++Releases; DeliveredAtRelease = Delivered.size(); CartRetail::SPIRelease(); }
+    u8 SPITransmitReceive(u8 val) override
+    { Delivered.push_back(val); return CartRetail::SPITransmitReceive(val); }
+    void ClearCounts() { Selects = Releases = 0; Delivered.clear(); DeliveredAtRelease = 0; }
 };
 
 struct Console : NDS
@@ -51,14 +56,21 @@ struct Console : NDS
         ARM9Timestamp = timestamp << ARM9ClockShift;
         ARM7Timestamp = timestamp;
     }
-    void Finish(u32 cpu)
+    u64 SPIDeadline(u32 cpu) const
     {
         const auto event = cpu == 0 ? Event_CartSPITransfer9 : Event_CartSPITransfer7;
         if (!(SchedListMask & (1u << event))) throw std::runtime_error("SPI event was not scheduled");
-        const auto timestamp = SchedList[event].Timestamp;
+        return SchedList[event].Timestamp;
+    }
+    void AdvanceTo(u64 timestamp)
+    {
         RunSystem(timestamp);
         ARM9Timestamp = timestamp << ARM9ClockShift;
         ARM7Timestamp = timestamp;
+    }
+    void Finish(u32 cpu)
+    {
+        AdvanceTo(SPIDeadline(cpu));
         if (NDSCartSlots[0]->ReadSPICnt(cpu) & 0x80) throw std::runtime_error("SPI event did not clear busy");
     }
 };
@@ -68,13 +80,13 @@ struct Fixture
     std::unique_ptr<Console> Machine;
     ObservedCart* Cart;
     u32 CPU;
-    explicit Fixture(u32 cpu, bool key1 = false) : CPU(cpu)
+    explicit Fixture(u32 cpu, bool key1 = false, u32 saveType = 1) : CPU(cpu)
     {
         NDSArgs args;
         args.JIT = std::nullopt;
         Machine = std::make_unique<Console>(std::move(args));
         Machine->Reset();
-        auto cart = std::make_unique<ObservedCart>(key1);
+        auto cart = std::make_unique<ObservedCart>(key1, saveType);
         Cart = cart.get();
         Machine->SetNDSCart(std::move(cart));
         // ARM9 owns EXMEMCNT's slot-selection bit even when testing ARM7 I/O.
@@ -475,11 +487,201 @@ static void TestFlashEraseState(u32 cpu, bool dsi)
     restored.Save(idle, 2);
 }
 
+static void TestByteCompletion(u32 cpu)
+{
+    std::printf("Byte completion ARM%u\n", cpu ? 7 : 9);
+    {
+        Fixture f(cpu, false, 11);
+        f.Control(0xA000);
+        f.Data(0x06, false);
+        const auto deadline = f.Machine->SPIDeadline(cpu);
+        Check((f.Count() & 0x80) && f.Cart->Selects == 1 && f.Cart->Delivered.empty() && f.Cart->Releases == 0,
+              "Starting an automatic-CS byte delivered it or released CS before the event");
+        f.Machine->AdvanceTo(deadline - 1);
+        Check(f.Cart->Delivered.empty() && f.Cart->Releases == 0,
+              "SPI byte reached the cart before its scheduled completion");
+        f.Machine->Finish(cpu);
+        Check(f.Cart->Delivered == std::vector<u8>{0x06} && f.Cart->Releases == 1 &&
+              f.Cart->DeliveredAtRelease == 1, "Completion did not deliver once before automatic CS release");
+        f.Machine->AdvanceTo(deadline + 1);
+        Check(f.Cart->Delivered.size() == 1 && f.Cart->Releases == 1,
+              "Completed SPI byte was delivered or released twice");
+        f.Control(0xA040); f.Data(0x05);
+        f.Control(0xA000); f.Data(0);
+        const u8 status = cpu ? f.Machine->ARM7Read8(0x040001A2) : f.Machine->ARM9Read8(0x040001A2);
+        Check(status & 2, "Scheduled WREN/release did not reach the real EEPROM status register");
+    }
+
+    for (bool eligible : {false, true})
+    {
+        Fixture f(cpu);
+        const u32 startOwner = eligible ? cpu : cpu ^ 1;
+        f.Machine->ARM9Write16(0x04000204, startOwner ? 0x0800 : 0);
+        f.Control(0xA000); f.Data(0x06, false);
+        Check(f.Cart->Delivered.empty() && f.Cart->Selects == (eligible ? 1u : 0u),
+              "SPI start did not capture initial cart ownership without delivering data");
+        Savestate pending;
+        if (!f.Machine->DoSavestate(&pending) || pending.Error)
+            throw std::runtime_error("Controller in-flight SPI save failed");
+        pending.Finish();
+        Check(pending.MajorVersion() == 14 && pending.MinorVersion() == 9,
+              "Accepted controller byte, including non-owner, did not require 14.9");
+        f.Machine->ARM9Write16(0x04000204, startOwner ? 0 : 0x0800);
+        f.Machine->Finish(cpu);
+        Check(f.Cart->Delivered == (eligible ? std::vector<u8>{0x06} : std::vector<u8>{}) &&
+              f.Cart->Releases == (eligible ? 1u : 0u),
+              "Completion re-evaluated ownership instead of using byte-start eligibility");
+    }
+
+    const auto beginWrite = [](Fixture& f)
+    {
+        f.Control(0xA000); f.Data(0x06);
+        f.Cart->ClearCounts();
+        f.Control(0xA040);
+        f.Data(0x02); f.Data(0x00); f.Data(0x05); f.Data(0xA1);
+    };
+    for (bool hold : {false, true})
+    {
+        Fixture original(cpu, false, 11);
+        beginWrite(original);
+        Check(original.Cart->Delivered == std::vector<u8>({0x02, 0, 5, 0xA1}) &&
+              original.Cart->Releases == 0, "Completed held command bytes lost their CS context");
+        original.Control(hold ? 0xA040 : 0xA000);
+        original.Data(0xB2, false);
+        const auto deadline = original.Machine->SPIDeadline(cpu);
+        original.Machine->AdvanceTo(deadline - 1);
+        Check(original.Cart->Delivered.size() == 4 && original.Cart->Releases == 0 &&
+              original.Cart->GetSaveMemory()[5] == 0xFF && original.Cart->GetSaveMemory()[6] == 0xFF,
+              "In-flight payload reached the held EEPROM page before completion");
+        original.Machine->ARM9Write32(0x02000200, 0x12345678);
+        Savestate saved;
+        if (!original.Machine->DoSavestate(&saved) || saved.Error)
+            throw std::runtime_error("In-flight SPI save failed");
+        saved.Finish();
+        Check(saved.MajorVersion() == 14 && saved.MinorVersion() == 9,
+              "Undelivered SPI byte did not require savestate 14.9");
+
+        Fixture restored(cpu, false, 11);
+        Savestate load(saved.Buffer(), saved.Length(), false);
+        if (!restored.Machine->DoSavestate(&load) || load.Error)
+            throw std::runtime_error("Cold in-flight SPI restore failed");
+        Check(restored.Machine->ARM9Read32(0x02000200) == 0x12345678 &&
+              restored.Machine->SPIDeadline(cpu) == deadline,
+              "Cold restore lost console RAM or the original SPI deadline");
+        Check(restored.Cart->Delivered.empty() && restored.Cart->Releases == 0 &&
+              restored.Cart->GetSaveMemory()[5] == 0xFF && restored.Cart->GetSaveMemory()[6] == 0xFF,
+              "Loading an in-flight byte delivered it or committed the held page");
+        restored.Machine->AdvanceTo(deadline - 1);
+        Check(restored.Cart->Delivered.empty(), "Restored byte was delivered before its deadline");
+        restored.Machine->Finish(cpu);
+        Check(restored.Cart->Delivered == std::vector<u8>{0xB2} &&
+              restored.Cart->Releases == (hold ? 0u : 1u),
+              "Restored byte was lost/replayed or its captured hold setting changed");
+        if (hold)
+        {
+            Check(restored.Cart->GetSaveMemory()[5] == 0xFF && restored.Cart->GetSaveMemory()[6] == 0xFF,
+                  "Completed held payload committed before CS release");
+            restored.Control(0x8040);
+        }
+        Check(restored.Cart->GetSaveMemory()[4] == 0xFF && restored.Cart->GetSaveMemory()[5] == 0xA1 &&
+              restored.Cart->GetSaveMemory()[6] == 0xB2 && restored.Cart->GetSaveMemory()[7] == 0xFF &&
+              restored.Cart->DeliveredAtRelease == 1,
+              "Restored completion/release lost previous page bytes or changed neighbors");
+        restored.Machine->AdvanceTo(deadline + 1);
+        Check(restored.Cart->Delivered.size() == 1 && restored.Cart->Releases == 1,
+              "Restored SPI completion was repeated");
+    }
+
+    {
+        Fixture f(cpu, false, 11);
+        beginWrite(f);
+        f.Data(0xB2, false);
+        const auto deadline = f.Machine->SPIDeadline(cpu);
+        f.High(0x80); // Real mode-bit falling edge aborts only the unfinished byte.
+        Check((f.Count() & 0x80) && f.Machine->SPIDeadline(cpu) == deadline,
+              "Mode clear changed the pending controller completion");
+        f.High(0xA0); // Reselect before the deadline must not revive canceled data.
+        f.Machine->Finish(cpu);
+        Check(f.Cart->Delivered == std::vector<u8>({0x02, 0, 5, 0xA1}) && f.Cart->Releases == 1,
+              "Mode clear delivered the aborted byte or duplicated CS release");
+        Check(f.Cart->GetSaveMemory()[5] == 0xA1 && f.Cart->GetSaveMemory()[6] == 0xFF,
+              "Aborting a byte lost completed page data or committed unfinished data");
+    }
+    for (bool replace : {false, true})
+    {
+        Fixture f(cpu);
+        f.Control(0xA000); f.Data(0x06, false);
+        const auto deadline = f.Machine->SPIDeadline(cpu);
+        Check(f.Cart->Delivered.empty(), "Byte was delivered before eject/replacement could cancel it");
+        auto old = f.Machine->EjectCart(); // Keep the old observer alive after ejection.
+        ObservedCart* replacement = nullptr;
+        if (replace)
+        {
+            auto next = std::make_unique<ObservedCart>();
+            replacement = next.get();
+            f.Machine->SetNDSCart(std::move(next));
+        }
+        Check((f.Count() & 0x80) && f.Machine->SPIDeadline(cpu) == deadline,
+              "Eject/replacement discarded the pending controller busy event");
+        f.Machine->Finish(cpu);
+        Check(f.Cart->Delivered.empty() && (!replacement || replacement->Delivered.empty()),
+              "An old pending byte reached the ejected or replacement cart");
+        if (replacement)
+        {
+            f.Control(0xA000); f.Data(0x06);
+            Check(replacement->Delivered == std::vector<u8>{0x06} && replacement->Releases == 1,
+                  "Cancelling an old byte prevented a fresh replacement-cart transfer");
+        }
+    }
+
+    // Existing generated DSi fixture drives the real SCFG power path and frame
+    // scheduler. Power off/on before completion must not revive the old byte.
+    FlashFixture powered(cpu, true);
+    auto observed = std::make_unique<ObservedCart>();
+    auto* cart = observed.get();
+    powered.Machine->SetNDSCart(std::move(observed));
+    powered.Cart = cart;
+    // DSi is final, so complete through its real frame scheduler. The DS
+    // cases above additionally inspect the cycle immediately before deadline.
+    powered.Control(0xA000);
+    if (cpu) powered.Machine->ARM7Write8(0x040001A2, 0x06);
+    else powered.Machine->ARM9Write8(0x040001A2, 0x06);
+    Check(cart->Selects == 1 && cart->Delivered.empty() && cart->Releases == 0 &&
+          (powered.Machine->NDSCartSlots[0]->ReadSPICnt(cpu) & 0x80),
+          "DSi MMIO start did not select without delivering/releasing the unfinished byte");
+    powered.Machine->RunFrame();
+    Check(cart->Delivered == std::vector<u8>{0x06} && cart->Releases == 1 &&
+          cart->DeliveredAtRelease == 1 && !(powered.Machine->NDSCartSlots[0]->ReadSPICnt(cpu) & 0x80),
+          "DSi scheduler did not deliver once before automatic CS release and busy clear");
+    cart->ClearCounts();
+    powered.Control(0xA000);
+    if (cpu) powered.Machine->ARM7Write8(0x040001A2, 0x06);
+    else powered.Machine->ARM9Write8(0x040001A2, 0x06);
+    Check(cart->Delivered.empty(), "DSi SPI delivered a byte before power-off cancellation");
+    powered.Machine->ARM7Write16(0x04004010, 0x0000);
+    Check((powered.Machine->ARM7Read16(0x04004010) & 0x000C) == 0,
+          "Generated DSi fixture did not power Slot-1 off");
+    powered.Machine->ARM7Write16(0x04004010, 0x0004);
+    powered.Machine->ARM7Write16(0x04004010, 0x0008);
+    powered.Machine->RunFrame();
+    Check(cart->Delivered.empty(), "Power cycling revived a pending byte at its old completion event");
+    cart->ClearCounts();
+    powered.Control(0xA000); powered.Data(0x06);
+    Check(cart->Delivered == std::vector<u8>{0x06} && cart->Releases == 1,
+          "Power cycling prevented a fresh scheduled SPI transfer");
+}
+
 int main(int argc, char** argv)
 try
 {
     if (argc != 2) return 2;
     const std::string mode = argv[1];
+    if (mode == "byte-completion")
+    {
+        for (u32 cpu : {0u, 1u}) TestByteCompletion(cpu);
+        std::printf("Cart SPI byte-completion: %u failures\n", Failures);
+        return Failures ? 1 : 0;
+    }
     if (mode == "status-protection")
     {
         TestStatusProtection(1, 0, false, false);

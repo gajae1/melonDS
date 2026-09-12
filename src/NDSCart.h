@@ -85,8 +85,7 @@ public:
     ~NDSCartSlot() noexcept;
     void Reset() noexcept;
     void DoSavestate(Savestate* file) noexcept;
-    void PrepareSavestate(Savestate* file) const noexcept
-    { if (Cart) Cart->PrepareSavestate(file); }
+    void PrepareSavestate(Savestate* file) const noexcept;
 
     void DecryptSecureArea(u8* out) noexcept;
 
@@ -206,6 +205,7 @@ private:
         void CheckDMA();
 
         void SPITransferDone(u32 param);
+        void DetachSPI() noexcept;
 
         NDSCartSlot& Parent;
         u8 Num;
@@ -215,6 +215,10 @@ private:
 
         u16 SPICnt = 0;
         u8 SPIData = 0;
+        // Byte delivery and automatic CS release occur at the scheduled end.
+        enum : u8 { SPIPending = 1, SPIToCart = 2, SPIHold = 4, SPIOwnsCS = 8 };
+        u8 SPIOut = 0;
+        u8 SPIFlags = 0;
 
         u32 ROMCnt = 0;
         u8 ROMCommand[8] {};

@@ -234,6 +234,14 @@ void NDSCartSlot::Reset() noexcept
         Cart->Reset();
 }
 
+void NDSCartSlot::PrepareSavestate(Savestate* file) const noexcept
+{
+    if (file->Saving)
+        for (const auto& inter : Interfaces)
+            if (inter.SPIFlags & Interface::SPIPending) file->RequireMinorVersion(9);
+    if (Cart) Cart->PrepareSavestate(file);
+}
+
 void NDSCartSlot::DoSavestate(Savestate* file) noexcept
 {
     PrepareSavestate(file);
@@ -781,6 +789,9 @@ std::unique_ptr<CartCommon> NDSCartSlot::EjectCart() noexcept
 {
     if (!Cart) return nullptr;
     ClearLegacyTransfer();
+    // The controller still finishes its clocked byte, but the old target must
+    // not receive it after removal or be replaced by a newly inserted cart.
+    for (auto& inter : Interfaces) inter.DetachSPI();
 
     // ejecting the cart triggers the gamecard IRQ
     RaiseCardIRQ();
@@ -810,7 +821,11 @@ void NDSCartSlot::SetPowerState(u8 power)
 
     if (power == PowerState)
         return;
-    if (power != 2) ClearLegacyTransfer();
+    if (power != 2)
+    {
+        ClearLegacyTransfer();
+        for (auto& inter : Interfaces) inter.DetachSPI();
+    }
     PowerState = power;
 
     if (PowerState == 0)
@@ -902,6 +917,7 @@ void NDSCartSlot::Interface::Reset()
 {
     SPICnt = 0;
     SPIData = 0;
+    SPIOut = SPIFlags = 0;
 
     ROMCnt = 0;
     memset(ROMCommand, 0, sizeof(ROMCommand));
@@ -943,6 +959,34 @@ void NDSCartSlot::Interface::DoSavestate(Savestate* file)
     file->VarBool(&ROMDataLate);
 
     file->VarBool(&SPISelected);
+    if (file->IsAtLeastVersion(14, 9))
+    {
+        u8 output = SPIOut, flags = SPIFlags;
+        file->Var8(&output);
+        file->Var8(&flags);
+        if (file->Error) return;
+        if ((flags & ~0x0F) || (flags && !(flags & SPIPending)) ||
+            ((flags & SPIPending) && !(SPICnt & 0x80)) ||
+            ((flags & SPIOwnsCS) && !SPISelected) ||
+            ((flags & SPIToCart) && (!(flags & SPIOwnsCS) ||
+                !Parent.Cart || !Parent.CartActive || !(SPICnt & 0x2000))))
+        {
+            file->Error = true;
+            return;
+        }
+        if (!file->Saving) { SPIOut = output; SPIFlags = flags; }
+    }
+    else if (!file->Saving)
+    {
+        // Older states already delivered their byte and automatic CS edge.
+        SPIOut = SPIFlags = 0;
+    }
+}
+
+void NDSCartSlot::Interface::DetachSPI() noexcept
+{
+    SPIFlags &= ~(SPIToCart | SPIOwnsCS);
+    SPISelected = false;
 }
 
 
@@ -1308,7 +1352,11 @@ void NDSCartSlot::Interface::WriteSPICnt(u16 val, u16 mask)
         // A lower-byte write leaves the mode bit untouched. Compare the
         // effective register value so it cannot end a held SPI transaction.
         if (SPICnt & ~newCnt & (1<<13))
+        {
+            // A byte whose clocks have not finished cannot cross this CS edge.
+            SPIFlags &= ~SPIToCart;
             Parent.Cart->SPIRelease();
+        }
         else if (~SPICnt & newCnt & (1<<13))
             Parent.Cart->SPISelect();
     }
@@ -1339,7 +1387,8 @@ void NDSCartSlot::Interface::WriteSPIData(u8 val)
 
     SPICnt |= (1<<7);
 
-    bool hold = !!(SPICnt & (1<<6));
+    SPIOut = val;
+    SPIFlags = SPIPending | ((SPICnt & (1<<6)) ? SPIHold : 0);
 
     if (Parent.CartActive)
     {
@@ -1347,11 +1396,10 @@ void NDSCartSlot::Interface::WriteSPIData(u8 val)
         {
             if (!SPISelected)
                 Parent.Cart->SPISelect();
-
-            SPIData = Parent.Cart->SPITransmitReceive(val);
-
-            if (!hold)
-                Parent.Cart->SPIRelease();
+            SPISelected = true;
+            // Ownership is decided when the byte starts. A later EXMEMCNT
+            // change must not redirect it; detach/power loss cancels delivery.
+            SPIFlags |= SPIToCart | SPIOwnsCS;
         }
         else
             SPIData = 0xFF;
@@ -1361,8 +1409,6 @@ void NDSCartSlot::Interface::WriteSPIData(u8 val)
     else
         SPIData = 0;
 
-    SPISelected = hold;
-
     // SPI transfers one bit per cycle -> 8 cycles per byte
     u32 delay = 8 * (8 << (SPICnt & 0x3));
     Parent.NDS.ScheduleEvent(SPITransferEvent, false, delay, 0, 0);
@@ -1370,6 +1416,16 @@ void NDSCartSlot::Interface::WriteSPIData(u8 val)
 
 void NDSCartSlot::Interface::SPITransferDone(u32 param)
 {
+    const u8 flags = SPIFlags;
+    SPIFlags = 0;
+    if ((flags & SPIToCart) && Parent.CartActive)
+        SPIData = Parent.Cart->SPITransmitReceive(SPIOut);
+    if ((flags & SPIOwnsCS) && !(flags & SPIHold))
+    {
+        if (SPISelected && Parent.CartActive && (SPICnt & (1<<13)))
+            Parent.Cart->SPIRelease();
+        SPISelected = false;
+    }
     SPICnt &= ~(1<<7);
 }
 
