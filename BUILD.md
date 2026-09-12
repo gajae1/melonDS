@@ -243,3 +243,9 @@ directories so Windows checkouts and source ZIPs contain the same seeds.
 When updating upstream corpus data, update these copies together with their
 original targets; the original symlink relationships are recorded by the pinned
 upstream tree. This does not restore executable modes or validate an OSS-Fuzz run.
+
+Development builds with tests can additionally execute generated A64 multiply
+blocks by setting `-DMELONDS_UNICORN_PYTHON=/path/to/python`. That interpreter must
+have Unicorn installed (2.1.4 was validated). The check compares guest registers,
+flags and emitted cycle accounting with ARM instruction rules and the interpreter;
+it does not replace native ARM64 ABI, executable-memory or hardware timing tests.

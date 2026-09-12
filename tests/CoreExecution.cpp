@@ -15,11 +15,13 @@ using namespace melonDS;
 
 int TestALUExecution(NDSArgs&& args, bool jit);
 int TestThumbShiftTiming(NDSArgs&& args, bool jit);
+int TestMultiplyTiming(NDSArgs&& args, bool jit);
 int TestBlockTransferExecution(NDSArgs&& args, bool jit);
 int TestDTCMExecution(NDSArgs&& args, bool jit);
 int TestMPUExecution(NDSArgs&& args, bool jit);
 int TestDeviceExecution(NDSArgs&& args, bool jit);
 int TestDSiNDMAExecution(NDSArgs&& args);
+int TestDMASlotTiming(NDSArgs&& args);
 int TestDSiResetI2C(NDSArgs&& args);
 int TestDSiBTDMP(NDSArgs&& args);
 int TestSchedulerExecution(NDSArgs&& args);
@@ -694,6 +696,8 @@ int main(int argc, char** argv) {
         return TestALUExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "thumb-shift-timing") == 0)
         return TestThumbShiftTiming(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "multiply-cycles") == 0)
+        return TestMultiplyTiming(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "block-transfer") == 0)
         return TestBlockTransferExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "dtcm-remap") == 0)
@@ -704,6 +708,8 @@ int main(int argc, char** argv) {
         return TestDeviceExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
         return TestSchedulerSavestate(std::move(args));
+    if (argc > 2 && std::strcmp(argv[2], "dma-slot-timing") == 0)
+        return TestDMASlotTiming(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "dsi-ndma") == 0)
         return TestDSiNDMAExecution(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "dsi-reset-i2c") == 0)

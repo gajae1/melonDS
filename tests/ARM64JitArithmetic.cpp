@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Use ExtractFunction.py to generate includes from the current source.
-// This runs the production emitter on any host; emitted A64 code is not executed.
+// Runs the production emitter on any host; the bounded ISA model below checks
+// its bytes. ARM64_JIT_MUL_TEST also exports blocks for an external A64 executor.
 #include "jit/Arm64Emitter.h"
 #include <array>
 #include <cstdio>
@@ -59,6 +60,15 @@ public:
     FixupBranch CheckCondition(u32 cond);
     void Comp_AddCycles_C(bool forceNonConstant = false);
     void Comp_AddCycles_CI(u32 numI);
+#ifdef ARM64_JIT_MUL_TEST
+    void Comp_AddCycles_CI(u32 c, ARM64Reg numI, ArithOption shift);
+    void Comp_Mul_Mla(bool S, bool mla, ARM64Reg rd, ARM64Reg rm, ARM64Reg rs, ARM64Reg rn);
+    void A_Comp_Mul();
+    void A_Comp_Mul_Long();
+    void T_Comp_ALU();
+    void Comp_Compare(int op, ARM64Reg rn, Op2 op2);
+    bool FlagsNZNeeded() const { return CurInstr.SetFlags & 0xC; }
+#endif
     void LoadCycles();
     void SaveCycles();
     void LoadCPSR();
@@ -111,6 +121,15 @@ std::array<Compiler::CompileFunc, ARMInstrInfo::tk_Count> T_Comp{};
 #include "ARM64JitGetOp2.inc"
 #include "ARM64JitShiftReg.inc"
 #include "ARM64JitShiftImm.inc"
+#ifdef ARM64_JIT_MUL_TEST
+// Current production functions, also used by the external Unicorn execution.
+#include "ARM64JitCyclesVariable.inc"
+#include "ARM64JitMulMla.inc"
+#include "ARM64JitMul.inc"
+#include "ARM64JitMulLong.inc"
+#include "ARM64JitThumbALU.inc"
+#include "ARM64JitCompare.inc"
+#endif
 #endif
 
 // Only the integer instructions used by these arithmetic/conditional cases.
@@ -273,6 +292,144 @@ struct A64State
 };
 
 #ifdef ARM64_JIT_BLOCK_TEST
+#ifdef ARM64_JIT_MUL_TEST
+// Arm DDI 0029E sections 4.7.3, 4.8.3 and 5.4/table 5-5; DDI 0029G
+// table 6-23. These explicit byte boundaries are independent of CLS/CLZ.
+// The runner must execute these production CompileBlock bytes (e.g. Unicorn),
+// not treat successful emission or interpreter agreement as a passing test.
+int ExportMultiplyBlocks()
+{
+    struct Boundary { u32 value, signedM, unsignedM; };
+    constexpr Boundary boundaries[] = {
+        {0, 1, 1}, {1, 1, 1}, {0x7F, 1, 1}, {0x80, 1, 1}, {0xFF, 1, 1},
+        {0x100, 2, 2}, {0x7FFF, 2, 2}, {0x8000, 2, 2}, {0xFFFF, 2, 2},
+        {0x10000, 3, 3}, {0x7FFFFF, 3, 3}, {0x800000, 3, 3}, {0xFFFFFF, 3, 3},
+        {0x1000000, 4, 4}, {0x7FFFFFFF, 4, 4}, {0x80000000, 4, 4},
+        {0xFFFFFFFF, 1, 4}, {0xFFFFFF80, 1, 4}, {0xFFFFFF00, 1, 4},
+        {0xFFFFFEFF, 2, 4}, {0xFFFF0000, 2, 4}, {0xFFFEFFFF, 3, 4},
+        {0xFF000000, 3, 4}, {0xFEFFFFFF, 4, 4},
+    };
+    struct Variant
+    {
+        const char* name;
+        bool s = false;
+        u8 flags = 0xC;
+        unsigned alias = 0, cond = 14;
+        bool z = false, prefix = false, consumeZ = false, waitstates = false;
+        u32 multiplicand = 1, halfword = 0;
+    };
+    constexpr Variant guards[] = {
+        {"live-NZ", true}, {"live-N", true, 8}, {"live-Z", true, 4},
+        {"dead-NZ", true, 0}, {"alias-Rs", true, 12, 1},
+        {"alias-accumulator", true, 12, 2},
+        {"EQ-taken", true, 12, 0, 0, true},
+        {"EQ-skipped", true, 12, 0, 0, false},
+        {"NE-taken", false, 12, 0, 1, false},
+        {"NE-skipped", false, 12, 0, 1, true},
+        {"prefix", false, 12, 0, 14, false, true},
+        {"consume-Z", true, 12, 0, 14, false, false, true},
+        {"waitstates", true, 12, 0, 14, false, true, false, true},
+        {"wide-multiplicand", true, 12, 0, 14, false, false, false, false, 0x81234567},
+        {"second-halfword", true, 12, 0, 14, false, false, false, false, 1, 2},
+    };
+    constexpr const char* names[] = {"MUL", "MLA", "UMULL", "UMLAL", "SMULL", "SMLAL", "Thumb-MUL"};
+    NDSArgs args;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    unsigned count = 0;
+    auto printRegs = [](const u32* regs) {
+        std::putchar('[');
+        for (unsigned i = 0; i < 16; ++i) std::printf("%s%u", i ? "," : "", regs[i]);
+        std::putchar(']');
+    };
+    auto emit = [&](unsigned num, unsigned op, Boundary b, Variant v) {
+        const bool thumb = op == 6, longOp = op >= 2 && op <= 5;
+        if ((thumb && (v.cond != 14 || v.prefix || v.consumeZ || v.alias == 2)) ||
+            (!thumb && v.halfword) || (op == 0 && v.alias == 2)) return;
+        ARM& cpu = num ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        const u32 ns = v.waitstates ? 5 : 1, seq = v.waitstates ? 2 : 1;
+        for (unsigned i = 0; i < 4; ++i) nds->ARM7MemTimings[1][i] = i & 1 ? seq : ns;
+        u32 rd = 0, rm = 1, rs = 2, rn = 3;
+        if (longOp) { if (v.alias) rs = v.alias == 1 ? rd : rn; }
+        else if (!thumb) { if (v.alias) rd = v.alias == 1 ? rs : rn; }
+        if (thumb) { rs = v.alias ? 0 : 1; }
+        u32 opcode = thumb ? 0x4340 | (rs << 3) | rd :
+            (v.cond << 28) | (u32(v.s) << 20) | (rs << 8) | rm | 0x90;
+        if (!thumb)
+            opcode |= longOp ? 0x800000 | (u32(op >= 4) << 22) | ((op & 1) << 21) | (rn << 16) | (rd << 12)
+                             : (u32(op == 1) << 21) | (rd << 16) | (op == 1 ? rn << 12 : 0);
+        FetchedInstr instrs[3]{};
+        unsigned length = 0;
+        auto append = [&](u32 instr, Compiler::CompileFunc method, u8 flags) {
+            auto& f = instrs[length];
+            f.Instr = instr;
+            f.Addr = 0x02008000 + v.halfword + length * (thumb ? 2 : 4);
+            f.CodeCycles = 1;
+            f.SetFlags = flags;
+            f.Info = ARMInstrInfo::Decode(thumb, num, instr, false);
+            (thumb ? T_Comp[f.Info.Kind] : A_Comp[f.Info.Kind]) = method;
+            ++length;
+        };
+        if (v.prefix) append(0xE2844001, &Compiler::A_Comp_ALUTriOp, 0);
+        append(opcode, thumb ? &Compiler::T_Comp_ALU : longOp ? &Compiler::A_Comp_Mul_Long : &Compiler::A_Comp_Mul, v.flags);
+        if (v.consumeZ) append(0x02866001, &Compiler::A_Comp_ALUTriOp, 0); // ADDEQ r6,r6,#1
+        std::array<u32, 512> code{};
+        Compiler compiler(*nds);
+        compiler.SetCodeBase(reinterpret_cast<u8*>(code.data()), reinterpret_cast<u8*>(code.data()));
+        compiler.CompileBlock(&cpu, thumb, instrs, length, false);
+        const auto words = std::span(code).first(compiler.GetCodeOffset() / 4);
+        for (unsigned i = 0; i < 16; ++i) cpu.R[i] = 0x13572468 + i;
+        cpu.R[rm] = v.multiplicand;
+        cpu.R[thumb ? rd : rs] = b.value;
+        if (thumb && rs != rd) cpu.R[rs] = v.multiplicand;
+        cpu.R[15] = instrs[0].Addr + (thumb ? 4 : 8);
+        const u32 cpsr = 0xB80000DF | (v.z ? 1u << 30 : 0) | (thumb ? 0x20 : 0);
+        cpu.CPSR = cpsr;
+        cpu.Cycles = 7;
+        cpu.CodeCycles = 1;
+        std::printf("{\"name\":\"ARM%u-%s-%08X-%s\",\"num\":%u,\"op\":%u,\"s\":%u,\"flags\":%u,"
+                    "\"m\":%u,\"unsignedM\":%u,\"rd\":%u,\"rm\":%u,\"rs\":%u,\"rn\":%u,"
+                    "\"ns\":%u,\"seq\":%u,\"prefix\":%u,\"consumeZ\":%u,\"cpsr\":%u,\"initial\":",
+                    num ? 7 : 9, names[op], b.value, v.name, num, op, unsigned(thumb || v.s), v.flags,
+                    op == 2 || op == 3 ? b.unsignedM : b.signedM, b.unsignedM, rd, rm, rs, rn,
+                    ns, seq, unsigned(v.prefix), unsigned(v.consumeZ), cpsr);
+        printRegs(cpu.R);
+        std::printf(",\"base\":%llu,\"return\":%llu,\"regOffset\":%zu,\"cpsrOffset\":%zu,\"cyclesOffset\":%zu,\"words\":[",
+                    u64(code.data()), u64(ARM_Ret), offsetof(ARM, R), offsetof(ARM, CPSR), offsetof(ARM, Cycles));
+        for (unsigned i = 0; i < words.size(); ++i) std::printf("%s%u", i ? "," : "", words[i]);
+        std::printf("],\"instrs\":[");
+        for (unsigned i = 0; i < length; ++i)
+        {
+            const auto& f = instrs[i];
+            std::printf("%s%u", i ? "," : "", f.Instr);
+            cpu.CurInstr = f.Instr;
+            cpu.R[15] = f.Addr + (thumb ? 4 : 8);
+            const bool taken = thumb || f.Cond() == 14 ||
+                (f.Cond() == 0 ? bool(cpu.CPSR & (1u << 30)) : !bool(cpu.CPSR & (1u << 30)));
+            if (taken) (thumb ? InterpretTHUMB[f.Info.Kind] : InterpretARM[f.Info.Kind])(&cpu);
+            else cpu.AddCycles_C();
+        }
+        std::printf("],\"interpreter\":");
+        printRegs(cpu.R);
+        std::printf(",\"interpreterCPSR\":%u,\"interpreterCycles\":%u}\n", cpu.CPSR, cpu.Cycles - 7);
+        ++count;
+    };
+    for (unsigned num : {1u, 0u})
+        for (unsigned op = 0; op < 7; ++op)
+        {
+            // Every ARM7 termination boundary; ARM9 has fixed internal timing.
+            for (const auto b : boundaries)
+                if (num || b.value == 0 || b.value == 1 || b.value == 0x1000000 || b.value == 0xFFFFFFFF)
+                    emit(num, op, b, {"boundary"});
+            for (const auto v : guards) emit(num, op, {0x1000000, 4, 4}, v);
+            emit(num, op, {0, 1, 1}, {"zero-flags", true});
+            emit(num, op, {1, 1, 1}, {"operand-order", true, 12, 0, 14, false, false, false, false, 0x1000000});
+        }
+    std::fprintf(stderr, "Exported %u production A64 multiply blocks; execution by external runner required.\n", count);
+    return 0;
+}
+#endif
+
 int TestConditionalCycles()
 {
     NDSArgs args;
@@ -365,6 +522,9 @@ int main(int argc, char** argv)
     using A64Test::A64State;
     const std::string_view filter = argc == 2 ? argv[1] : "all";
 #ifdef ARM64_JIT_BLOCK_TEST
+#ifdef ARM64_JIT_MUL_TEST
+    if (filter == "export-mul-cycles") return A64Test::ExportMultiplyBlocks();
+#endif
     if (filter == "conditional-cycles") return A64Test::TestConditionalCycles();
     NDSArgs args;
     auto nds = std::make_unique<NDS>(std::move(args));

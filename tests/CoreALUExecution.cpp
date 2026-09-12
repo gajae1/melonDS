@@ -4,6 +4,7 @@
 #include "Args.h"
 #include "NDS.h"
 #include "ARM.h"
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <memory>
@@ -235,5 +236,167 @@ int TestThumbShiftTiming(NDSArgs&& args, bool jit)
         std::printf("ARM%d warmed Thumb LSR/ASR: %u/%u iterations per frame\n", arm7 ? 7 : 9, iterations[0], iterations[1]);
         if (iterations[0] != iterations[1]) ++failures;
     }
+    return failures ? 1 : 0;
+}
+
+int TestMultiplyTiming(NDSArgs&& args, bool jit)
+{
+    if (args.JIT)
+    {
+        args.JIT->MaxBlockSize = 1;
+        args.JIT->BranchOptimizations = false;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    // ARM DDI 0029E 4.7.3/4.8.3, table 5-5; DDI 0029G table 6-23.
+    // m is controlled by ARM Rs / old Thumb Rd. Signed termination accepts
+    // all-one upper bytes; unsigned long multiplication accepts zero only.
+    struct Boundary { u32 value, signedM, unsignedM; };
+    constexpr Boundary boundaries[] = {
+        {0, 1, 1}, {1, 1, 1}, {0x7F, 1, 1}, {0x80, 1, 1}, {0xFF, 1, 1},
+        {0x100, 2, 2}, {0x7FFF, 2, 2}, {0x8000, 2, 2}, {0xFFFF, 2, 2},
+        {0x10000, 3, 3}, {0x7FFFFF, 3, 3}, {0x800000, 3, 3}, {0xFFFFFF, 3, 3},
+        {0x1000000, 4, 4}, {0x7FFFFFFF, 4, 4}, {0x80000000, 4, 4},
+        {0xFFFFFFFF, 1, 4}, {0xFFFFFF80, 1, 4}, {0xFFFFFF00, 1, 4},
+        {0xFFFFFEFF, 2, 4}, {0xFFFF0000, 2, 4}, {0xFFFEFFFF, 3, 4},
+        {0xFF000000, 3, 4}, {0xFEFFFFFF, 4, 4},
+    };
+    struct Variant
+    {
+        const char* name;
+        bool s = false;
+        unsigned alias = 0, cond = 14;
+        bool waitstates = false;
+        u32 multiplicand = 1, halfword = 0;
+    };
+    constexpr Variant variants[] = {
+        {"boundary"}, {"live-NZ", true}, {"alias-Rs", true, 1},
+        {"alias-accumulator", true, 2}, {"EQ", true, 0, 0}, {"NE", false, 0, 1},
+        {"waitstates", true, 0, 14, true},
+        {"operand-order", true, 0, 14, false, 0x1000000},
+        {"negative-product", true, 0, 14, false, 0x80000000},
+        {"second-halfword", true, 0, 14, false, 1, 2},
+    };
+    constexpr const char* names[] = {"MUL", "MLA", "UMULL", "UMLAL", "SMULL", "SMLAL", "Thumb-MUL"};
+    unsigned checked = 0, failures = 0, dispatched = 0, blockCount = 0;
+    for (bool arm7 : {true, false})
+    for (unsigned op = 0; op < 7; ++op)
+    for (const auto& v : variants)
+    {
+        const bool thumb = op == 6, longOp = op >= 2 && op <= 5;
+        if ((thumb && (v.cond != 14 || v.alias == 2)) || (!thumb && v.halfword) ||
+            (op == 0 && v.alias == 2)) continue;
+        ARM& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        const u32 addr = Code + blockCount++ * 16 + v.halfword, key = addr | unsigned(thumb);
+        const u32 ns = v.waitstates ? 5 : 1, seq = v.waitstates ? 2 : 1;
+        nds->ARM9.MemTimings[addr >> 12][0] = 1;
+        for (unsigned i = 0; i < 4; ++i) nds->ARM7MemTimings[addr >> 15][i] = i & 1 ? seq : ns;
+        u32 rd = 0, rm = 1, rs = 2, rn = 3;
+        if (longOp && v.alias) rs = v.alias == 1 ? rd : rn;
+        else if (!thumb && v.alias) rd = v.alias == 1 ? rs : rn;
+        if (thumb) rs = v.alias ? rd : rm;
+        u32 opcode = thumb ? 0x4340 | (rs << 3) | rd :
+            (v.cond << 28) | (u32(v.s) << 20) | (rs << 8) | rm | 0x90;
+        if (!thumb)
+            opcode |= longOp ? 0x800000 | (u32(op >= 4) << 22) | ((op & 1) << 21) | (rn << 16) | (rd << 12)
+                             : (u32(op == 1) << 21) | (rd << 16) | (op == 1 ? rn << 12 : 0);
+        if (thumb)
+        {
+            nds->ARM9Write16(addr, opcode);
+            nds->ARM9Write16(addr + 2, 0xE7FE);
+        }
+        else
+        {
+            nds->ARM9Write32(addr, opcode);
+            nds->ARM9Write32(addr + 4, 0xEAFFFFFE);
+        }
+        for (const auto b : boundaries)
+        {
+            // Exhaust the ARM7 byte boundaries once; use representative inputs
+            // for fixed ARM9 timing and each flag/alias/condition guard.
+            if ((!arm7 || v.s || v.alias || v.cond != 14 || v.waitstates || v.multiplicand != 1 || v.halfword)
+                && b.value != 0 && b.value != 1 && b.value != 0x1000000 && b.value != 0xFFFFFFFF) continue;
+            for (bool z : {false, true})
+            {
+                if (z && v.cond == 14) continue;
+                std::array<u32, 16> initial;
+                for (unsigned i = 0; i < initial.size(); ++i) initial[i] = 0x13572468 + i;
+                if (longOp) initial[rd] = initial[rn] = 0;
+                initial[rm] = v.multiplicand;
+                initial[thumb ? rd : rs] = b.value;
+                if (thumb && rs != rd) initial[rs] = v.multiplicand;
+                const u32 cpsr = 0xB80000DF | (z ? Z : 0) | (thumb ? 0x20 : 0);
+                const bool taken = thumb || v.cond == 14 || (v.cond == 0 ? z : !z);
+                auto expected = initial;
+                u32 expectedCPSR = cpsr;
+                if (taken)
+                {
+                    const u32 a = initial[thumb ? rs : rm], multiplier = initial[thumb ? rd : rs];
+                    u64 product = longOp && op >= 4 ? u64(s64(s32(a)) * s32(multiplier)) : u64(a) * multiplier;
+                    if (op == 1) product += initial[rn];
+                    else if (longOp && (op & 1)) product += u64(initial[rn]) << 32 | initial[rd];
+                    if (!longOp) product = u32(product);
+                    expected[rd] = u32(product);
+                    if (longOp) expected[rn] = u32(product >> 32);
+                    if (thumb || v.s)
+                        expectedCPSR = (cpsr & ~(N | Z)) | (u32(product >> (longOp ? 63 : 31)) << 31) | (product == 0 ? Z : 0);
+                }
+                expected[15] = addr + (thumb ? 4 : 8);
+                const unsigned m = op == 2 || op == 3 ? b.unsignedM : b.signedM;
+                const unsigned internal = arm7 ? m + (longOp ? (op & 1) + 1 : unsigned(op == 1)) : (thumb || v.s ? 3 : 1);
+                const unsigned fetch = arm7 ? ns : (thumb && (addr & 2) ? 0 : 1);
+                const unsigned cycles = taken ? fetch + internal : (arm7 ? seq : 1);
+                // ARM7 S-form C is undefined; compare every defined/live bit,
+                // including V, and require exact C preservation when S is clear.
+                const u32 flagMask = arm7 && taken && (thumb || v.s) ? ~C : ~0u;
+                auto prepare = [&] {
+                    std::copy(initial.begin(), initial.end(), cpu.R);
+                    cpu.CPSR = cpsr;
+                    cpu.JumpTo(key);
+                    cpu.Cycles = 0; // Exclude pipeline refill, as in conditional-cycles.
+                    (arm7 ? nds->ARM7Timestamp : nds->ARM9Timestamp) = 0;
+                    (arm7 ? nds->ARM7Target : nds->ARM9Target) = 1;
+                };
+                prepare();
+                u64 elapsed;
+#ifdef JIT_ENABLED
+                if (jit)
+                {
+                    auto& blocks = arm7 ? nds->JIT.JitBlocks7 : nds->JIT.JitBlocks9;
+                    if (!blocks.contains(key))
+                    {
+                        // Trace using the real core once; do not measure the
+                        // interpreter pass performed during block compilation.
+                        if (arm7) nds->ARM7.Execute<CPUExecuteMode::JIT>();
+                        else nds->ARM9.Execute<CPUExecuteMode::JIT>();
+                        if (!HasBlock(*nds, arm7, key, jit)) return 2;
+                    }
+                    const auto entry = blocks.at(key)->EntryPoint;
+                    prepare();
+                    ARM_Dispatch(&cpu, entry); // Exactly one cached native block, even if cycles=0.
+                    if (blocks.at(key)->EntryPoint != entry) return 2;
+                    elapsed = cpu.Cycles;
+                    ++dispatched;
+                }
+                else
+#endif
+                {
+                    if (arm7) nds->ARM7.Execute<CPUExecuteMode::Interpreter>();
+                    else nds->ARM9.Execute<CPUExecuteMode::Interpreter>();
+                    elapsed = arm7 ? nds->ARM7Timestamp : nds->ARM9Timestamp;
+                }
+                const bool regs = std::equal(expected.begin(), expected.end(), cpu.R);
+                const bool flags = ((cpu.CPSR ^ expectedCPSR) & flagMask) == 0;
+                const bool ok = regs && flags && elapsed == cycles;
+                ++checked;
+                failures += !ok;
+                std::printf("%s ARM%d %s %s multiplier=%08X Z=%d %s: cycles=%llu/%u regs=%s flags=%08X/%08X mask=%08X\n",
+                    jit ? "native-dispatch" : "interpreter", arm7 ? 7 : 9, names[op], v.name, b.value, z,
+                    ok ? "PASS" : "FAIL", static_cast<unsigned long long>(elapsed), cycles,
+                    regs ? "OK" : "FAIL", cpu.CPSR, expectedCPSR, flagMask);
+            }
+        }
+    }
+    std::printf("core multiply timing: %u checks, %u failures; %u cached native dispatches\n", checked, failures, dispatched);
     return failures ? 1 : 0;
 }

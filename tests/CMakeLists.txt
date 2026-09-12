@@ -161,6 +161,8 @@ if (TARGET core)
     add_test(NAME core-scheduler-execution COMMAND CoreExecution interpreter scheduler-execution)
     add_test(NAME core-dsi-ndma COMMAND CoreExecution interpreter dsi-ndma)
     set_tests_properties(core-dsi-ndma PROPERTIES TIMEOUT 30)
+    add_test(NAME core-dma-slot-timing COMMAND CoreExecution interpreter dma-slot-timing)
+    set_tests_properties(core-dma-slot-timing PROPERTIES TIMEOUT 30)
     add_test(NAME core-dsi-reset-i2c COMMAND CoreExecution interpreter dsi-reset-i2c)
     set_tests_properties(core-dsi-reset-i2c PROPERTIES TIMEOUT 30)
     add_test(NAME core-dsi-btdmp COMMAND CoreExecution interpreter dsi-btdmp)
@@ -170,7 +172,7 @@ if (TARGET core)
         if (NOT ENABLE_JIT AND NOT backend STREQUAL "interpreter")
             continue()
         endif()
-        foreach(group IN ITEMS alu-shift thumb-shift-timing thumb-stack thumb-push-timing unaligned-memory block-transfer dtcm-remap mpu-execution device-execution)
+        foreach(group IN ITEMS alu-shift thumb-shift-timing multiply-cycles thumb-stack thumb-push-timing unaligned-memory block-transfer dtcm-remap mpu-execution device-execution)
             add_test(NAME core-${backend}-${group} COMMAND CoreExecution ${backend} ${group})
             set_tests_properties(core-${backend}-${group} PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
         endforeach()
@@ -268,6 +270,8 @@ if (MELONDS_TEST_GPU)
     target_link_libraries(ROMSmoke PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)
     target_compile_definitions(ROMSmoke PRIVATE MELONDS_TEST_MEMORY_FILES)
     add_test(NAME gpu-opengl-frame-capture COMMAND GLFrameReadback)
+    add_test(NAME gpu-software-2d-composite COMMAND GLFrameReadback software-2d-composite)
+    set_tests_properties(gpu-software-2d-composite PROPERTIES TIMEOUT 30)
     add_test(NAME gpu-compute-frame-capture COMMAND GLFrameReadback compute)
     set_tests_properties(gpu-opengl-frame-capture gpu-compute-frame-capture
         PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
@@ -356,6 +360,12 @@ if (TARGET core AND ENABLE_JIT)
         "Condition|ARMJIT_Compiler.cpp|FixupBranch Compiler::CheckCondition(u32 cond)"
         "CyclesC|ARMJIT_Compiler.cpp|void Compiler::Comp_AddCycles_C(bool forceNonConstant)"
         "CyclesCI|ARMJIT_Compiler.cpp|void Compiler::Comp_AddCycles_CI(u32 numI)"
+        "CyclesVariable|ARMJIT_Compiler.cpp|void Compiler::Comp_AddCycles_CI(u32 c, ARM64Reg numI, ArithOption shift)"
+        "MulMla|ARMJIT_ALU.cpp|void Compiler::Comp_Mul_Mla(bool S, bool mla, ARM64Reg rd, ARM64Reg rm, ARM64Reg rs, ARM64Reg rn)"
+        "Mul|ARMJIT_ALU.cpp|void Compiler::A_Comp_Mul()"
+        "MulLong|ARMJIT_ALU.cpp|void Compiler::A_Comp_Mul_Long()"
+        "ThumbALU|ARMJIT_ALU.cpp|void Compiler::T_Comp_ALU()"
+        "Compare|ARMJIT_ALU.cpp|void Compiler::Comp_Compare(int op, ARM64Reg rn, Op2 op2)"
         "LoadCycles|ARMJIT_Compiler.cpp|void Compiler::LoadCycles()"
         "SaveCycles|ARMJIT_Compiler.cpp|void Compiler::SaveCycles()"
         "LoadCPSR|ARMJIT_Compiler.cpp|void Compiler::LoadCPSR()"
@@ -381,7 +391,7 @@ if (TARGET core AND ENABLE_JIT)
     endforeach()
     target_sources(ARM64JitArithmetic PRIVATE PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(ARM64JitArithmetic PRIVATE core Threads::Threads)
-    target_compile_definitions(ARM64JitArithmetic PRIVATE ARM64_JIT_BLOCK_TEST)
+    target_compile_definitions(ARM64JitArithmetic PRIVATE ARM64_JIT_BLOCK_TEST ARM64_JIT_MUL_TEST)
     # The extracted backend uses the same ARM member offsets as core.
     target_compile_options(ARM64JitArithmetic PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-invalid-offsetof>)
     add_test(NAME arm64-jit-conditional-cycles COMMAND ARM64JitArithmetic conditional-cycles)
@@ -390,6 +400,14 @@ if (TARGET core AND ENABLE_JIT)
     set_tests_properties(core-interpreter-conditional-cycles PROPERTIES TIMEOUT 30)
     add_test(NAME core-jit-conditional-cycles COMMAND CoreExecution jit conditional-cycles)
     set_tests_properties(core-jit-conditional-cycles PROPERTIES TIMEOUT 30)
+    set(MELONDS_UNICORN_PYTHON "" CACHE FILEPATH
+        "Optional Python with Unicorn for execution of generated A64 multiply blocks")
+    if (MELONDS_UNICORN_PYTHON)
+        add_test(NAME arm64-jit-multiply-execution
+            COMMAND "${MELONDS_UNICORN_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/ARM64JitMultiply.py"
+                "$<TARGET_FILE:ARM64JitArithmetic>")
+        set_tests_properties(arm64-jit-multiply-execution PROPERTIES TIMEOUT 60)
+    endif()
 endif()
 
 if (TARGET core)

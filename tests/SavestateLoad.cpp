@@ -16,6 +16,7 @@
 #include <SDL2/SDL.h>
 #include "ARM.h"
 #include "NDS.h"
+#include "NDSCart/CartRetailIR.h"
 #include "Platform.h"
 #include "StateLoadResult.h"
 #include "AudioLowPass.h"
@@ -197,6 +198,20 @@ static void Prepare(NDS& nds, u32 increment)
     nds.RunFrame();
 }
 
+static std::unique_ptr<NDSCart::CartCommon> MakeCart(bool infrared, u8 identity)
+{
+    // The actual cartridge classes compute their identity from this generated
+    // header. No serialized offsets or checksum implementation are duplicated.
+    auto rom = std::make_unique<u8[]>(0x1000);
+    rom[0] = identity;
+    ROMListEntry params{0, 0x1000, 1};
+    if (infrared)
+        return std::make_unique<NDSCart::CartRetailIR>(std::move(rom), 0x1000,
+            0, 1, false, params, nullptr, 0, nullptr);
+    return std::make_unique<NDSCart::CartRetail>(std::move(rom), 0x1000,
+        0, false, params, nullptr, 0, nullptr);
+}
+
 static int AudioHistory(const std::string& test)
 {
     // Reuse the actual core/load/late-section fixture above and the actual SDL
@@ -301,8 +316,15 @@ int main(int argc, char** argv)
     auto console = std::make_unique<FixtureConsole>(std::move(args));
     auto& nds = *console;
     StateReader reader{&nds};
+    const bool cartTest = test.starts_with("cart-");
+    if (cartTest && test != "cart-unexpected") nds.SetNDSCart(MakeCart(false, 1));
     Prepare(nds, 3);
     auto target = Snapshot(nds);
+    if (cartTest)
+    {
+        if (test == "cart-missing") nds.SetNDSCart(nullptr);
+        else nds.SetNDSCart(MakeCart(test == "cart-type", test == "cart-checksum" ? 2 : 1));
+    }
     Prepare(nds, 1);
     const auto previous = Snapshot(nds);
     nds.RunFrame();
@@ -373,13 +395,13 @@ int main(int argc, char** argv)
     nds.failSave = false;
     const bool accepted = result == StateLoadResult::Success;
     bool passed;
-    if (test == "success" || test == "undo-error")
+    if (test == "success" || test == "cart-match" || test == "undo-error")
     {
         passed = accepted && Snapshot(nds) == target;
         if (test == "undo-error") nds.failLoads = 1u << nds.loadCalls;
         const auto undone = reader.undoStateLoad();
-        passed &= undone == (test == "success" ? StateLoadResult::Success : StateLoadResult::Failed);
-        passed &= Snapshot(nds) == (test == "success" ? previous : target);
+        passed &= undone == (test != "undo-error" ? StateLoadResult::Success : StateLoadResult::Failed);
+        passed &= Snapshot(nds) == (test != "undo-error" ? previous : target);
         if (test == "undo-error")
         {
             passed &= reader.undoStateLoad() == StateLoadResult::Success;

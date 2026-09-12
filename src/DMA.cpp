@@ -45,9 +45,20 @@ using Platform::LogLevel;
 //   another DMA (TODO: check)
 // * applied to all accesses for mainRAM->mainRAM, resulting in timings of 16-18 cycles per unit
 //
-// TODO: GBA slot
-// TODO: re-add initial NS delay
-// TODO: timings are nonseq when address is fixed/decrementing
+// TODO: GBA slot interactions with main RAM and same-bank transfers
+
+// GBA ROM's last halfword in each 128 KiB block is nonsequential, regardless
+// of address mode (Arisotura's hardware tests, 2021-06-03):
+// https://melonds.kuribo64.net/board/thread.php?pid=3805#3805
+// A starting halfword already pays N. For a word, the second halfword pays N
+// independently, so even the first word of a burst can need this extra cost.
+static u32 GBASlotBoundaryPenalty(u32 addr, u32 width, bool burststart, u32 penalty)
+{
+    const u32 mask = 0x20000 - width;
+    if ((addr & mask) != mask || (width == 2 && burststart))
+        return 0;
+    return penalty;
+}
 
 
 DMA::DMA(u32 cpu, u32 num, melonDS::NDS& nds) :
@@ -277,10 +288,12 @@ u32 DMA::UnitTimings9_16(bool burststart)
     }
     else
     {
-        if (burststart)
-            return src_n + dst_n;
-        else
-            return src_s + dst_s;
+        u32 ret = burststart ? src_n + dst_n : src_s + dst_s;
+        if (src_rgn == Mem9_GBAROM)
+            ret += GBASlotBoundaryPenalty(CurSrcAddr, 2, burststart, src_n - src_s);
+        if (dst_rgn == Mem9_GBAROM)
+            ret += GBASlotBoundaryPenalty(CurDstAddr, 2, burststart, dst_n - dst_s);
+        return ret;
     }
 }
 
@@ -367,10 +380,12 @@ u32 DMA::UnitTimings9_32(bool burststart)
     }
     else
     {
-        if (burststart)
-            return src_n + dst_n;
-        else
-            return src_s + dst_s;
+        u32 ret = burststart ? src_n + dst_n : src_s + dst_s;
+        if (src_rgn == Mem9_GBAROM)
+            ret += GBASlotBoundaryPenalty(CurSrcAddr, 4, burststart, src_n - src_s);
+        if (dst_rgn == Mem9_GBAROM)
+            ret += GBASlotBoundaryPenalty(CurDstAddr, 4, burststart, dst_n - dst_s);
+        return ret;
     }
 }
 
@@ -455,10 +470,12 @@ u32 DMA::UnitTimings7_16(bool burststart)
     }
     else
     {
-        if (burststart)
-            return src_n + dst_n;
-        else
-            return src_s + dst_s;
+        u32 ret = burststart ? src_n + dst_n : src_s + dst_s;
+        if (src_rgn == Mem7_GBAROM)
+            ret += GBASlotBoundaryPenalty(CurSrcAddr, 2, burststart, src_n - src_s);
+        if (dst_rgn == Mem7_GBAROM)
+            ret += GBASlotBoundaryPenalty(CurDstAddr, 2, burststart, dst_n - dst_s);
+        return ret;
     }
 }
 
@@ -545,10 +562,12 @@ u32 DMA::UnitTimings7_32(bool burststart)
     }
     else
     {
-        if (burststart)
-            return src_n + dst_n;
-        else
-            return src_s + dst_s;
+        u32 ret = burststart ? src_n + dst_n : src_s + dst_s;
+        if (src_rgn == Mem7_GBAROM)
+            ret += GBASlotBoundaryPenalty(CurSrcAddr, 4, burststart, src_n - src_s);
+        if (dst_rgn == Mem7_GBAROM)
+            ret += GBASlotBoundaryPenalty(CurDstAddr, 4, burststart, dst_n - dst_s);
+        return ret;
     }
 }
 

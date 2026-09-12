@@ -912,3 +912,180 @@ int TestDSiNDMAExecution(NDSArgs&& args)
     }
     return failures ? 1 : 0;
 }
+
+// Arisotura's hardware observations, 2021-06-03: the last halfword of each
+// 128 KiB GBA ROM block is nonsequential, including fixed/decrementing DMA.
+// https://melonds.kuribo64.net/board/thread.php?pid=3805#3805
+// EXMEMCNT first/second access durations are in 33 MHz bus cycles:
+// https://problemkaputt.de/gbatek.htm#dsmemorycontrol
+// Exercise the additive GBA slot <-> WRAM path. Main-RAM overlap and channel
+// preemption need separate hardware measurements, not inferred cycle totals.
+int TestDMASlotTiming(NDSArgs&& args)
+{
+    args.JIT = std::nullopt;
+    struct DMAObservedNDS : NDS
+    {
+        using NDS::NDS;
+        using NDS::DMAs;
+    };
+    auto nds = std::make_unique<DMAObservedNDS>(std::move(args));
+    nds->SetGBACart(std::make_unique<GBACart::CartRAMExpansion>());
+    nds->Reset();
+    constexpr u32 SlotEnd = 0x09020000;
+    constexpr u32 WRAM = 0x03001000;
+    constexpr u32 DMA0 = 0x040000B0;
+    constexpr u32 Enable = 1u << 31;
+    constexpr u32 Done = 1u << IRQ_DMA0;
+    constexpr u32 Guard = 0xCDEF;
+    unsigned failures = 0;
+    unsigned cases = 0;
+
+    struct Transfer
+    {
+        const char* Name;
+        unsigned Count;
+        int Offset; // Units relative to the 128 KiB boundary.
+        unsigned Mode;
+        unsigned NonseqHalfwords;
+    };
+    // The counts below are from the bus rule, not DMA_Timings or the emulator's
+    // memory tables: one initial N, plus every visit to the final halfword.
+    // For a 16-bit initial access at that address, those are the same access.
+    constexpr Transfer transfers[] = {
+        {"one-before", 1, -2, 0, 1},
+        {"one-terminal", 1, -1, 0, 2},
+        {"one-after", 1, 0, 0, 1},
+        {"two-through", 2, -2, 0, 2},
+        {"many-through", 17, -9, 0, 2},
+        {"decrement-through", 17, 7, 1, 2},
+        {"fixed-terminal", 17, -1, 2, 18},
+        {"fixed-interior", 17, -2, 2, 1},
+        {"reload-through", 17, -9, 3, 2},
+    };
+    struct WaitSetting { u16 Control; unsigned Nonseq; unsigned Seq; };
+    // Two documented EXMEMCNT settings, including both sequential speeds.
+    constexpr WaitSetting waits[] = {{0x0000, 10, 6}, {0x001C, 18, 4}};
+
+    for (unsigned cpu : {0u, 1u})
+    {
+        auto write16 = [&](u32 addr, u16 value) {
+            if (cpu) nds->ARM7Write16(addr, value);
+            else     nds->ARM9Write16(addr, value);
+        };
+        auto write32 = [&](u32 addr, u32 value) {
+            if (cpu) nds->ARM7Write32(addr, value);
+            else     nds->ARM9Write32(addr, value);
+        };
+        auto read16 = [&](u32 addr) {
+            return cpu ? nds->ARM7Read16(addr) : nds->ARM9Read16(addr);
+        };
+        auto& timestamp = cpu ? nds->ARM7Timestamp : nds->ARM9Timestamp;
+        auto& target = cpu ? nds->ARM7Target : nds->ARM9Target;
+        auto& dma = nds->DMAs[cpu * 4];
+        nds->CurCPU = cpu;
+        nds->MapSharedWRAM(1);
+        nds->MapSharedWRAM(cpu ? 3 : 0);
+        write32(0x04000208, 1);
+        write32(0x04000210, Done);
+
+        for (const auto& wait : waits)
+        for (unsigned width : {2u, 4u})
+        for (bool toSlot : {false, true})
+        for (const auto& test : transfers)
+        {
+            if (!toSlot && test.Mode == 3) continue; // Source mode 3 is reserved.
+            nds->ARM9Write16(0x04000204, wait.Control | (cpu << 7));
+            write16(0x04000204, wait.Control | (cpu << 7));
+            write32(0x04000214, Done);
+            timestamp = 0;
+            target = 0;
+            for (int i = -40; i < 40; ++i)
+                write16(SlotEnd + i * 2, Guard);
+            for (unsigned i = 0; i < 40; ++i)
+                write16(WRAM + i * 2, Guard);
+
+            const u32 slot = SlotEnd + test.Offset * static_cast<int>(width);
+            const int stride = test.Mode == 1 ? -static_cast<int>(width) :
+                               test.Mode == 2 ? 0 : static_cast<int>(width);
+            const u32 source = toSlot ? WRAM : slot;
+            const u32 dest = toSlot ? slot : WRAM;
+            const int sourceStride = toSlot ? static_cast<int>(width) : stride;
+            const int destStride = toSlot ? stride : static_cast<int>(width);
+            auto pattern = [](u32 addr) -> u16 { return (addr >> 1) ^ 0x5A39; };
+            for (unsigned i = 0; i < test.Count; ++i)
+            for (unsigned half = 0; half < width; half += 2)
+            {
+                const u32 addr = source + i * sourceStride + half;
+                write16(addr, pattern(addr));
+            }
+
+            write32(DMA0, source);
+            write32(DMA0 + 4, dest);
+            write32(DMA0 + 8, Enable | (1u << 30) | (width == 4 ? 1u << 26 : 0) |
+                    (test.Mode << (toSlot ? 21 : 23)) | test.Count);
+            bool ok = dma.IsRunning() && !(nds->IF[cpu] & Done);
+            dma.Run(); // No budget: must not consume the initial burst access.
+            ok &= timestamp == 0 && !(nds->IF[cpu] & Done);
+            bool dataOK = true;
+            bool irqOK = true;
+            u64 firstAt = 0;
+            for (unsigned i = 0; i < test.Count; ++i)
+            {
+                // One unit per scheduler slice; resuming is not a new burst.
+                target = timestamp + 1;
+                dma.Run();
+                if (i == 0) firstAt = timestamp;
+                for (unsigned half = 0; half < width; half += 2)
+                    dataOK &= read16(dest + i * destStride + half) ==
+                          pattern(source + i * sourceStride + half);
+                irqOK &= bool(nds->IF[cpu] & Done) == (i + 1 == test.Count);
+                ok &= dma.IsRunning() == (i + 1 < test.Count);
+            }
+
+            const unsigned visits = test.NonseqHalfwords -
+                (width == 2 && test.Offset == -1 ? 1 : 0);
+            const unsigned expected = test.Count * (width / 2 * wait.Seq + 1) +
+                                      visits * (wait.Nonseq - wait.Seq);
+            const unsigned firstExpected = wait.Nonseq + 1 + (width == 4 ?
+                (test.Offset == -1 ? wait.Nonseq : wait.Seq) : 0);
+            const unsigned shift = cpu ? 0 : nds->ARM9ClockShift;
+            ok &= timestamp == (u64{expected} << shift);
+            ok &= firstAt == (u64{firstExpected} << shift);
+            ok &= !(dma.Cnt & Enable) && !(nds->CPUStop & (1u << (cpu * 16)));
+            irqOK &= (cpu ? nds->ARM7.IRQ : nds->ARM9.IRQ) == 1;
+            // Verify the entire destination plus guards, including the final
+            // value of a fixed destination and both halves of a word transfer.
+            const u32 checkStart = toSlot ? SlotEnd - 80 : WRAM;
+            const unsigned checkHalves = toSlot ? 80 : 40;
+            for (unsigned h = 0; h < checkHalves; ++h)
+            {
+                const u32 addr = checkStart + h * 2;
+                u16 expectedData = Guard;
+                for (unsigned i = 0; i < test.Count; ++i)
+                for (unsigned half = 0; half < width; half += 2)
+                    if (addr == dest + i * destStride + half)
+                        expectedData = pattern(source + i * sourceStride + half);
+                dataOK &= read16(addr) == expectedData;
+            }
+            write32(0x04000214, Done);
+            const u64 completedAt = timestamp;
+            target = timestamp + 100;
+            dma.Run();
+            ok &= timestamp == completedAt && !(nds->IF[cpu] & Done);
+            ok &= dataOK && irqOK;
+            ++cases;
+            failures += !ok;
+            std::printf("{\"case\":\"%s\",\"cpu\":%u,\"bits\":%u,\"to_slot\":%s,"
+                        "\"units\":%u,\"exmem\":%u,\"cycles\":%llu,\"expected\":%u,"
+                        "\"first\":%llu,\"first_expected\":%u,\"data_ok\":%s,\"irq_ok\":%s,\"ok\":%s}\n",
+                        test.Name, cpu ? 7 : 9, width * 8, toSlot ? "true" : "false",
+                        test.Count, wait.Control,
+                        static_cast<unsigned long long>(completedAt >> shift), expected,
+                        static_cast<unsigned long long>(firstAt >> shift), firstExpected,
+                        dataOK ? "true" : "false", irqOK ? "true" : "false",
+                        ok ? "true" : "false");
+        }
+    }
+    std::printf("{\"test\":\"dma-slot-boundary\",\"cases\":%u,\"failed\":%u}\n", cases, failures);
+    return failures ? 1 : 0;
+}

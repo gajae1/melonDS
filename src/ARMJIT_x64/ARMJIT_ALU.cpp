@@ -304,7 +304,10 @@ void Compiler::Comp_MulOp(bool S, bool add, Gen::OpArg rd, Gen::OpArg rm, Gen::O
         CMOVcc(32, RSCRATCH, R(RSCRATCH2), CC_L);
         SHR(32, R(RSCRATCH), Imm8(3));
         SetJumpTarget(zeroBSR); // fortunately that's even right
-        Comp_AddCycles_CI(RSCRATCH, add ? 2 : 1);
+        // Include all I cycles in the register: the CI helper's constant path
+        // only adds the fetch cost, unlike its conditional path.
+        ADD(32, R(RSCRATCH), Imm8(add ? 2 : 1));
+        Comp_AddCycles_CI(RSCRATCH, 0);
     }
 
     static_assert(EAX == RSCRATCH, "Someone changed RSCRATCH!");
@@ -375,7 +378,8 @@ void Compiler::A_Comp_Mul_Long()
 
         SHR(32, R(RSCRATCH), Imm8(3));
         SetJumpTarget(zeroBSR); // fortunately that's even right
-        Comp_AddCycles_CI(RSCRATCH, 2);
+        ADD(32, R(RSCRATCH), Imm8(add ? 3 : 2)); // MULL m+1 I; MLAL m+2 I.
+        Comp_AddCycles_CI(RSCRATCH, 0);
     }
 
     if (sign)
@@ -675,7 +679,8 @@ void Compiler::T_Comp_MUL()
 {
     OpArg rd = MapReg(CurInstr.T_Reg(0));
     OpArg rs = MapReg(CurInstr.T_Reg(3));
-    Comp_MulOp(true, false, rd, rd, rs, Imm8(-1));
+    // Thumb MUL Rd,Rs is ARM MULS Rd,Rs,Rd: old Rd controls timing.
+    Comp_MulOp(true, false, rd, rs, rd, Imm8(-1));
 }
 
 void Compiler::T_Comp_ALU()

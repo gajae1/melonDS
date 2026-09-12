@@ -42,76 +42,103 @@ void SoftRenderer2D::Reset()
     NumSprites = 0;
 }
 
-u32 SoftRenderer2D::ColorComposite(int i, u32 val1, u32 val2) const
+// Keep RGB6 components in separate 16-bit lanes for the weighted sum. The
+// largest normal sum is 63 * (16 + 16) + 8, so no carry crosses a lane.
+static u32 ColorBlend4Packed(u32 val1, u32 val2, u32 eva, u32 evb)
 {
-    u32 coloreffect = 0;
-    u32 eva, evb;
+    // Also preserve the old unsigned arithmetic for out-of-range state/flags.
+    if (eva > 16 || evb > 16) return ColorBlend4(val1, val2, eva, evb);
 
-    u32 flag1 = val1 >> 24;
-    u32 flag2 = val2 >> 24;
+    const u64 rgb1 = (val1 & 0x3F003F) | (u64(val1 & 0x003F00) << 24);
+    const u64 rgb2 = (val2 & 0x3F003F) | (u64(val2 & 0x003F00) << 24);
+    u64 rgb = (rgb1 * eva + rgb2 * evb + 0x000800080008ULL) >> 4;
+    const u64 overflow = rgb & 0x004000400040ULL;
+    rgb = (rgb | (overflow - (overflow >> 6))) & 0x003F003F003FULL;
+    return u32(rgb & 0x3F003F) | u32((rgb >> 24) & 0x003F00) | 0xFF000000;
+}
 
-    u32 blendCnt = GPU2D.BlendCnt;
+static u32 ColorBlend5Packed(u32 val1, u32 val2)
+{
+    const u32 eva = ((val1 >> 24) & 0x1F) + 1;
+    if (eva == 32) return val1;
 
-    u32 target2;
-    if      (flag2 & 0x80) target2 = 0x1000;
-    else if (flag2 & 0x40) target2 = 0x0100;
-    else                   target2 = flag2 << 8;
+    const u64 rgb1 = (val1 & 0x3F003F) | (u64(val1 & 0x003F00) << 24);
+    const u64 rgb2 = (val2 & 0x3F003F) | (u64(val2 & 0x003F00) << 24);
+    // EVA + EVB = 32: the rounded result cannot exceed 63 in any lane.
+    const u64 rgb = (rgb1 * eva + rgb2 * (32 - eva) + 0x001000100010ULL) >> 5;
+    return u32(rgb & 0x3F003F) | u32((rgb >> 24) & 0x003F00) | 0xFF000000;
+}
 
-    if ((flag1 & 0x80) && (blendCnt & target2))
+template<u32 effect>
+void SoftRenderer2D::ColorComposite(u32* dst) const
+{
+    // Blend registers are constant for the scanline. Select the normal effect
+    // once, while retaining the per-pixel OBJ/3D blending and window rules.
+    const u32 blendCnt = GPU2D.BlendCnt;
+    const u32 blendEVA = GPU2D.EVA, blendEVB = GPU2D.EVB, blendEVY = GPU2D.EVY;
+
+    if constexpr (effect <= 1)
     {
-        // sprite blending
-
-        coloreffect = 1;
-
-        if (flag1 & 0x40)
+        // Without second targets even forced OBJ/3D alpha blending is disabled.
+        if (!(blendCnt & 0x3F00))
         {
-            eva = flag1 & 0x1F;
-            evb = 16 - eva;
-        }
-        else
-        {
-            eva = GPU2D.EVA;
-            evb = GPU2D.EVB;
+            memcpy(dst, BGOBJLine, 256 * sizeof(u32));
+            return;
         }
     }
-    else if ((flag1 & 0x40) && (blendCnt & target2))
-    {
-        // 3D layer blending
 
-        coloreffect = 4;
-    }
-    else
+    for (int i = 0; i < 256; i++)
     {
-        if      (flag1 & 0x80) flag1 = 0x10;
-        else if (flag1 & 0x40) flag1 = 0x01;
+        const u32 val1 = BGOBJLine[i];
+        u32 flag1 = val1 >> 24;
 
-        if ((blendCnt & flag1) && (WindowMask[i] & 0x20))
+        // Normal alpha blending requires a first target and an enabled window.
+        // Semitransparent OBJ and 3D pixels bypass those two conditions.
+        if constexpr (effect == 1)
         {
-            coloreffect = (blendCnt >> 6) & 0x3;
-
-            if (coloreffect == 1)
+            if (!(flag1 & 0xC0) && (!(blendCnt & flag1) || !(WindowMask[i] & 0x20)))
             {
-                if (blendCnt & target2)
-                {
-                    eva = GPU2D.EVA;
-                    evb = GPU2D.EVB;
-                }
-                else
-                    coloreffect = 0;
+                dst[i] = val1;
+                continue;
             }
         }
-    }
 
-    switch (coloreffect)
-    {
-        case 0: return val1;
-        case 1: return ColorBlend4(val1, val2, eva, evb);
-        case 2: return ColorBrightnessUp(val1, GPU2D.EVY, 0x8);
-        case 3: return ColorBrightnessDown(val1, GPU2D.EVY, 0x7);
-        case 4: return ColorBlend5(val1, val2);
-    }
+        if (effect == 1 || (flag1 & 0xC0))
+        {
+            const u32 val2 = BGOBJLine[256+i];
+            const u32 flag2 = val2 >> 24;
+            const u32 target2 = (flag2 & 0x80) ? 0x1000 : (flag2 & 0x40) ? 0x0100 : flag2 << 8;
+            if (blendCnt & target2)
+            {
+                if ((flag1 & 0xC0) == 0x40)
+                    dst[i] = ColorBlend5Packed(val1, val2);
+                else if ((flag1 & 0xC0) == 0xC0)
+                {
+                    const u32 eva = flag1 & 0x1F;
+                    dst[i] = ColorBlend4Packed(val1, val2, eva, 16 - eva);
+                }
+                else
+                    dst[i] = ColorBlend4Packed(val1, val2, blendEVA, blendEVB);
+                continue;
+            }
+        }
 
-    return val1;
+        if constexpr (effect >= 2)
+        {
+            if      (flag1 & 0x80) flag1 = 0x10;
+            else if (flag1 & 0x40) flag1 = 0x01;
+
+            if ((blendCnt & flag1) && (WindowMask[i] & 0x20))
+            {
+                if constexpr (effect == 2)
+                    dst[i] = ColorBrightnessUp(val1, blendEVY, 0x8);
+                else
+                    dst[i] = ColorBrightnessDown(val1, blendEVY, 0x7);
+                continue;
+            }
+        }
+        dst[i] = val1;
+    }
 }
 
 void SoftRenderer2D::DrawScanline(u32 line)
@@ -345,15 +372,13 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
         case 7: DrawScanlineBGMode7(line); break;
     }
 
-    // color special effects
-    // can likely be optimized
-
-    for (int i = 0; i < 256; i++)
+    // Color special effects: specialize the scanline-invariant normal effect.
+    switch ((GPU2D.BlendCnt >> 6) & 0x3)
     {
-        u32 val1 = BGOBJLine[i];
-        u32 val2 = BGOBJLine[256+i];
-
-        dst[i] = ColorComposite(i, val1, val2);
+        case 0: ColorComposite<0>(dst); break;
+        case 1: ColorComposite<1>(dst); break;
+        case 2: ColorComposite<2>(dst); break;
+        case 3: ColorComposite<3>(dst); break;
     }
 }
 

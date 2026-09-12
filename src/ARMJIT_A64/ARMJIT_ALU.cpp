@@ -579,7 +579,13 @@ void Compiler::Comp_Mul_Mla(bool S, bool mla, ARM64Reg rd, ARM64Reg rm, ARM64Reg
     }
     else
     {
-        CLS(W0, rs);
+        // ARM7 terminates on all-zero or all-one upper bytes, including
+        // 0xFF and 0xFFFFFF00. Fold the sign and keep at least one bit.
+        EOR(W0, rs, rs, ArithOption(rs, ST_ASR, 31));
+        ORRI2R(W0, W0, 1);
+        CLZ(W0, W0);
+        MOVI2R(W1, 32 + 7);
+        SUB(W0, W1, W0); // ceil(significant bits / 8), shifted by the helper
         Comp_AddCycles_CI(mla ? 1 : 0, W0, ArithOption(W0, ST_LSR, 3));
     }
 
@@ -613,10 +619,15 @@ void Compiler::A_Comp_Mul_Long()
     else
     {
         if (sign)
-            CLS(W0, rs);
+            EOR(W0, rs, rs, ArithOption(rs, ST_ASR, 31));
         else
-            CLZ(W0, rs);
-        Comp_AddCycles_CI(0, W0, ArithOption(W0, ST_LSR, 3));
+            MOV(W0, rs);
+        ORRI2R(W0, W0, 1);
+        CLZ(W0, W0);
+        MOVI2R(W1, 32 + 7);
+        SUB(W0, W1, W0);
+        // MULL needs m+1 internal cycles; MLAL needs m+2 (DDI 0029G 6-23).
+        Comp_AddCycles_CI(add ? 2 : 1, W0, ArithOption(W0, ST_LSR, 3));
     }
 
     if (add)
@@ -815,7 +826,7 @@ void Compiler::T_Comp_ALU()
     
     if ((op >= 0x2 && op <= 0x4) || op == 0x7)
         Comp_AddCycles_CI(1);
-    else
+    else if (op != 0xD)
         Comp_AddCycles_C();
 
     switch (op)
@@ -862,7 +873,9 @@ void Compiler::T_Comp_ALU()
         Comp_Logical(0xC, true, rd, rd, Op2(rs));
         break;
     case 0xD:
-        Comp_Mul_Mla(true, false, rd, rd, rs, INVALID_REG);
+        // Thumb MUL Rd,Rs corresponds to ARM MULS Rd,Rs,Rd: the old Rd
+        // controls early termination, and Comp_Mul_Mla includes the fetch.
+        Comp_Mul_Mla(true, false, rd, rs, rd, INVALID_REG);
         break;
     case 0xE:
         Comp_Logical(0xE, true, rd, rd, Op2(rs));

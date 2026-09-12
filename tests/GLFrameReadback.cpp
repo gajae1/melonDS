@@ -11,6 +11,109 @@
 #include <cstring>
 #include <algorithm>
 
+// Inspect the RGB6 compositor before the framebuffer expansion discards flags.
+#define private public
+#include "GPU2D_Soft.h"
+#undef private
+#include "GPU_Soft.h"
+
+static melonDS::u32 CompositeReference(melonDS::u32 a, melonDS::u32 b,
+                                      unsigned control, unsigned eva, unsigned evb,
+                                      unsigned evy, bool window)
+{
+    using namespace melonDS;
+    const unsigned fa = a >> 24, fb = b >> 24;
+    const auto target = [](unsigned flag) { return (flag & 0x80) ? 0x10u : (flag & 0x40) ? 1u : flag; };
+    const bool second = control & (target(fb) << 8);
+    unsigned mode = (control >> 6) & 3;
+    unsigned shift = 4, bias = 8;
+    if ((fa & 0xC0) && second)
+    {
+        mode = 1;
+        if (fa & 0x80)
+        {
+            if (fa & 0x40) { eva = fa & 31; evb = 16 - eva; }
+        }
+        else
+        {
+            eva = (fa & 31) + 1;
+            if (eva == 32) return a;
+            evb = 32 - eva; shift = 5; bias = 16;
+        }
+    }
+    else if (!(control & target(fa)) || !window || (mode == 1 && !second))
+        mode = 0;
+    if (!mode) return a;
+    u32 result = 0xFF000000;
+    for (unsigned component = 0; component < 24; component += 8)
+    {
+        unsigned value = (a >> component) & 63;
+        if (mode == 1)
+            value = std::min(63u, (value * eva + ((b >> component) & 63) * evb + bias) >> shift);
+        else if (mode == 2)
+            value += ((63 - value) * evy + 8) >> 4;
+        else
+            value -= (value * evy + 7) >> 4;
+        result |= value << component;
+    }
+    return result;
+}
+
+static int CheckSoftware2DEffects()
+{
+    using namespace melonDS;
+    NDSArgs args; args.JIT = std::nullopt;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    SoftRenderer parent(*nds);
+    auto& gpu = nds->GPU.GPU2D_A;
+    SoftRenderer2D renderer(gpu, parent);
+    alignas(16) u32 output[264];
+    constexpr unsigned flags[] = {1,2,4,8,16,32,0x80,0xC0,0xC1,0xCF,0xD0,0x40,0x41,0x5E,0x5F};
+    constexpr unsigned colors[] = {0,1,31,32,62,63};
+    unsigned pixels = 0;
+    for (unsigned mode = 0; mode < 4; ++mode)
+    for (unsigned targets : {0u,0x0001u,0x0010u,0x2000u,0x3F00u,0x0101u,0x1010u,0x3F3Fu})
+    for (unsigned factor : {0u,1u,8u,15u,16u})
+    for (unsigned flag : flags)
+    {
+        gpu.BlendCnt = targets | (mode << 6);
+        gpu.EVA = factor; gpu.EVB = (factor * 7 + 3) % 17; gpu.EVY = factor;
+        std::fill(std::begin(output),std::end(output),0xBAADF00D);
+        const unsigned offset = (flag & 3) + 1;
+        u32* dst = output + offset;
+        for (unsigned x = 0; x < 256; ++x)
+        {
+            renderer.BGOBJLine[x] = (flag << 24) | colors[x%6] | (colors[(x+1)%6]<<8) | (colors[(x+2)%6]<<16);
+            renderer.BGOBJLine[256+x] = (x << 24) | colors[(x+3)%6] | (colors[(x+4)%6]<<8) | (colors[(x+5)%6]<<16);
+            renderer.WindowMask[x] = x;
+        }
+        switch (mode)
+        {
+            case 0: renderer.ColorComposite<0>(dst); break;
+            case 1: renderer.ColorComposite<1>(dst); break;
+            case 2: renderer.ColorComposite<2>(dst); break;
+            case 3: renderer.ColorComposite<3>(dst); break;
+        }
+        for (unsigned x = 0; x < 256; ++x)
+        {
+            const u32 expected = CompositeReference(renderer.BGOBJLine[x],renderer.BGOBJLine[256+x],
+                gpu.BlendCnt,gpu.EVA,gpu.EVB,gpu.EVY,renderer.WindowMask[x] & 0x20);
+            if (dst[x] != expected)
+            {
+                std::fprintf(stderr,"2d-composite cnt=%04x flag=%02x x=%u coeff=%u,%u,%u expected=%08x actual=%08x\n",
+                    gpu.BlendCnt,flag,x,gpu.EVA,gpu.EVB,gpu.EVY,expected,dst[x]);
+                return 1;
+            }
+            ++pixels;
+        }
+        for (unsigned x = 0; x < std::size(output); ++x)
+            if ((x < offset || x >= offset+256) && output[x] != 0xBAADF00D) return 2;
+    }
+    std::printf("{\"software_2d_composite_pixels\":%u,\"mismatches\":0,\"guard_failures\":0}\n",pixels);
+    return 0;
+}
+
 static PFNGLGENFRAMEBUFFERSPROC DriverGenFramebuffers;
 static std::vector<GLuint> RendererFramebuffers;
 
@@ -363,6 +466,8 @@ int CheckGLTextureBoundaries(const char* name);
 int main(int argc, char** argv)
 {
     using namespace melonDS;
+    if (argc == 2 && std::strcmp(argv[1], "software-2d-composite") == 0)
+        return CheckSoftware2DEffects();
     const bool failureCase = argc == 3 && std::strcmp(argv[1], "compute-failure") == 0;
     const bool captureCase = argc == 3 && std::strcmp(argv[1], "capture-readback") == 0;
     const bool midCaptureCase = argc == 3 && std::strcmp(argv[1], "capture-mid") == 0;

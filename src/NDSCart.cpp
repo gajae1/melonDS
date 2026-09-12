@@ -269,13 +269,17 @@ void NDSCartSlot::DoSavestate(Savestate* file) noexcept
     }
     else
     {
-        u32 savetype;
+        u32 savetype = 0;
+        u32 savechk = 0;
         file->Var32(&savetype);
-        if (savetype != carttype) return;
-
-        u32 savechk;
         file->Var32(&savechk);
-        if (savechk != cartchk) return;
+        if (file->Error) return;
+        if (savetype != carttype || savechk != cartchk)
+        {
+            Log(LogLevel::Error, "savestate: cartridge in slot %u does not match saved type/checksum\n", Num);
+            file->Error = true;
+            return;
+        }
     }
 
     if (Cart)

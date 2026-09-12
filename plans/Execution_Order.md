@@ -292,3 +292,13 @@ GR-08의 새 편지 상태는 DSi·DSP HLE였다. 같은 입력의 3모드600프
 BV-07은 원본 libslirp v4.8.0 alias31개를 실제 packet 사본/디렉터리로 저장해 소스 ZIP 소비 대상8/16→16/16, 전체19 corpus·61 packet 바이트 일치를 확인했다. source identity의 symlink 거절은 유지하며 향후 원본/사본을 함께 갱신해야 한다. POSIX 실행·fuzz campaign·스크립트 실행 bit 복원은 수행하지 않았다. Windows 전체 빌드와 CTest682/682(59.78초, 실패/skip0)가 통과했다. 다음은 실기 AA 값 판정과 CJ-12 DMA 타이밍의 실제 입력/기준 대조이며 native A64·다른 OS·장기 게임과 앞선 미완료 과제는 계속 남는다.
 
 2026-09-12, 1.1.49: AD-03 생성자의 bitdepth 인자 덮어쓰기와 Auto 기종 조건 불일치를 기존 SetDegrade10Bit 경로 재사용으로 수정했다. 비공개 입력 없이 실제 DS/DSi 코어에 반복 PCM16을 공급하여 Auto/10/16비트의 최초 생성·재설정 출력을 setter 경로와 대조했고 3/6→6/6을 확인했다. Windows 전체 빌드·CTest682/682(79.95초, 실패/skip0)가 통과했다. 실제 오디오 장치와 청취 수락은 별도다. 구형 13.0 상태 가져오기는 GPU·scheduler·cart 구조와 과거 DSi 전원 의미의 변환 실험까지 진행했으며 제품에는 아직 넣지 않았다. 일반 저장 시점, DMA/SPI 진행 중 상태, 1.1로의 역방향 내보내기는 후속으로 남긴다.
+
+2026-09-12, 1.1.50: CJ-01의 A64 곱셈 가변 I 누락·중복 fetch, signed early termination·long accumulate·Thumb의 원래 Rd 기준을 수정했다. [ARM7TDMI timing 표](https://documentation-service.arm.com/static/5e8e1323fd977155116a3129)와 실제 emitter 실행을 대조하면서 interpreter/x64의 추가 오류도 재현했다. Interpreter716조건은125실패→0, 캐시된 native x64는348실패→0, production A64를 Unicorn으로 실행한404조건도 최종0실패다. ARM7 multiply의 정의되지 않은 C는 oracle에서 제외하며, native A64 ABI/메모리 보호·실기 timing을 통과한 것으로 세지 않는다.
+
+CJ-12는 기존 [DS 버스 실측](https://melonds.kuribo64.net/board/thread.php?pid=3805#3805)에 따라 GBA slot128KiB 마지막 halfword의 N 접근 비용을 반영한다. 실제 DMA 데이터·timestamp·IRQ136조건은80실패→0이며 mainRAM overlap·선점·ITCM 동시 실행은 남는다. CJ-16은 [VirtualFree 계약](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree)에 맞춰 동적32MiB JIT slice의 해제 인자를 수정했다. Windows x64의3회 누수가 모두 해제되고 native 코드18회 실행과 기본 슬롯 재사용이 유지됐다.
+
+GR-09는 software2D의 효과별 scanline 분기·정수 RGB6 합성과 불필요한 두 번째 층 처리를 줄인다. 독립 scalar/baseline과18,550,784픽셀이 일치했고, 같은 최종 코어에 렌더러만 교체한 실제 블랙 편지→선택600프레임도 모두 일치했다. 생성5장면의 paired scanline wall 중앙값은3.02~6.82% 감소했다. 실제 게임600프레임의8쌍은 총 RunFrame 비용 변화가−17.70~+17.35%로 넓게 흔들려 전체 게임의 속도 향상은 확정하지 않았다. CJ-10은 카트 checksum/type/삽입 유무 불일치를 실제 로드 오류로 전파해 기존 rollback을 실행하며, 정상 로드·다음 frame 보존5조건을 검증했다. 상태 형식은14.2를 유지한다.
+
+Windows 통합 빌드·전체 CTest693/693(93.02초, 실패/skip0)이 통과했다. 구형13.0 일반 가져오기·1.1 역방향 저장, 실기 AA·native A64·다른 OS·장기 게임 수락은 미완료다. 다음 독립 작업은 ARM9 cache/ITCM, x64 BMI, software3D·SPU 비용, libslirp 갱신이다. JIT 자기수정 코드의 추가 검증은 미완료다.
+
+1.1.50 배포는322파일의 원본/hash·PE129개 누락 import0·기존과 같은DLL128개와 clean PATH의 EXE/launcher·배포 qwindows 로드·버전/소스 식별 일치를 확인했다. 개인 입력은 보존하며 패키지에 포함하지 않는다.

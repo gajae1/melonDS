@@ -87,7 +87,7 @@ void FreeCodeMem(void* codeMem)
 #endif
 
 #ifdef _WIN32
-    VirtualFree(codeMem, CodeMemorySliceSize, MEM_RELEASE|MEM_DECOMMIT);
+    VirtualFree(codeMem, 0, MEM_RELEASE);
 #else
     munmap(codeMem, CodeMemorySliceSize);
 #endif

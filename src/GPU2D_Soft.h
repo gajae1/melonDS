@@ -77,7 +77,7 @@ private:
         return table;
     }();
 
-    u32 ColorComposite(int i, u32 val1, u32 val2) const;
+    template<u32 effect> void ColorComposite(u32* dst) const;
 
     template<u32 bgmode> void DrawScanlineBGMode(u32 line);
     void DrawScanlineBGMode6(u32 line);

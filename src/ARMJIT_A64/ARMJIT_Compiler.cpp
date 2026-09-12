@@ -893,17 +893,8 @@ void Compiler::Comp_AddCycles_CI(u32 numI)
 
 void Compiler::Comp_AddCycles_CI(u32 c, ARM64Reg numI, ArithOption shift)
 {
-    IrregularCycles = true;
-
-    s32 cycles = (Num ?
-        NDS.ARM7MemTimings[CurInstr.CodeCycles][Thumb ? 0 : 2]
-        : ((R15 & 0x2) ? 0 : CurInstr.CodeCycles)) + c;
-
-    ADD(RCycles, RCycles, cycles);
-    if (Thumb || CurInstr.Cond() >= 0xE)
-        ConstantCycles += cycles;
-    else
-        ADD(RCycles, RCycles, cycles);
+    ADD(RCycles, RCycles, numI, shift);
+    Comp_AddCycles_CI(c);
 }
 
 void Compiler::Comp_AddCycles_CDI()

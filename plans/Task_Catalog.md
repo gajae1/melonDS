@@ -6,7 +6,7 @@
 
 | ID | 작업·상세 계약 | 관찰 근거 | 우선 | 기본 버전 | 공동 대표 | 처리 상태 |
 |---|---|---|---|---|---|---|
-| CJ-01 | [A64 MUL 가변 사이클](workstreams/01-core-jit.md#CJ-01) | 정적 후보 | P1 | [1.1.39](Release_Plan.md#v39) | — | 미착수 |
+| CJ-01 | [A64 MUL 가변 사이클](workstreams/01-core-jit.md#CJ-01) | 실행 재현 | P1 | [1.1.39](Release_Plan.md#v39) | — | 1.1.50 A64 MUL/MLA/long/Thumb의 가변 I·중복 fetch와 interpreter/x64의 accumulate·음수 Thumb timing 수정. 실제 interpreter/캐시된 x64 각각716조건, production A64를 Unicorn으로 실행한404조건 통과; native A64·실기 timing은 후속 |
 | CJ-02 | [A64 조건부 사이클 누적](workstreams/01-core-jit.md#CJ-02) | 부분 실행 재현 | P1 | [1.1.39](Release_Plan.md#v39) | — | 1.1.34 A64 production emitter의 taken/untaken·normal·fallback 누적 수정, 생성 코드28/28과 x64 실제 cached dispatch 포함40/40; x64 건너뛴 명령의 1사이클 누락도 수정, 최종 Windows 통합631/631, 1.1.36 ARM7 x64의 전체 DataRegion 영역 판별4→24 수정·5 profile/2정렬 native 대조; native A64·실기 타이밍은 후속 |
 | CJ-03 | [warmed ALU·shift·부분 flags](workstreams/01-core-jit.md#CJ-03) | 실행 재현/확장 | P1 | [1.1.14](Release_Plan.md#v14) | — | 1.1.15 ASR·ALU 회귀, 1.1.16 ARM7 STM PC값·동일 pipeline PC의 ARM/Thumb 복원 수정; 전체 명령/조건·native A64·실기 후속 |
 | CJ-04 | [MPU 실행·data 권한 경계](workstreams/01-core-jit.md#CJ-04) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.18 warmed 정적 분기의 실행 권한 취소·예외 상태 수정; 같은 페이지 변경·data abort·Thumb·겹친 region·실기/native A64 후속 |
@@ -15,13 +15,13 @@
 | CJ-07 | [callback 중 event 취소](workstreams/01-core-jit.md#CJ-07) | 실행 재현 | P1 | [1.1.15](Release_Plan.md#v15) | — | 1.1.17 취소된 due event 실행 수정, 정상·재예약·교체·periodic·snapshot 6개 case 통과; IRQ/DMA/sleep 장치 경계는 CJ-08 후속 |
 | CJ-08 | [IRQ·DMA·sleep 경계](workstreams/01-core-jit.md#CJ-08) | 실행 재현 | P2 | [1.1.15](Release_Plan.md#v15) | — | 1.1.19 Timer0/HALT/ARM9 IRQ의 F 보존 수정·IME/IE/CPSR 대조와 warmed guest 검증; ARM7/Thumb·DMA/sleep·실기 latency 후속 |
 | CJ-09 | [savestate event 값 검증](workstreams/01-core-jit.md#CJ-09) | 정적 후보 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.03 구현·로컬 회귀; DSi HLE 실사용 후속 |
-| CJ-10 | [부분 load 실패 복원](workstreams/01-core-jit.md#CJ-10) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | FS-01 | 1.1.04 load·undo 복원·정지; 1.1.32 짧은 section의 이웃 읽기·NDSG 선검사, 원본 14.0 생성 상태 이관; 카트·DSi·전체 게임 후속 |
+| CJ-10 | [부분 load 실패 복원](workstreams/01-core-jit.md#CJ-10) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | FS-01 | 1.1.04 load·undo 복원·정지; 1.1.32 section/NDSG 검사·14.0 이관; 1.1.50 카트 checksum/type/삽입 유무 불일치를 오류로 전달해 기존 rollback 연결, 실제 frontend load/다음 frame5조건 통과. 13.0 일반 가져오기·역방향 저장 및 진행 중 장치는 후속 |
 | CJ-11 | [GDB SPSR bank 접근](workstreams/01-core-jit.md#CJ-11) | 실행 재현 | P1 | [1.1.10](Release_Plan.md#v10) | — | 1.1.48 활성 예외 모드의 SPSR/CPSR 혼동 수정; ARM9/7·5 bank·활성/비활성 20조건에서 interpreter/JIT의 MRS·예외 복귀 대조 통과; GNU ARM GDB 실제 UI 수락 후속 |
-| CJ-12 | [DMA 버스 타이밍](workstreams/01-core-jit.md#CJ-12) | 정적 후보 | P2 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
+| CJ-12 | [DMA 버스 타이밍](workstreams/01-core-jit.md#CJ-12) | 실행 재현 | P2 | [1.1.15](Release_Plan.md#v15) | — | 1.1.50 GBA slot의128KiB 마지막 halfword가 N 접근인 조건을16/32비트에 반영. ARM9/7·주소 증감/fixed·waitstate·IRQ/데이터136조건 통과; mainRAM 겹침·선점·ITCM 동시 실행과 새 실기 측정은 후속 |
 | CJ-13 | [ARM9 cache·ITCM 타이밍](workstreams/01-core-jit.md#CJ-13) | 관찰/확장 | P2 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
 | CJ-14 | [DSi clock·NDMA 순서](workstreams/01-core-jit.md#CJ-14) | 정적 후보 | P2 | [1.1.20](Release_Plan.md#v20) | AD-16 | 미착수 |
 | CJ-15 | [SMC·alias·remap 재진입](workstreams/01-core-jit.md#CJ-15) | 관찰/확장 | P1 | [1.1.15](Release_Plan.md#v15) | — | 미착수 |
-| CJ-16 | [A64 native fastmem·W^X·I-cache](workstreams/01-core-jit.md#CJ-16) | 관찰/확장 | P1 | [1.1.39](Release_Plan.md#v39) | — | 미착수 |
+| CJ-16 | [A64 native fastmem·W^X·I-cache](workstreams/01-core-jit.md#CJ-16) | Windows 해제 오류 실행 재현 | P1 | [1.1.39](Release_Plan.md#v39) | — | 1.1.50 동적 JIT32MiB slice의 VirtualFree 인자를 API 계약에 맞춰 수정. 실제 Windows x64에서3/3누수→3/3해제와18회 코드 실행/슬롯 재사용 통과; native A64 fastmem·W^X·I-cache는 미검증 |
 | CJ-17 | [BMI BIC·shift 실효성](workstreams/01-core-jit.md#CJ-17) | 미측정 가설 | P3 | [1.1.25](Release_Plan.md#v25) | — | 미착수 |
 | CJ-18 | [짧은 block hash·cache 비용](workstreams/01-core-jit.md#CJ-18) | 제한 장면 계측 | P3 | [1.1.25](Release_Plan.md#v25) | — | 1.1.38 compile/hash 측정·고정 임시 배열; reset/reuse·holdout 대기 |
 | CJ-19 | [3D capture의 CPU/DMA 가시성](workstreams/01-core-jit.md#CJ-19) | 부분 실행 검증 | P2 | [1.1.16](Release_Plan.md#v16) | GR-06 | 1.1.30 source A DMA-first→동일 warmed JIT load 블록의 과거/미래 줄 읽기·3 backend 검증; JIT-first·직접 VRAM fastmem·실기/게임 후속 |
@@ -35,7 +35,7 @@
 | GR-06 | [실제 source A→guest readback](workstreams/02-renderers.md#GR-06) | 부분 실행 검증 | P1 | [1.1.16](Release_Plan.md#v16) | — | 1.1.20 A/B·혼합·bank wrap→guest LDRH·128/256 재사용; 1.1.30 source A DMA-first/warmed JIT·3 backend 검증; 1.1.33 direct-color texture 끝·RAM fallback·dirty word wrap·guest 재사용 대조; JIT-first·모든 2D source A·실기 후속 |
 | GR-07 | [고배율 한도·할당 복구](workstreams/02-renderers.md#GR-07) | 실행 재현 | P2 | [1.1.17](Release_Plan.md#v17) | — | 1.1.21 texture/viewport·SSBO/texel 한도와 첫 할당 오류·software 복구·캡처 보존·재선택 검증; 1.1.33 producer 용량·indirect 상한의 순서 보존 분할·중간 합성 상태 유지; 실장치 OOM/context 복구·작은 VRAM·게임/driver 후속 |
 | GR-08 | [depth·fog·AA·edge 정확성](workstreams/02-renderers.md#GR-08) | 부분 실행 재현 | P1 | [1.1.28](Release_Plan.md#v28) | — | 1.1.33 classic alpha ref/texel alpha·Compute 분할 전후 중간 상태/픽셀 대조; 1.1.34 Compute blend-off와 classic GL 정수 합성·modulate alpha·fog 수정; 세 렌더러 각각 alpha44·겹침/bitmap24·6비트shading22조합 통과, 추가 GPU 복사 비용·다른 장치·실기 후속; 1.1.46 애니메이션 대조·1.1.47 네 면 독립 홈브루에서 깊이 차이112/AA6/32 경로 재현, 실기 값 대기 |
-| GR-09 | [2D/3D 정수 SIMD·구간 묶음](workstreams/02-renderers.md#GR-09) | 미측정 가설 | P2 | [1.1.27](Release_Plan.md#v27) | — | 미착수 |
+| GR-09 | [2D/3D 정수 SIMD·구간 묶음](workstreams/02-renderers.md#GR-09) | 2D 실행 대조·제한 비용 측정 | P2 | [1.1.27](Release_Plan.md#v27) | — | 1.1.50 software 2D의 scanline invariant·효과별 분기·RGB6 정수 합성 최적화. 생성 입력18,550,784픽셀 비교 일치; 같은 host의5장면 paired 비용 감소는 전체 게임 FPS로 환산하지 않는다. 3D·다른 CPU/OS는 후속 |
 | GR-10 | [texture cache 비용·상주량](workstreams/02-renderers.md#GR-10) | 정확성 재현·비용 미측정 | P2 | [1.1.28](Release_Plan.md#v28) | — | 1.1.47 GL 16비트 bitmap 변경 감시 범위가 절반이던 결함 수정; 128/256·1x/2x·8비트 대조와 실제 guest 출력/재실행 일치, cache 비용·상주량은 미측정 |
 | GR-11 | [surface 상실·표시 복구](workstreams/02-renderers.md#GR-11) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22~24 초기화/실행 실패·해제 거부·paused 이미지/입력 복구; 1.1.25 반환 실패·전체 Qt 세 인스턴스/네 창의 상태 보존·native 전환·재선택; 물리 surface·이종 GPU/DPI·휴면 후속 |
 | GR-12 | [다중 context 초기화 도달성](workstreams/02-renderers.md#GR-12) | 실행 재현 | P2 | [1.1.16](Release_Plan.md#v16) | — | 1.1.22 loader 중첩/조기 재개와 broadcast 교착 차단; 1.1.25 실패한 borrow의 GUI 진입 거부·부분 반환·중첩 외부 소유 보존·실제 Qt 다중 창 복구; 이종 GPU 함수표·다른 OS 후속 |
