@@ -231,6 +231,15 @@ Platform callbacks. Normal AD1 transitions, changes to unrelated bits and old
 state values are checked. Physical SDL haptics and pause/eject/device lifetime
 are not exercised here.
 
+`GBASave` drives the real Flash decoder and save notifications for 64KiB,
+128KiB and 128KiB plus an RTC trailer. It checks sector boundaries, unsupported
+bank rejection, and command-looking byte payloads with initially erased data.
+Extra owned backing exposes old out-of-range accesses through canary changes;
+it is not part of the declared chip. `core-gba-flash-bus` separately checks the
+actual ARM9/ARM7 memory handlers and slot ownership with exact-size saves.
+These do not establish EEPROM ROM-bus support, physical Flash timing,
+undefined bank-bit behavior, or general GBA savestate/import compatibility.
+
 `CartSPI` calls the actual ARM9/ARM7 MMIO methods, slot and scheduler with a
 generated retail cartridge. SPI select/release observers delegate to the real
 methods. Held write data, lower-byte controls, read-only busy, real mode/enable

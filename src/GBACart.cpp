@@ -350,7 +350,9 @@ u8 CartGame::SRAMRead_FLASH(u32 addr)
 {
     if (SRAMFlashState.cmd == 0) // no cmd
     {
-        return *(u8*)&SRAM[addr + 0x10000 * SRAMFlashState.bank];
+        const u32 offset = addr + 0x10000 * SRAMFlashState.bank;
+        const u32 flashLength = SRAMType == S_FLASH1M ? 0x20000 : 0x10000;
+        return offset < flashLength ? SRAMRead_SRAM(offset) : 0xFF;
     }
 
     switch (SRAMFlashState.cmd)
@@ -378,6 +380,27 @@ u8 CartGame::SRAMRead_FLASH(u32 addr)
 // mostly ported from DeSmuME
 void CartGame::SRAMWrite_FLASH(u32 addr, u8 val)
 {
+    const u32 flashLength = SRAMType == S_FLASH1M ? 0x20000 : 0x10000;
+    if (SRAMFlashState.cmd == 0xA0)
+    {
+        // The byte after A0 is payload, even at an unlock/reset address.
+        const u32 offset = addr + 0x10000 * SRAMFlashState.bank;
+        if (offset < flashLength) SRAMWrite_SRAM(offset, val);
+        SRAMFlashState.state = 0;
+        SRAMFlashState.cmd = 0;
+        return;
+    }
+    if (SRAMFlashState.cmd == 0xB0)
+    {
+        // Keep the selected bank on unsupported values; never expose a save
+        // trailer or host memory as another physical Flash bank.
+        if (addr == 0 && (val == 0 || (val == 1 && SRAMType == S_FLASH1M)))
+            SRAMFlashState.bank = val;
+        SRAMFlashState.state = 0;
+        SRAMFlashState.cmd = 0;
+        return;
+    }
+
     switch (SRAMFlashState.state)
     {
         case 0x00:
@@ -393,16 +416,6 @@ void CartGame::SRAMWrite_FLASH(u32 addr, u8 val)
                 else if (val == 0xAA)
                 {
                     SRAMFlashState.state = 1;
-                    return;
-                }
-            }
-            if (addr == 0x0000)
-            {
-                if (SRAMFlashState.cmd == 0xB0)
-                {
-                    // bank switching
-                    SRAMFlashState.bank = val;
-                    SRAMFlashState.cmd = 0;
                     return;
                 }
             }
@@ -460,10 +473,12 @@ void CartGame::SRAMWrite_FLASH(u32 addr, u8 val)
         case 0x82:
             if (val == 0x30)
             {
-                u32 start_addr = addr + 0x10000 * SRAMFlashState.bank;
-                memset((u8*)&SRAM[start_addr], 0xFF, 0x1000);
-
-                Platform::WriteGBASave(SRAM.get(), SRAMLength, start_addr, 0x1000, UserData);
+                const u32 start = (addr & 0xF000) + 0x10000 * SRAMFlashState.bank;
+                if (start < flashLength && start <= SRAMLength && 0x1000 <= SRAMLength - start)
+                {
+                    memset(&SRAM[start], 0xFF, 0x1000);
+                    Platform::WriteGBASave(SRAM.get(), SRAMLength, start, 0x1000, UserData);
+                }
             }
             SRAMFlashState.state = 0;
             SRAMFlashState.cmd = 0;
@@ -491,14 +506,6 @@ void CartGame::SRAMWrite_FLASH(u32 addr, u8 val)
             return;
         default:
             break;
-    }
-
-    if (SRAMFlashState.cmd == 0xA0) // write
-    {
-        SRAMWrite_SRAM(addr + 0x10000 * SRAMFlashState.bank, val);
-        SRAMFlashState.state = 0;
-        SRAMFlashState.cmd = 0;
-        return;
     }
 
     Log(LogLevel::Debug, "GBACart_SRAM::Write_Flash: unknown write 0x%02X @ 0x%04X (state: 0x%02X)\n",

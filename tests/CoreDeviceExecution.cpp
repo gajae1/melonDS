@@ -12,10 +12,70 @@
 #include "teakra/src/btdmp.h"
 
 #include <cstdio>
+#include <algorithm>
 #include <memory>
 #include <utility>
+#include <vector>
 
 using namespace melonDS;
+
+// Actual DS memory handlers and slot ownership, after instruction decoding.
+// Chip-level save callback ranges are covered independently by GBASave.
+int TestGBAFlashBus(NDSArgs&& args)
+{
+    auto nds = std::make_unique<NDS>(std::move(args));
+    unsigned failures = 0;
+    for (u32 length : {0x10000u, 0x20000u, 0x20010u})
+    for (u32 cpu : {0u, 1u})
+    {
+        nds->Reset();
+        auto rom = std::make_unique<u8[]>(0x200);
+        auto save = std::make_unique<u8[]>(length);
+        std::fill_n(save.get(), length, 0x31);
+        std::vector<u8> expected(save.get(), save.get() + length);
+        nds->SetGBACart(std::make_unique<GBACart::CartGame>(
+            std::move(rom), 0x200, std::move(save), length, nullptr));
+        nds->ARM9Write16(0x04000204, u16(cpu << 7));
+        const auto write = [&](u32 writer, u32 address, u8 data) {
+            address += 0x0A000000;
+            if (writer) nds->ARM7Write8(address, data);
+            else nds->ARM9Write8(address, data);
+        };
+        const auto command = [&](u8 data) {
+            write(cpu, 0x5555, 0xAA);
+            write(cpu, 0x2AAA, 0x55);
+            write(cpu, 0x5555, data);
+        };
+        const auto read = [&](u32 reader, u32 address) {
+            address += 0x0A000000;
+            return reader ? nds->ARM7Read8(address) : nds->ARM9Read8(address);
+        };
+        const bool banked = length >= 0x20000;
+        if (banked)
+        {
+            command(0xB0);
+            write(cpu, 0, 1);
+        }
+        command(0x80);
+        write(cpu, 0x5555, 0xAA);
+        write(cpu, 0x2AAA, 0x55);
+        write(cpu, 0xFFFF, 0x30);
+        const u32 sector = banked ? 0x1F000 : 0xF000;
+        std::fill_n(expected.data() + sector, 0x1000, 0xFF);
+        bool ok = read(cpu, 0xF000) == 0xFF && read(cpu ^ 1, 0xF000) == 0;
+        command(0xA0);
+        write(cpu ^ 1, 0xFFF0, 0xA5); // Non-owner cannot consume the pending byte.
+        write(cpu, 0xFFF0, 0xAA);
+        expected[sector + 0xFF0] = 0xAA;
+        ok &= read(cpu, 0xFFF0) == 0xAA && read(cpu ^ 1, 0xFFF0) == 0;
+        const auto* cart = nds->GetGBACart();
+        ok &= cart->GetSaveMemoryLength() == length &&
+              std::equal(expected.begin(), expected.end(), cart->GetSaveMemory());
+        failures += !ok;
+        std::printf("gba-flash-bus/ARM%u/%u: %s\n", cpu ? 7 : 9, length, ok ? "PASS" : "FAIL");
+    }
+    return failures ? 1 : 0;
+}
 
 // Exercises the active sample clock, including DSi I2S -> DSP -> Teakra.
 // A missing right word uses the upstream Teakra Tick fallback as an emulator
