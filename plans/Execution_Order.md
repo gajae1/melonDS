@@ -308,3 +308,14 @@ Windows 통합 빌드·전체 CTest693/693(93.02초, 실패/skip0)이 통과했�
 BV-07은 출처를 고정한 libslirp4.9.4를 통합했다. 기존23개 공개 symbol·이전 header consumer·61개 corpus packet을 보존하고, 마지막 IPv4 fragment의 header 길이가 다른 실제 echo 누락을 수정한다. 최종 생산 Net_Slirp object와 vendored archive의 두 fragment 입력·runtime4.9.4를 확인했다. 호스트 UDP loopback의 첫 datagram 미수신은 이전/현재 및 독립 송수신에서도 남아 있어 해결로 세지 않는다. 실제 게임 Internet·다른 OS 수락은 후속이다. SPU pan과 BMI1 BIC 후보는 출력 검증과 별개로 성능 근거가 불충분하여 제품에 넣지 않았다.
 
 Windows 통합 빌드·전체 CTest696/696(84.75초, 실패/skip0), 배포322파일·PE129개 누락 import0·기존과 같은DLL128개·clean PATH EXE/launcher/배포 qwindows·버전/소스 식별이 통과했다. 다음은 최대20개 독립 작업으로 오디오 전달/커널·입력/표시 지연·CPU/OS ISA dispatch·DSP·저장/플랫폼 호환을 분담하며, 원본1.1/현재 upstream과의 개선 및125개 계획의 구현·수락 상태를 별도로 대조한다. 개별 실행 검사 통과를 물리 지연·실기 일치·구형 상태 일반 호환이나 전체 계획 완료로 세지 않는다.
+
+
+2026-09-12, 1.1.52: 20개 병렬 작업의 구현 후보15묶음을 통합했다. CJ-02 x64 조건부 PC 쓰기 cycle, AD-06 SPU channel capture, AD-20 DSP PDATA IRQ mask, 거절된 savestate header 재읽기, 압축 texture palette cache의 끝4바이트 누락을 수정했다. Software/Legacy/Compute 실제 guest capture에서 palette 교체가 반영된다. 구형13상태 일반 이관·실기 capture/IRQ timing·블랙 AA 문제 전체 해결을 의미하지 않는다.
+
+오디오 mute 해제는 기존1ms recovery ramp를 사용하고 SSE2 PCM의0.5 경계 반올림을 맞췄다. 일시정지 중 제어 메시지 대기는 queue wake로 끊고, GL swap interval은 각 창을 current로 만든 뒤 적용한다. Qt의 오른쪽 modifier E0 scan code·GL header 기본 include·FMA4 OS 상태 판별도 바로잡았다. NEON RGB6 변환은 little-endian compiler baseline일 때만 자동 선택하며 기존 enum/낮은 ISA fallback을 보존한다. Compute clear 통합은 batch당 dispatch1회와 shader1개를 줄인다. payload 없는 archive의 전체 크기 선할당도 피한다. 실제 전체 FPS·입력/오디오/화면 물리 지연 향상은 아직 확정하지 않는다.
+
+Windows 전체 빌드가 통과했다. 검사 프로세스 중단 전에 완료된635개 기록과 미완료64개의 후속 통과를 합쳤고, 기존 microbenchmark 옵션을 켜 반올림 verify1개만 추가했다. 현재 등록700개 모두 성공, 실패/skip0이며 성공한 full suite를 반복하지 않았다. 최종 core로 블랙 편지→선택600프레임을 세 renderer에서 실행했고 개인 입력/NAND/state hash를 보존했다. native ARM/macOS/Linux/Android, 물리 장치/장기 게임, 실제 두 PC 통신 및 기존 미완료 과제는 남는다.
+
+125개 ID의1.1.51 고정 감사는 최소 구현·로컬 검증68, 좁은 계약 수락2, 부분28, 미착수22, 후보 보류/조건부/제외5다. 1.1.52의 AD-06/20 최소 증분2개와 FS-20 부분 착수를 반영하면 각각70/2/29/19/5다. 과제 크기가 다르고 실기/플랫폼 수락이 남아 있으므로 제품 완성도 백분율로 쓰지 않는다. 원본1.1과 현재 master의 상류 기능을 자체 개선으로 세지 않으며, 별도 릴리즈 문서가 없는37이후 기록도 이 실행 기록에서 이어진다.
+
+다음은 보통2~4개의 필요한 독립 작업만 배정한다. Apple native SIMD/SME 호출 비용과 실제 처리 병목은 공식 자료·참고 프로젝트에서 조사하고, 출력이 NUL로 확정된 Windows GUI 로그의 불필요한 formatting 생략부터 작은 후보를 검증한다. 치트 구조 검증 재사용은 불변 실행본 소유권 확인 뒤 판단한다. C/C++ 표준 변경이나 assembly 사용 자체를 성능 개선으로 세지 않는다.

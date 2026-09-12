@@ -78,8 +78,109 @@ static bool TestInitialBitDepth()
     return passed;
 }
 
+static bool TestCaptureSource()
+{
+    // GBATEK: DS Sound Capture / Block Diagrams / Capture Clipping/Rounding.
+    // https://problemkaputt.de/gbatek.htm#dssoundcapture
+    // The channel tap follows volume, precedes pan, and has a both-negative
+    // quirk. Expected samples below are independent, literal register vectors.
+    struct CaptureCase
+    {
+        const char* Name;
+        std::array<s16, 4> Samples;
+        u8 Volume;
+        u8 Divider;
+        bool ChannelSource;
+        std::array<s16, 2> Expected16;
+        std::array<s8, 2> Expected8;
+    };
+    constexpr CaptureCase cases[] = {
+        {"channel", {12288, 1024, -8192, 2048}, 127, 0, true, {12288, -8192}, {48, -32}},
+        {"volume-divider", {12288, 1024, -8192, 2048}, 64, 1, true, {3072, -2048}, {12, -8}},
+        {"both-negative", {-4096, -2048, -8192, -1024}, 127, 0, true, {-32768, -32768}, {-128, -128}},
+        {"zero-associated", {-4096, 0, 0, -1024}, 127, 0, true, {-4096, 0}, {-16, 0}},
+        {"negative-fraction", {-257, 1024, -255, 2048}, 64, 0, true, {-128, -127}, {-1, 0}},
+        {"positive-fraction", {257, 1024, 255, 2048}, 64, 0, true, {128, 127}, {0, 0}},
+        {"mixer", {12288, 1024, -8192, 2048}, 127, 0, false, {-6912, 14592}, {-27, 57}},
+    };
+    NDSArgs args;
+    args.JIT.reset();
+    auto nds = std::make_unique<NDS>(std::move(args));
+    bool passed = true;
+    for (const auto& test : cases)
+    for (bool pcm8 : {false, true})
+    for (bool oneShot : {false, true})
+    {
+        nds->Reset();
+        nds->ARM9.Halt(1);
+        nds->ARM7.Halt(1);
+        nds->ARM7Write16(0x04000304, 1);
+        // Deliberately zero master volume: capture is before the master stage.
+        nds->ARM7Write16(0x04000500, 0x8000);
+        for (unsigned channel = 0; channel < 5; ++channel)
+        {
+            const u32 source = 0x02004000 + channel * 32;
+            const s16 sample = channel < 4 ? test.Samples[channel] : 512;
+            for (unsigned i = 0; i < 16; ++i)
+                nds->ARM7Write16(source + i * 2, u16(sample));
+            const u32 reg = 0x04000400 + channel * 16;
+            nds->ARM7Write32(reg + 4, source);
+            nds->ARM7Write32(reg + 8, 0x0000FE00);
+            nds->ARM7Write32(reg + 12, 8);
+            // Opposite pans distinguish Ch0/2 from both mixer and each other.
+            const u32 pan = channel == 4 ? 64 : (channel == 0 || channel == 3 ? 127 : 0);
+            const bool sourceChannel = channel == 0 || channel == 2;
+            const u32 volume = sourceChannel ? test.Volume : 127;
+            const u32 divider = sourceChannel ? test.Divider : 0;
+            nds->ARM7Write32(reg, 0xA8000000 | (pan << 16) | (divider << 8) | volume);
+        }
+        nds->Start();
+        nds->RunFrame(); // Let PCM startup/FIFO latency expire before capture.
+        constexpr u32 captureBase = 0x02005000;
+        constexpr u32 captureBytes = 20; // Full FIFO flush plus a partial flush.
+        constexpr u32 guard = 0x5A5A5A5A;
+        for (unsigned unit = 0; unit < 2; ++unit)
+        {
+            const u32 dest = captureBase + unit * 64;
+            for (u32 offset = 0; offset < captureBytes + 8; offset += 4)
+                nds->ARM7Write32(dest - 4 + offset, guard);
+            nds->ARM7Write32(0x04000510 + unit * 8, dest);
+            nds->ARM7Write16(0x04000514 + unit * 8, captureBytes / 4);
+        }
+        const u8 mode = 0x80 | (test.ChannelSource ? 2 : 0) | (pcm8 ? 8 : 0) | (oneShot ? 4 : 0);
+        if (pcm8)
+        {
+            nds->ARM7Write8(0x04000508, mode);
+            nds->ARM7Write8(0x04000509, mode);
+        }
+        else if (oneShot) nds->ARM7Write16(0x04000508, u16(mode) * 0x0101);
+        else nds->ARM7Write32(0x04000508, u32(mode) * 0x0101);
+        nds->RunFrame();
+        for (unsigned unit = 0; unit < 2; ++unit)
+        {
+            const u32 dest = captureBase + unit * 64;
+            const int expected = pcm8 ? test.Expected8[unit] : test.Expected16[unit];
+            unsigned mismatches = 0;
+            for (u32 offset = 0; offset < captureBytes; offset += pcm8 ? 1 : 2)
+            {
+                const int actual = pcm8 ? s8(nds->ARM7Read8(dest + offset)) : s16(nds->ARM7Read16(dest + offset));
+                mismatches += actual != expected;
+            }
+            const bool intact = nds->ARM7Read32(dest - 4) == guard &&
+                nds->ARM7Read32(dest + captureBytes) == guard;
+            const bool status = nds->ARM7Read8(0x04000508 + unit) == (oneShot ? mode & 0x7F : mode);
+            const int first = pcm8 ? s8(nds->ARM7Read8(dest)) : s16(nds->ARM7Read16(dest));
+            std::printf("Audio capture %s unit=%u pcm=%u one-shot=%u: first=%d expected=%d mismatches=%u guards=%u status=%u\n",
+                test.Name, unit, pcm8 ? 8 : 16, unsigned(oneShot), first, expected, mismatches, unsigned(intact), unsigned(status));
+            passed &= !mismatches && intact && status;
+        }
+    }
+    return passed;
+}
+
 int main()
 {
+    if (!TestCaptureSource()) return 5;
     if (!TestInitialBitDepth()) return 4;
     NDSArgs args;
     args.JIT.reset();

@@ -181,8 +181,10 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
 
     if (inst->audioMutedByWindowFocus || inst->audioMutedToggle || inst->audioMutedByFastForward)
     {
-        memset(stream, 0, len*sizeof(s16)*2);
         inst->audioOutputRamp.Reset();
+        // Deliver silence immediately, but retain a recovery transition so
+        // unmuting fades in instead of jumping to a full-amplitude sample.
+        inst->audioOutputRamp.Process(reinterpret_cast<s16*>(stream), 0, len);
         inst->audioLowPass.ProcessMuted(len, targetHz, blockSeconds);
         return;
     }

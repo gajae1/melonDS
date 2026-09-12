@@ -33,7 +33,6 @@ namespace ComputeRendererShaders
 // Rasterise
 // DepthBlend
 // ClearCoarseBinMask
-// ClearIndirectWorkCount
 // CalculateWorkOffsets
 // SortWork
 // FinalPass
@@ -835,18 +834,6 @@ void main()
 
 )";
 
-const std::string ClearIndirectWorkCount =
-    BinningBuffer + R"(
-
-layout (local_size_x = 32) in;
-
-void main()
-{
-    VariantWorkCount[gl_GlobalInvocationID.x] = uvec4(1, 1, 0, 0);
-}
-
-)";
-
 const std::string ClearCoarseBinMask =
     BinningBuffer + R"(
 layout (local_size_x = ClearCoarseBinMaskLocalSize) in;
@@ -855,6 +842,12 @@ void main()
 {
     BinningMaskAndOffset[BinningCoarseMaskStart + gl_GlobalInvocationID.x*CoarseBinStride+0] = 0;
     BinningMaskAndOffset[BinningCoarseMaskStart + gl_GlobalInvocationID.x*CoarseBinStride+1] = 0;
+
+    // The tile grid has at least 768 invocations for at most 256 variants.
+    // Keep the 32-wide clear, including variant 1's offset accumulator when
+    // there is only one variant. Both regions are consumed after the same barrier.
+    if (gl_GlobalInvocationID.x < ((NumVariants + 31U) & ~31U))
+        VariantWorkCount[gl_GlobalInvocationID.x] = uvec4(1, 1, 0, 0);
 }
 
 )";

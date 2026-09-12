@@ -866,6 +866,25 @@ void SPUCaptureUnit::Run(u32 cycles, s32 sample)
 }
 
 
+static s32 GetCaptureSample(u8 cnt, s32 mixer, s32 channel, s32 other)
+{
+    // Channel-source mode without addition taps the 16.11 volume output,
+    // before panning. Addition modes remain unimplemented.
+    if ((cnt & 0x03) == 0x02)
+    {
+        // GBATEK: both-negative capture bug (speaker output is unaffected).
+        if (channel < 0 && other < 0) return -0x8000;
+
+        const u32 shift = (cnt & 0x08) ? 19 : 11;
+        s32 val = channel >> shift;
+        // Negative values with the top fractional bit set round toward zero.
+        if (channel < 0 && (channel & (1 << (shift - 1)))) ++val;
+        return (cnt & 0x08) ? val * 256 : val;
+    }
+
+    return std::clamp(mixer >> 8, -0x8000, 0x7FFF);
+}
+
 void SPU::Mix(u32 spucycles)
 {
     s32 left = 0, right = 0;
@@ -894,28 +913,15 @@ void SPU::Mix(u32 spucycles)
         }
 
         // sound capture
-        // TODO: other sound capture sources, along with their bugs
 
         if (Capture[0].Cnt & (1<<7))
         {
-            s32 val = left;
-
-            val >>= 8;
-            if      (val < -0x8000) val = -0x8000;
-            else if (val > 0x7FFF)  val = 0x7FFF;
-
-            Capture[0].Run(spucycles, val);
+            Capture[0].Run(spucycles, GetCaptureSample(Capture[0].Cnt, left, ch0, ch1));
         }
 
         if (Capture[1].Cnt & (1<<7))
         {
-            s32 val = right;
-
-            val >>= 8;
-            if      (val < -0x8000) val = -0x8000;
-            else if (val > 0x7FFF)  val = 0x7FFF;
-
-            Capture[1].Run(spucycles, val);
+            Capture[1].Run(spucycles, GetCaptureSample(Capture[1].Cnt, right, ch2, ch3));
         }
 
         // final output
@@ -1319,11 +1325,11 @@ void SPU::Write8(u32 addr, u8 val)
 
         case 0x04000508:
             Capture[0].SetCnt(val);
-            if (val & 0x03) Log(LogLevel::Warn, "!! UNSUPPORTED SPU CAPTURE MODE %02X\n", val);
+            if (val & 0x01) Log(LogLevel::Warn, "!! UNSUPPORTED SPU CAPTURE MODE %02X\n", val);
             return;
         case 0x04000509:
             Capture[1].SetCnt(val);
-            if (val & 0x03) Log(LogLevel::Warn, "!! UNSUPPORTED SPU CAPTURE MODE %02X\n", val);
+            if (val & 0x01) Log(LogLevel::Warn, "!! UNSUPPORTED SPU CAPTURE MODE %02X\n", val);
             return;
         }
     }
@@ -1369,7 +1375,7 @@ void SPU::Write16(u32 addr, u16 val)
         case 0x04000508:
             Capture[0].SetCnt(val & 0xFF);
             Capture[1].SetCnt(val >> 8);
-            if (val & 0x0303) Log(LogLevel::Warn, "!! UNSUPPORTED SPU CAPTURE MODE %04X\n", val);
+            if (val & 0x0101) Log(LogLevel::Warn, "!! UNSUPPORTED SPU CAPTURE MODE %04X\n", val);
             return;
 
         case 0x04000514: Capture[0].SetLength(val); return;
@@ -1417,7 +1423,7 @@ void SPU::Write32(u32 addr, u32 val)
         case 0x04000508:
             Capture[0].SetCnt(val & 0xFF);
             Capture[1].SetCnt(val >> 8);
-            if (val & 0x0303) Log(LogLevel::Warn, "!! UNSUPPORTED SPU CAPTURE MODE %04X\n", val);
+            if (val & 0x0101) Log(LogLevel::Warn, "!! UNSUPPORTED SPU CAPTURE MODE %04X\n", val);
             return;
 
         case 0x04000510: Capture[0].SetDstAddr(val); return;

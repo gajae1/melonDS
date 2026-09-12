@@ -927,7 +927,7 @@ void ScreenPanelGL::setSwapInterval(int intv)
 {
     if (!glContext) return;
 
-    glContext->SetSwapInterval(intv);
+    pendingSwapInterval = intv;
 }
 
 bool ScreenPanelGL::initOpenGL()
@@ -1137,6 +1137,14 @@ bool ScreenPanelGL::drawScreen()
     auto emuThread = emuInstance->getEmuThread();
 
     if (!glContext->MakeCurrent()) return false;
+
+    // WGL/EGL apply the interval to the current window. Settings can be
+    // broadcast while another panel is current, so apply them when drawing.
+    if (pendingSwapInterval)
+    {
+        glContext->SetSwapInterval(*pendingSwapInterval);
+        pendingSwapInterval.reset();
+    }
 
     int w = windowInfo.surface_width;
     int h = windowInfo.surface_height;

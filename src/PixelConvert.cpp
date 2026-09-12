@@ -6,6 +6,10 @@
 #include <immintrin.h>
 #endif
 
+#if MELONDS_PIXEL_NEON && defined(__ARM_NEON) && !defined(__ARM_BIG_ENDIAN)
+#include <arm_neon.h>
+#endif
+
 namespace melonDS::PixelConvert
 {
 void ExpandScalar(u32* pixels, size_t count) noexcept
@@ -31,6 +35,27 @@ void ExpandScalar(u32* pixels, size_t count) noexcept
         pixels[i] = rgb | ((rgb & 0x00C0C0C0) >> 6) | 0xFF000000;
     }
 }
+
+#if MELONDS_PIXEL_NEON && defined(__ARM_NEON) && !defined(__ARM_BIG_ENDIAN)
+static void ExpandNEON(u32* pixels, size_t count) noexcept
+{
+    const size_t simdCount = count & ~size_t(3);
+    for (size_t i = 0; i < simdCount; i += 4)
+    {
+        const uint32x4_t c = vld1q_u32(pixels + i);
+        // Reverse each pixel's bytes, then discard the original alpha byte.
+        const uint32x4_t bgr = vshrq_n_u32(
+            vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(c))), 8);
+        const uint8x16_t channels = vandq_u8(vreinterpretq_u8_u32(bgr), vdupq_n_u8(63));
+        const uint8x16_t rgb = vshlq_n_u8(channels, 2);
+        // Replicate the top two bits of each six-bit channel into its low bits.
+        const uint8x16_t expanded = vsriq_n_u8(rgb, rgb, 6);
+        const uint32x4_t result = vorrq_u32(vreinterpretq_u32_u8(expanded), vdupq_n_u32(0xFF000000));
+        vst1q_u32(pixels + i, result);
+    }
+    if (count & 3) ExpandScalar(pixels + simdCount, count & 3);
+}
+#endif
 
 #if MELONDS_PIXEL_AVX2
 __attribute__((target("avx2")))
@@ -103,6 +128,9 @@ bool IsSupported(Backend backend) noexcept
     {
     case Backend::Auto:
     case Backend::Scalar: return true;
+#if MELONDS_PIXEL_NEON && defined(__ARM_NEON) && !defined(__ARM_BIG_ENDIAN)
+    case Backend::NEON: return true;
+#endif
 #if MELONDS_PIXEL_AVX2
     case Backend::AVX2: return __builtin_cpu_supports("avx2");
 #endif
@@ -114,8 +142,12 @@ bool IsSupported(Backend backend) noexcept
     }
 }
 
-Function Select(Backend backend) noexcept
+Function Select([[maybe_unused]] Backend backend) noexcept
 {
+#if MELONDS_PIXEL_NEON && defined(__ARM_NEON) && !defined(__ARM_BIG_ENDIAN)
+    if (backend == Backend::Auto || backend == Backend::NEON)
+        return ExpandNEON;
+#endif
 #if MELONDS_PIXEL_AVX512BW
     if ((backend == Backend::Auto || backend == Backend::AVX512) &&
         __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw"))

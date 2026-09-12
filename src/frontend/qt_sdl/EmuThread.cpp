@@ -470,7 +470,14 @@ void EmuThread::run()
             snprintf(melontitle, sizeof(melontitle), "melonDS " MELONDS_VERSION);
             changeWindowTitle(melontitle);
 
-            SDL_Delay(75);
+            // Keep the idle redraw interval, but handle queued controls promptly.
+            // Checking the queue under its mutex also covers messages sent before
+            // we enter the wait.
+            {
+                QMutexLocker lock(&msgMutex);
+                if (msgQueue.empty())
+                    msgAvailable.wait(&msgMutex, 75);
+            }
 
             if (int failedWindow = emuInstance->drawScreen(); failedWindow >= 0)
                 reportGLFailure(failedWindow);
@@ -487,6 +494,7 @@ void EmuThread::sendMessage(Message msg)
     // Queued UI work must be able to interrupt an unbounded cheat loop before
     // waitMessage() waits for the emulation thread to handle that work.
     cheatStopSource.request_stop();
+    msgAvailable.wakeOne();
     msgMutex.unlock();
 }
 

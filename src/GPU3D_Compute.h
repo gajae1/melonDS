@@ -50,7 +50,7 @@ public:
     void RestartFrame() override;
     u32* GetLine(int line) override;
 
-    bool NeedsShaderCompile() override { return !ShaderCompileFailed && ShaderStepIdx != 33; }
+    bool NeedsShaderCompile() override { return !ShaderCompileFailed && ShaderStepIdx != 32; }
     bool ShaderCompileStep(int& current, int& count) override;
 
 private:
@@ -71,7 +71,6 @@ private:
     GLuint ShaderRasteriseUseTextureHighlight[2]{};
     GLuint ShaderRasteriseShadowMask[2]{};
     GLuint ShaderClearCoarseBinMask{};
-    GLuint ShaderClearIndirectWorkCount{};
     GLuint ShaderCalculateWorkListOffset{};
     GLuint ShaderSortWork{};
     GLuint ShaderFinalPass[8]{};

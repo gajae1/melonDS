@@ -26,7 +26,9 @@ bool isRightModKey(QKeyEvent* event)
 {
 #ifdef __WIN32__
     quint32 scan = event->nativeScanCode();
-    return (scan == 0x11D || scan == 0x138 || scan == 0x36);
+    // Qt uses an E0 prefix for extended keys; retain older scan-code values.
+    return (scan == 0xE01D || scan == 0xE038 ||
+            scan == 0x11D || scan == 0x138 || scan == 0x36);
 #elif __APPLE__
     quint32 scan = event->nativeVirtualKey();
     return (scan == 0x36 || scan == 0x3C || scan == 0x3D || scan == 0x3E);

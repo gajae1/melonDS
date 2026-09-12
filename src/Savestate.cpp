@@ -62,7 +62,8 @@ Savestate::Savestate(void *buffer, u32 size, bool save) :
     buffer_length(size),
     section_end(size),
     buffer_owned(false),
-    finished(false)
+    finished(false),
+    header_valid(false)
 {
     if (!buffer || size < 16)
     {
@@ -96,7 +97,11 @@ Savestate::Savestate(void *buffer, u32 size, bool save) :
         Var16(&major);
         if (major != SAVESTATE_MAJOR)
         {
-            Log(LogLevel::Error, "savestate: bad version major %d, expecting %d\n", major, SAVESTATE_MAJOR);
+            // Legacy GPU, scheduler and cartridge layouts need explicit migration.
+            if (major == 13)
+                Log(LogLevel::Error, "savestate: legacy format 13.%d is unsupported by this build; load it with the emulator version that created it\n", MinorVersion());
+            else
+                Log(LogLevel::Error, "savestate: bad version major %d, expecting %d\n", major, SAVESTATE_MAJOR);
             Error = true;
             return;
         }
@@ -121,6 +126,7 @@ Savestate::Savestate(void *buffer, u32 size, bool save) :
 
         // The next 4 bytes are reserved
         buffer_offset += 4;
+        header_valid = true;
     }
 }
 
@@ -134,7 +140,8 @@ Savestate::Savestate(u32 initial_size) :
     buffer_length(initial_size),
     section_end(initial_size),
     buffer_owned(true),
-    finished(false)
+    finished(false),
+    header_valid(false)
 {
     buffer = static_cast<u8 *>(malloc(buffer_length));
 
@@ -298,6 +305,15 @@ void Savestate::Finish()
 
 void Savestate::Rewind(bool save)
 {
+    // A rejected global header cannot become readable by clearing Error.
+    // Section errors can still be retried on a reader with a valid header.
+    if (!save && !header_valid)
+    {
+        Log(LogLevel::Error, "savestate: cannot rewind a rejected header for loading\n");
+        Error = true;
+        return;
+    }
+
     Error = false;
     Saving = save;
     CurSection = NO_SECTION;
@@ -368,6 +384,7 @@ void Savestate::WriteSavestateHeader()
 
     // The following 4 bytes are reserved
     Var32(&zero);
+    header_valid = !Error;
 }
 
 void Savestate::WriteStateLength()

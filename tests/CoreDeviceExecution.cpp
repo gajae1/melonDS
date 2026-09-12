@@ -184,6 +184,42 @@ int TestDSiBTDMP(NDSArgs&& args)
         require((dsi->I2S.ReadSndExCnt() & 0x2000) == rate, "I2S sample changed the rate");
         std::printf("btdmp: I2S rate-bit=%04x: %s\n", rate, failures == before ? "PASS" : "FAIL");
     }
+    // GBATEK PCFG bits 5/6/8 independently enable the PDATA FIFO IRQ conditions.
+    // https://problemkaputt.de/gbatek.htm#dsiteakioportsonarm9side
+    auto dspIRQ = [&] {
+        return (dsi->ARM9IORead32(0x04000214) & (1u << IRQ_DSi_DSP)) != 0;
+    };
+    auto ackDSP = [&] { dsi->ARM9IOWrite32(0x04000214, 1u << IRQ_DSi_DSP); };
+    for (u16 mask : {u16{0}, u16{0x80}, u16{0x100}})
+    {
+        dsi->DSP.Write16(0x04004308, 0x1000 | mask);
+        dsi->DSP.Write16(0x04004304, 0x2CA); // BTDMP TX FIFO flush.
+        ackDSP();
+        dsi->DSP.Write16(0x04004300, 1);
+        require(dspIRQ() == (mask == 0x100), "PDATA write-empty IRQ mask");
+    }
+    struct PDataCase { u16 config; bool startIRQ; bool afterReadIRQ; };
+    const PDataCase pDataCases[] = {
+        {0x1014, false, false}, // Eight words, both read IRQs disabled.
+        {0x1034, false, false}, // Full-only IRQ must not fire for eight words.
+        {0x1054, true,  true }, // Nonempty IRQ, including after one read.
+        {0x1018, false, false}, // Full but masked off.
+        {0x1038, true,  false}, // Sixteen -> fifteen words clears full condition.
+        {0x1050, true,  false}, // One -> zero words clears nonempty condition.
+        {0x103C, true,  true }, // Free-running refill leaves the FIFO full.
+    };
+    for (const auto& test : pDataCases)
+    {
+        dsi->DSP.Write16(0x04004308, 0x1000);
+        dsi->DSP.Write16(0x04004304, 0x2C2); // BTDMP status: side-effect-free read.
+        ackDSP();
+        dsi->DSP.Write16(0x04004308, test.config);
+        require(dspIRQ() == test.startIRQ, "PDATA read-start IRQ mask/full/nonempty");
+        ackDSP();
+        dsi->DSP.Read16(0x04004300);
+        require(dspIRQ() == test.afterReadIRQ, "PDATA read/refill IRQ mask/full/nonempty");
+    }
+    dsi->DSP.Write16(0x04004308, 0x1000); // Cancel free-running read.
     return failures ? 1 : 0;
 }
 

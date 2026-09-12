@@ -8,7 +8,8 @@ namespace melonDS::PixelConvert
 // Keep the first four values stable: they are saved in frontend settings.
 // AVX512 selects the BW kernel when available, otherwise the F-only kernel.
 // AVX512F is also exposed for reference testing/benchmarking.
-enum class Backend { Auto, Scalar, AVX2, AVX512, AVX512F };
+// NEON requires a little-endian compiler target with baseline Neon/ASIMD.
+enum class Backend { Auto, Scalar, AVX2, AVX512, AVX512F, NEON };
 using Function = void (*)(u32* pixels, size_t count) noexcept;
 // Input needs u32 alignment, not SIMD alignment. Conversion is in-place.
 void ExpandScalar(u32* pixels, size_t count) noexcept;

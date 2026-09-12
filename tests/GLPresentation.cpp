@@ -15,6 +15,7 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <optional>
 #include <cstdio>
 #include "frontend/glad/glad.h"
 #include "frontend/graphics/window_info.h"
@@ -79,6 +80,13 @@ struct NativeContext
 #endif
         SDL_GL_SwapWindow(window); return true;
     }
+    bool SetSwapInterval(int interval)
+    {
+#ifdef _WIN32
+        if (native) return native->SetSwapInterval(interval);
+#endif
+        return SDL_GL_SetSwapInterval(interval) == 0;
+    }
     bool IsCurrent() const
     {
 #ifdef _WIN32
@@ -132,6 +140,7 @@ public:
     }
     std::unique_ptr<NativeContext> glContext;
     bool glInited = false, glOwned = false;
+    std::optional<int> pendingSwapInterval;
     std::array<QImage, 2> preservedFrame;
     unsigned int preservedFrameNumber = 0;
     GLuint screenVertexBuffer = 0, screenVertexArray = 0, screenTexture = 0, screenShaderProgram = 0;

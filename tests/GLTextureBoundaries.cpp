@@ -234,6 +234,39 @@ bool RunAlpha(const char* backend, int scale, bool wbuffer)
     return passed;
 }
 
+bool RunCompressedPalette(const char* backend, int scale)
+{
+    Scene scene;
+    auto nds = CreateNDS(backend, scale);
+    if (!nds) return false;
+    // Four 4x4 blocks select color 2 at the largest compressed palette offset.
+    // Its address is 0xfffc + 4, just beyond the first 64 KiB palette bank.
+    for (u32 block = 0; block < 4; ++block)
+    {
+        nds->ARM9Write32(0x06800000 + block * 4, 0xAAAAAAAA);
+        nds->ARM9Write16(0x06820000 + block * 2, 0xBFFF);
+    }
+    nds->ARM9Write8(0x04000240, 0x83);
+    nds->ARM9Write8(0x04000241, 0x8B);
+    nds->ARM9Write8(0x04000244, 0x83);
+    nds->ARM9Write16(0x04000060, 1);
+    bool passed = true;
+    for (u16 color : {Blue, Red})
+    {
+        nds->ARM9Write8(0x04000245, 0x80);
+        nds->ARM9Write16(0x06890000, color & 0x7FFF);
+        nds->ARM9Write8(0x04000245, 0x93);
+        nds->RunFrame();
+        scene.Set(31, 5u << 26, false);
+        scene.Submit(*nds);
+        const bool ok = CaptureAndRead(*nds, color, color);
+        std::printf("compressed-palette=%s scale=%d color=%04x result=%s\n",
+                    backend, scale, color, ok ? "pass" : "fail");
+        passed &= ok;
+    }
+    return passed;
+}
+
 bool RunBlend(const char* backend, int scale, bool wbuffer)
 {
     Scene scene;
@@ -495,9 +528,11 @@ int CheckGLTextureBoundaries(const char* name)
     const bool blend = std::strncmp(name, "blend-", 6) == 0;
     const bool shading = std::strncmp(name, "shading-", 8) == 0;
     const bool bitmap = std::strncmp(name, "bitmap-", 7) == 0;
+    const bool compressed = std::strncmp(name, "compressed-", 11) == 0;
     if (alpha || blend) backend = name + 6;
     else if (shading) backend = name + 8;
     else if (bitmap) backend = name + 7;
+    else if (compressed) backend = name + 11;
     else if (std::strncmp(name, "capture-", 8) == 0) backend = name + 8;
     else return 2;
     if (std::strcmp(backend, "software") && std::strcmp(backend, "opengl") && std::strcmp(backend, "compute")) return 2;
@@ -510,6 +545,8 @@ int CheckGLTextureBoundaries(const char* name)
             for (bool wbuffer : {false, true}) passed &= RunBlend(backend, scale, wbuffer);
         else if (shading)
             passed &= RunShading(backend, scale);
+        else if (compressed)
+            passed &= RunCompressedPalette(backend, scale);
         else if (bitmap)
         {
             for (int size : {128, 256}) passed &= RunBitmap(backend, scale, size, true);

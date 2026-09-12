@@ -101,6 +101,35 @@ int main(int argc, char** argv)
     input.onKeyRelease(&releaseKeypad);
     check(input.keyInputMask & 2, "Keypad binding remains held");
 
+#ifdef __WIN32__
+    // Qt's Windows backend prefixes extended scan codes with E0. Capturing
+    // both sides must keep them independent, including when one is released.
+    for (const auto& codes : {std::array<quint32, 4>{Qt::Key_Control, 0x1D, 0xE01D, 0x11D},
+                              std::array<quint32, 4>{Qt::Key_Alt, 0x38, 0xE038, 0x138},
+                              std::array<quint32, 4>{Qt::Key_Shift, 0x2A, 0x36, 0x36}})
+    {
+        InputState sides;
+        QKeyEvent left(QEvent::KeyPress, codes[0], Qt::NoModifier, codes[1], 0, 0);
+        QKeyEvent right(QEvent::KeyPress, codes[0], Qt::NoModifier, codes[2], 0, 0);
+        mapKey(sides.keyMapping[0], false, left);
+        mapKey(sides.keyMapping[1], false, right);
+        check(sides.keyMapping[0] != sides.keyMapping[1], "Left/right modifier captures collide");
+        QKeyEvent legacyRight(QEvent::KeyPress, codes[0], Qt::NoModifier, codes[3], 0, 0);
+        check(sides.keyMapping[1] == getEventKeyVal(&legacyRight, false),
+              "Right modifier capture changed the saved binding format");
+        sides.onKeyPress(&left);
+        check((sides.keyInputMask & 3) == 2, "Left modifier presses the right binding");
+        sides.onKeyPress(&right);
+        check((sides.keyInputMask & 3) == 0, "Both modifier bindings did not press");
+        QKeyEvent releaseLeft(QEvent::KeyRelease, codes[0], Qt::NoModifier, codes[1], 0, 0);
+        sides.onKeyRelease(&releaseLeft);
+        check((sides.keyInputMask & 3) == 1, "Releasing left modifier releases the held right binding");
+        QKeyEvent releaseRight(QEvent::KeyRelease, codes[0], Qt::NoModifier, codes[2], 0, 0);
+        sides.onKeyRelease(&releaseRight);
+        check(sides.keyInputMask == 0xFFF, "Right modifier remains held after release");
+    }
+#endif
+
     QKeyEvent shortcut(QEvent::KeyPress, Qt::Key_F, Qt::ControlModifier);
     mapKey(input.hkKeyMapping[HK_FastForward], true, shortcut);
     check(input.hkKeyMapping[HK_FastForward] == (Qt::Key_F | Qt::ControlModifier),

@@ -460,10 +460,10 @@ void DSi_DSP::PDataDMAWrite(u16 wrval)
     if (DSP_PCFG & (1<<1)) // auto-increment
         ++DSP_PADR; // overflows and stays within a 64k 'page' // TODO: is this +1 or +2?
 
-    DSi.SetIRQ(0, IRQ_DSi_DSP); // wrfifo empty
+    if (DSP_PCFG & (1<<8))
+        DSi.SetIRQ(0, IRQ_DSi_DSP); // wrfifo empty
 }
 
-// TODO: FIFO interrupts! (rd full, nonempty)
 u16 DSi_DSP::PDataDMARead()
 {
     u16 r = 0;
@@ -530,7 +530,7 @@ void DSi_DSP::PDataDMAStart()
     for (int i = 0; i < amt; ++i)
         PDataDMAFetch();
 
-    DSi.SetIRQ(0, IRQ_DSi_DSP);
+    CheckPDataReadIRQ();
 
 }
 void DSi_DSP::PDataDMACancel()
@@ -539,6 +539,14 @@ void DSi_DSP::PDataDMACancel()
     PDATAReadFifo.Clear();
 
 }
+void DSi_DSP::CheckPDataReadIRQ()
+{
+    // PCFG bits 5/6 independently enable the full/nonempty read FIFO IRQs.
+    if (((DSP_PCFG & (1<<5)) && PDATAReadFifo.IsFull()) ||
+        ((DSP_PCFG & (1<<6)) && !PDATAReadFifo.IsEmpty()))
+        DSi.SetIRQ(0, IRQ_DSi_DSP);
+}
+
 u16 DSi_DSP::PDataDMAReadMMIO()
 {
     u16 ret = 0; // TODO: is this actually 0, or just open bus?
@@ -557,9 +565,7 @@ u16 DSi_DSP::PDataDMAReadMMIO()
             PDataDMAFetch();
     }
 
-    // TODO only trigger IRQ if enabled!!
-    if (!PDATAReadFifo.IsEmpty() || PDATAReadFifo.IsFull())
-        DSi.SetIRQ(0, IRQ_DSi_DSP);
+    CheckPDataReadIRQ();
 
     return ret;
 }

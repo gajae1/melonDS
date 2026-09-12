@@ -50,7 +50,8 @@ function(melonds_configure_pixel_kernels target)
     endif()
     target_compile_definitions(${target} PRIVATE
         MELONDS_PIXEL_AVX2=$<BOOL:${avx2}> MELONDS_PIXEL_AVX512=$<BOOL:${avx512}>
-        MELONDS_PIXEL_AVX512BW=$<BOOL:${avx512bw}>)
+        MELONDS_PIXEL_AVX512BW=$<BOOL:${avx512bw}>
+        MELONDS_PIXEL_NEON=$<BOOL:${ENABLE_SIMD}>)
     message(STATUS "${target}: AVX2=${avx2}, AVX512F=${avx512}, AVX512BW=${avx512bw}; runtime CPU/OS dispatch")
 endfunction()
 

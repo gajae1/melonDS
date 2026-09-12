@@ -480,6 +480,7 @@ int main(int argc, char** argv)
                                          std::strcmp(argv[2], "alpha-compute") == 0 ||
                                          std::strcmp(argv[2], "blend-compute") == 0 ||
                                          std::strcmp(argv[2], "bitmap-compute") == 0 ||
+                                         std::strcmp(argv[2], "compressed-compute") == 0 ||
                                          std::strcmp(argv[2], "shading-compute") == 0)) ||
                          workloadCase || failureCase || allocationCase || ((captureCase || midCaptureCase || jitCaptureCase) && std::strcmp(argv[2], "compute") == 0) ||
                          (argc > 1 && std::strcmp(argv[1], "compute") == 0);

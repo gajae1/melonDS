@@ -123,8 +123,13 @@ s32 ExtractFileFromArchive(QString path, QString wantedFile, std::unique_ptr<u8[
         if (size <= 0 || size > 0x40000000) return -1;
 
         const size_t length = static_cast<size_t>(size);
+        // Reject an unreadable body before allocating its entire advertised size.
+        u8 first;
+        if (archive_read_data(reader.get(), &first, 1) != 1) return -1;
+
         auto data = std::make_unique_for_overwrite<u8[]>(length);
-        size_t total = 0;
+        data[0] = first;
+        size_t total = 1;
         while (total < length)
         {
             const la_ssize_t count = archive_read_data(reader.get(), data.get() + total, length - total);

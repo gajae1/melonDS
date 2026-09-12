@@ -192,8 +192,9 @@ void CPUInfo::Detect()
       bLAHFSAHF64 = true;
     if ((cpu_id[2] >> 5) & 1)
       bLZCNT = true;
+    // FMA4 also requires OS-enabled XMM/YMM state.
     if ((cpu_id[2] >> 16) & 1)
-      bFMA4 = true;
+      bFMA4 = bAVX;
     if ((cpu_id[3] >> 29) & 1)
       bLongMode = true;
   }

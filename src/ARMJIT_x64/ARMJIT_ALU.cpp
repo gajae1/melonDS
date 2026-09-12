@@ -125,9 +125,13 @@ OpArg Compiler::A_Comp_GetALUOp2(bool S, bool& carryUsed)
 {
     S = S && (CurInstr.SetFlags & 0x2);
 
+    // Conditional PC writes get a separate failed-condition fetch in CompileBlock.
+    // Keep their executed-path fetch out of the shared ConstantCycles total.
+    const bool conditionalPCWrite = CurInstr.Cond() < 0xE && (CurInstr.Info.DstRegs & (1 << 15));
+
     if (CurInstr.Instr & (1 << 25))
     {
-        Comp_AddCycles_C();
+        Comp_AddCycles_C(conditionalPCWrite);
 
         u32 shift = (CurInstr.Instr >> 7) & 0x1E;
         u32 imm = melonDS::ROR(CurInstr.Instr & 0xFF, shift);
@@ -158,7 +162,7 @@ OpArg Compiler::A_Comp_GetALUOp2(bool S, bool& carryUsed)
         }
         else
         {
-            Comp_AddCycles_C();
+            Comp_AddCycles_C(conditionalPCWrite);
             return Comp_RegShiftImm(op, (CurInstr.Instr >> 7) & 0x1F,
                     MapReg(CurInstr.A_Reg(0)), S, carryUsed);
         }

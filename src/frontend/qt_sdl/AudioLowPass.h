@@ -175,7 +175,11 @@ private:
         // Clamp before integer conversion, then round halfway away from zero.
         y = _mm_min_pd(_mm_max_pd(y, _mm_set1_pd(-32768.0)), _mm_set1_pd(32767.0));
         const __m128d half = _mm_or_pd(_mm_and_pd(y, _mm_set1_pd(-0.0)), _mm_set1_pd(0.5));
-        const __m128i rounded = _mm_cvttpd_epi32(_mm_add_pd(y, half));
+        // Adding half can round the double immediately below 0.5 up to 1.0.
+        // Values strictly inside (-0.5, 0.5) must still become silent PCM.
+        const __m128d magnitude = _mm_andnot_pd(_mm_set1_pd(-0.0), y);
+        const __m128d quiet = _mm_cmplt_pd(magnitude, _mm_set1_pd(0.5));
+        const __m128i rounded = _mm_cvttpd_epi32(_mm_andnot_pd(quiet, _mm_add_pd(y, half)));
         const int packed = _mm_cvtsi128_si32(_mm_packs_epi32(rounded, rounded));
         std::memcpy(samples, &packed, sizeof(packed));
     }

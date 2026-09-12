@@ -85,6 +85,17 @@ int main(int argc, char** argv)
             fprintf(stderr, "Accepted global header without reserved bytes\n");
             return 1;
         }
+        shortHeader.Rewind(false);
+        if (!shortHeader.Error) return 1;
+        auto legacy = MakeState(16);
+        const u16 oldMajor = 13;
+        memcpy(legacy.data() + 4, &oldMajor, sizeof(oldMajor));
+        Savestate rejected(legacy.data(), static_cast<u32>(legacy.size()), false);
+        if (!rejected.Error) return 1;
+        rejected.Rewind(false);
+        u32 preserved = 0x12345678;
+        rejected.Var32(&preserved);
+        if (!rejected.Error || preserved != 0x12345678) return 1;
         auto data = MakeState(32);
         u8 value = 0xA5;
         Savestate loaded(data.data(), static_cast<u32>(data.size()), false);

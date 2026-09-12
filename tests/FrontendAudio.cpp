@@ -132,6 +132,49 @@ int main(int, char**)
               "Audio diagnostics do not count the supplied/short/missing blocks");
     }
 
+    // Unmuting a continuously supplied signal must recover from the silence
+    // actually delivered, including when a callback is shorter than the ramp.
+    for (auto mute : {&AudioState::audioMutedToggle, &AudioState::audioMutedByFastForward,
+                      &AudioState::audioMutedByWindowFocus})
+    for (int buffer : {16, 128, 512})
+    {
+        Console muteConsole;
+        AudioState muteState{&muteConsole};
+        muteState.audioLowPass.Init(muteState.audioFreq);
+        muteState.audioOutputRamp.Init(muteState.audioFreq);
+        muteState.audioDiagnostics.Enabled = true;
+        AudioState::audioCallback(&muteState, reinterpret_cast<Uint8*>(output.data()), buffer * 4);
+        muteState.*mute = true;
+        output.fill(poison);
+        AudioState::audioCallback(&muteState, reinterpret_cast<Uint8*>(output.data()), buffer * 4);
+        check(std::all_of(output.begin(), output.begin() + buffer * 2,
+                          [](s16 sample) { return sample == 0; }),
+              "Muting does not immediately deliver silence");
+        check(std::all_of(output.begin() + buffer * 2, output.end(),
+                          [](s16 sample) { return sample == poison; }),
+              "Muted callback writes beyond the device buffer");
+        muteState.*mute = false;
+        int previous = 0, maxStep = 0;
+        for (int block = 0; block < 4; ++block)
+        {
+            AudioState::audioCallback(&muteState, reinterpret_cast<Uint8*>(output.data()), buffer * 4);
+            for (int i = 0; i < buffer; ++i)
+            {
+                maxStep = std::max(maxStep, std::abs(int(output[2 * i]) - previous));
+                previous = output[2 * i];
+                check(std::abs(int(output[2 * i]) + output[2 * i + 1]) <= 1,
+                      "Unmute recovery mixes stereo channels");
+            }
+        }
+        std::printf("Audio unmute buffer=%d: largest step=%d / amplitude=1000\n", buffer, maxStep);
+        check(maxStep < 250, "Unmuting creates a full-amplitude click");
+        check(previous == 1000 && output[buffer * 2 - 1] == -1000,
+              "Normal delivery remains attenuated after unmuting");
+        const auto& stats = muteState.audioDiagnostics;
+        check(stats.SuppliedFrames == stats.RequestedFrames && stats.Underruns == 0,
+              "Intentional mute is counted as a source underrun");
+    }
+
     // Compare actual output and retained state through cutoff changes, bypass,
     // mute and unmute. Fusing may change rounding by one output LSB.
     int maxDifference = 0;

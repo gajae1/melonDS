@@ -127,6 +127,7 @@ private:
     u32 section_end;
     bool buffer_owned;
     bool finished;
+    bool header_valid;
 };
 }
 

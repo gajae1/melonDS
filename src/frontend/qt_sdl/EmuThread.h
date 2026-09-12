@@ -226,6 +226,7 @@ private:
     QString msgError;
 
     QMutex msgMutex;
+    QWaitCondition msgAvailable;
     QSemaphore msgSemaphore;
     QQueue<Message> msgQueue;
     std::stop_source cheatStopSource;

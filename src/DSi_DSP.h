@@ -167,6 +167,7 @@ private:
     void PDataDMAFetch();
     void PDataDMAStart();
     void PDataDMACancel();
+    void CheckPDataReadIRQ();
     u16 PDataDMAReadMMIO();
 };
 

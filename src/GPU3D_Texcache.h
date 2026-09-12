@@ -263,7 +263,8 @@ public:
             entry.TextureRAMStart[1] = slot1addr;
             entry.TextureRAMSize[1] = width*height/16*2;
             entry.TexPalStart = palBase*16;
-            entry.TexPalSize = 0x10000;
+            // The last 4-byte palette offset can select four 16-bit colors.
+            entry.TexPalSize = 0x10004;
 
             ConvertCompressedTexture<outputFmt_RGB6A5>(width, height, DecodingBuffer, addr, slot1addr, entry.TexPalStart, GPU);
         }

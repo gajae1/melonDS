@@ -79,7 +79,7 @@ bool ComputeRenderer3D::CompileShader(GLuint& shader, const std::string& source,
 bool ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
 {
     current = ShaderStepIdx;
-    count = 33;
+    count = 32;
     if (ShaderCompileFailed) return false;
     if (ShaderStepIdx == count) return true;
     ShaderStepIdx++;
@@ -130,26 +130,24 @@ bool ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
     case 21:
         return CompileShader(ShaderClearCoarseBinMask, ComputeRendererShaders::ClearCoarseBinMask, {"ClearCoarseBinMask"});
     case 22:
-        return CompileShader(ShaderClearIndirectWorkCount, ComputeRendererShaders::ClearIndirectWorkCount, {"ClearIndirectWorkCount"});
-    case 23:
         return CompileShader(ShaderCalculateWorkListOffset, ComputeRendererShaders::CalcOffsets, {"CalculateWorkOffsets"});
-    case 24:
+    case 23:
         return CompileShader(ShaderSortWork, ComputeRendererShaders::SortWork, {"SortWork"});
-    case 25:
+    case 24:
         return CompileShader(ShaderFinalPass[0], ComputeRendererShaders::FinalPass, {"FinalPass"});
-    case 26:
+    case 25:
         return CompileShader(ShaderFinalPass[1], ComputeRendererShaders::FinalPass, {"FinalPass", "EdgeMarking"});
-    case 27:
+    case 26:
         return CompileShader(ShaderFinalPass[2], ComputeRendererShaders::FinalPass, {"FinalPass", "Fog"});
-    case 28:
+    case 27:
         return CompileShader(ShaderFinalPass[3], ComputeRendererShaders::FinalPass, {"FinalPass", "EdgeMarking", "Fog"});
-    case 29:
+    case 28:
         return CompileShader(ShaderFinalPass[4], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing"});
-    case 30:
+    case 29:
         return CompileShader(ShaderFinalPass[5], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "EdgeMarking"});
-    case 31:
+    case 30:
         return CompileShader(ShaderFinalPass[6], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "Fog"});
-    case 32:
+    case 31:
         return CompileShader(ShaderFinalPass[7], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "EdgeMarking", "Fog"});
     default:
         return false;
@@ -281,7 +279,6 @@ void ComputeRenderer3D::DeleteShaders()
         &ShaderRasteriseShadowMask[0],
         &ShaderRasteriseShadowMask[1],
         &ShaderClearCoarseBinMask,
-        &ShaderClearIndirectWorkCount,
         &ShaderCalculateWorkListOffset,
         &ShaderSortWork,
         &ShaderFinalPass[0],
@@ -1151,9 +1148,6 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
     if (numYSpans > 0)
     {
         wbuffer = GPU3D.RenderPolygonRAM[0]->WBuffer;
-
-        glUseProgram(ShaderClearIndirectWorkCount);
-        glDispatchCompute((numVariants+31)/32, 1, 1);
 
         // calculate x-spans
         glBindImageTexture(0, YSpanIndicesTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16UI);

@@ -227,6 +227,7 @@ private:
     std::unique_ptr<GL::Context> glContext;
     bool glInited;
     bool glOwned = false; // Includes a partial init or an outstanding current release.
+    std::optional<int> pendingSwapInterval;
 
     GLuint screenVertexBuffer = 0, screenVertexArray = 0;
     GLuint screenTexture = 0;

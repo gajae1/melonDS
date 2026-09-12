@@ -516,10 +516,13 @@ static int TestConditionalCycles(NDSArgs&& args, bool jit)
     }
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
-    constexpr u32 code = 0x02008000, sentinel = 0x12345678;
+    constexpr u32 code = 0x02008000, sentinel = 0x12345678, branchTarget = code + 0x400;
     const struct { u32 instr, result, cycles; } instructions[] = {
         {0x00810312, 3, 2}, {0x10810312, 3, 2},
         {0x00810002, 2, 1}, {0xE0810312, 3, 2},
+        // A skipped PC write costs one fetch; an executed one refills the pipeline.
+        {0x0281F004, branchTarget + 4, 3}, // ADDEQ pc,r1,#4
+        {0x11A0F001, branchTarget, 3},     // MOVNE pc,r1
 #if defined(__x86_64__)
         // Nearest control for the x64 register-valued C+I helper (guest ARM7).
         {0x00000291, 1, 2}, // MULEQ r0,r1,r2; r1=r2=1
@@ -535,6 +538,7 @@ static int TestConditionalCycles(NDSArgs&& args, bool jit)
         {
             const auto& test = instructions[i];
             const u32 addr = code + i * 16, instr = test.instr;
+            const bool writesPC = ((instr >> 12) & 15) == 15;
             nds->ARM9Write32(addr, instr);
             nds->ARM9Write32(addr + 4, 0xEAFFFFFE);
             for (bool z : {true, false})
@@ -547,6 +551,7 @@ static int TestConditionalCycles(NDSArgs&& args, bool jit)
 #endif
                 cpu.R[0] = sentinel;
                 cpu.R[1] = cpu.R[2] = cpu.R[3] = 1;
+                if (writesPC) cpu.R[1] = branchTarget;
                 const u32 cpsr = 0xDF | (z ? 1u << 30 : 0);
                 cpu.CPSR = cpsr;
                 cpu.JumpTo(addr);
@@ -591,11 +596,12 @@ static int TestConditionalCycles(NDSArgs&& args, bool jit)
                     else nds->ARM9.Execute<CPUExecuteMode::Interpreter>();
                 }
                 const bool taken = instr >> 28 == 14 || (instr >> 28 == 0 ? z : !z);
-                const u32 result = taken ? test.result : sentinel;
+                const u32 result = taken && !writesPC ? test.result : sentinel;
                 const u32 cycles = taken ? test.cycles : 1;
+                const u32 expectedPC = taken && writesPC ? test.result + 4 : addr + 8;
                 const bool ok = warm && cpu.R[0] == result && timestamp == cycles &&
-                    cpu.R[15] == addr + 8 && cpu.CPSR == cpsr &&
-                    cpu.R[1] == 1 && cpu.R[2] == 1 && cpu.R[3] == 1;
+                    cpu.R[15] == expectedPC && cpu.CPSR == cpsr &&
+                    cpu.R[1] == (writesPC ? branchTarget : 1) && cpu.R[2] == 1 && cpu.R[3] == 1;
                 ++checked;
                 failures += !ok;
                 std::printf("%s ARM%d %08X Z=%u run=%u warm=%d: %s r0=%08X cycles=%llu expected=%08X/%u pc=%08X->%08X\n",
