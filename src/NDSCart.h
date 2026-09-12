@@ -62,6 +62,12 @@ struct NDSCartArgs
     /// If 0, then the cart's SRAM buffer will be empty.
     /// Ignored for homebrew ROMs.
     u32 SRAMLength = 0;
+
+    /// Override the SPI save chip for this retail cartridge only. nullopt uses
+    /// ROM metadata or existing-file detection. Values match ROMList SaveMemType
+    /// 0..7 (none, EEPROM 512B/8K/64K/128K, Flash 256K/512K/1M).
+    /// Existing file bytes are retained; this cannot convert NAND/SD cartridges.
+    std::optional<u32> SPISaveType = std::nullopt;
 };
 
 class NDSCartSlot

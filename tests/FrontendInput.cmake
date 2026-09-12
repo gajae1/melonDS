@@ -236,7 +236,10 @@ foreach(pair IN ITEMS
         "Finish|void MainWindow::finishROMPreparation(const ROMPreparation::Result& result)"
         "Pick|void MainWindow::pickFileFromArchive(const ROMPreparation::Result& result)"
         "Split|QStringList MainWindow::splitArchivePath(const QString& filename, bool useMemberSyntax)"
-        "Preload|bool MainWindow::preloadROMs(QStringList file, QStringList gbafile, bool boot)")
+        "Preload|bool MainWindow::preloadROMs(QStringList file, QStringList gbafile, bool boot)"
+        "Open|void MainWindow::onOpenFile()"
+        "Insert|void MainWindow::onInsertCart()"
+        "Recent|void MainWindow::onClickRecentFile()")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
     list(GET parts 1 signature)
@@ -254,7 +257,7 @@ target_link_libraries(ROMPreparationUI PRIVATE PkgConfig::LibArchive PkgConfig::
 foreach(case IN ITEMS cancel-read cancel-extract cancel-list cancel-decode cancel-member
         reselect reselect-member late-completion close close-destruction os-blocked-close modal-close modal-reselect
         success-read success-extract success-member success-zstd read-failure apply-failure
-        gba-save-route gba-save-reselect gba-save-cancel)
+        gba-save-route gba-save-reselect gba-save-cancel ds-save-route ds-save-reselect ds-save-cancel)
     add_test(NAME rom-preparation-${case} COMMAND ROMPreparationUI ${case})
     # Keep headless timing independent of native Windows dialog styling costs.
     set_tests_properties(rom-preparation-${case} PROPERTIES TIMEOUT 15
@@ -467,6 +470,8 @@ add_test(NAME savestate-message-recovery COMMAND StateLoadMessages)
 add_test(NAME direct-boot-message-failure COMMAND StateLoadMessages boot-failure)
 add_test(NAME gl-state-message-gate COMMAND StateLoadMessages gl-gate)
 set_tests_properties(gl-state-message-gate PROPERTIES TIMEOUT 10)
+add_test(NAME ds-save-request-consumer COMMAND StateLoadMessages ds-save-request)
+set_tests_properties(ds-save-request-consumer PROPERTIES TIMEOUT 10)
 set_tests_properties(savestate-message-recovery PROPERTIES TIMEOUT 10)
 foreach(case IN ITEMS normal missing empty short error oversize allocation reset-failure paused-failure no-cart)
     add_test(NAME save-import-${case} COMMAND StateLoadMessages ${case})
@@ -524,7 +529,7 @@ foreach(method IN ITEMS BuildPath RetryCapture FlushSave FlushAll AssetPath Save
     elseif (method STREQUAL "SaveError")
         set(signature "QString EmuInstance::getSavErrorString(std::string& filepath, bool gba)")
     elseif (method STREQUAL "LoadROM")
-        set(signature "bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)")
+        set(signature "bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared, std::optional<melonDS::u32> dsSaveType)")
     elseif (method STREQUAL "LoadGBA")
         set(signature "bool EmuInstance::loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared, u32 initialSaveLength)")
     elseif (method STREQUAL "Reset")
@@ -557,7 +562,8 @@ foreach(case IN ITEMS ds-invalid gba-invalid ds-writable gba-writable ds-existin
         ds-prepared-queued-cancel gba-prepared-queued-cancel ds-prepared-failure gba-prepared-failure ds-prepared-queued-failure
         capture-ds capture-gba capture-generated-firmware capture-raw-firmware
         gba-initial-roundtrip gba-initial-existing gba-initial-rejects gba-initial-prepared
-        ds-capacity-unknown ds-capacity-metadata ds-capacity-unsupported ds-capacity-state)
+        ds-capacity-unknown ds-capacity-metadata ds-capacity-unsupported ds-capacity-state
+        ds-manual-roundtrip ds-manual-existing ds-manual-rejects)
     add_test(NAME cart-replacement-${case} COMMAND CartReplacement ${case})
     set_tests_properties(cart-replacement-${case} PROPERTIES TIMEOUT 20)
 endforeach()
@@ -623,8 +629,9 @@ endforeach()
 set(asset_ui_methods)
 foreach(pair IN ITEMS
         "assetPrepareUI|bool EmuThread::prepareAssets(const QStringList& source, bool gba, bool allowExisting, AssetIdentity::Selection& selection, QString& error, std::stop_token stop)"
-        "assetBootUI|int EmuThread::bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)"
-        "assetInsertUI|int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseGBASave)"
+        "assetDSSaveUI|bool EmuThread::chooseDSSaveType(CartLoadRequest& request, QString& errorstr)"
+        "assetBootUI|int EmuThread::bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseDSSave)"
+        "assetInsertUI|int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseGBASave, bool chooseDSSave)"
         "assetResetUI|void EmuThread::emuReset()")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
@@ -645,7 +652,7 @@ else()
     target_link_libraries(AssetIdentityUI PRIVATE Qt5::Widgets)
 endif()
 foreach(case IN ITEMS cancel existing separate other reset worker-reset prepared-modal-cancel
-        gba-initial-choices gba-initial-cancel)
+        gba-initial-choices gba-initial-cancel ds-save-choices ds-save-cancel)
     add_test(NAME asset-ui-${case} COMMAND AssetIdentityUI ${case})
     set_tests_properties(asset-ui-${case} PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()

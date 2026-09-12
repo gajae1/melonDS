@@ -139,6 +139,8 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             actOpenROM = menu->addAction("Open ROM...");
             connect(actOpenROM, &QAction::triggered, this, &MainWindow::onOpenFile);
             actOpenROM->setShortcut(QKeySequence(QKeySequence::StandardKey::Open));
+            actOpenROMWithSave = menu->addAction(tr("Open ROM with save type..."));
+            connect(actOpenROMWithSave, &QAction::triggered, this, &MainWindow::onOpenFile);
 
             /*actOpenROMArchive = menu->addAction("Open ROM inside archive...");
             connect(actOpenROMArchive, &QAction::triggered, this, &MainWindow::onOpenFileArchive);
@@ -158,6 +160,8 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
             actInsertCart = menu->addAction("Insert cart...");
             connect(actInsertCart, &QAction::triggered, this, &MainWindow::onInsertCart);
+            actInsertCartWithSave = menu->addAction(tr("Insert cart with save type..."));
+            connect(actInsertCartWithSave, &QAction::triggered, this, &MainWindow::onInsertCart);
 
             actEjectCart = menu->addAction("Eject cart");
             connect(actEjectCart, &QAction::triggered, this, &MainWindow::onEjectCart);
@@ -1181,7 +1185,7 @@ void MainWindow::startROMPreparation(QStringList files, ROMAction action, bool r
     }
     romAction = action;
     romRememberFolder = rememberFolder;
-    romRememberRecent = action == ROMAction::BootDS || action == ROMAction::Drop;
+    romRememberRecent = action == ROMAction::BootDS || action == ROMAction::BootDSWithSave || action == ROMAction::Drop;
     romPreparation.start({std::move(files), true});
     showROMProgress();
 }
@@ -1241,9 +1245,11 @@ void MainWindow::finishROMPreparation(const ROMPreparation::Result& result)
     });
     QString error;
     const bool gba = action == ROMAction::InsertGBA || action == ROMAction::InsertGBAWithSave;
-    const bool success = action == ROMAction::BootDS ?
-        emuThread->bootROM(result.Source, error, result.ROM) :
-        emuThread->insertCart(result.Source, gba, error, result.ROM, action == ROMAction::InsertGBAWithSave);
+    const bool bootDS = action == ROMAction::BootDS || action == ROMAction::BootDSWithSave;
+    const bool success = bootDS ?
+        emuThread->bootROM(result.Source, error, result.ROM, action == ROMAction::BootDSWithSave) :
+        emuThread->insertCart(result.Source, gba, error, result.ROM,
+            action == ROMAction::InsertGBAWithSave, action == ROMAction::InsertDSWithSave);
     if (result.Stop.stop_requested()) return;
     if (!success)
     {
@@ -1404,10 +1410,12 @@ void MainWindow::updateCartInserted(bool gba)
 
 void MainWindow::onOpenFile()
 {
+    const auto action = sender() && sender() == actOpenROMWithSave ?
+        ROMAction::BootDSWithSave : ROMAction::BootDS;
     cancelROMPreparations();
     if (!verifySetup()) return;
     const auto file = pickROM(false);
-    if (!file.isEmpty()) startROMPreparation(file, ROMAction::BootDS, true);
+    if (!file.isEmpty()) startROMPreparation(file, action, true);
 }
 
 void MainWindow::onClearRecentFiles()
@@ -1521,8 +1529,10 @@ void MainWindow::onBootFirmware()
 
 void MainWindow::onInsertCart()
 {
+    const auto action = sender() && sender() == actInsertCartWithSave ?
+        ROMAction::InsertDSWithSave : ROMAction::InsertDS;
     const auto file = pickROM(false);
-    if (!file.isEmpty()) startROMPreparation(file, ROMAction::InsertDS, true);
+    if (!file.isEmpty()) startROMPreparation(file, action, true);
 }
 
 void MainWindow::onEjectCart()

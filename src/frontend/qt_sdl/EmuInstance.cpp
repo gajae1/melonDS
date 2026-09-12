@@ -1959,8 +1959,13 @@ bool EmuInstance::loadSaveRAM(string path, string original, bool gba, unique_ptr
     }
 }
 
-bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared)
+bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets, const std::shared_ptr<ROMPreparation::Data>& prepared, std::optional<melonDS::u32> dsSaveType)
 {
+    if (dsSaveType && *dsSaveType > 7)
+    {
+        errorstr = "Unsupported DS SPI save type.";
+        return false;
+    }
     unique_ptr<u8[]> filedata = nullptr;
     u32 filelen;
     std::string basepath;
@@ -2002,6 +2007,7 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
             .SDCard = getSDCardArgs("DLDI"),
             .SRAM = std::move(savedata),
             .SRAMLength = savelen,
+            .SPISaveType = dsSaveType,
     };
 
     unique_ptr<NDSCart::CartCommon> cart;
@@ -2019,7 +2025,9 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
     if (!cart)
     {
         // If we couldn't parse the ROM...
-        errorstr = "Failed to load the DS ROM.";
+        errorstr = dsSaveType ?
+            "Failed to load the DS ROM. Custom SPI save types require a standard retail cartridge; use Automatic for NAND or homebrew." :
+            "Failed to load the DS ROM.";
         return false;
     }
 

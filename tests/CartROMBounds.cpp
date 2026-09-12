@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "NDS.h"
 #include "GBACart.h"
+#include "NDSCart/CartHomebrew.h"
+#include "NDSCart/CartR4.h"
+#include "NDSCart/CartRetailNAND.h"
 #include <array>
 #include <cstdio>
 #include <memory>
@@ -49,4 +52,55 @@ int main()
             return 7;
     }
     puts("NDS trimmed executable bounds in borrowed and owned input: PASS");
+
+    // Public factory callers must get the same override validation as the UI.
+    std::vector<u8> retail(0x8000);
+    auto* header = reinterpret_cast<NDSHeader*>(retail.data());
+    header->ARM9ROMOffset = 0x4000; header->ARM7ROMOffset = 0x4004;
+    header->ARM9Size = header->ARM7Size = 4;
+    std::memcpy(header->GameCode, "ZZZA", 4);
+    for (u32 invalid : {8u, 10u, 11u, UINT32_MAX})
+    {
+        NDSCart::NDSCartArgs args; args.SPISaveType = invalid;
+        if (NDSCart::ParseROM(retail.data(), retail.size(), nullptr, std::move(args))) return 8;
+        auto owned = std::make_unique<u8[]>(retail.size());
+        std::memcpy(owned.get(), retail.data(), retail.size());
+        auto* original = owned.get();
+        args.SPISaveType = invalid;
+        if (NDSCart::ParseROM(std::move(owned), retail.size(), nullptr, std::move(args)) ||
+            owned.get() != original) return 9;
+    }
+    for (u32 type : {0u, 1u, 7u})
+    {
+        NDSCart::NDSCartArgs args; args.SPISaveType = type;
+        auto cart = NDSCart::ParseROM(retail.data(), retail.size(), nullptr, std::move(args));
+        if (!cart || cart->Type() != NDSCart::CartType::Retail || cart->GetROMParams().SaveMemType != type) return 10;
+    }
+    for (const char* code : {"####", "ASMA", "UAMA"})
+    {
+        std::memcpy(header->GameCode, code, 4);
+        std::memset(header->GameTitle, 0, sizeof(header->GameTitle));
+        if (!std::strcmp(code, "ASMA")) std::memcpy(header->GameTitle + 1, "SD/TF-NDS", 9);
+        auto automatic = NDSCart::ParseROM(retail.data(), retail.size());
+        // R4 retains CartSD's historical Homebrew state tag. Check the actual
+        // factory class rather than assuming the unused UnlicensedR4 tag.
+        const bool family = !std::strcmp(code, "####") ? dynamic_cast<NDSCart::CartHomebrew*>(automatic.get()) != nullptr :
+            !std::strcmp(code, "ASMA") ? dynamic_cast<NDSCart::CartR4*>(automatic.get()) != nullptr :
+            dynamic_cast<NDSCart::CartRetailNAND*>(automatic.get()) != nullptr;
+        if (!family) return 11;
+        for (u32 type : {0u, 2u, 7u})
+        {
+            NDSCart::NDSCartArgs args; args.SPISaveType = type;
+            if (NDSCart::ParseROM(retail.data(), retail.size(), nullptr, std::move(args))) return 12;
+        }
+    }
+    for (const char* code : {"IZZZ", "UZPZ"})
+    {
+        std::memcpy(header->GameCode, code, 4);
+        NDSCart::NDSCartArgs args; args.SPISaveType = 1;
+        auto cart = NDSCart::ParseROM(retail.data(), retail.size(), nullptr, std::move(args));
+        const auto expected = code[0] == 'I' ? NDSCart::CartType::RetailIR : NDSCart::CartType::RetailBT;
+        if (!cart || cart->Type() != expected || cart->GetROMParams().SaveMemType != 1) return 13;
+    }
+    puts("DS manual SPI factory: supported standard/IR/BT overrides, invalid values, NAND/homebrew/R4 family guards: PASS");
 }

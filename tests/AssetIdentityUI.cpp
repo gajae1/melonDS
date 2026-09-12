@@ -50,6 +50,7 @@ void EmuThread::sendMessage(Message message)
 void EmuThread::waitMessage(int) {}
 #include "stateThreadConstructor.inc"
 #include "assetPrepareUI.inc"
+#include "assetDSSaveUI.inc"
 #include "assetBootUI.inc"
 #include "assetInsertUI.inc"
 #include "assetResetUI.inc"
@@ -75,6 +76,99 @@ static void Choose(const QString& label, bool mayAdopt)
 }
 static bool Write(const QString& path, const QByteArray& bytes)
 { QFile file(path); return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(); }
+
+static int DSSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const QString& mode)
+{
+    const QString first = root.filePath("a/manual.nds"), second = root.filePath("b/reselection.nds");
+    Check(Write(first, "generated first DS") && Write(second, "generated second DS"), "DS sources");
+    const QStringList labels{"Automatic", "No save", "EEPROM - 512 bytes", "EEPROM - 8 KiB",
+        "EEPROM - 64 KiB", "EEPROM - 128 KiB", "Flash - 256 KiB", "Flash - 512 KiB", "Flash - 1 MiB"};
+    const std::optional<u32> values[] = {std::nullopt, 0, 1, 2, 3, 4, 5, 6, 7};
+    int prompts = 0;
+    const auto choose = [&](int index, int action, std::stop_source* stop = nullptr) {
+        QTimer::singleShot(0, &thread, [&, index, action, stop] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            Check(dialog && dialog->windowTitle() == "DS save type", "Expected actual DS save type dialog");
+            if (!dialog) { if (auto* other = qobject_cast<QDialog*>(QApplication::activeModalWidget())) other->reject(); return; }
+            ++prompts;
+            auto* combo = dialog->findChild<QComboBox*>();
+            Check(QThread::currentThread() == qApp->thread(), "DS save chooser ran off the UI thread");
+            Check(dialog->comboBoxItems() == labels && combo && !combo->isEditable(), "Incorrect DS save choices");
+            Check(dialog->textValue() == labels.front(), "DS chooser inherited a prior selection");
+            Check(!QDir(instance.registry).entryList(QDir::Files).isEmpty(), "DS chooser preceded asset preparation");
+            if (action == 3) dialog->setComboBoxItems({"unsupported save"});
+            else dialog->setTextValue(labels[index]);
+            if (stop) stop->request_stop();
+            if (action == 0) dialog->reject();
+            else if (action != 2) dialog->accept(); // 2 waits for the real stop callback to reject it.
+        });
+    };
+    QString error;
+    for (bool boot : {true, false})
+    {
+        const auto load = [&](const QString& source, const std::shared_ptr<ROMPreparation::Data>& prepared, bool manual) {
+            return boot ? thread.bootROM({source}, error, prepared, manual) :
+                thread.insertCart({source}, false, error, prepared, false, manual);
+        };
+        if (mode == "ds-save-choices")
+        {
+            for (int index = 0; index < 9; ++index)
+            {
+                messages.clear();
+                const auto source = index % 2 ? second : first;
+                auto prepared = std::make_shared<ROMPreparation::Data>(); prepared->Source = {source};
+                choose(index, 1);
+                Check(load(source, prepared, true) == 1, "Accepted DS choice did not dispatch");
+                Check(messages.size() == (boot ? 2u : 1u), "DS choice dispatched missing/extra messages");
+                if (messages.empty()) continue;
+                const auto request = messages.front().param.value<EmuThread::CartLoadRequest>();
+                Check(messages.front().type == (boot ? EmuThread::msg_BootROM : EmuThread::msg_InsertCart) &&
+                      request.Files == QStringList{source} && request.Assets.Source == request.Files &&
+                      request.Prepared == prepared && request.DSSaveType == values[index] && request.InitialGBASaveLength == 0,
+                      "DS choice lost Auto/zero distinction or crossed source/prepared/GBA payload");
+                if (boot && messages.size() == 2) Check(messages.back().type == EmuThread::msg_EmuRun, "Boot did not run after accepted load");
+            }
+        }
+        else
+        {
+            for (int action : {0, 1, 2, 3})
+            {
+                messages.clear();
+                auto prepared = std::make_shared<ROMPreparation::Data>(); prepared->Source = {first};
+                std::stop_source stop; prepared->Stop = stop.get_token();
+                choose(8, action, action == 1 || action == 2 ? &stop : nullptr);
+                error = "old error";
+                Check(!load(first, prepared, true) && error.isEmpty() && messages.empty(),
+                      "DS cancel, accepted-stop race, stopped dialog or invalid text dispatched");
+            }
+            auto stopped = std::make_shared<ROMPreparation::Data>();
+            std::stop_source stop; stopped->Stop = stop.get_token(); stop.request_stop();
+            Check(!load(first, stopped, true) && error.isEmpty() && messages.empty(), "Stopped DS request opened a chooser/queued");
+            Choose("Cancel", true);
+            Check(!load(root.filePath("a/game.nds"), {}, true) && messages.empty(), "Ownership cancellation reached DS save dispatch");
+            choose(2, 1);
+            Check(load(second, {}, true) == 1 && !messages.empty() &&
+                  messages.front().param.value<EmuThread::CartLoadRequest>().Files == QStringList{second} &&
+                  messages.front().param.value<EmuThread::CartLoadRequest>().DSSaveType == 1,
+                  "Fresh DS reselection retained cancelled source/save type");
+        }
+        messages.clear();
+        QObject timerOwner;
+        QTimer::singleShot(0, &timerOwner, [&] {
+            if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+            { Check(false, "Ordinary DS load unexpectedly opened a chooser"); dialog->reject(); }
+        });
+        Check(load(first, {}, false) == 1 && !messages.empty() &&
+              !messages.front().param.value<EmuThread::CartLoadRequest>().DSSaveType,
+              "Ordinary DS load inherited an explicit save type");
+        QCoreApplication::processEvents();
+    }
+    Check(prompts == (mode == "ds-save-choices" ? 18 : 10), "Unexpected DS chooser count");
+    Check(!QFile::exists(instance.config.directory + "/manual.sav") &&
+          !QFile::exists(instance.config.directory + "/reselection.sav"), "DS chooser wrote a save file");
+    std::printf("%s: %d failures (actual Qt chooser; recorded consumer)\n", mode.toUtf8().constData(), failures);
+    return failures ? 1 : 0;
+}
 
 static int InitialSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const QString& mode)
 {
@@ -183,6 +277,7 @@ int main(int argc, char** argv)
     if (!Write(a, "source A") || !Write(b, "source B") ||
         !Write(instance.config.directory + "/game.sav", "legacy")) return 2;
     EmuThread thread(&instance);
+    if (mode.startsWith("ds-save-")) return DSSaveUI(thread, instance, root, mode);
     if (mode.startsWith("gba-initial-")) return InitialSaveUI(thread, instance, root, mode);
     QString error;
     if (mode == "prepared-modal-cancel")

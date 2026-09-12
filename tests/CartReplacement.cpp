@@ -196,7 +196,7 @@ struct CartLoader
                      unique_ptr<u8[]>& data, u32& length, QString& errorstr);
     string getAssetPath(bool gba, const string& configpath, const string& ext, const string& file);
     QString getSavErrorString(string& filepath, bool gba);
-    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
+    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, std::optional<melonDS::u32> dsSaveType = std::nullopt);
     bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, u32 initialSaveLength = 0);
     bool updateConsole(bool directBoot = false) noexcept;
     bool reset(const AssetIdentity::Selection& dsAssets = {}, const AssetIdentity::Selection& gbaAssets = {});
@@ -783,11 +783,163 @@ static int DSSaveCapacity(const string& test)
     }
 }
 
+static int ManualDSSave(const string& test)
+{
+    try
+    {
+        QTemporaryDir directory;
+        RequireDSCapacity(directory.isValid(), "manual DS temporary directory");
+        CartLoader loader;
+        loader.incomingDir = loader.localCfg.savePath = directory.path().toStdString();
+        loader.forbidROMRead = true;
+        captureCartSave = true;
+        QString error;
+        const auto prepared = [&](const QString& name, const char* code = "ZZZA") {
+            auto data = std::make_shared<ROMPreparation::Data>();
+            data->Source = {name}; data->Name = name.toStdString();
+            data->BasePath = loader.incomingDir;
+            data->Bytes = ROM(false, data->Length);
+            auto* header = reinterpret_cast<NDSHeader*>(data->Bytes.get());
+            std::memcpy(header->GameCode, code, 4);
+            if (!std::strcmp(code, "ASMA")) std::memcpy(header->GameTitle + 1, "SD/TF-NDS", 9);
+            return data;
+        };
+        const auto load = [&](const std::shared_ptr<ROMPreparation::Data>& data, std::optional<u32> type) {
+            return loader.loadROM(data->Source, false, error, {}, data, type);
+        };
+        const auto cart = [&]() -> NDSCart::CartRetail& {
+            auto* actual = dynamic_cast<NDSCart::CartRetail*>(loader.nds->GetNDSCart());
+            RequireDSCapacity(actual && actual->Type() == NDSCart::CartType::Retail, "manual standard SPI cart");
+            return *actual;
+        };
+        const auto bytes = [&] {
+            return QByteArray(reinterpret_cast<const char*>(cart().GetSaveMemory()), cart().GetSaveMemoryLength());
+        };
+        const auto persisted = [&](const QByteArray& expected) {
+            RequireDSCapacity(bytes() == expected && loader.ndsSave->Flush() &&
+                ReadSaveFile(loader.ndsSave->GetPath()) == expected, "manual DS full memory/file preservation");
+        };
+        if (test == "ds-manual-roundtrip")
+        {
+            struct Chip { u32 type, length, width; u8 write, read; };
+            for (const auto chip : {Chip{1,512,1,0x0A,0x0B}, Chip{2,8192,2,0x02,0x03},
+                Chip{3,65536,2,0x02,0x03}, Chip{4,131072,3,0x02,0x03},
+                Chip{5,262144,3,0x0A,0x03}, Chip{6,524288,3,0x0A,0x03}, Chip{7,1048576,3,0x0A,0x03}})
+            {
+                const auto name = QString("manual-%1.nds").arg(chip.type);
+                RequireDSCapacity(load(prepared(name), chip.type), "manual initial DS load");
+                const auto path = loader.ndsSave->GetPath();
+                QByteArray expected(chip.length, '\xFF');
+                RequireDSCapacity(bytes() == expected && loader.ndsSave->Flush() && !QFile::exists(QString::fromStdString(path)),
+                    "manual selection must create erased chip memory without writing a file");
+                const u32 high = chip.length - 40;
+                const auto update = QByteArray::fromHex("96a619");
+                DSWrite(cart(), chip.write, chip.width, high, update);
+                expected.replace(high, update.size(), update); persisted(expected);
+                RequireDSCapacity(load(prepared(name), chip.type) && DSRead(cart(), chip.read, chip.width, high, update.size()) == update,
+                    "manual save reload lost high bytes or SPI protocol");
+                persisted(expected);
+            }
+            RequireDSCapacity(load(prepared("none.nds"), 0) && cart().GetSaveMemoryLength() == 0, "explicit no-save is not Automatic");
+            DSWrite(cart(), 0x02, 1, 0x27, QByteArray::fromHex("96"));
+            RequireDSCapacity(loader.ndsSave->Flush() && !QFile::exists(directory.filePath("none.sav")), "no-save SPI created a file");
+            RequireDSCapacity(load(prepared("auto.nds"), std::nullopt) && cart().GetSaveMemoryLength() == 8192,
+                "Automatic inherited a previous custom selection");
+            auto* running = loader.nds->GetNDSCart();
+            loader.active = false;
+            RequireDSCapacity(load(prepared("queued.nds"), 1) && loader.changeCart && loader.nextCart &&
+                loader.nextCart->GetSaveMemoryLength() == 512 && loader.nds->GetNDSCart() == running,
+                "inactive insert lost the selected chip or replaced the active cart early");
+        }
+        else if (test == "ds-manual-existing")
+        {
+            const auto path = directory.filePath("padded.sav");
+            QByteArray expected(524288, '\0');
+            for (qsizetype i = 0; i < expected.size(); ++i) expected[i] = char(i * 37 + (i >> 8));
+            QFile file(path);
+            RequireDSCapacity(file.open(QIODevice::WriteOnly | QIODevice::NewOnly) && file.write(expected) == expected.size(), "padded manual input");
+            file.close();
+            RequireDSCapacity(load(prepared("padded.nds", "A2DC"), 1) && bytes() == expected &&
+                cart().GetROMParams().SaveMemType == 1 && ReadSaveFile(path.toStdString()) == expected,
+                "explicit chip must override known EEPROM8K metadata and retain every file byte");
+            DSWrite(cart(), 0x0A, 1, 472, QByteArray::fromHex("96a619"));
+            expected.replace(472, 3, QByteArray::fromHex("96a619")); persisted(expected);
+            RequireDSCapacity(load(prepared("padded.nds", "A2DC"), 0), "explicit no-save with existing data");
+            DSWrite(cart(), 0x02, 1, 0x27, QByteArray::fromHex("77")); persisted(expected);
+            RequireDSCapacity(load(prepared("padded.nds", "A2DC"), std::nullopt) && cart().GetROMParams().SaveMemType == 2,
+                "Automatic did not restore registered metadata after custom selection");
+            persisted(expected);
+            for (u32 originalLength : {0u, 512u})
+            {
+                const auto name = QString("grow-%1").arg(originalLength);
+                const auto savePath = directory.filePath(name + ".sav");
+                const QByteArray original(originalLength, '\x6D');
+                QFile small(savePath);
+                RequireDSCapacity(small.open(QIODevice::WriteOnly | QIODevice::NewOnly) && small.write(original) == original.size(), "short existing manual input");
+                small.close();
+                RequireDSCapacity(load(prepared(name + ".nds"), 2), "manual initialization from short existing file");
+                QByteArray grown(8192, '\xFF'); grown.replace(0, original.size(), original);
+                RequireDSCapacity(bytes() == grown && loader.ndsSave->Flush() && ReadSaveFile(savePath.toStdString()) == original,
+                    "manual load changed the existing file before a guest write or lost its prefix");
+                DSWrite(cart(), 0x02, 2, 8190, QByteArray::fromHex("963C"));
+                grown.replace(8190, 2, QByteArray::fromHex("963C")); persisted(grown);
+            }
+        }
+        else if (test == "ds-manual-rejects")
+        {
+            RequireDSCapacity(load(prepared("owner.nds"), 1), "initial manual owner");
+            DSWrite(cart(), 0x02, 1, 39, QByteArray::fromHex("96"));
+            const auto oldBytes = bytes(); persisted(oldBytes);
+            auto* oldCart = loader.nds->GetNDSCart(); auto* oldManager = loader.ndsSave.get();
+            const auto oldPath = oldManager->GetPath(); const auto callbacks = ndsSaveCalls;
+            const auto retained = [&] {
+                RequireDSCapacity(loader.nds->GetNDSCart() == oldCart && loader.ndsSave.get() == oldManager &&
+                    oldManager->GetPath() == oldPath && loader.baseROMName == "owner.nds" && bytes() == oldBytes &&
+                    ReadSaveFile(oldPath) == oldBytes && ndsSaveCalls == callbacks,
+                    "rejected manual DS request changed live cart/save ownership, bytes or callbacks");
+            };
+            for (u32 type : {8u, 10u, UINT32_MAX})
+            {
+                RequireDSCapacity(!loader.loadROM({"unread.nds"}, false, error, {}, {}, type) && !error.isEmpty(), "invalid raw DS option accepted");
+                auto data = prepared("unread.nds"); auto* input = data->Bytes.get();
+                RequireDSCapacity(!load(data, type) && data->Bytes.get() == input, "invalid DS option consumed prepared bytes"); retained();
+            }
+            for (const char* code : {"####", "ASMA", "UAMA"})
+            {
+                RequireDSCapacity(!load(prepared("unsupported.nds", code), 1) && error.contains("Automatic"), "unsupported family manual conversion accepted"); retained();
+            }
+            for (bool cancelled : {false, true})
+            {
+                auto data = prepared("cancelled.nds"); std::stop_source stop; data->Stop = stop.get_token();
+                if (cancelled) stop.request_stop();
+                auto* input = data->Bytes.get();
+                RequireDSCapacity(!loader.loadROM(cancelled ? data->Source : QStringList{"other.nds"}, false, error, {}, data, 1) &&
+                    data->Bytes.get() == input, "cancelled/mismatched manual DS request consumed prepared bytes"); retained();
+            }
+            auto data = prepared("allocation.nds"); failCaptureSize = 524288;
+            RequireDSCapacity(!load(data, 6) && !error.isEmpty() && failCaptureSize == 0 && captureAllocationFailures == 1,
+                "manual chip allocation failure did not reject safely"); retained();
+            RequireDSCapacity(!QFile::exists(directory.filePath("unread.sav")) && !QFile::exists(directory.filePath("unsupported.sav")) &&
+                !QFile::exists(directory.filePath("cancelled.sav")) && !QFile::exists(directory.filePath("allocation.sav")), "rejected DS choice created a file");
+        }
+        else return 2;
+        RequireDSCapacity(openFiles == 0, "manual DS save handle leak");
+        std::printf("%s: PASS\n", test.c_str());
+        return 0;
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: %s\n", test.c_str(), error.what());
+        return 1;
+    }
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
     if (argc != 2) return 2;
     const string test = argv[1];
+    if (test.starts_with("ds-manual-")) return ManualDSSave(test);
     if (test.starts_with("ds-capacity-")) return DSSaveCapacity(test);
     if (test.starts_with("gba-initial-")) return InitialGBASave(test);
     if (test.starts_with("capture-")) return CaptureRecovery(test);

@@ -225,7 +225,7 @@ private:
                      std::unique_ptr<melonDS::u8[]>& data, melonDS::u32& length, QString& errorstr);
     bool flushSaveData(QString& errorstr);
     QString getSavErrorString(std::string& filepath, bool gba);
-    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
+    bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, std::optional<melonDS::u32> dsSaveType = std::nullopt);
     void ejectCart();
     bool cartInserted();
     QString cartLabel();

@@ -3,6 +3,7 @@
 // Window handlers. Delays replace host read/decoder boundaries only. The UI's
 // emulation dispatch is recorded; CartReplacement covers the real cart/save swap.
 #include <QApplication>
+#include <QAction>
 #include <QCloseEvent>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -101,23 +102,24 @@ struct FixtureConfig
 struct FixtureThread
 {
     int applies = 0;
-    bool gba = false, boot = false, chooseGBASave = false;
-    std::vector<bool> saveChoices;
+    bool gba = false, boot = false, chooseGBASave = false, chooseDSSave = false;
+    std::vector<bool> saveChoices, dsSaveChoices;
     QStringList source;
     QByteArray bytes;
     bool reject = false;
     std::function<void(const std::shared_ptr<ROMPreparation::Data>&)> beforeApply;
-    int bootROM(const QStringList& path, QString& error, const std::shared_ptr<ROMPreparation::Data>& data)
-    { boot = true; return insertCart(path, false, error, data); }
-    int insertCart(const QStringList& path, bool isGBA, QString& error, const std::shared_ptr<ROMPreparation::Data>& data, bool chooseSave = false)
+    int bootROM(const QStringList& path, QString& error, const std::shared_ptr<ROMPreparation::Data>& data, bool chooseDS = false)
+    { const auto result = insertCart(path, false, error, data, false, chooseDS); boot = true; return result; }
+    int insertCart(const QStringList& path, bool isGBA, QString& error, const std::shared_ptr<ROMPreparation::Data>& data, bool chooseSave = false, bool chooseDS = false)
     {
         saveChoices.push_back(chooseSave);
+        dsSaveChoices.push_back(chooseDS);
         if (beforeApply) beforeApply(data);
         if (data->Stop.stop_requested()) { error.clear(); return 0; }
         if (reject) { error = "Generated apply failure"; return 0; }
         Require(!data->Stop.stop_requested(), "Cancelled result reached apply");
         Require(QThread::currentThread() == qApp->thread(), "Apply ran off the UI thread");
-        ++applies; gba = isGBA; chooseGBASave = chooseSave; source = path;
+        ++applies; gba = isGBA; boot = false; chooseGBASave = chooseSave; chooseDSSave = chooseDS; source = path;
         bytes = QByteArray(reinterpret_cast<const char*>(data->Bytes.get()), data->Length);
         data->Bytes.reset();
         return 1;
@@ -133,7 +135,7 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
-    enum class ROMAction { BootDS, InsertDS, InsertGBA, InsertGBAWithSave, Drop };
+    enum class ROMAction { BootDS, BootDSWithSave, InsertDS, InsertDSWithSave, InsertGBA, InsertGBAWithSave, Drop };
     FixtureInstance instance;
     FixtureInstance* emuInstance = &instance;
     FixtureThread thread;
@@ -154,6 +156,9 @@ public:
     bool reselectedRememberFolder = false;
     QStringList nextPreloadROM;
     bool bootAfterPreload = false;
+    QAction* actOpenROMWithSave = nullptr;
+    QAction* actInsertCartWithSave = nullptr;
+    QStringList pickedROM;
     MainWindow()
     {
         instance.window = this;
@@ -177,6 +182,10 @@ public:
     void pickFileFromArchive(const ROMPreparation::Result& result);
     QStringList splitArchivePath(const QString& filename, bool useMemberSyntax);
     bool preloadROMs(QStringList file, QStringList gbafile, bool boot);
+    void onOpenFile();
+    void onInsertCart();
+    void onClickRecentFile();
+    QStringList pickROM(bool gba) { Require(!gba, "DS menu requested GBA file picker"); return pickedROM; }
     bool verifySetup() { return true; }
     void onBootFirmware() { ++firmwareBoots; }
     void updateRecentFilesMenu() { ++recentWrites; }
@@ -197,6 +206,9 @@ public:
 #include "romWindowPick.inc"
 #include "romWindowSplit.inc"
 #include "romWindowPreload.inc"
+#include "romWindowOpen.inc"
+#include "romWindowInsert.inc"
+#include "romWindowRecent.inc"
 
 static void WriteFixture(const QString& path, const QByteArray& bytes)
 {
@@ -222,6 +234,95 @@ static void ArchiveFile(const QString& path, const QByteArray& bytes, int member
     }
     Require(archive_write_free(writer) == ARCHIVE_OK, "Fixture archive close");
 }
+static int DSSavePreparation(const QString& mode)
+{
+    QTemporaryDir directory;
+    const QString first = directory.filePath("first.nds"), second = directory.filePath("second.nds");
+    WriteFixture(first, "first generated DS"); WriteFixture(second, "second generated DS");
+    delayReads = false;
+    const auto finish = [](MainWindow& window) {
+        QEventLoop loop;
+        QTimer ticker; ticker.setInterval(2);
+        QObject::connect(&ticker, &QTimer::timeout, &loop, [&] {
+            if (!window.romPreparation.busy() && !window.romApplying) loop.quit();
+        });
+        QTimer::singleShot(3000, &loop, &QEventLoop::quit);
+        ticker.start(); loop.exec();
+        Require(!window.romPreparation.busy() && !window.romApplying, "DS save preparation timed out");
+    };
+    if (mode == "ds-save-route")
+    {
+        MainWindow window;
+        QAction open, insert, recent;
+        window.actOpenROMWithSave = &open;
+        window.actInsertCartWithSave = &insert;
+        QObject::connect(&open, &QAction::triggered, &window, &MainWindow::onOpenFile);
+        QObject::connect(&insert, &QAction::triggered, &window, &MainWindow::onInsertCart);
+        QObject::connect(&recent, &QAction::triggered, &window, &MainWindow::onClickRecentFile);
+        window.pickedROM = {first};
+        open.trigger(); finish(window);
+        Require(window.thread.boot && window.thread.chooseDSSave && !window.thread.gba &&
+                window.thread.source == QStringList{first} && window.recentFileList == QList<QString>{first} &&
+                window.recentWrites == 1 && window.globalCfg.writes == 1,
+                "Manual boot lost chooser, prepared source, recent file or folder");
+        window.pickedROM = {second};
+        insert.trigger(); finish(window);
+        Require(!window.thread.boot && window.thread.chooseDSSave && window.thread.source == QStringList{second} &&
+                window.recentWrites == 1 && window.globalCfg.writes == 2,
+                "Manual insert lost chooser or changed DS recent files");
+        // Direct handlers also run without menus: two null pointers are not a sender match.
+        window.actOpenROMWithSave = nullptr; window.actInsertCartWithSave = nullptr;
+        window.pickedROM = {first};
+        window.onOpenFile(); finish(window);
+        Require(window.thread.boot && !window.thread.chooseDSSave, "No-menu open inherited manual mode");
+        window.onInsertCart(); finish(window);
+        Require(!window.thread.boot && !window.thread.chooseDSSave, "No-menu insert inherited manual mode");
+        recent.setData(second); recent.trigger(); finish(window);
+        Require(window.thread.boot && !window.thread.chooseDSSave && window.globalCfg.writes == 4,
+                "Recent-file path prompted or changed the last folder");
+        window.startROMPreparation({first}, MainWindow::ROMAction::Drop); finish(window);
+        Require(window.thread.applies == 6 && window.thread.boot && !window.thread.gba &&
+                window.thread.dsSaveChoices == std::vector<bool>{true, true, false, false, false, false} &&
+                window.thread.saveChoices == std::vector<bool>(6, false) &&
+                window.globalCfg.writes == 4 && window.recentWrites == 4 && window.recentFileList.front() == first,
+                "Drop/default path inherited DS/GBA manual choice or lost recent/folder behavior");
+    }
+    else for (bool boot : {true, false})
+    {
+        MainWindow window;
+        bool invalidated = false;
+        std::shared_ptr<ROMPreparation::Data> oldPrepared;
+        window.thread.beforeApply = [&](const std::shared_ptr<ROMPreparation::Data>& data) {
+            if (invalidated) return;
+            invalidated = true; oldPrepared = data;
+            Require(window.romApplying && window.thread.applies == 0, "Missed DS save apply boundary");
+            if (mode == "ds-save-reselect")
+                window.startROMPreparation({second}, boot ? MainWindow::ROMAction::InsertDS :
+                    MainWindow::ROMAction::BootDSWithSave, true);
+            else window.cancelROMPreparation();
+            Require(data->Stop.stop_requested(), "Old DS chooser/prepared request was not stopped");
+        };
+        window.startROMPreparation({first}, boot ? MainWindow::ROMAction::BootDSWithSave :
+            MainWindow::ROMAction::InsertDSWithSave, true);
+        finish(window);
+        Require(invalidated && oldPrepared && oldPrepared->Bytes && oldPrepared->Stop.stop_requested(),
+                "Stopped DS preparation consumed the old ROM bytes");
+        if (mode == "ds-save-reselect")
+            Require(window.thread.applies == 1 && window.thread.source == QStringList{second} &&
+                    window.thread.bytes == "second generated DS" && window.thread.boot == !boot &&
+                    window.thread.chooseDSSave == !boot &&
+                    window.thread.dsSaveChoices == std::vector<bool>{true, !boot} &&
+                    window.globalCfg.writes == 1 && window.recentWrites == int(!boot),
+                    "DS reselection reused old source/choice or committed stale recent/folder state");
+        else
+            Require(window.thread.applies == 0 && window.cartUpdates == 0 && window.globalCfg.writes == 0 &&
+                    window.recentWrites == 0 && window.recentFileList.isEmpty(),
+                    "Cancelled DS manual load committed a cart, folder or recent file");
+    }
+    std::printf("%s: PASS (actual preparation/window handlers; recorded apply)\n", mode.toUtf8().constData());
+    return 0;
+}
+
 static int InitialSavePreparation(const QString& mode)
 {
     QTemporaryDir directory;
@@ -296,6 +397,7 @@ int main(int argc, char** argv)
             ready.exec();
         }
         if (mode.startsWith("gba-save-")) return InitialSavePreparation(mode);
+        if (mode.startsWith("ds-save-")) return DSSavePreparation(mode);
         QTemporaryDir dir;
         const auto path = dir.filePath("generated.nds"), zip = dir.filePath("generated.zip");
         const auto second = dir.filePath("second.gba");

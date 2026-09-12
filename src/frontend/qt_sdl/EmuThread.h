@@ -102,6 +102,7 @@ public:
         AssetIdentity::Selection Assets;
         std::shared_ptr<ROMPreparation::Data> Prepared;
         melonDS::u32 InitialGBASaveLength = 0;
+        std::optional<melonDS::u32> DSSaveType = std::nullopt;
     };
     struct AssetResetRequest
     {
@@ -129,9 +130,9 @@ public:
     void emuFrameStep();
     void emuReset();
 
-    int bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {});
+    int bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, bool chooseDSSave = false);
     int bootFirmware(QString& errorstr);
-    int insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, bool chooseGBASave = false);
+    int insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, bool chooseGBASave = false, bool chooseDSSave = false);
     void ejectCart(bool gba);
     int insertGBAAddon(int type, QString& errorstr);
 
@@ -200,6 +201,7 @@ private:
     std::stop_token cheatStopToken();
     bool prepareAssets(const QStringList& source, bool gba, bool allowExisting,
                        AssetIdentity::Selection& selection, QString& error, std::stop_token stop = {});
+    bool chooseDSSaveType(CartLoadRequest& request, QString& errorstr);
 
     void updateRenderer();
     void compileShaders();

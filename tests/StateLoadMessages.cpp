@@ -9,6 +9,7 @@
 #include <list>
 #include <optional>
 #include <variant>
+#include <vector>
 #include <utility>
 #include <stop_token>
 #include <QCoreApplication>
@@ -106,6 +107,8 @@ public:
     int loads = 0, undos = 0;
     unsigned resets = 0;
     bool currentAvailable = true;
+    std::vector<EmuThread::CartLoadRequest> cartLoads;
+    std::vector<bool> cartResets;
     QMutex renderLock;
 
     EmuInstance() { console.audio = &audio; }
@@ -120,8 +123,13 @@ public:
         if (!bootOK) { if (stopOnBootFailure) nds->Stop(); return false; }
         nds->Start(); return true;
     }
-    bool loadROM(const QStringList&, bool, QString&, const AssetIdentity::Selection&, const std::shared_ptr<ROMPreparation::Data>&)
+    bool loadROM(QStringList files, bool reset, QString&, const AssetIdentity::Selection& assets,
+                 const std::shared_ptr<ROMPreparation::Data>& prepared, std::optional<melonDS::u32> dsSaveType)
     {
+        EmuThread::CartLoadRequest request{files, assets, prepared};
+        request.DSSaveType = dsSaveType;
+        cartLoads.push_back(request);
+        cartResets.push_back(reset);
         callbacksDuringLoad |= audio;
         if (!bootOK && stopOnBootFailure) nds->Stop();
         return bootOK;
@@ -206,6 +214,40 @@ int main(int argc, char** argv)
         thread.handleMessages();
         check(thread.msgSemaphore.tryAcquire(), "Message failed to acknowledge completion");
     };
+    if (argc == 2 && std::string(argv[1]) == "ds-save-request")
+    {
+        // Queue distinct QVariant snapshots before consuming any of them. The
+        // real dispatcher must retain explicit zero separately from Automatic.
+        const std::optional<u32> choices[] = {0, 7, std::nullopt, 3, 1, std::nullopt};
+        std::vector<EmuThread::CartLoadRequest> expected;
+        for (int i = 0; i < 6; ++i)
+        {
+            EmuThread::CartLoadRequest request;
+            request.Files = {QString("generated-%1.nds").arg(i)};
+            request.Assets.Source = request.Files;
+            request.Prepared = std::make_shared<ROMPreparation::Data>();
+            request.Prepared->Source = request.Files;
+            request.DSSaveType = choices[i];
+            expected.push_back(request);
+            thread.msgQueue.enqueue({.type = i % 2 ? EmuThread::msg_InsertCart : EmuThread::msg_BootROM,
+                                     .param = QVariant::fromValue(request)});
+            request.DSSaveType = 99;
+            request.Files = {"later-reselection.nds"};
+        }
+        thread.handleMessages();
+        check(thread.msgSemaphore.tryAcquire(6) && instance.cartLoads.size() == 6,
+              "Queued DS requests did not all reach the loader");
+        for (size_t i = 0; i < instance.cartLoads.size(); ++i)
+        {
+            const auto& actual = instance.cartLoads[i];
+            check(actual.Files == expected[i].Files && actual.Assets.Source == expected[i].Files &&
+                  actual.Prepared == expected[i].Prepared && actual.DSSaveType == choices[i] &&
+                  instance.cartResets[i] == (i % 2 == 0),
+                  "DS queue consumer lost per-request source/prepared/choice or boot/insert mode");
+        }
+        std::printf("ds-save-request: %s (actual dispatcher; recorded loader)\n", failures ? "FAIL" : "PASS");
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "gl-gate")
     {
         unsigned graphicsErrors = 0;

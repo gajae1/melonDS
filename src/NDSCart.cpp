@@ -545,13 +545,19 @@ bool ValidateROM(u32 romlen, NDSHeader& header)
 std::unique_ptr<CartCommon> ParseROM(const u8* romdata, u32 romlen, void* userdata, std::optional<NDSCartArgs>&& args)
 {
     // Reject unsupported lengths before allocating or reading a copy.
-    if (romdata == nullptr || romlen < 0x1000 || romlen > 512*1024*1024)
+    if (romdata == nullptr || romlen < 0x1000 || romlen > 512*1024*1024 ||
+        (args && args->SPISaveType && *args->SPISaveType > 7))
         return nullptr;
     return ParseROM(CopyToUnique(romdata, romlen), romlen, userdata, std::move(args));
 }
 
 std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen, void* userdata, std::optional<NDSCartArgs>&& args)
 {
+    if (args && args->SPISaveType && *args->SPISaveType > 7)
+    {
+        Log(LogLevel::Error, "NDSCart: unsupported SPI save type\n");
+        return nullptr;
+    }
     if (romdata == nullptr)
     {
         Log(LogLevel::Error, "NDSCart: romdata is null\n");
@@ -596,6 +602,7 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
     u32 gamecode = header.GameCodeAsU32();
 
     bool homebrew = header.IsHomebrew();
+    const bool r4 = gametitle[0] == 0 && !strncmp("SD/TF-NDS", gametitle + 1, 9) && gamecode == 0x414D5341;
 
     ROMListEntry romparams {};
     if (!ReadROMParams(gamecode, &romparams))
@@ -610,7 +617,7 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
         else
         {
             romparams.SaveMemType = 2; // Legacy default when capacity is unknown.
-            if (args && args->SRAM && args->SRAMLength)
+            if (args && !args->SPISaveType && args->SRAM && args->SRAMLength)
             {
                 if (const auto type = CartRetail::SPITypeForSaveLength(args->SRAMLength))
                 {
@@ -623,6 +630,16 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
                         args->SRAMLength);
             }
         }
+    }
+
+    if (args && args->SPISaveType)
+    {
+        if (homebrew || r4 || (romparams.SaveMemType >= 8 && romparams.SaveMemType <= 10))
+        {
+            Log(LogLevel::Error, "NDSCart: custom SPI save type cannot be used with NAND or SD cartridges\n");
+            return nullptr;
+        }
+        romparams.SaveMemType = *args->SPISaveType;
     }
 
     if (romparams.ROMSize != romlen)
@@ -667,7 +684,7 @@ std::unique_ptr<CartCommon> ParseROM(std::unique_ptr<u8[]>&& romdata, u32 romlen
         std::optional<FATStorage> sdcard = args && args->SDCard ? std::make_optional<FATStorage>(std::move(*args->SDCard)) : std::nullopt;
         cart = std::make_unique<CartHomebrew>(std::move(cartrom), cartromsize, cartid, romparams, userdata, std::move(sdcard));
     }
-    else if (gametitle[0] == 0 && !strncmp("SD/TF-NDS", gametitle + 1, 9) && gamecode == 0x414D5341)
+    else if (r4)
     {
         std::optional<FATStorage> sdcard = args && args->SDCard ? std::make_optional<FATStorage>(std::move(*args->SDCard)) : std::nullopt;
         cart = std::make_unique<CartR4>(std::move(cartrom), cartromsize, cartid, romparams, CartR4TypeR4, CartR4LanguageEnglish, userdata, std::move(sdcard));

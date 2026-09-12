@@ -727,7 +727,8 @@ void EmuThread::handleMessages()
             msgResult = 0;
             if (!emuInstance->loadROM(msg.param.value<CartLoadRequest>().Files, true, msgError,
                                      msg.param.value<CartLoadRequest>().Assets,
-                                     msg.param.value<CartLoadRequest>().Prepared))
+                                     msg.param.value<CartLoadRequest>().Prepared,
+                                     msg.param.value<CartLoadRequest>().DSSaveType))
             {
                 if (emuInstance->nds && !emuInstance->nds->IsRunning())
                 {
@@ -768,7 +769,8 @@ void EmuThread::handleMessages()
             msgResult = 0;
             if (!emuInstance->loadROM(msg.param.value<CartLoadRequest>().Files, false, msgError,
                                      msg.param.value<CartLoadRequest>().Assets,
-                                     msg.param.value<CartLoadRequest>().Prepared))
+                                     msg.param.value<CartLoadRequest>().Prepared,
+                                     msg.param.value<CartLoadRequest>().DSSaveType))
                 break;
 
             msgResult = 1;
@@ -1041,12 +1043,42 @@ bool EmuThread::emuIsActive()
     return emuActive;
 }
 
-int EmuThread::bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared)
+bool EmuThread::chooseDSSaveType(CartLoadRequest& request, QString& errorstr)
+{
+    const auto stop = request.Prepared ? request.Prepared->Stop : std::stop_token{};
+    if (stop.stop_requested()) { errorstr.clear(); return false; }
+    const QStringList choices{tr("Automatic"), tr("No save"), tr("EEPROM - 512 bytes"),
+        tr("EEPROM - 8 KiB"), tr("EEPROM - 64 KiB"), tr("EEPROM - 128 KiB"),
+        tr("Flash - 256 KiB"), tr("Flash - 512 KiB"), tr("Flash - 1 MiB")};
+    QInputDialog dialog(emuInstance->getMainWindow());
+    dialog.setWindowTitle(tr("DS save type"));
+    dialog.setLabelText(tr("Save hardware for %1.\n"
+        "Existing save bytes are retained; smaller files expand when needed.\n"
+        "Automatic uses ROM metadata or the existing save size.")
+        .arg(QFileInfo(request.Files.last()).fileName()));
+    dialog.setComboBoxItems(choices);
+    dialog.setComboBoxEditable(false);
+    std::stop_callback cancelDialog(stop, [&dialog] {
+        QMetaObject::invokeMethod(&dialog, &QDialog::reject, Qt::QueuedConnection);
+    });
+    if (dialog.exec() != QDialog::Accepted || stop.stop_requested())
+    {
+        errorstr.clear();
+        return false;
+    }
+    const auto selected = choices.indexOf(dialog.textValue());
+    if (selected < 0) { errorstr.clear(); return false; }
+    request.DSSaveType = selected == 0 ? std::nullopt : std::optional<u32>(selected - 1);
+    return true;
+}
+
+int EmuThread::bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseDSSave)
 {
     const auto stop = prepared ? prepared->Stop : std::stop_token{};
     if (stop.stop_requested()) { errorstr.clear(); return 0; }
     CartLoadRequest request{filename, {}, prepared};
     if (!prepareAssets(filename, false, true, request.Assets, errorstr, stop)) return 0;
+    if (chooseDSSave && !chooseDSSaveType(request, errorstr)) return 0;
     if (stop.stop_requested()) { errorstr.clear(); return 0; }
     sendMessage({.type = msg_BootROM, .param = QVariant::fromValue(request)});
     waitMessage();
@@ -1078,7 +1110,7 @@ int EmuThread::bootFirmware(QString& errorstr)
     return msgResult;
 }
 
-int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseGBASave)
+int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseGBASave, bool chooseDSSave)
 {
     MessageType msgtype = gba ? msg_InsertGBACart : msg_InsertCart;
 
@@ -1086,6 +1118,7 @@ int EmuThread::insertCart(const QStringList& filename, bool gba, QString& errors
     if (stop.stop_requested()) { errorstr.clear(); return 0; }
     CartLoadRequest request{filename, {}, prepared};
     if (!prepareAssets(filename, gba, true, request.Assets, errorstr, stop)) return 0;
+    if (!gba && chooseDSSave && !chooseDSSaveType(request, errorstr)) return 0;
     if (stop.stop_requested()) { errorstr.clear(); return 0; }
     if (gba && chooseGBASave)
     {
