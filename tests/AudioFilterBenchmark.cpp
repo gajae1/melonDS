@@ -10,7 +10,7 @@
 #include <windows.h>
 #endif
 
-static bool VerifyRounding()
+static bool VerifyRounding(AudioLowPass::Backend only = AudioLowPass::Backend::Auto)
 {
     // These impulses leave the next sample close to half an output LSB.
     // Adding 0.5 before truncating can round the double below 0.5 up to 1.0.
@@ -22,8 +22,14 @@ static bool VerifyRounding()
         {1666, 0x1.37adcb18a7b7dp+9}, {1703, 0x1.1f91fd7bc86f6p+9},
     };
     bool passed = true;
-    for (auto backend : {AudioLowPass::Backend::SSE2, AudioLowPass::Backend::FMA})
+    for (auto backend : {AudioLowPass::Backend::SSE2, AudioLowPass::Backend::FMA, AudioLowPass::Backend::NEON})
     {
+        if (only != AudioLowPass::Backend::Auto && backend != only) continue;
+        if (!AudioLowPass::IsSupported(backend))
+        {
+            std::printf("Audio rounding backend=%d: SKIP (unsupported)\n", int(backend));
+            continue;
+        }
         const int tolerance = backend == AudioLowPass::Backend::FMA &&
                               AudioLowPass::IsSupported(backend) ? 1 : 0;
         int maxDifference = 0;
@@ -59,6 +65,15 @@ static bool VerifyRounding()
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--verify-neon") == 0)
+    {
+        if (!AudioLowPass::IsSupported(AudioLowPass::Backend::NEON))
+        {
+            std::fputs("NEON unavailable; verification not run\n", stderr);
+            return 77;
+        }
+        return VerifyRounding(AudioLowPass::Backend::NEON) ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--verify") == 0)
         return VerifyRounding() ? 0 : 1;
 #ifdef _WIN32
@@ -68,7 +83,7 @@ int main(int argc, char** argv)
     std::mt19937 rng(12345);
     std::array<int16_t, frames * 2> source, output;
     for (auto& sample : source) sample = static_cast<int16_t>(rng());
-    std::vector backends{AudioLowPass::Backend::Scalar, AudioLowPass::Backend::SSE2, AudioLowPass::Backend::FMA};
+    std::vector backends{AudioLowPass::Backend::Scalar, AudioLowPass::Backend::SSE2, AudioLowPass::Backend::FMA, AudioLowPass::Backend::NEON};
     std::erase_if(backends, [](auto backend) { return !AudioLowPass::IsSupported(backend); });
     std::puts("round,backend,ns_per_block_copy_and_filter,checksum");
     for (int round = 0; round < 9; ++round)

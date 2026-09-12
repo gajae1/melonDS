@@ -86,6 +86,7 @@ function(melonds_configure_audio_kernels target)
         set(fma ${MELONDS_HAS_FMA_TARGET})
     endif()
     target_compile_definitions(${target} PRIVATE
-        MELONDS_AUDIO_SSE2=$<BOOL:${sse2}> MELONDS_AUDIO_FMA=$<BOOL:${fma}>)
+        MELONDS_AUDIO_SSE2=$<BOOL:${sse2}> MELONDS_AUDIO_FMA=$<BOOL:${fma}>
+        MELONDS_AUDIO_NEON=$<BOOL:${ENABLE_SIMD}>)
     message(STATUS "${target}: audio SSE2=${sse2}, FMA=${fma}; runtime CPU/OS dispatch")
 endfunction()

@@ -24,6 +24,9 @@
 #include <cstdint>
 #include <cstring>
 #include <numbers>
+#if MELONDS_AUDIO_NEON && defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 #if MELONDS_AUDIO_SSE2 || MELONDS_AUDIO_FMA
 #include <immintrin.h>
 #endif
@@ -37,11 +40,15 @@
 class AudioLowPass
 {
 public:
-    enum class Backend { Auto, Scalar, FMA, SSE2 };
+    // Preserve prior values; NEON is explicit-only until native benchmarking.
+    enum class Backend { Auto, Scalar, FMA, SSE2, NEON };
 
     static bool IsSupported(Backend backend)
     {
         if (backend == Backend::Auto || backend == Backend::Scalar) return true;
+#if MELONDS_AUDIO_NEON && defined(__aarch64__) && defined(__ARM_NEON)
+        if (backend == Backend::NEON) return true; // Baseline AArch64 FP64 SIMD.
+#endif
 #if MELONDS_AUDIO_SSE2
         if (backend == Backend::SSE2) return true; // Baseline on x64.
 #endif
@@ -145,6 +152,13 @@ private:
             return;
         }
 #endif
+#if MELONDS_AUDIO_NEON && defined(__aarch64__) && defined(__ARM_NEON)
+        if (Kernel == Backend::NEON)
+        {
+            ProcessBlockNEON(samples, numFrames, from, to, bypass, changing);
+            return;
+        }
+#endif
         for (int i = 0; i < numFrames; i++)
         {
             if (changing) StepCoefficients(from, to, (double)(i + 1) / numFrames);
@@ -218,6 +232,55 @@ private:
         {
             _mm_storeu_pd(Stages[s].z1, z1[s]);
             _mm_storeu_pd(Stages[s].z2, z2[s]);
+        }
+    }
+#endif
+
+#if MELONDS_AUDIO_NEON && defined(__aarch64__) && defined(__ARM_NEON)
+#if defined(__GNUC__) && !defined(__clang__)
+    __attribute__((optimize("fp-contract=off")))
+#endif
+    void ProcessBlockNEON(int16_t* samples, int numFrames, const double from[2][5],
+                          const double to[2][5], bool bypass, bool changing)
+    {
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#endif
+        float64x2_t z1[2], z2[2];
+        for (int s = 0; s < 2; ++s)
+        {
+            z1[s] = vld1q_f64(Stages[s].z1);
+            z2[s] = vld1q_f64(Stages[s].z2);
+        }
+        for (int i = 0; i < numFrames; ++i)
+        {
+            if (changing) StepCoefficients(from, to, (double)(i + 1) / numFrames);
+            float64x2_t y = samples
+                ? float64x2_t{double(samples[i * 2]), double(samples[i * 2 + 1])}
+                : vdupq_n_f64(0.0);
+            // Only L/R run in parallel; samples and cascade stages remain ordered.
+            for (int s = 0; s < 2; ++s)
+            {
+                const auto& stage = Stages[s];
+                const float64x2_t x = y;
+                y = vaddq_f64(vmulq_n_f64(x, stage.b0), z1[s]);
+                z1[s] = vaddq_f64(vsubq_f64(vmulq_n_f64(x, stage.b1),
+                                           vmulq_n_f64(y, stage.a1)), z2[s]);
+                z2[s] = vsubq_f64(vmulq_n_f64(x, stage.b2), vmulq_n_f64(y, stage.a2));
+            }
+            if (!bypass)
+            {
+                y = vminq_f64(vmaxq_f64(y, vdupq_n_f64(-32768.0)), vdupq_n_f64(32767.0));
+                // FCVTAS rounds halfway away from zero without adding +/-0.5.
+                const int64x2_t rounded = vcvtaq_s64_f64(y);
+                samples[i * 2] = static_cast<int16_t>(vgetq_lane_s64(rounded, 0));
+                samples[i * 2 + 1] = static_cast<int16_t>(vgetq_lane_s64(rounded, 1));
+            }
+        }
+        for (int s = 0; s < 2; ++s)
+        {
+            vst1q_f64(Stages[s].z1, z1[s]);
+            vst1q_f64(Stages[s].z2, z2[s]);
         }
     }
 #endif

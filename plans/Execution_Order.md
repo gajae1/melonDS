@@ -327,3 +327,9 @@ AD-04/05의 SPU 출력 소비는 기존 QMutex를 유지한 채 stereo sample별
 후속은 AArch64 FP64 L/R NEON 오디오의 명시적 후보와 native 검증이다. 자동 선택은 실측 전 유지한다. 픽셀 SIMD는 실제256픽셀 호출과 기존 전체화면 벤치의 차이를 반영해 측정해야 한다. libyuv의 locally-streaming·ZA 미사용 픽셀 커널, Opus의 채널 SIMD 순환 필터, mGBA의 분할 링 복사·audio wait predicate를 참고했다. native QWidget repaint→update 병합은 정상 표시 지연 악화 가능성이 있어 실측 전 보류하고, audioSync의 제어 요청 wake는 잠금/취소 수명을 검증할 별도 후보로 남긴다. 원본 상태/실기/다른 OS/실제 통신 및 기존 미완료 계약을 완료로 올리지 않는다.
 
 SPU 복사 비용은 모든 작업자·빌드/검사를 멈춘 구간에서 같은 QMutex와 실제 추출 함수, 고정 CPU의12조건·9쌍으로 비교했다. 128~1024프레임 조건은 모두9/9 개선 방향이었다. 512프레임의 호출 중앙값은 연속 구간0.345→0.036µs, wrap0.341→0.046µs였다. 링 위치 준비/검사 비용도 포함한 단일 스레드 결과이고 동일 함수 대조군도 약±11% 흔들렸다. 작은16/64조건의 정밀 향상률·producer 경합·전체 callback·물리 지연으로 확대하지 않는다. 장치 queue 크기는 바꾸지 않았다.
+
+2026-09-12, 1.1.54: AD-04/05의 audioSync가 기존 제어 요청 stop token을 받아 큐 대기를 끝내도록 연결했다. callback은 SDL mutex를 잡기 전에 등록하고 잠금을 푼 뒤 해제하여 이미 취소된 token과 대기 진입 사이의 신호를 놓치지 않는다. 기존 큐 threshold·500ms 장치 starvation fallback·PCM은 유지한다. 기존 FrontendAudio 검사에 실제 SDL wait의 사전 취소·반복 취소·spurious wake·정상 소비를 추가했다. 같은 검사에서 이전 함수는 사전 취소 및 두 제어 요청에 실패했고 수정본은 통과했다. 이것은 큐 대기 중 제어 응답 개선이며 물리 오디오 지연 측정이 아니다.
+
+ARM 오디오에는 AArch64 FP64 두 lane으로 좌우 채널을 계산하는 명시적 NEON backend를 추가했다. 기존 enum 값·Auto 선택·scalar fallback·필터 단계/시간 순서·mute 및 coefficient ramp를 유지하며 streaming/SME 명령은 사용하지 않는다. 실제 Android Clang A64 ELF를 Unicorn에서 실행한 1,800개 전환 블록·952개 경계 사례에서 PCM 차이0, strict profile의 모든 FP64 state가 일치했다. 기본 compiler profile의 state는 미세한 차이가 있어 bit exact로 세지 않는다. ARMv7/비지원/ENABLE_SIMD=OFF에서는 제외되며 명시적 NEON 검사는 비지원 시77을 반환한다. native Apple ABI·기기 성능·물리 출력 검증은 남아 있고 자동 선택을 승격하지 않았다.
+
+Windows 전체 빌드·CTest700/700(73초, 실패/skip0)이 통과했다. 변경된 frontend 대기·x64 회귀를 확인했고 ARM runtime probe와 별도로 기록했다. 다음 우선순위는 실제256픽셀 호출 크기의 SIMD 측정, native ARM 오디오 및 입력/출력 장치 수락, 기존 ROM 취소·설정 저장 실패·13형식 상태 호환 과제다. 계획 ID 완료 수를 이번 후보 추가만으로 올리지 않으며 GitHub Actions·macOS 빌드는 사용하지 않는다.

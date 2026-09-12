@@ -256,7 +256,7 @@ if (MELONDS_TEST_GPU)
         if (method STREQUAL "Callback")
             set(signature "void EmuInstance::audioCallback(void* data, Uint8* stream, int len)")
         else()
-            set(signature "void EmuInstance::audioSync(int frameSamples)")
+            set(signature "void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)")
         endif()
         set(extracted "${CMAKE_CURRENT_BINARY_DIR}/ROMSmokeAudio${method}.inc")
         add_custom_command(OUTPUT "${extracted}"

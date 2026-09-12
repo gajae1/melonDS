@@ -141,17 +141,24 @@ void EmuInstance::updateFastForwardMute(bool fastForward)
     audioMutedByFastForward = fastForward && globalCfg.GetBool("MuteFastForward");
 }
 
-void EmuInstance::audioSync(int frameSamples)
+void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
 {
-    if (audioDevice)
+    if (audioDevice && !stopToken.stop_requested())
     {
         // The producer advances a whole emulated frame at once. A small SDL
         // callback can be delivered in a larger backend burst; waiting for
         // less than one callback then stalls production until that burst has
         // already exhausted the queue. Bound lead by a producer frame instead.
         const int maxQueued = std::max(audioBufSize, frameSamples);
+        // Register before locking: an already requested stop can invoke this
+        // callback synchronously. Destroy it only after releasing the mutex.
+        std::stop_callback wakeOnStop(stopToken, [this] {
+            SDL_LockMutex(audioSyncLock);
+            SDL_CondSignal(audioSyncCond);
+            SDL_UnlockMutex(audioSyncLock);
+        });
         SDL_LockMutex(audioSyncLock);
-        while (nds->SPU.GetOutputSize() >= maxQueued)
+        while (!stopToken.stop_requested() && nds->SPU.GetOutputSize() >= maxQueued)
         {
             int ret = SDL_CondWaitTimeout(audioSyncCond, audioSyncLock, 500);
             if (ret == SDL_MUTEX_TIMEDOUT) break;

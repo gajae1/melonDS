@@ -410,7 +410,7 @@ void EmuThread::run()
 
             if (emuInstance->doAudioSync && !(fastforward || slowmo))
                 emuInstance->audioSync(static_cast<int>(std::ceil(
-                    emuInstance->audioFreq * nlines / (outputFPS * 263.0))));
+                    emuInstance->audioFreq * nlines / (outputFPS * 263.0))), cheatStopToken());
 
             double frametimeStep = nlines / (currentFPS * 263.0);
 
@@ -491,7 +491,7 @@ void EmuThread::sendMessage(Message msg)
 {
     msgMutex.lock();
     msgQueue.enqueue(msg);
-    // Queued UI work must be able to interrupt an unbounded cheat loop before
+    // Queued UI work must interrupt both cheat execution and audio waits before
     // waitMessage() waits for the emulation thread to handle that work.
     cheatStopSource.request_stop();
     msgAvailable.wakeOne();

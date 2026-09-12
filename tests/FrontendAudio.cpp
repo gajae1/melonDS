@@ -6,6 +6,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <future>
+#include <semaphore>
+#include <stop_token>
+#include <thread>
 #include <SDL2/SDL.h>
 #include "types.h"
 #include "AudioLowPass.h"
@@ -19,6 +23,8 @@ struct SampleSource
 {
     int available = 1024;
     int rateChanges = 0;
+    int queuedFrames = 0;
+    int GetOutputSize() const { return queuedFrames; }
     int ReadOutput(s16* output, int frames)
     {
         const int count = std::min(available, frames);
@@ -46,18 +52,40 @@ struct AudioState
     bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
     SDL_mutex* audioSyncLock = SDL_CreateMutex();
     SDL_cond* audioSyncCond = SDL_CreateCond();
+    SDL_AudioDeviceID audioDevice = 0;
     ~AudioState() { SDL_DestroyCond(audioSyncCond); SDL_DestroyMutex(audioSyncLock); }
     static void audioCallback(void* data, Uint8* stream, int len);
+    void audioSync(int frameSamples, std::stop_token stopToken = {});
 };
+static std::counting_semaphore<> syncWaitEntered(0);
+static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
+{
+    syncWaitEntered.release();
+    return SDL_CondWaitTimeout(cond, mutex, timeout);
+}
 #define EmuInstance AudioState
 #include "audioCallback.inc"
+#define SDL_CondWaitTimeout ObserveSyncWait
+#include "audioSync.inc"
+#undef SDL_CondWaitTimeout
 #undef EmuInstance
 
-int main(int, char**)
+int main(int argc, char** argv)
 {
+    static_assert(int(AudioLowPass::Backend::Auto) == 0 &&
+                  int(AudioLowPass::Backend::Scalar) == 1 &&
+                  int(AudioLowPass::Backend::FMA) == 2 &&
+                  int(AudioLowPass::Backend::SSE2) == 3);
+    const bool requireNEON = argc == 2 && std::strcmp(argv[1], "--neon") == 0;
+    if (requireNEON && !AudioLowPass::IsSupported(AudioLowPass::Backend::NEON))
+    {
+        std::fputs("NEON unavailable; frontend verification not run\n", stderr);
+        return 77;
+    }
     Console console;
     AudioState state{&console};
-    state.audioLowPass.Init(state.audioFreq);
+    state.audioLowPass.Init(state.audioFreq, requireNEON ? AudioLowPass::Backend::NEON :
+                                                        AudioLowPass::Backend::Auto);
     state.audioOutputRamp.Init(state.audioFreq);
     constexpr s16 poison = 0x5555;
     constexpr int frames = 16;
@@ -66,6 +94,48 @@ int main(int, char**)
     const auto check = [&](bool ok, const char* message) {
         if (!ok) { ++failures; std::fprintf(stderr, "%s\n", message); }
     };
+    // Exercise the real SDL wait: a control request must not depend on the
+    // 500ms starvation fallback, and a spurious wake must recheck the queue.
+    using namespace std::chrono_literals;
+    Console syncConsole;
+    AudioState sync{&syncConsole};
+    syncConsole.SPU.queuedFrames = 4096;
+    sync.audioSync(800); // No device: no wait.
+    sync.audioDevice = 1; // Only the predicate uses this ID; no device is opened.
+    std::stop_source alreadyStopped;
+    alreadyStopped.request_stop();
+    sync.audioSync(800, alreadyStopped.get_token());
+    check(!syncWaitEntered.try_acquire(), "No-device or cancelled sync entered a wait");
+    for (bool consume : {false, true, false})
+    {
+        std::stop_source stop;
+        syncConsole.SPU.queuedFrames = 4096;
+        std::promise<void> complete;
+        auto done = complete.get_future();
+        std::thread waiter([&] { sync.audioSync(800, stop.get_token()); complete.set_value(); });
+        const bool waiting = syncWaitEntered.try_acquire_for(200ms);
+        check(waiting, "Audio sync did not wait above its existing threshold");
+        if (waiting)
+        {
+            SDL_LockMutex(sync.audioSyncLock);
+            SDL_CondSignal(sync.audioSyncCond); // Queue still high: must wait again.
+            SDL_UnlockMutex(sync.audioSyncLock);
+            check(syncWaitEntered.try_acquire_for(200ms), "Audio sync accepted a spurious wake");
+        }
+        if (consume)
+        {
+            SDL_LockMutex(sync.audioSyncLock);
+            syncConsole.SPU.queuedFrames = 0;
+            SDL_CondSignal(sync.audioSyncCond);
+            SDL_UnlockMutex(sync.audioSyncLock);
+        }
+        else stop.request_stop();
+        check(done.wait_for(200ms) == std::future_status::ready,
+              "Audio control/consumption waited for the 500ms fallback");
+        waiter.join();
+        check(syncConsole.SPU.queuedFrames == (consume ? 0 : 4096), "Cancellation drained audio");
+        while (syncWaitEntered.try_acquire()) {}
+    }
     const auto run = [&] {
         output.fill(poison);
         AudioState::audioCallback(&state, reinterpret_cast<Uint8*>(output.data()), frames * 4);
@@ -178,9 +248,11 @@ int main(int, char**)
     // Compare actual output and retained state through cutoff changes, bypass,
     // mute and unmute. Fusing may change rounding by one output LSB.
     int maxDifference = 0;
-    for (auto backend : {AudioLowPass::Backend::SSE2, AudioLowPass::Backend::FMA})
+    for (auto backend : {AudioLowPass::Backend::SSE2, AudioLowPass::Backend::FMA, AudioLowPass::Backend::NEON})
     for (double rate : {44100.0, 48000.0, 96000.0})
     {
+        if (!AudioLowPass::IsSupported(backend)) continue;
+        if (requireNEON && backend != AudioLowPass::Backend::NEON) continue;
         AudioLowPass reference, accelerated;
         reference.Init(rate, AudioLowPass::Backend::Scalar);
         accelerated.Init(rate, backend);
@@ -209,22 +281,23 @@ int main(int, char**)
             }
             for (int i = 1; i < 513; ++i)
                 maxDifference = std::max(maxDifference, std::abs(int(expected[i]) - int(actual[i])));
-            check(actual.front() == poison && actual.back() == poison, "FMA filter writes outside the stereo block");
+            check(actual.front() == poison && actual.back() == poison, "SIMD filter writes outside the stereo block");
             for (int channel = 0; channel < 2; ++channel)
             {
                 const double a = reference.ProcessSample(0, channel);
                 const double b = accelerated.ProcessSample(0, channel);
-                check(std::isfinite(b) && std::abs(a - b) < 0.01, "FMA filter state drifts or becomes non-finite");
+                check(std::isfinite(b) && std::abs(a - b) < 0.01, "SIMD filter state drifts or becomes non-finite");
             }
         }
     }
-    check(maxDifference <= 1, "FMA changes output by more than one 16-bit LSB");
-    std::printf("FMA supported=%d; max stereo output difference=%d LSB\n",
-                AudioLowPass::IsSupported(AudioLowPass::Backend::FMA), maxDifference);
+    check(maxDifference <= 1, "SIMD changes output by more than one 16-bit LSB");
+    std::printf("FMA supported=%d; NEON supported=%d; max stereo output difference=%d LSB\n",
+                AudioLowPass::IsSupported(AudioLowPass::Backend::FMA),
+                AudioLowPass::IsSupported(AudioLowPass::Backend::NEON), maxDifference);
 
     // Measure an actual stereo signal, not a duplicate of the filter equations.
     AudioLowPass filter;
-    filter.Init(48000);
+    filter.Init(48000, requireNEON ? AudioLowPass::Backend::NEON : AudioLowPass::Backend::Auto);
     filter.SetCutoffNow(6000);
     std::array<s16, 512 * 2> signal;
     double energy[2] = {};

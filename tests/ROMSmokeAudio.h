@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <stop_token>
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
@@ -116,7 +117,7 @@ struct SmokeAudio
     }
 
     static double Now() { return double(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency(); }
-    void audioSync(int frameSamples);
+    void audioSync(int frameSamples, std::stop_token stopToken = {});
     static void audioCallback(void*, Uint8*, int);
 };
 

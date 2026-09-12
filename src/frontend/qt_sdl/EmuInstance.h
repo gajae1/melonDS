@@ -21,6 +21,7 @@
 
 #include <SDL2/SDL.h>
 #include <atomic>
+#include <stop_token>
 
 #include "Platform.h"
 #include "main.h"
@@ -240,7 +241,7 @@ private:
     void updateAudioMuteByWindowFocus();
     void toggleAudioMute();
     void updateFastForwardMute(bool fastForward);
-    void audioSync(int frameSamples);
+    void audioSync(int frameSamples, std::stop_token stopToken = {});
     void audioReportDiagnostics();
     void audioUpdateSettings();
 

@@ -279,9 +279,15 @@ add_custom_command(OUTPUT "${audio_callback}"
         "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceAudio.cpp"
         "void EmuInstance::audioCallback(void* data, Uint8* stream, int len)" "${audio_callback}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
-add_executable(FrontendAudio "${CMAKE_SOURCE_DIR}/tests/FrontendAudio.cpp" "${audio_callback}")
+set(audio_sync "${CMAKE_CURRENT_BINARY_DIR}/audioSync.inc")
+add_custom_command(OUTPUT "${audio_sync}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceAudio.cpp"
+        "void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)" "${audio_sync}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
+add_executable(FrontendAudio "${CMAKE_SOURCE_DIR}/tests/FrontendAudio.cpp" "${audio_callback}" "${audio_sync}")
 target_include_directories(FrontendAudio PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(FrontendAudio PRIVATE PkgConfig::SDL2)
+target_link_libraries(FrontendAudio PRIVATE PkgConfig::SDL2 Threads::Threads)
 melonds_configure_audio_kernels(FrontendAudio)
 add_test(NAME audio-callback-buffer COMMAND FrontendAudio)
 set_tests_properties(audio-callback-buffer PROPERTIES TIMEOUT 30)
