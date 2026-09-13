@@ -177,11 +177,12 @@ target_link_libraries(melonDS PRIVATE bridge)
         self.assertEqual(manifest['schema'], 1)
         expected = {'9.9.90-melonDS.exe', 'bridge.dll', 'leaf.dll', 'platforms/plugin.dll', 'LICENSE',
                     'release-version.txt', 'README.txt', 'run-melonDS.cmd', 'third-party-licenses/fixture/COPYING',
-                    'third-party-licenses/miniaudio/LICENSE'}
+                    'third-party-licenses/miniaudio/LICENSE', 'third-party-licenses/rubberband/COPYING'}
         self.assertEqual(set(manifest['files']), expected)
         self.assertEqual({p.relative_to(self.runtime).as_posix() for p in self.runtime.rglob('*') if p.is_file()}, expected)
         self.assertTrue(all(sha(self.runtime / name) == value for name, value in manifest['files'].items()))
         self.assertEqual(sha(self.runtime / 'third-party-licenses/miniaudio/LICENSE'), sha(ROOT / 'src/miniaudio/LICENSE'))
+        self.assertEqual(sha(self.runtime / 'third-party-licenses/rubberband/COPYING'), sha(ROOT / 'src/rubberband/COPYING'))
         self.assertEqual(before, {p: sha(p) for p in before})
         self.assertEqual(set(self.owned_queries), {'/ucrt64/bin/bridge.dll', '/ucrt64/bin/leaf.dll',
                                                   '/ucrt64/share/qt6/plugins/platforms/plugin.dll'})

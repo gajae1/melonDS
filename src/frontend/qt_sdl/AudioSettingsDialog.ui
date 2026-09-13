@@ -36,6 +36,12 @@
       <string>Audio output</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_2">
+      <item row="11" column="0" colspan="3">
+       <widget class="QCheckBox" name="chkTimeStretch">
+        <property name="text"><string>Preserve pitch when changing speed (adds latency)</string></property>
+        <property name="toolTip"><string>Applies to audio output only. Off keeps the existing low-latency path. Processing adds tens of milliseconds independently of the output-device buffer; the actual delay varies. Not recommended for latency-sensitive rhythm games. Changes are previewed immediately; Cancel restores the previous setting.</string></property>
+       </widget>
+      </item>
       <item row="10" column="0">
        <widget class="QCheckBox" name="chkLowPass">
         <property name="text"><string>Low-pass filter:</string></property>

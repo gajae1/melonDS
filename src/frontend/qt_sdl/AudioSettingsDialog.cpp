@@ -53,6 +53,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     oldBufferSize = cfg.GetInt("Audio.BufferSize");
     oldOutputBackend = cfg.GetInt("Audio.OutputBackend");
     oldOutputDevice = cfg.GetQString("Audio.OutputDevice");
+    oldTimeStretch = cfg.GetBool("Audio.TimeStretch");
     oldVolume = instcfg.GetInt("Audio.Volume");
     oldDSiSync = instcfg.GetBool("Audio.DSiVolumeSync");
 
@@ -92,6 +93,11 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     }
     restoreOutputSelection();
     ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
+
+    {
+        const QSignalBlocker blocker(ui->chkTimeStretch);
+        ui->chkTimeStretch->setChecked(oldTimeStretch);
+    }
 
     ui->sbLowPassCutoff->blockSignals(true);
     ui->sbLowPassCutoff->setValue(oldLowPassCutoff > 0 ? oldLowPassCutoff : 20000);
@@ -165,6 +171,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
         ui->cbOutputDevice->setEnabled(false);
         ui->btnApplyBuffer->setEnabled(false);
         ui->chkLowPass->setEnabled(false);
+        ui->chkTimeStretch->setEnabled(false);
         ui->sbLowPassCutoff->setEnabled(false);
         for (QAbstractButton* btn : grpMicMode->buttons())
             btn->setEnabled(false);
@@ -237,6 +244,13 @@ void AudioSettingsDialog::on_AudioSettingsDialog_rejected()
             QMessageBox::warning(this, tr("Audio output"),
                 tr("The previous audio output could not be restored.\n%1").arg(error));
     }
+    if (cfg.GetBool("Audio.TimeStretch") != oldTimeStretch)
+    {
+        QString error;
+        if (!applyTimeStretch(oldTimeStretch, error))
+            QMessageBox::warning(this, tr("Audio output"),
+                tr("The previous pitch-preserving speed setting could not be restored.\n%1").arg(error));
+    }
     instcfg.SetInt("Audio.Volume", oldVolume);
     instcfg.SetBool("Audio.DSiVolumeSync", oldDSiSync);
 
@@ -297,6 +311,26 @@ void AudioSettingsDialog::on_chkLowPass_toggled(bool checked)
     emuInstance->getGlobalConfig().SetInt("Audio.LowPassCutoff",
         checked ? ui->sbLowPassCutoff->value() : 0);
     emit updateAudioSettings();
+}
+
+bool AudioSettingsDialog::applyTimeStretch(bool enabled, QString& error)
+{
+    if (!emuInstance->changeAudioTimeStretch(enabled, error)) return false;
+    emuInstance->getGlobalConfig().SetBool("Audio.TimeStretch", enabled);
+    return true;
+}
+
+void AudioSettingsDialog::on_chkTimeStretch_toggled(bool checked)
+{
+    QString error;
+    if (!applyTimeStretch(checked, error))
+    {
+        const QSignalBlocker blocker(ui->chkTimeStretch);
+        ui->chkTimeStretch->setChecked(emuInstance->getGlobalConfig().GetBool("Audio.TimeStretch"));
+        QMessageBox::warning(this, tr("Audio output"),
+            tr("The pitch-preserving speed setting could not be applied.\n%1").arg(error));
+    }
+    ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
 }
 
 void AudioSettingsDialog::populateOutputDevices(int backend, const QString& device)

@@ -86,7 +86,7 @@ target_include_directories(AudioSettingsUI PRIVATE "${CMAKE_SOURCE_DIR}/src"
 target_compile_definitions(AudioSettingsUI PRIVATE MELONDS_TEST_FILE_EXISTS)
 set_target_properties(AudioSettingsUI PROPERTIES
     AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(AudioSettingsUI PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)
+target_link_libraries(AudioSettingsUI PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads melonds-audio-stretch)
 if (USE_QT6)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     target_link_libraries(AudioSettingsUI PRIVATE Qt6::Test)
@@ -96,7 +96,8 @@ else()
 endif()
 foreach(case IN ITEMS filter-cancel buffer-preview-cancel buffer-accept
         buffer-failure buffer-cancel-failure secondary
-        output-preview-cancel output-failure output-unavailable)
+        output-preview-cancel output-failure output-unavailable
+        time-stretch-preview-cancel time-stretch-failure)
     add_test(NAME audio-settings-ui-${case} COMMAND AudioSettingsUI ${case})
     set_tests_properties(audio-settings-ui-${case} PROPERTIES TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;SDL_AUDIODRIVER=dummy")
@@ -360,6 +361,9 @@ add_custom_command(OUTPUT "${audio_sync}"
 set(audio_device_methods)
 foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(const AudioOutput::Settings& settings, std::string& error)"
         "audioEnable|void EmuInstance::audioEnable()"
+        "audioPumpTimeStretch|void EmuInstance::audioPumpTimeStretch(int maxQueued)"
+        "audioSetSpeed|void EmuInstance::audioSetSpeed(double speed)"
+        "audioTimeStretchFailed|void EmuInstance::audioTimeStretchFailed()"
         "audioSetOutput|bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::string& error)")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
@@ -373,13 +377,20 @@ foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(const A
 endforeach()
 add_executable(FrontendAudio "${CMAKE_SOURCE_DIR}/tests/FrontendAudio.cpp" "${audio_callback}" "${audio_sync}" ${audio_device_methods})
 target_include_directories(FrontendAudio PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(FrontendAudio PRIVATE PkgConfig::SDL2 Threads::Threads)
+target_link_libraries(FrontendAudio PRIVATE PkgConfig::SDL2 Threads::Threads melonds-audio-stretch)
 if (WIN32)
     target_link_libraries(FrontendAudio PRIVATE melonds-wasapi)
 endif()
 melonds_configure_audio_kernels(FrontendAudio)
 add_test(NAME audio-callback-buffer COMMAND FrontendAudio)
 set_tests_properties(audio-callback-buffer PROPERTIES TIMEOUT 30)
+
+add_executable(AudioTimeStretch "${CMAKE_SOURCE_DIR}/tests/AudioTimeStretch.cpp")
+target_link_libraries(AudioTimeStretch PRIVATE melonds-audio-stretch Threads::Threads)
+foreach(case IN ITEMS stream pressure reset)
+    add_test(NAME audio-time-stretch-${case} COMMAND AudioTimeStretch ${case})
+    set_tests_properties(audio-time-stretch-${case} PROPERTIES TIMEOUT 30)
+endforeach()
 
 add_executable(SaveManagerIO "${CMAKE_SOURCE_DIR}/tests/SaveManagerIO.cpp" SaveManager.cpp SaveManager.h)
 target_include_directories(SaveManagerIO PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -437,9 +448,10 @@ foreach(pair IN ITEMS "stateAudioEnable|audioEnable" "stateAudioDisable|audioDis
         DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
     target_sources(SavestateLoad PRIVATE "${output}")
 endforeach()
-target_link_libraries(SavestateLoad PRIVATE PkgConfig::SDL2 melonds-audio-output)
+target_link_libraries(SavestateLoad PRIVATE PkgConfig::SDL2 melonds-audio-output melonds-audio-stretch)
 melonds_configure_audio_kernels(SavestateLoad)
-foreach(case IN ITEMS audio-success audio-rebase audio-rollback audio-preflight)
+foreach(case IN ITEMS audio-success audio-rebase audio-rollback audio-preflight
+        stretch-success stretch-rollback stretch-preflight)
     add_test(NAME savestate-load-${case} COMMAND SavestateLoad ${case} interpreter)
     set_tests_properties(savestate-load-${case} PROPERTIES TIMEOUT 30)
 endforeach()

@@ -4,6 +4,7 @@ src/frontend/qt_sdl/gif-h/**                 linguist-vendored
 src/frontend/qt_sdl/toml/**                  linguist-vendored
 src/net/libslirp/**                          linguist-vendored
 src/net/pcap/**                              linguist-vendored
+src/rubberband/**                            linguist-vendored
 src/sha1/**                                  linguist-vendored
 src/teakra/**                                linguist-vendored
 src/tiny-AES-c/**                            linguist-vendored
@@ -19,3 +20,6 @@ src/net/libslirp/src/glib/**                 -linguist-vendored
 
 # Preserve the offline generator's byte-for-byte output on Windows checkouts.
 src/GBASaveDatabase.h                       text eol=lf
+
+# Retain the pinned upstream README's original line endings.
+src/rubberband/README.md                    -text

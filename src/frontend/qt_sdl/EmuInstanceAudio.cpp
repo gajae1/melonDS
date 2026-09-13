@@ -36,6 +36,7 @@ void EmuInstance::audioInit()
     audioVolume = localCfg.GetInt("Audio.Volume");
     audioDSiVolumeSync = localCfg.GetBool("Audio.DSiVolumeSync");
     audioLowPassCutoff = globalCfg.GetInt("Audio.LowPassCutoff");
+    audioTimeStretchEnabled = globalCfg.GetBool("Audio.TimeStretch");
 
     audioMutedToggle = false;
     audioMutedByFastForward = false;
@@ -82,6 +83,11 @@ void EmuInstance::audioInit()
 bool EmuInstance::audioOpenOutput(const AudioOutput::Settings& settings, std::string& error)
 {
     if (!audioDevice.Open(settings, audioCallback, this, error)) return false;
+    if (audioTimeStretchEnabled && !audioTimeStretch.Configure(audioDevice.GetSpec().rate, error))
+    {
+        audioDevice.Close();
+        return false;
+    }
     // Newly opened devices are stopped. Publish the complete callback state
     // before the emulation thread resumes delivery.
     audioFreq = audioDevice.GetSpec().rate;
@@ -143,6 +149,8 @@ QString EmuInstance::audioOutputDescription() const
         .arg(audioBufSize * 1000.0 / audioFreq, 0, 'f', 2);
     if (spec.bufferFrames > 0)
         description += QObject::tr("; device capacity %1 frames").arg(spec.bufferFrames);
+    if (audioTimeStretchEnabled)
+        description += QObject::tr("; pitch preservation adds processing delay");
     return description;
 }
 
@@ -173,6 +181,25 @@ bool EmuInstance::changeAudioOutput(int frames, int backend, const QString& devi
     emuThread->emuPause(false);
     std::string detail;
     const bool applied = audioSetOutput(settings, detail);
+    emuThread->emuUnpause(false);
+    error = QString::fromStdString(detail);
+    return applied;
+}
+
+bool EmuInstance::changeAudioTimeStretch(bool enabled, QString& error)
+{
+    error.clear();
+    if (enabled == audioTimeStretchEnabled) return true;
+    emuThread->emuPause(false);
+    audioDevice.Stop();
+    std::string detail;
+    const bool applied = !enabled || audioTimeStretch.Configure(audioFreq, detail);
+    if (applied)
+    {
+        audioTimeStretchEnabled = enabled;
+        if (!enabled) audioTimeStretch.Clear();
+        if (nds) audioResetOutput();
+    }
     emuThread->emuUnpause(false);
     error = QString::fromStdString(detail);
     return applied;
@@ -234,6 +261,48 @@ void EmuInstance::updateFastForwardMute(bool fastForward)
     audioMutedByFastForward = fastForward && globalCfg.GetBool("MuteFastForward");
 }
 
+void EmuInstance::audioTimeStretchFailed()
+{
+    // Processing is never called by the device callback. Quiesce that callback
+    // before replacing its source and recovery ramp after a native failure.
+    const bool running = audioDevice.IsRunning();
+    audioDevice.Stop();
+    audioTimeStretchEnabled = false;
+    audioTimeStretch.Clear();
+    if (nds) nds->SPU.ResetOutputHistory();
+    audioOutputRamp.FadeIn();
+    Platform::Log(Platform::LogLevel::Error,
+        "Pitch-preserving processing failed; restored the original audio path\n");
+    if (running)
+    {
+        std::string error;
+        if (!audioDevice.Start(error))
+            Platform::Log(Platform::LogLevel::Error, "Audio recovery failed: %s\n", error.c_str());
+    }
+}
+
+void EmuInstance::audioSetSpeed(double speed)
+{
+    if (audioTimeStretchEnabled && !audioTimeStretch.SetSpeed(speed)) audioTimeStretchFailed();
+}
+
+void EmuInstance::audioPumpTimeStretch(int maxQueued)
+{
+    if (!audioTimeStretchEnabled || !nds) return;
+    audioTimeStretch.Drain();
+    std::array<int16_t, AudioTimeStretch::BlockFrames * 2> input;
+    // Leave excess source/native output pending instead of dropping samples or
+    // growing a second unbounded queue. audioSync pumps again after consumption.
+    while (audioTimeStretch.QueuedFrames() < static_cast<size_t>(std::max(1, maxQueued)) &&
+           audioTimeStretch.CanPush())
+    {
+        const int count = nds->SPU.ReadOutput(input.data(), AudioTimeStretch::BlockFrames);
+        if (!count) break;
+        if (!audioTimeStretch.Push(input.data(), count)) break;
+    }
+    if (!audioTimeStretch.Healthy()) audioTimeStretchFailed();
+}
+
 void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
 {
     if (audioIsRunning() && !stopToken.stop_requested())
@@ -250,11 +319,18 @@ void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
             SDL_CondSignal(audioSyncCond);
             SDL_UnlockMutex(audioSyncLock);
         });
+        audioPumpTimeStretch(maxQueued);
         SDL_LockMutex(audioSyncLock);
-        while (!stopToken.stop_requested() && audioIsRunning() && nds->SPU.GetOutputSize() >= maxQueued)
+        while (!stopToken.stop_requested() && audioIsRunning() &&
+               (audioTimeStretchEnabled
+                   ? (audioTimeStretch.PendingFrames() >= static_cast<size_t>(maxQueued) || nds->SPU.GetOutputSize() > 0)
+                   : nds->SPU.GetOutputSize() >= maxQueued))
         {
             int ret = SDL_CondWaitTimeout(audioSyncCond, audioSyncLock, 500);
             if (ret == SDL_MUTEX_TIMEDOUT) break;
+            SDL_UnlockMutex(audioSyncLock);
+            audioPumpTimeStretch(maxQueued);
+            SDL_LockMutex(audioSyncLock);
         }
         SDL_UnlockMutex(audioSyncLock);
     }
@@ -270,7 +346,9 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
     // requested device buffer; changing its length here leaves stale samples.
     const Uint64 started = inst->audioDiagnostics.Begin();
     SDL_LockMutex(inst->audioSyncLock);
-    int num_in = inst->nds->SPU.ReadOutput((s16*) stream, len);
+    int num_in = inst->audioTimeStretchEnabled
+        ? static_cast<int>(inst->audioTimeStretch.Read(reinterpret_cast<s16*>(stream), len))
+        : inst->nds->SPU.ReadOutput((s16*) stream, len);
     SDL_CondSignal(inst->audioSyncCond);
     SDL_UnlockMutex(inst->audioSyncLock);
     inst->audioDiagnostics.Record(len, num_in, started);
@@ -640,6 +718,7 @@ void EmuInstance::audioResetOutput()
     // The caller has paused the device; discard every host output history while
     // retaining the user's output rate, volume and current filter cutoff.
     nds->SPU.ResetOutputHistory();
+    if (audioTimeStretchEnabled && !audioTimeStretch.Reset()) audioTimeStretchFailed();
     const double cutoff = audioLowPass.Cutoff();
     audioLowPass.Init(audioFreq);
     audioLowPass.SetCutoffNow(cutoff);

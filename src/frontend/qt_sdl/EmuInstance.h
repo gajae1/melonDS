@@ -37,6 +37,7 @@
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
 #include "AudioOutput.h"
+#include "AudioTimeStretch.h"
 
 const int kMaxWindows = 4;
 
@@ -99,6 +100,7 @@ public:
     QString audioOutputDescription() const;
     bool changeAudioBuffer(int frames, QString& error);
     bool changeAudioOutput(int frames, int backend, const QString& device, QString& error);
+    bool changeAudioTimeStretch(bool enabled, QString& error);
     static QList<QPair<QString, QString>> audioOutputDevices(int backend, QString& error);
     melonDS::NDS* getNDS() { return nds; }
     // Only on the emulation thread, or while that producer is paused.
@@ -250,6 +252,9 @@ private:
     void toggleAudioMute();
     void updateFastForwardMute(bool fastForward);
     void audioSync(int frameSamples, std::stop_token stopToken = {});
+    void audioPumpTimeStretch(int maxQueued);
+    void audioSetSpeed(double speed);
+    void audioTimeStretchFailed();
     void audioReportDiagnostics();
     void audioUpdateSettings();
 
@@ -340,6 +345,8 @@ private:
     bool cheatsOn;
 
     AudioOutput audioDevice;
+    AudioTimeStretch audioTimeStretch;
+    bool audioTimeStretchEnabled = false;
     bool audioOpenOutput(const AudioOutput::Settings& settings, std::string& error);
     bool audioSetOutput(const AudioOutput::Settings& settings, std::string& error);
     bool audioIsRunning() const { return audioDevice.IsRunning(); }

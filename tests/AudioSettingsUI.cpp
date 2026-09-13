@@ -20,16 +20,20 @@ struct AudioInstance
         int backend, backendBefore;
         QString device, deviceBefore;
     };
+    struct StretchCall { bool requested, configuredBefore, activeBefore; };
     Config::Table global = Config::GetGlobalTable();
     Config::Table local;
     int instanceID;
     int activeBuffer = 512;
     int activeBackend = 0;
     QString activeDevice;
+    bool activeTimeStretch = false;
+    int failTimeStretch = -1;
     int failBuffer = -1;
     QString failDevice;
     inline static bool enumerationFails = false;
     std::vector<Call> calls;
+    std::vector<StretchCall> stretchCalls;
 
     explicit AudioInstance(int instance) : local(Config::GetLocalTable(instance)), instanceID(instance) {}
     Config::Table& getGlobalConfig() { return global; }
@@ -63,12 +67,24 @@ struct AudioInstance
         activeDevice = device;
         return true;
     }
+    bool changeAudioTimeStretch(bool enabled, QString& error)
+    {
+        stretchCalls.push_back({enabled, global.GetBool("Audio.TimeStretch"), activeTimeStretch});
+        if (failTimeStretch == static_cast<int>(enabled))
+        {
+            error = "AudioSettingsUI simulated time-stretch failure";
+            return false;
+        }
+        activeTimeStretch = enabled;
+        return true;
+    }
     QString audioOutputDescription() const
     {
         // Deliberately different obtained period: the label must show the
         // output result, not infer a device period from the requested choice.
-        return QString("Test output: requested %1 frames; obtained 256 frames at 44100 Hz; backend %2, %3")
-            .arg(activeBuffer).arg(activeBackend).arg(activeDevice.isEmpty() ? "System default" : activeDevice);
+        return QString("Test output: requested %1 frames; obtained 256 frames at 44100 Hz; backend %2, %3; time stretch %4")
+            .arg(activeBuffer).arg(activeBackend).arg(activeDevice.isEmpty() ? "System default" : activeDevice)
+            .arg(activeTimeStretch ? "on" : "off");
     }
 };
 class AudioWindow : public QWidget
@@ -159,9 +175,10 @@ class ExpectedWarning
     QTimer poll, timeout;
     bool dismissed = false;
 public:
-    ExpectedWarning(AudioSettingsDialog& owner, const QString& explanation)
+    ExpectedWarning(AudioSettingsDialog& owner, const QString& explanation,
+                    const QString& detail = "AudioSettingsUI simulated device-open failure")
     {
-        const QString text = explanation + "\nAudioSettingsUI simulated device-open failure";
+        const QString text = explanation + '\n' + detail;
         QObject::connect(&poll, &QTimer::timeout, &poll, [this, &owner, text] {
             auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
             if (!box) return;
@@ -192,11 +209,12 @@ static void Preview64(AudioSettingsDialog& dialog, AudioInstance& instance)
     const QString capture = qEnvironmentVariable("MELONDS_AUDIO_UI_CAPTURE");
     if (!capture.isEmpty()) Require(dialog.grab().save(capture), "Could not capture the actual Qt dialog");
 }
-static void ReadBack(int frames, int backend = 0, const QString& device = {})
+static void ReadBack(int frames, int backend = 0, const QString& device = {}, bool timeStretch = false)
 {
     QProcess child;
     child.start(QCoreApplication::applicationFilePath(),
-                {"readback", configDirectory, QString::number(frames), QString::number(backend), device});
+                {"readback", configDirectory, QString::number(frames), QString::number(backend), device,
+                 timeStretch ? "1" : "0"});
     const bool finished = child.waitForFinished(10000);
     const QByteArray output = child.readAllStandardOutput() + child.readAllStandardError();
     std::fwrite(output.constData(), 1, output.size(), stdout);
@@ -232,6 +250,16 @@ static void CheckRouteCall(const AudioInstance& instance, int backend, const QSt
     Require(call.backend == backend && call.device == device && call.backendBefore == previousBackend &&
             call.deviceBefore == previousDevice, "Backend/device configuration changed before successful apply");
 }
+static void CheckTimeStretch(AudioSettingsDialog& dialog, AudioInstance& instance, bool enabled, size_t count)
+{
+    Require(instance.stretchCalls.size() == count && instance.activeTimeStretch == enabled &&
+            instance.global.GetBool("Audio.TimeStretch") == enabled &&
+            Widget<QCheckBox>(dialog, "chkTimeStretch")->isChecked() == enabled,
+            "Pitch-preserving preview, configuration and checkbox state disagree");
+    if (count)
+        Require(instance.stretchCalls.back().configuredBefore == instance.stretchCalls.back().activeBefore,
+                "Pitch-preserving configuration changed before the transaction completed");
+}
 #ifdef Q_OS_WIN
 static constexpr int PreviewBackend = 1;
 static const QString PreviewDevice = "wasapi:broadcast";
@@ -251,6 +279,19 @@ static void Scenario(const QString& name)
         cfg.SetQString("Audio.OutputDevice", PreviewDevice);
         instance.activeBackend = PreviewBackend;
         instance.activeDevice = PreviewDevice;
+        cfg.SetBool("Audio.TimeStretch", true);
+        instance.activeTimeStretch = true;
+    }
+    if (name.startsWith("time-stretch-"))
+    {
+        cfg.SetInt("Audio.BufferSize", 64);
+        cfg.SetInt("Audio.OutputBackend", PreviewBackend);
+        cfg.SetQString("Audio.OutputDevice", PreviewDevice);
+        instance.activeBuffer = 64;
+        instance.activeBackend = PreviewBackend;
+        instance.activeDevice = PreviewDevice;
+        Require(!cfg.GetBool("Audio.TimeStretch") && Config::Save(),
+                "Could not seed the existing output tuple with pitch preservation off");
     }
     if (name == "output-unavailable")
     {
@@ -366,6 +407,81 @@ static void Scenario(const QString& name)
         Require(instance.calls.size() == 1 && cfg.GetInt("Audio.BufferSize") == 33,
                 "Cancel unnecessarily reconfigured the unchanged non-power-of-two preference");
     }
+    else if (name == "time-stretch-preview-cancel")
+    {
+        CheckTimeStretch(*dialog, instance, false, 0);
+        SelectOutput(*dialog, 32, 0, "sdl:speakers"); // Leave a separate output draft unapplied.
+        Click(Widget<QCheckBox>(*dialog, "chkTimeStretch"));
+        CheckTimeStretch(*dialog, instance, true, 1);
+        CheckOutput(*dialog, instance, 64);
+        Require(instance.calls.empty() && cfg.GetInt("Audio.OutputBackend") == PreviewBackend &&
+                cfg.GetQString("Audio.OutputDevice") == PreviewDevice &&
+                Widget<QComboBox>(*dialog, "cbBufferSize")->currentData().toInt() == 32 &&
+                Widget<QComboBox>(*dialog, "cbOutputBackend")->currentData().toInt() == 0 &&
+                Widget<QComboBox>(*dialog, "cbOutputDevice")->currentData().toString() == "sdl:speakers",
+                "Pitch preview applied or reset the separate output tuple/draft");
+        Finish(*dialog, QDialogButtonBox::Cancel);
+        Require(instance.calls.empty() && instance.stretchCalls.size() == 2 &&
+                !instance.stretchCalls.back().requested && !instance.activeTimeStretch &&
+                !cfg.GetBool("Audio.TimeStretch"), "Cancel did not restore pitch preservation off");
+        ReadBack(64, PreviewBackend, PreviewDevice);
+
+        dialog = Open(window);
+        CheckTimeStretch(*dialog, instance, false, 2);
+        CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
+        Click(Widget<QCheckBox>(*dialog, "chkTimeStretch"));
+        Finish(*dialog, QDialogButtonBox::Ok);
+        CheckTimeStretch(*dialog, instance, true, 3);
+        CheckOutput(*dialog, instance, 64);
+        CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
+        CheckCall(instance, 1, 64, 64); // Keep the existing OK output-apply semantics.
+        ReadBack(64, PreviewBackend, PreviewDevice, true);
+
+        dialog = Open(window);
+        CheckTimeStretch(*dialog, instance, true, 3); // Opening a saved enabled setting is not a preview.
+        Click(Widget<QCheckBox>(*dialog, "chkTimeStretch"));
+        CheckTimeStretch(*dialog, instance, false, 4);
+        Finish(*dialog, QDialogButtonBox::Cancel);
+        Require(instance.calls.size() == 1 && instance.stretchCalls.size() == 5 &&
+                instance.stretchCalls.back().requested && instance.activeTimeStretch &&
+                cfg.GetBool("Audio.TimeStretch"), "Cancel did not restore the originally enabled mode");
+    }
+    else if (name == "time-stretch-failure")
+    {
+        SelectBuffer(*dialog, 32);
+        instance.failTimeStretch = 1;
+        {
+            ExpectedWarning warning(*dialog, "The pitch-preserving speed setting could not be applied.",
+                                    "AudioSettingsUI simulated time-stretch failure");
+            Click(Widget<QCheckBox>(*dialog, "chkTimeStretch"));
+            warning.Check();
+        }
+        CheckTimeStretch(*dialog, instance, false, 1);
+        Require(Widget<QComboBox>(*dialog, "cbBufferSize")->currentData().toInt() == 32,
+                "Failed pitch preview reset the separate output draft");
+        instance.failTimeStretch = -1;
+        Click(Widget<QCheckBox>(*dialog, "chkTimeStretch"));
+        CheckTimeStretch(*dialog, instance, true, 2);
+        instance.failTimeStretch = 0;
+        {
+            ExpectedWarning warning(*dialog, "The pitch-preserving speed setting could not be applied.",
+                                    "AudioSettingsUI simulated time-stretch failure");
+            Click(Widget<QCheckBox>(*dialog, "chkTimeStretch"));
+            warning.Check();
+        }
+        CheckTimeStretch(*dialog, instance, true, 3);
+        {
+            ExpectedWarning warning(*dialog, "The previous pitch-preserving speed setting could not be restored.",
+                                    "AudioSettingsUI simulated time-stretch failure");
+            Finish(*dialog, QDialogButtonBox::Cancel);
+            warning.Check();
+        }
+        CheckTimeStretch(*dialog, instance, true, 4);
+        CheckOutput(*dialog, instance, 64);
+        CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
+        Require(instance.calls.empty(), "Pitch failure recovery unexpectedly reopened the output tuple");
+        ReadBack(64, PreviewBackend, PreviewDevice); // Failed Cancel retains the live success without saving it.
+    }
     else if (name == "output-preview-cancel")
     {
         // Keep the buffer unchanged: Cancel must notice backend/device-only
@@ -475,20 +591,23 @@ static void Scenario(const QString& name)
         auto* cutoff = Widget<QSpinBox>(*dialog, "sbLowPassCutoff");
         auto* backends = Widget<QComboBox>(*dialog, "cbOutputBackend");
         auto* devices = Widget<QComboBox>(*dialog, "cbOutputDevice");
+        auto* timeStretch = Widget<QCheckBox>(*dialog, "chkTimeStretch");
         Require(!combo->isEnabled() && !preview->isEnabled() && !filter->isEnabled() && !cutoff->isEnabled() &&
-                !backends->isEnabled() && !devices->isEnabled(),
+                !backends->isEnabled() && !devices->isEnabled() && !timeStretch->isEnabled(),
                 "Secondary instance exposes shared output/filter controls");
         QTest::keyClick(combo, Qt::Key_Up);
         Click(preview); Click(filter);
         QTest::keyClick(cutoff, Qt::Key_Down);
         QTest::keyClick(backends, Qt::Key_Up);
         QTest::keyClick(devices, Qt::Key_Up);
+        Click(timeStretch);
         Finish(*dialog, QDialogButtonBox::Ok);
         Require(instance.calls.empty() && cfg.GetInt("Audio.BufferSize") == 512 &&
                 cfg.GetInt("Audio.LowPassCutoff") == 9000,
                 "Secondary instance changed global output/filter settings through UI or OK");
         CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
-        ReadBack(512, PreviewBackend, PreviewDevice);
+        CheckTimeStretch(*dialog, instance, true, 0);
+        ReadBack(512, PreviewBackend, PreviewDevice, true);
     }
     else throw std::runtime_error("Unknown AudioSettingsUI scenario");
 }
@@ -505,19 +624,20 @@ int main(int argc, char** argv)
     watchdog.setSingleShot(true); watchdog.start(15000);
     try
     {
-        if (argc == 6 && QString::fromLocal8Bit(argv[1]) == "readback")
+        if (argc == 7 && QString::fromLocal8Bit(argv[1]) == "readback")
         {
             configDirectory = QString::fromLocal8Bit(argv[2]);
             const int frames = QString::fromLocal8Bit(argv[3]).toInt();
             const int backend = QString::fromLocal8Bit(argv[4]).toInt();
             const QString device = QString::fromLocal8Bit(argv[5]);
+            const bool timeStretch = QString::fromLocal8Bit(argv[6]) == "1";
             Require(Config::Load(), "Fresh process could not load the generated configuration");
             auto cfg = Config::GetGlobalTable();
             Require(cfg.GetInt("Audio.BufferSize") == frames && cfg.GetInt("Audio.OutputBackend") == backend &&
-                    cfg.GetQString("Audio.OutputDevice") == device,
+                    cfg.GetQString("Audio.OutputDevice") == device && cfg.GetBool("Audio.TimeStretch") == timeStretch,
                     "Saved output tuple was absent or changed during fresh Config::Load");
-            std::printf("Fresh Config::Load: buffer=%d backend=%d device=%s PASS\n",
-                        frames, backend, device.toUtf8().constData());
+            std::printf("Fresh Config::Load: buffer=%d backend=%d device=%s timeStretch=%d PASS\n",
+                        frames, backend, device.toUtf8().constData(), timeStretch);
             return 0;
         }
         Require(argc == 2, "Expected one AudioSettingsUI scenario name");

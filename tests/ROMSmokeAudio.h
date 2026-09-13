@@ -25,6 +25,15 @@ struct SmokeAudio
     std::atomic<int> audioLowPassCutoff{0}, audioVolume{256};
     bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
     bool Started = false;
+    // This generic core smoke fixture exercises the default audio path. The
+    // optional converter is covered by its native streaming tests separately.
+    static constexpr bool audioTimeStretchEnabled = false;
+    struct DisabledTimeStretch
+    {
+        size_t Read(int16_t*, size_t) { std::abort(); }
+        size_t PendingFrames() const { std::abort(); }
+    } audioTimeStretch;
+    void audioPumpTimeStretch(int) {}
     bool audioIsRunning() const { return audioDevice && SDL_GetAudioDeviceStatus(audioDevice) == SDL_AUDIO_PLAYING; }
     double LastTime = 0, FrameLimitError = 0;
 

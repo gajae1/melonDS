@@ -69,6 +69,7 @@ private slots:
     void on_slVolume_valueChanged(int val);
     void on_sbLowPassCutoff_valueChanged(int value);
     void on_chkLowPass_toggled(bool checked);
+    void on_chkTimeStretch_toggled(bool checked);
     void on_cbOutputBackend_currentIndexChanged(int idx);
     void on_btnApplyBuffer_clicked();
     void on_chkSyncDSiVolume_clicked(bool checked);
@@ -79,6 +80,7 @@ private:
     void populateOutputDevices(int backend, const QString& device);
     void restoreOutputSelection();
     bool applyOutput(int frames, int backend, const QString& device, QString& error);
+    bool applyTimeStretch(bool enabled, QString& error);
 
     Ui::AudioSettingsDialog* ui;
 
@@ -90,6 +92,7 @@ private:
     int oldBufferSize;
     int oldOutputBackend;
     QString oldOutputDevice;
+    bool oldTimeStretch;
     int oldVolume;
     bool oldDSiSync;
     QButtonGroup* grpMicMode;

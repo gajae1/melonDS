@@ -315,11 +315,15 @@ void EmuThread::run()
             // emulate
             // blip buffers belong to this thread. Adjust their clock for the
             // requested emulation speed before producing device-rate samples.
-            // Fast-forward retains the existing queue-trimming behavior; its
-            // requested speed may exceed what the host can actually execute.
-            const double audioFPS = std::min(emuInstance->curFPS.load(std::memory_order_relaxed), emuInstance->targetFPS);
+            // The optional pitch-preserving path instead keeps the source
+            // clock unchanged and converts speed after the core produces PCM.
+            const double requestedFPS = emuInstance->curFPS.load(std::memory_order_relaxed);
+            const double audioFPS = emuInstance->audioTimeStretchEnabled ? requestedFPS
+                : std::min(requestedFPS, emuInstance->targetFPS);
             const double outputFPS = std::max(audioFPS, 59.8260982880808 * 0.5);
-            emuInstance->nds->SPU.SetOutputSkew(outputFPS / 59.8260982880808);
+            emuInstance->audioSetSpeed(outputFPS / 59.8260982880808);
+            emuInstance->nds->SPU.SetOutputSkew(emuInstance->audioTimeStretchEnabled
+                ? 1.0 : outputFPS / 59.8260982880808);
             u32 nlines;
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
             {
@@ -411,9 +415,11 @@ void EmuThread::run()
                 emuInstance->audioVolume = volumeLevel * (256.0 / 31.0);
             }
 
-            if (emuInstance->doAudioSync && !(fastforward || slowmo))
-                emuInstance->audioSync(static_cast<int>(std::ceil(
-                    emuInstance->audioFreq * nlines / (outputFPS * 263.0))), cheatStopToken());
+            const int outputFrameSamples = static_cast<int>(std::ceil(
+                emuInstance->audioFreq * nlines / (outputFPS * 263.0)));
+            emuInstance->audioPumpTimeStretch(std::max(emuInstance->audioBufSize, outputFrameSamples));
+            if (emuInstance->doAudioSync && (emuInstance->audioTimeStretchEnabled || !(fastforward || slowmo)))
+                emuInstance->audioSync(outputFrameSamples, cheatStopToken());
 
             double frametimeStep = nlines / (currentFPS * 263.0);
 

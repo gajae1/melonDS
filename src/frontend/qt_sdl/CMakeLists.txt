@@ -3,6 +3,14 @@ include(CMakeDependentOption)
 include(FixInterfaceIncludes)
 include(PackageIdentity)
 
+add_library(melonds-audio-stretch STATIC AudioTimeStretch.cpp AudioTimeStretch.h
+    ../../rubberband/single/RubberBandSingle.cpp)
+target_include_directories(melonds-audio-stretch PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+    PRIVATE ../../rubberband)
+if (APPLE)
+    target_link_libraries(melonds-audio-stretch PRIVATE "-framework Accelerate")
+endif()
+
 add_library(melonds-audio-output STATIC AudioOutput.cpp AudioOutput.h)
 target_include_directories(melonds-audio-output PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" PRIVATE ../..)
 target_link_libraries(melonds-audio-output PRIVATE PkgConfig::SDL2)
@@ -210,7 +218,7 @@ else()
     target_include_directories(melonDS PUBLIC ${Qt5Gui_PRIVATE_INCLUDE_DIRS})
 endif()
 target_link_libraries(melonDS PRIVATE core)
-target_link_libraries(melonDS PRIVATE melonds-audio-output)
+target_link_libraries(melonDS PRIVATE melonds-audio-output melonds-audio-stretch)
 target_link_libraries(melonDS PRIVATE PkgConfig::SDL2 PkgConfig::LibArchive PkgConfig::Zstd PkgConfig::Faad)
 target_link_libraries(melonDS PRIVATE ${QT_LINK_LIBS} ${CMAKE_DL_LIBS})
 

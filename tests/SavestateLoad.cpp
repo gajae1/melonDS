@@ -23,6 +23,7 @@
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
 #include "AudioOutput.h"
+#include "AudioTimeStretch.h"
 using namespace melonDS;
 
 enum class ReadFailure { None, Short, Error, Oversize };
@@ -93,6 +94,9 @@ struct StateReader
     FixtureConsole* nds;
     std::unique_ptr<Savestate> backupState;
     AudioOutput audioDevice;
+    AudioTimeStretch audioTimeStretch;
+    bool audioTimeStretchEnabled = false;
+    void audioTimeStretchFailed() { std::abort(); }
     SDL_mutex* audioSyncLock = SDL_CreateMutex();
     SDL_cond* audioSyncCond = SDL_CreateCond();
     SDL_sem* captured = SDL_CreateSemaphore(0);
@@ -211,8 +215,10 @@ static std::unique_ptr<NDSCart::CartCommon> MakeCart(bool infrared, u8 identity)
         0, false, params, nullptr, 0, nullptr);
 }
 
-static int AudioHistory(const std::string& test)
+static int AudioHistory(const std::string& requestedTest)
 {
+    const bool stretch = requestedTest.starts_with("stretch-");
+    const std::string test = stretch ? "audio-" + requestedTest.substr(8) : requestedTest;
     // Reuse the actual core/load/late-section fixture above and the actual SDL
     // callback below. Only the backend is dummy; no sound device or mic is used.
     SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
@@ -246,10 +252,22 @@ static int AudioHistory(const std::string& test)
         nds.ARM7Write16(0x04000504, 0x280);
         nds.RunFrame();
         reader.nextCallback(); // Prime real frontend filter history too.
+        if (stretch)
+        {
+            std::string error;
+            if (!reader.audioTimeStretch.Configure(reader.audioFreq, error)) throw std::runtime_error(error);
+            reader.audioTimeStretchEnabled = true;
+            std::array<int16_t, 2048> tone;
+            for (size_t i = 0; i < tone.size(); i += 2) { tone[i] = 12000; tone[i + 1] = -12000; }
+            for (unsigned i = 0; i < 10; ++i)
+                if (!reader.audioTimeStretch.Push(tone.data(), 1024)) throw std::runtime_error("stretch history seed");
+            reader.nextCallback();
+            nds.SPU.DrainOutput(); // Converter is now the callback's source.
+        }
         const auto previous = Snapshot(nds);
         nds.loadCalls = 0;
         Observation observed;
-        observed.queuedBefore = nds.SPU.GetOutputSize();
+        observed.queuedBefore = stretch ? reader.audioTimeStretch.QueuedFrames() : nds.SPU.GetOutputSize();
         if (load)
         {
             if (test == "audio-rollback") target[target.size() - 20] = 'X';
@@ -264,12 +282,30 @@ static int AudioHistory(const std::string& test)
             observed.result = reader.loadState(name.toStdString());
         }
         observed.corePreserved = Snapshot(nds) == (load && success ? target : previous);
-        observed.queuedAfter = nds.SPU.GetOutputSize();
+        observed.queuedAfter = stretch ? reader.audioTimeStretch.QueuedFrames() : nds.SPU.GetOutputSize();
         observed.first = reader.nextCallback();
         // Pass the old queue through real callbacks before checking newly
         // produced audio, so a rollback also proves the pending blip history.
-        while (nds.SPU.GetOutputSize()) reader.nextCallback();
+        if (stretch)
+        {
+            while (reader.audioTimeStretch.PendingFrames())
+            {
+                reader.audioTimeStretch.Drain();
+                reader.nextCallback();
+            }
+        }
+        else while (nds.SPU.GetOutputSize()) reader.nextCallback();
         nds.RunFrame();
+        if (stretch)
+        {
+            std::array<int16_t, 2048> input;
+            while (reader.audioTimeStretch.CanPush())
+            {
+                const int n = nds.SPU.ReadOutput(input.data(), 1024);
+                if (!n) break;
+                if (!reader.audioTimeStretch.Push(input.data(), n)) throw std::runtime_error("stretch resume");
+            }
+        }
         observed.next = reader.nextCallback(); // Includes the pending blip tail.
         return observed;
     };
@@ -292,7 +328,7 @@ static int AudioHistory(const std::string& test)
         passed &= loaded.result == StateLoadResult::Failed && loaded.queuedAfter == loaded.queuedBefore &&
             loaded.first == control.first && loaded.next == control.next;
     std::printf("%s: %s result=%d queue=%d->%d first_peak=%d next_peak=%d control_peak=%d "
-                "resume_equal=%d core_snapshot_equal=%d backend=dummy\n", test.c_str(), passed ? "PASS" : "FAIL",
+                "resume_equal=%d core_snapshot_equal=%d backend=dummy\n", requestedTest.c_str(), passed ? "PASS" : "FAIL",
         int(loaded.result), loaded.queuedBefore, loaded.queuedAfter, peak(loaded.first), peak(loaded.next),
         peak(control.first), loaded.first == control.first && loaded.next == control.next, loaded.corePreserved);
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -304,7 +340,7 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
     if (argc != 3) return 2;
     const std::string test = argv[1];
-    if (test.starts_with("audio-")) return AudioHistory(test);
+    if (test.starts_with("audio-") || test.starts_with("stretch-")) return AudioHistory(test);
     const bool jit = std::strcmp(argv[2], "interpreter") != 0;
 #ifndef JIT_ENABLED
     if (jit) return 77;

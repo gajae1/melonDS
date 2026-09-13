@@ -18,6 +18,7 @@
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
 #include "AudioOutput.h"
+#include "AudioTimeStretch.h"
 #include "Platform.h"
 using namespace melonDS;
 namespace melonDS::Platform { void Log(LogLevel, const char*, ...) {} }
@@ -61,11 +62,16 @@ struct AudioState
     SDL_mutex* audioSyncLock = SDL_CreateMutex();
     SDL_cond* audioSyncCond = SDL_CreateCond();
     AudioOutput audioDevice;
+    AudioTimeStretch audioTimeStretch;
+    bool audioTimeStretchEnabled = false;
     bool fakeRunning = false;
     bool audioIsRunning() const { return fakeRunning || audioDevice.IsRunning(); }
     ~AudioState() { audioDevice.Close(); SDL_DestroyCond(audioSyncCond); SDL_DestroyMutex(audioSyncLock); }
     static void audioCallback(void* data, Uint8* stream, int len);
     void audioSync(int frameSamples, std::stop_token stopToken = {});
+    void audioPumpTimeStretch(int maxQueued);
+    void audioSetSpeed(double speed);
+    void audioTimeStretchFailed();
     bool audioOpenOutput(const AudioOutput::Settings& settings, std::string& error);
     bool audioSetOutput(const AudioOutput::Settings& requested, std::string& error);
     bool audioSetBufferSize(int frames, std::string& error)
@@ -110,6 +116,9 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 #include "audioOpenOutput.inc"
 #include "audioSetOutput.inc"
 #include "audioEnable.inc"
+#include "audioPumpTimeStretch.inc"
+#include "audioSetSpeed.inc"
+#include "audioTimeStretchFailed.inc"
 #undef EmuInstance
 
 int main(int argc, char** argv)
