@@ -730,7 +730,9 @@ void EmuInstance::audioEnable()
     if (audioDevice)
     {
         audioDevice.Stop();
-        audioOutputRamp.FadeIn();
+        // The device transition runs after filtering, so retained filter state
+        // cannot bypass the fade. Reset only the source-shortage history here.
+        audioOutputRamp.Reset();
         audioDiagnostics.PreviousStart = 0; // paused time is not callback lateness
         std::string error;
         if (!audioDevice.Start(error))

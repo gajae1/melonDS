@@ -35,8 +35,8 @@ public:
     bool Open(const Settings&, Callback, void* userdata, std::string& error);
     void Close();
     bool Start(std::string& error);
-    // Waits until client callbacks finish. A shared stream may remain active
-    // delivering silence; Close releases the device itself.
+    // Waits until client callbacks finish. Native delivery fades to silence
+    // without consuming source PCM; Close releases the device itself.
     void Stop();
     explicit operator bool() const;
     bool IsRunning() const;

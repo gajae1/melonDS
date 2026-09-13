@@ -163,3 +163,6 @@ FS-06의 비공개 생성파일 진단은 [Qt6.11.2의 native rename](https://ra
 
 
 1.1.88 — Windows 최종 빌드·CTest919/919(102.16초, 전체1회, 실패/skip0). private main에 설정·타이머 제어를 추가해 실제 Qt EmuThread·설정창·소프트웨어 표시·상태 복원·WASAPI 경로를 실행했다. 원본 BIOS/펌웨어/NAND/ROM/state는 복사본으로 분리하고 원본 hash 보존을 확인했다. 이전128 실행에서 설정창 사이 PCM 폐기7이 발생했고 후보128/512 각3회 설정창 열기/닫기는 폐기0, 첫 설정창 이후 추가 부족0이다. 시작/상태 로드 부족은 남았고 음량0·offscreen이므로 청취·실제 표시/입력 지연·장기 수락은 아니다. 최종 표시 버전만 올리기 전 후보 동작 검증이며 실제 EmuThread 객체를 사용했다. 초기 실행기 private-slot 호출 컴파일 오류와 ROM 연결 확인창이 열린 상태에서 NDS 없이 상태를 로드한 crash는 실행기 오류로 보존했다. 파일 배치를 바로잡은 성공과 구분한다. 이전 headless 실행기의 최초 시간 기준 차이는 제품 수정 없이 별도 교정했으며 공급 수치 개선을 제품 성능으로 세지 않는다. GitHub Actions·macOS 빌드는 사용하지 않았다.
+
+
+1.1.89 — Windows 최종 빌드·CTest919/919(88.65초, 전체1회, 실패/skip0). 실제 AudioOutput에 등록된 SDL callback을 수동 구동한 정지/재개 회귀는 필터OFF/20Hz/6kHz×16/128/512의9조건에서 기존 최대1000sample 불연속9실패→최종21sample로 감소했다(입력 진폭1000). SDL 초기화를 빠뜨렸던 최초 실행기 실패는 별도로 보존하고 수정된 baseline만 근거로 쓴다. 별도 native SDL/WASAPI의 진행 중 callback·반복 Start·Stop 대기·재개/Close 검사가 통과했다. 최종1.1.89의 실제Qt/EmuThread/설정창·Playback 1/2·양 backend×128/512의4조건은 PCM 폐기0, 각3회 정상 재개였으나 SDL128은 첫 설정창 이후219frame 부족이 남았다. 다른3조건은 해당 구간 추가 부족0이며 시작/상태 복원 부족은 유지된다. 무음/offscreen 실행을 청취·물리 지연·장기/ARM/장치 상실 수락으로 세지 않는다. GitHub Actions·macOS 빌드는 사용하지 않았다.

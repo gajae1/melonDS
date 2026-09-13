@@ -86,6 +86,8 @@ struct AudioState
 };
 static int failedOpens = 0;
 static bool negotiateRate = false;
+static bool manualOutput = false, manualPaused = true;
+static SDL_AudioSpec manualSpec{};
 static SDL_AudioDeviceID OpenOutput(const char* name, int capture, const SDL_AudioSpec* desired,
                                    SDL_AudioSpec* obtained, int changes)
 {
@@ -97,7 +99,14 @@ static SDL_AudioDeviceID OpenOutput(const char* name, int capture, const SDL_Aud
     }
     auto wanted = *desired;
     if (negotiateRate) wanted.freq = 44100;
+    if (manualOutput) manualSpec = wanted;
     return SDL_OpenAudioDevice(name, capture, &wanted, obtained, changes);
+}
+static void PauseOutput(SDL_AudioDeviceID id, int paused)
+{
+    // Keep the real dummy device paused while this test drives its callback.
+    if (manualOutput) manualPaused = paused != 0;
+    else SDL_PauseAudioDevice(id, paused);
 }
 static std::counting_semaphore<> syncWaitEntered(0);
 static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
@@ -106,8 +115,10 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
     return SDL_CondWaitTimeout(cond, mutex, timeout);
 }
 #define SDL_OpenAudioDevice OpenOutput
+#define SDL_PauseAudioDevice PauseOutput
 #include "AudioOutput.cpp"
 #undef SDL_OpenAudioDevice
+#undef SDL_PauseAudioDevice
 #define EmuInstance AudioState
 #include "audioCallback.inc"
 #define SDL_CondWaitTimeout ObserveSyncWait
@@ -346,6 +357,64 @@ int main(int argc, char** argv)
         check(stats.SuppliedFrames == stats.RequestedFrames && stats.Underruns == 0,
               "Intentional mute is counted as a source underrun");
     }
+
+    // Observe the final device buffer, after volume, recovery and low-pass DSP.
+    // Backend silence during pause must not step directly from the last sample;
+    // filter history must not bypass the transition when playback resumes.
+    if (SDL_AudioInit("dummy") != 0) return 2;
+    for (int cutoff : {0, 20, 6000})
+    for (int buffer : {16, 128, 512})
+    {
+        manualOutput = true;
+        manualPaused = true;
+        Console resumeConsole;
+        AudioState resume{&resumeConsole};
+        resume.audioLowPassCutoff = cutoff;
+        resume.audioLowPass.Init(resume.audioFreq);
+        resume.audioLowPass.SetCutoffNow(cutoff ? cutoff : resume.audioLowPass.WideOpenCutoff());
+        resume.audioOutputRamp.Init(resume.audioFreq);
+        resume.audioDiagnostics.Enabled = true;
+        std::string error;
+        check(resume.audioDevice.Open({AudioOutput::SDL, {}, 128}, AudioState::audioCallback, &resume, error),
+              "Manual device open failed");
+        const auto pump = [&] {
+            output.fill(poison);
+            if (manualPaused) std::fill_n(output.data(), buffer * 2, 0);
+            else manualSpec.callback(manualSpec.userdata, reinterpret_cast<Uint8*>(output.data()), buffer * 4);
+            check(std::all_of(output.begin() + buffer * 2, output.end(),
+                              [](s16 sample) { return sample == poison; }), "Device transition writes past its buffer");
+        };
+        resume.audioEnable();
+        for (int i = 0; i < 48000 / buffer; ++i) pump();
+        check(output[0] == 1000 && output[1] == -1000, "Steady filtered input did not settle");
+        check(resume.audioDevice.Start(error), "Idempotent device start failed");
+        pump();
+        check(output[0] == 1000 && output[1] == -1000, "Idempotent start fades continuous output");
+        const auto calls = resume.audioDiagnostics.Callbacks;
+        resume.audioDevice.Stop();
+        int previous = 1000, maxStep = 0;
+        const auto observe = [&] {
+            for (int i = 0; i < buffer; ++i)
+            {
+                maxStep = std::max(maxStep, std::abs(int(output[i * 2]) - previous));
+                previous = output[i * 2];
+                check(std::abs(int(output[i * 2]) + output[i * 2 + 1]) <= 1,
+                      "Device transition mixes stereo channels");
+            }
+        };
+        for (int i = 0; i < 8; ++i) { pump(); observe(); }
+        check(previous == 0 && resume.audioDiagnostics.Callbacks == calls && !resume.audioDevice.IsRunning(),
+              "Paused output is not silent or consumes source PCM");
+        resume.audioEnable();
+        for (int i = 0; i < 48000 / buffer; ++i) { pump(); observe(); }
+        std::printf("Device pause/resume cutoff=%d buffer=%d: largest step=%d / amplitude=1000\n", cutoff, buffer, maxStep);
+        check(maxStep < 250, "Device pause/resume creates a full-amplitude step");
+        check(previous == 1000 && resume.audioDiagnostics.Underruns == 0,
+              "Resume remains attenuated or creates a source shortage");
+        resume.audioDevice.Close();
+        manualOutput = false;
+    }
+    SDL_AudioQuit();
 
     // Compare actual output and retained state through cutoff changes, bypass,
     // mute and unmute. Fusing may change rounding by one output LSB.

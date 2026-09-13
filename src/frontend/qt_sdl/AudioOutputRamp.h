@@ -43,12 +43,18 @@ public:
         if (supplied < requested)
         {
             if (!Starved) Transition(true);
-            for (int i = supplied; i < requested; ++i)
+            int i = supplied;
+            for (; i < requested && Remaining; ++i)
             {
-                if (Remaining) --Remaining;
+                --Remaining;
                 for (int ch = 0; ch < 2; ++ch)
                     samples[2 * i + ch] = Last[ch] = static_cast<int16_t>(
                         int64_t(From[ch]) * Remaining / RampFrames);
+            }
+            if (i < requested)
+            {
+                std::fill_n(samples + 2 * i, 2 * (requested - i), int16_t{0});
+                Last[0] = Last[1] = 0;
             }
         }
     }
@@ -58,6 +64,9 @@ public:
         Reset();
         Starved = true;
     }
+
+    // Crossfade from the last sample actually submitted, including silence.
+    void FadeFromLast() { Transition(false); }
 
 private:
     void Transition(bool starved)
