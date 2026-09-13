@@ -535,7 +535,7 @@ void EmuThread::handleMessages()
         // the core. All other consumers must have the root context first.
         const bool control = msg.type == msg_Exit || msg.type == msg_EmuPause ||
             msg.type == msg_EmuUnpause || msg.type == msg_InitGL ||
-            msg.type == msg_DeInitGL || msg.type == msg_BorrowGL;
+            msg.type == msg_DeInitGL || msg.type == msg_BorrowGL || msg.type == msg_AudioSettings;
         if (!control && !prepareGL())
         {
             msgResult = 0; // Also StateLoadResult::Failed: the old state is intact.
@@ -836,6 +836,17 @@ void EmuThread::handleMessages()
         case msg_EnableCheats:
             emuInstance->enableCheats(msg.param.value<bool>());
             break;
+        case msg_AudioSettings:
+        {
+            const auto settings = msg.param.toList();
+            if (emuInstance->nds)
+            {
+                emuInstance->nds->SPU.SetInterpolation(static_cast<AudioInterpolation>(settings[0].toInt()));
+                emuInstance->nds->SPU.SetDegrade10Bit(static_cast<AudioBitDepth>(settings[1].toInt()));
+            }
+            if (settings[2].toBool()) emuInstance->audioUpdateSettings();
+            break;
+        }
         }
 
         msgSemaphore.release();
@@ -1074,6 +1085,12 @@ bool EmuThread::chooseDSSaveType(CartLoadRequest& request, QString& errorstr)
     if (selected < 0) { errorstr.clear(); return false; }
     request.DSSaveType = types[selected];
     return true;
+}
+
+void EmuThread::updateAudioSettings(int interpolation, int bitDepth, bool reloadMic)
+{
+    sendMessage({.type = msg_AudioSettings, .param = QVariantList{interpolation, bitDepth, reloadMic}});
+    waitMessage();
 }
 
 int EmuThread::bootROM(const QStringList& filename, QString& errorstr, const std::shared_ptr<ROMPreparation::Data>& prepared, bool chooseDSSave)

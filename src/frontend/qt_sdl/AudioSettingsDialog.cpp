@@ -19,6 +19,7 @@
 #include <bit>
 #include <SDL2/SDL.h>
 #include <QFileDialog>
+#include <QMessageBox>
 
 #include "types.h"
 #include "Platform.h"
@@ -47,6 +48,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     oldInterp = cfg.GetInt("Audio.Interpolation");
     oldBitDepth = cfg.GetInt("Audio.BitDepth");
     oldLowPassCutoff = cfg.GetInt("Audio.LowPassCutoff");
+    oldBufferSize = cfg.GetInt("Audio.BufferSize");
     oldVolume = instcfg.GetInt("Audio.Volume");
     oldDSiSync = instcfg.GetBool("Audio.DSiVolumeSync");
 
@@ -65,15 +67,20 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     ui->cbBitDepth->addItem("16-bit");
     ui->cbBitDepth->setCurrentIndex(oldBitDepth);
 
-    for (int frames : {128, 256, 512, 1024})
+    for (int frames : {32, 64, 128, 256, 512, 1024})
         ui->cbBufferSize->addItem(QString("%1 frames (%2 ms at 48 kHz)")
             .arg(frames).arg(frames / 48.0, 0, 'f', 1), frames);
     ui->cbBufferSize->setCurrentIndex(ui->cbBufferSize->findData(
         static_cast<int>(std::bit_ceil(static_cast<unsigned>(cfg.GetInt("Audio.BufferSize"))))));
+    ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
 
     ui->sbLowPassCutoff->blockSignals(true);
-    ui->sbLowPassCutoff->setValue(oldLowPassCutoff);
+    ui->sbLowPassCutoff->setValue(oldLowPassCutoff > 0 ? oldLowPassCutoff : 20000);
     ui->sbLowPassCutoff->blockSignals(false);
+    ui->chkLowPass->blockSignals(true);
+    ui->chkLowPass->setChecked(oldLowPassCutoff > 0);
+    ui->chkLowPass->blockSignals(false);
+    ui->sbLowPassCutoff->setEnabled(oldLowPassCutoff > 0);
 
     bool state = ui->slVolume->blockSignals(true);
     ui->slVolume->setValue(oldVolume);
@@ -134,6 +141,10 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
         ui->lblInstanceNum->setText(QString("Configuring settings for instance %1").arg(inst+1));
         ui->cbInterpolation->setEnabled(false);
         ui->cbBitDepth->setEnabled(false);
+        ui->cbBufferSize->setEnabled(false);
+        ui->btnApplyBuffer->setEnabled(false);
+        ui->chkLowPass->setEnabled(false);
+        ui->sbLowPassCutoff->setEnabled(false);
         for (QAbstractButton* btn : grpMicMode->buttons())
             btn->setEnabled(false);
         ui->txtMicWavPath->setEnabled(false);
@@ -174,7 +185,9 @@ void AudioSettingsDialog::on_AudioSettingsDialog_accepted()
     cfg.SetQString("Mic.Device", ui->cbMic->currentText());
     cfg.SetInt("Mic.InputType", grpMicMode->checkedId());
     cfg.SetQString("Mic.WavPath", ui->txtMicWavPath->text());
-    cfg.SetInt("Audio.BufferSize", ui->cbBufferSize->currentData().toInt());
+    // Apply is explicit so a failed device reopen cannot silently save a buffer
+    // that never became active. Unapplied combo changes are applied on OK too.
+    if (ui->btnApplyBuffer->isEnabled()) on_btnApplyBuffer_clicked();
 
     Config::SaveWithDialog(this);
 
@@ -194,6 +207,15 @@ void AudioSettingsDialog::on_AudioSettingsDialog_rejected()
     cfg.SetInt("Audio.Interpolation", oldInterp);
     cfg.SetInt("Audio.BitDepth", oldBitDepth);
     cfg.SetInt("Audio.LowPassCutoff", oldLowPassCutoff);
+    if (cfg.GetInt("Audio.BufferSize") != oldBufferSize)
+    {
+        QString error;
+        if (emuInstance->changeAudioBuffer(oldBufferSize, error))
+            cfg.SetInt("Audio.BufferSize", oldBufferSize);
+        else
+            QMessageBox::warning(this, tr("Audio output"),
+                tr("The previous output buffer could not be restored.\n%1").arg(error));
+    }
     instcfg.SetInt("Audio.Volume", oldVolume);
     instcfg.SetBool("Audio.DSiVolumeSync", oldDSiSync);
 
@@ -243,8 +265,34 @@ void AudioSettingsDialog::on_slVolume_valueChanged(int val)
 
 void AudioSettingsDialog::on_sbLowPassCutoff_valueChanged(int value)
 {
+    if (!ui->chkLowPass->isChecked()) return;
     emuInstance->getGlobalConfig().SetInt("Audio.LowPassCutoff", value);
     emit updateAudioSettings();
+}
+
+void AudioSettingsDialog::on_chkLowPass_toggled(bool checked)
+{
+    ui->sbLowPassCutoff->setEnabled(checked);
+    emuInstance->getGlobalConfig().SetInt("Audio.LowPassCutoff",
+        checked ? ui->sbLowPassCutoff->value() : 0);
+    emit updateAudioSettings();
+}
+
+void AudioSettingsDialog::on_btnApplyBuffer_clicked()
+{
+    const int frames = ui->cbBufferSize->currentData().toInt();
+    QString error;
+    if (emuInstance->changeAudioBuffer(frames, error))
+        emuInstance->getGlobalConfig().SetInt("Audio.BufferSize", frames);
+    else
+    {
+        ui->cbBufferSize->setCurrentIndex(ui->cbBufferSize->findData(
+            static_cast<int>(std::bit_ceil(static_cast<unsigned>(
+                emuInstance->getGlobalConfig().GetInt("Audio.BufferSize"))))));
+        QMessageBox::warning(this, tr("Audio output"),
+            tr("The requested output buffer could not be applied.\n%1").arg(error));
+    }
+    ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
 }
 
 void AudioSettingsDialog::on_chkSyncDSiVolume_clicked(bool checked)

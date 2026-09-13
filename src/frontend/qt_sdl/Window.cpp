@@ -2019,19 +2019,16 @@ void MainWindow::onUpdateAudioSettings()
     if (!emuThread->emuIsActive()) return;
     assert(emuInstance->nds != nullptr);
 
-    int interp = globalCfg.GetInt("Audio.Interpolation");
-    emuInstance->nds->SPU.SetInterpolation(static_cast<AudioInterpolation>(interp));
-
-    int bitdepth = globalCfg.GetInt("Audio.BitDepth");
-    if (bitdepth == 0)
-        emuInstance->nds->SPU.SetDegrade10Bit(emuInstance->nds->ConsoleType == 0);
-    else
-        emuInstance->nds->SPU.SetDegrade10Bit(bitdepth == 1);
+    // Channel interpolation and quantization are consumed by the producer.
+    // Apply between guest frames without pausing the SDL output device.
+    emuThread->updateAudioSettings(globalCfg.GetInt("Audio.Interpolation"),
+                                   globalCfg.GetInt("Audio.BitDepth"));
 }
 
 void MainWindow::onAudioSettingsFinished(int res)
 {
-    emuInstance->audioUpdateSettings();
+    emuThread->updateAudioSettings(globalCfg.GetInt("Audio.Interpolation"),
+                                   globalCfg.GetInt("Audio.BitDepth"), true);
 }
 
 void MainWindow::onOpenMPSettings()

@@ -95,6 +95,8 @@ public:
     int getInstanceID() { return instanceID; }
     int getConsoleType() { return consoleType; }
     EmuThread* getEmuThread() { return emuThread; }
+    QString audioOutputDescription() const;
+    bool changeAudioBuffer(int frames, QString& error);
     melonDS::NDS* getNDS() { return nds; }
     // Only on the emulation thread, or while that producer is paused.
     void retrySaveCapture();
@@ -247,6 +249,7 @@ private:
     void audioSync(int frameSamples, std::stop_token stopToken = {});
     void audioReportDiagnostics();
     void audioUpdateSettings();
+    bool audioSetBufferSize(int frames, std::string& error);
 
     void micOpen();
     void micClose();
@@ -335,6 +338,8 @@ private:
     bool cheatsOn;
 
     SDL_AudioDeviceID audioDevice;
+    bool audioOpenOutput(int frames);
+    int audioRequestedBuffer;
     int audioFreq;
     int audioBufSize;
     AudioLowPass audioLowPass;

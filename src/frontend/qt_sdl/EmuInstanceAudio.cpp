@@ -44,26 +44,15 @@ void EmuInstance::audioInit()
     audioSyncLock = SDL_CreateMutex();
 
     audioFreq = 48000;
-    // SDL device buffers use powers of two. Keep hand-edited settings bounded.
-    audioBufSize = std::bit_ceil(static_cast<unsigned>(globalCfg.GetInt("Audio.BufferSize")));
-
-    SDL_AudioSpec whatIwant, whatIget;
-    memset(&whatIwant, 0, sizeof(SDL_AudioSpec));
-    whatIwant.freq = audioFreq;
-    whatIwant.format = AUDIO_S16SYS;
-    whatIwant.channels = 2;
-    whatIwant.samples = audioBufSize;
-    whatIwant.callback = audioCallback;
-    whatIwant.userdata = this;
-    audioDevice = SDL_OpenAudioDevice(NULL, 0, &whatIwant, &whatIget, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-    if (!audioDevice)
+    audioRequestedBuffer = std::bit_ceil(static_cast<unsigned>(
+        std::clamp(globalCfg.GetInt("Audio.BufferSize"), 32, 1024)));
+    audioBufSize = audioRequestedBuffer;
+    if (!audioOpenOutput(audioRequestedBuffer))
     {
         Platform::Log(Platform::LogLevel::Error, "Audio init failed: %s\n", SDL_GetError());
     }
     else
     {
-        audioFreq = whatIget.freq;
-        audioBufSize = whatIget.samples;
         Platform::Log(Platform::LogLevel::Info, "Audio output frequency: %d Hz\n", audioFreq);
         Platform::Log(Platform::LogLevel::Info, "Audio output buffer size: %d samples\n", audioBufSize);
         SDL_PauseAudioDevice(audioDevice, 1);
@@ -82,6 +71,90 @@ void EmuInstance::audioInit()
     micLock = SDL_CreateMutex();
 
     setupMicInputData();
+}
+
+bool EmuInstance::audioOpenOutput(int frames)
+{
+    SDL_AudioSpec wanted{}, obtained{};
+    wanted.freq = 48000;
+    wanted.format = AUDIO_S16SYS;
+    wanted.channels = 2;
+    wanted.samples = frames;
+    wanted.callback = audioCallback;
+    wanted.userdata = this;
+    audioDevice = SDL_OpenAudioDevice(nullptr, 0, &wanted, &obtained, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+    if (!audioDevice) return false;
+    // Newly opened devices are paused. Publish the complete callback state
+    // before the emulation thread resumes delivery.
+    audioFreq = obtained.freq;
+    audioBufSize = obtained.samples;
+    audioRequestedBuffer = frames;
+    return true;
+}
+
+bool EmuInstance::audioSetBufferSize(int frames, std::string& error)
+{
+    // The UI has stopped the producer and waits for SDL callbacks to finish.
+    // Open/close stay on the original UI thread: WASAPI's COM lifetime is
+    // thread-affine, even though the audio callback itself runs elsewhere.
+    frames = std::bit_ceil(static_cast<unsigned>(std::clamp(frames, 32, 1024)));
+    error.clear();
+    if (audioDevice && frames == audioRequestedBuffer) return true;
+    const bool hadDevice = audioDevice != 0;
+    const int previousBuffer = audioRequestedBuffer;
+    const int previousRate = audioFreq;
+    if (audioDevice)
+    {
+        SDL_PauseAudioDevice(audioDevice, 1);
+        audioReportDiagnostics();
+        SDL_CloseAudioDevice(audioDevice);
+        audioDevice = 0;
+    }
+    const bool applied = audioOpenOutput(frames);
+    if (!applied)
+    {
+        error = SDL_GetError();
+        if (hadDevice && !audioOpenOutput(previousBuffer))
+            error += std::string("; previous output could not be reopened: ") + SDL_GetError();
+    }
+    if (audioDevice)
+    {
+        if (nds)
+        {
+            if (audioFreq != previousRate) nds->SPU.SetOutputSampleRate(audioFreq);
+            nds->SPU.ResetOutputHistory();
+        }
+        audioLowPass.Init(audioFreq);
+        const int cutoff = audioLowPassCutoff.load(std::memory_order_relaxed);
+        audioLowPass.SetCutoffNow(cutoff > 0 ? cutoff : audioLowPass.WideOpenCutoff());
+        audioOutputRamp.Init(audioFreq);
+        audioOutputRamp.FadeIn();
+        const bool diagnostics = audioDiagnostics.Enabled;
+        audioDiagnostics = {};
+        audioDiagnostics.Enabled = diagnostics;
+    }
+    return applied;
+}
+
+QString EmuInstance::audioOutputDescription() const
+{
+    // UI reads this only between its synchronous output-change requests.
+    if (!audioDevice) return QObject::tr("Audio output unavailable");
+    return QObject::tr("Active: %1 frames at %2 Hz (%3 ms per callback)")
+        .arg(audioBufSize).arg(audioFreq).arg(audioBufSize * 1000.0 / audioFreq, 0, 'f', 2);
+}
+
+bool EmuInstance::changeAudioBuffer(int frames, QString& error)
+{
+    frames = std::bit_ceil(static_cast<unsigned>(std::clamp(frames, 32, 1024)));
+    error.clear();
+    if (audioDevice && frames == audioRequestedBuffer) return true;
+    emuThread->emuPause(false);
+    std::string detail;
+    const bool applied = audioSetBufferSize(frames, detail);
+    emuThread->emuUnpause(false);
+    error = QString::fromStdString(detail);
+    return applied;
 }
 
 void EmuInstance::audioDeInit()
@@ -533,13 +606,10 @@ void EmuInstance::micCallback(void* data, Uint8* stream, int len)
 void EmuInstance::audioUpdateSettings()
 {
     audioLowPassCutoff = globalCfg.GetInt("Audio.LowPassCutoff");
+    if (micInputType == globalCfg.GetInt("Mic.InputType") &&
+        micDeviceName == globalCfg.GetString("Mic.Device") &&
+        micWavPath == globalCfg.GetString("Mic.WavPath")) return;
     if (micStarted) micClose();
-
-    if (nds != nullptr)
-    {
-        int audiointerp = globalCfg.GetInt("Audio.Interpolation");
-        nds->SPU.SetInterpolation(static_cast<AudioInterpolation>(audiointerp));
-    }
 
     setupMicInputData();
     if (micStarted) micOpen();
@@ -561,7 +631,7 @@ void EmuInstance::audioEnable()
     if (audioDevice)
     {
         SDL_LockAudioDevice(audioDevice);
-        audioOutputRamp.Reset();
+        audioOutputRamp.FadeIn();
         audioDiagnostics.PreviousStart = 0; // paused time is not callback lateness
         SDL_UnlockAudioDevice(audioDevice);
         SDL_PauseAudioDevice(audioDevice, 0);

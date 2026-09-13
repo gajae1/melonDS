@@ -76,6 +76,31 @@ foreach(case IN ITEMS letter controller space return tab hotkey escape unbind ca
     set_tests_properties(input-dialog-${case} PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
 
+add_executable(AudioSettingsUI "${CMAKE_SOURCE_DIR}/tests/AudioSettingsUI.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    Config.cpp AudioSettingsDialog.h AudioSettingsDialog.ui QPathInput.h)
+target_include_directories(AudioSettingsUI PRIVATE "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/src/net" "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_definitions(AudioSettingsUI PRIVATE MELONDS_TEST_FILE_EXISTS)
+set_target_properties(AudioSettingsUI PROPERTIES
+    AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(AudioSettingsUI PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)
+if (USE_QT6)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    target_link_libraries(AudioSettingsUI PRIVATE Qt6::Test)
+else()
+    find_package(Qt5 REQUIRED COMPONENTS Test)
+    target_link_libraries(AudioSettingsUI PRIVATE Qt5::Test)
+endif()
+foreach(case IN ITEMS filter-cancel buffer-preview-cancel buffer-accept
+        buffer-failure buffer-cancel-failure secondary)
+    add_test(NAME audio-settings-ui-${case} COMMAND AudioSettingsUI ${case})
+    set_tests_properties(audio-settings-ui-${case} PROPERTIES TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;SDL_AUDIODRIVER=dummy")
+endforeach()
+
 set(touch_methods)
 foreach(pair IN ITEMS "touchEvent|void ScreenPanel::touchEvent(QTouchEvent* event)"
         "releaseTouch|void ScreenPanel::releaseTouch()"
@@ -331,7 +356,21 @@ add_custom_command(OUTPUT "${audio_sync}"
         "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceAudio.cpp"
         "void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)" "${audio_sync}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
-add_executable(FrontendAudio "${CMAKE_SOURCE_DIR}/tests/FrontendAudio.cpp" "${audio_callback}" "${audio_sync}")
+set(audio_device_methods)
+foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(int frames)"
+        "audioEnable|void EmuInstance::audioEnable()"
+        "audioSetBufferSize|bool EmuInstance::audioSetBufferSize(int frames, std::string& error)")
+    string(REPLACE "|" ";" parts "${pair}")
+    list(GET parts 0 method)
+    list(GET parts 1 signature)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/${method}.inc")
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/EmuInstanceAudio.cpp" "${signature}" "${output}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
+    list(APPEND audio_device_methods "${output}")
+endforeach()
+add_executable(FrontendAudio "${CMAKE_SOURCE_DIR}/tests/FrontendAudio.cpp" "${audio_callback}" "${audio_sync}" ${audio_device_methods})
 target_include_directories(FrontendAudio PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FrontendAudio PRIVATE PkgConfig::SDL2 Threads::Threads)
 melonds_configure_audio_kernels(FrontendAudio)
@@ -467,6 +506,7 @@ else()
     target_link_libraries(StateLoadMessages PRIVATE Qt5::Core)
 endif()
 add_test(NAME savestate-message-recovery COMMAND StateLoadMessages)
+add_test(NAME audio-settings-message COMMAND StateLoadMessages audio-settings)
 add_test(NAME direct-boot-message-failure COMMAND StateLoadMessages boot-failure)
 add_test(NAME gl-state-message-gate COMMAND StateLoadMessages gl-gate)
 set_tests_properties(gl-state-message-gate PROPERTIES TIMEOUT 10)

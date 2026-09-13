@@ -53,6 +53,12 @@ public:
         }
     }
 
+    void FadeIn()
+    {
+        Reset();
+        Starved = true;
+    }
+
 private:
     void Transition(bool starved)
     {

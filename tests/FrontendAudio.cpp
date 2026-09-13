@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -10,6 +11,7 @@
 #include <semaphore>
 #include <stop_token>
 #include <thread>
+#include <string>
 #include <SDL2/SDL.h>
 #include "types.h"
 #include "AudioLowPass.h"
@@ -24,6 +26,9 @@ struct SampleSource
     int available = 1024;
     int rateChanges = 0;
     int queuedFrames = 0;
+    int historyResets = 0;
+    void ResetOutputHistory() { ++historyResets; queuedFrames = 0; }
+    void SetOutputSampleRate(double) { ++rateChanges; }
     int GetOutputSize() const { return queuedFrames; }
     int ReadOutput(s16* output, int frames)
     {
@@ -43,6 +48,7 @@ struct AudioState
     Console* nds;
     double curFPS = 60, targetFPS = 60;
     int audioBufSize = 512;
+    int audioRequestedBuffer = 512;
     int audioFreq = 48000;
     AudioLowPass audioLowPass;
     AudioOutputRamp audioOutputRamp;
@@ -53,10 +59,31 @@ struct AudioState
     SDL_mutex* audioSyncLock = SDL_CreateMutex();
     SDL_cond* audioSyncCond = SDL_CreateCond();
     SDL_AudioDeviceID audioDevice = 0;
-    ~AudioState() { SDL_DestroyCond(audioSyncCond); SDL_DestroyMutex(audioSyncLock); }
+    ~AudioState() { if (audioDevice > 1) SDL_CloseAudioDevice(audioDevice); SDL_DestroyCond(audioSyncCond); SDL_DestroyMutex(audioSyncLock); }
     static void audioCallback(void* data, Uint8* stream, int len);
     void audioSync(int frameSamples, std::stop_token stopToken = {});
+    bool audioOpenOutput(int frames);
+    bool audioSetBufferSize(int frames, std::string& error);
+    void audioReportDiagnostics() {}
+    void audioEnable();
+    bool micStarted = false;
+    void micOpen() {}
 };
+static int failedOpens = 0;
+static bool negotiateRate = false;
+static SDL_AudioDeviceID OpenOutput(const char* name, int capture, const SDL_AudioSpec* desired,
+                                   SDL_AudioSpec* obtained, int changes)
+{
+    if (failedOpens > 0)
+    {
+        --failedOpens;
+        SDL_SetError("Injected output-open failure");
+        return 0;
+    }
+    auto wanted = *desired;
+    if (negotiateRate) wanted.freq = 44100;
+    return SDL_OpenAudioDevice(name, capture, &wanted, obtained, changes);
+}
 static std::counting_semaphore<> syncWaitEntered(0);
 static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 {
@@ -68,6 +95,11 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 #define SDL_CondWaitTimeout ObserveSyncWait
 #include "audioSync.inc"
 #undef SDL_CondWaitTimeout
+#define SDL_OpenAudioDevice OpenOutput
+#include "audioOpenOutput.inc"
+#undef SDL_OpenAudioDevice
+#include "audioSetBufferSize.inc"
+#include "audioEnable.inc"
 #undef EmuInstance
 
 int main(int argc, char** argv)
@@ -94,6 +126,45 @@ int main(int argc, char** argv)
     const auto check = [&](bool ok, const char* message) {
         if (!ok) { ++failures; std::fprintf(stderr, "%s\n", message); }
     };
+    // Reopen the real SDL dummy output using the production lifecycle methods.
+    // Failure injection is confined to device creation; callbacks and pause /
+    // close synchronization remain SDL's real implementation.
+    if (SDL_AudioInit("dummy") != 0) return 2;
+    {
+        Console deviceConsole;
+        AudioState device{&deviceConsole};
+        std::string error;
+        for (int buffer : {512, 64, 32})
+        {
+            check(device.audioSetBufferSize(buffer, error), "SDL buffer reopen failed");
+            check(device.audioBufSize == buffer && device.audioRequestedBuffer == buffer &&
+                  SDL_GetAudioDeviceStatus(device.audioDevice) == SDL_AUDIO_PAUSED,
+                  "Buffer change lost the requested size or resumed paused playback");
+        }
+        const int before = deviceConsole.SPU.historyResets;
+        const auto unchanged = device.audioDevice;
+        check(device.audioSetBufferSize(32, error) && device.audioDevice == unchanged &&
+              deviceConsole.SPU.historyResets == before, "Unchanged buffer reopened or cleared output");
+        failedOpens = 1;
+        check(!device.audioSetBufferSize(64, error) && !error.empty() && device.audioDevice &&
+              device.audioRequestedBuffer == 32, "Failed reopen did not restore the previous output");
+        failedOpens = 2;
+        check(!device.audioSetBufferSize(64, error) && !device.audioDevice &&
+              error.find("previous output") != std::string::npos,
+              "Double open failure hid output loss or kept a stale device ID");
+        negotiateRate = true;
+        check(device.audioSetBufferSize(64, error) && device.audioFreq == 44100 &&
+              deviceConsole.SPU.rateChanges == 1, "Device rate negotiation did not update the producer");
+        negotiateRate = false;
+        device.audioDiagnostics.Enabled = true;
+        check(device.audioSetBufferSize(32, error), "Running output reopen failed");
+        device.audioEnable();
+        SDL_Delay(30);
+        SDL_PauseAudioDevice(device.audioDevice, 1);
+        check(device.audioDiagnostics.Callbacks > 0, "Reopened running output did not deliver callbacks");
+        std::printf("SDL output reopen: 32/64 frames, pause, rollback, recovery, rate and callbacks verified\n");
+    }
+    SDL_AudioQuit();
     // Exercise the real SDL wait: a control request must not depend on the
     // 500ms starvation fallback, and a spurious wake must recheck the queue.
     using namespace std::chrono_literals;
@@ -172,7 +243,7 @@ int main(int argc, char** argv)
     // A constant source has no real discontinuity. Missing samples and their
     // return must not introduce a full-amplitude step at callback boundaries.
     // The source shortage is deliberate; this does not reproduce a device fault.
-    for (int buffer : {128, 512})
+    for (int buffer : {32, 64, 128, 512})
     {
         Console gapConsole;
         AudioState gapState{&gapConsole};
@@ -180,7 +251,7 @@ int main(int argc, char** argv)
         gapState.audioOutputRamp.Init(gapState.audioFreq);
         gapState.audioDiagnostics.Enabled = true;
         int previous = 1000, maxStep = 0;
-        for (int available : {buffer, buffer - 2, 0, 0, buffer, buffer})
+        for (int available : {buffer, buffer - 2, 0, 0, buffer, buffer, buffer})
         {
             gapConsole.SPU.available = available;
             AudioState::audioCallback(&gapState, reinterpret_cast<Uint8*>(output.data()), buffer * 4);
@@ -197,8 +268,8 @@ int main(int argc, char** argv)
         check(output[0] == 1000 && output[1] == -1000 && previous == 1000,
               "Normal delivery remains attenuated after recovery");
         const auto& stats = gapState.audioDiagnostics;
-        check(stats.Callbacks == 6 && stats.RequestedFrames == 6u * buffer &&
-              stats.SuppliedFrames == 4u * buffer - 2 && stats.Underruns == 3 && stats.EmptyCallbacks == 2,
+        check(stats.Callbacks == 7 && stats.RequestedFrames == 7u * buffer &&
+              stats.SuppliedFrames == 5u * buffer - 2 && stats.Underruns == 3 && stats.EmptyCallbacks == 2,
               "Audio diagnostics do not count the supplied/short/missing blocks");
     }
 

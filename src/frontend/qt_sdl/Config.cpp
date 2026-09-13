@@ -101,7 +101,7 @@ RangeList IntRanges =
     {"Screen.VSyncInterval", {1, 20}},
     {"3D.GL.ScaleFactor", {1, 16}},
     {"Audio.Interpolation", {0, 4}},
-    {"Audio.BufferSize", {128, 1024}},
+    {"Audio.BufferSize", {32, 1024}},
     {"Audio.LowPassCutoff", {0, 20000}},
     {"3D.Soft.PixelConversion", {0, 3}},
     {"Instance*.Audio.Volume", {0, 256}},

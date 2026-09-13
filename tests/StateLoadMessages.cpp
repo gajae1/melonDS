@@ -24,6 +24,7 @@
 #include "NDSCart.h"
 #include "GBACart.h"
 #include "Platform.h"
+#include "SPU.h"
 #include "AssetIdentity.h"
 // Dependencies are already included: expose only the dispatcher's state.
 #define private public
@@ -75,6 +76,13 @@ u64 ReadImportFile(void* data, u64 size, u64 count, FileHandle* file)
 
 struct FixtureConsole
 {
+    struct OutputSettings
+    {
+        AudioInterpolation interpolation = AudioInterpolation::None;
+        AudioBitDepth depth = AudioBitDepth::Auto;
+        void SetInterpolation(AudioInterpolation value) { interpolation = value; }
+        void SetDegrade10Bit(AudioBitDepth value) { depth = value; }
+    } SPU;
     bool running = true;
     bool* audio = nullptr;
     bool importedWithAudio = false;
@@ -114,6 +122,8 @@ public:
     EmuInstance() { console.audio = &audio; }
     void audioDisable() { audio = false; }
     void audioEnable() { audio = true; }
+    unsigned audioReloads = 0;
+    void audioUpdateSettings() { ++audioReloads; }
     void osdAddMessage(unsigned, const char* text) { lastOSD = text; }
     void clearBackupState() {}
     void discardPreservedFrame() {}
@@ -214,6 +224,36 @@ int main(int argc, char** argv)
         thread.handleMessages();
         check(thread.msgSemaphore.tryAcquire(), "Message failed to acknowledge completion");
     };
+    if (argc == 2 && std::string(argv[1]) == "audio-settings")
+    {
+        for (bool paused : {false, true})
+        for (bool graphicsFailed : {false, true})
+        {
+            thread.emuStatus = paused ? EmuThread::emuStatus_Paused : EmuThread::emuStatus_Running;
+            thread.glFailureWindow = graphicsFailed ? 0 : -1;
+            instance.audio = !paused && !graphicsFailed;
+            const bool playing = instance.audio;
+            const auto status = thread.emuStatus;
+            const auto reloads = instance.audioReloads;
+            thread.msgQueue.enqueue({.type = EmuThread::msg_AudioSettings,
+                .param = QVariantList{int(AudioInterpolation::Cubic), int(AudioBitDepth::_16Bit), paused}});
+            thread.handleMessages();
+            check(thread.msgSemaphore.tryAcquire() &&
+                  instance.console.SPU.interpolation == AudioInterpolation::Cubic &&
+                  instance.console.SPU.depth == AudioBitDepth::_16Bit &&
+                  instance.audioReloads == reloads + paused && instance.audio == playing &&
+                  thread.emuStatus == status,
+                  "Audio settings changed playback state, required graphics, or lost the queued values");
+        }
+        instance.nds = nullptr;
+        thread.msgQueue.enqueue({.type = EmuThread::msg_AudioSettings,
+            .param = QVariantList{0, 0, true}});
+        thread.handleMessages();
+        check(thread.msgSemaphore.tryAcquire() && instance.audioReloads == 3,
+              "Audio settings without a loaded console lost microphone configuration");
+        std::printf("audio settings producer message: %s\n", failures ? "FAIL" : "PASS");
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "ds-save-request")
     {
         // Queue distinct QVariant snapshots before consuming any of them.

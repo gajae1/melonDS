@@ -68,6 +68,8 @@ private slots:
     void on_cbBitDepth_currentIndexChanged(int idx);
     void on_slVolume_valueChanged(int val);
     void on_sbLowPassCutoff_valueChanged(int value);
+    void on_chkLowPass_toggled(bool checked);
+    void on_btnApplyBuffer_clicked();
     void on_chkSyncDSiVolume_clicked(bool checked);
     void onChangeMicMode(int mode);
     void on_btnMicWavBrowse_clicked();
@@ -80,6 +82,7 @@ private:
     int oldInterp;
     int oldBitDepth;
     int oldLowPassCutoff;
+    int oldBufferSize;
     int oldVolume;
     bool oldDSiSync;
     QButtonGroup* grpMicMode;

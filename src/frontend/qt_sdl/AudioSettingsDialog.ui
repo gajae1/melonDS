@@ -37,18 +37,17 @@
      </property>
      <layout class="QGridLayout" name="gridLayout_2">
       <item row="6" column="0">
-       <widget class="QLabel" name="lblLowPassCutoff">
-        <property name="text"><string>Low-pass cutoff:</string></property>
-        <property name="buddy"><cstring>sbLowPassCutoff</cstring></property>
+       <widget class="QCheckBox" name="chkLowPass">
+        <property name="text"><string>Low-pass filter:</string></property>
        </widget>
       </item>
       <item row="6" column="1">
        <widget class="QSpinBox" name="sbLowPassCutoff">
         <property name="toolTip"><string>Optional fourth-order Butterworth filter for a softer sound. Lower values reduce more treble. Off preserves the original output. This does not correct missing audio or device latency.</string></property>
-        <property name="specialValueText"><string>Off</string></property>
         <property name="suffix"><string> Hz</string></property>
+        <property name="minimum"><number>20</number></property>
         <property name="maximum"><number>20000</number></property>
-        <property name="singleStep"><number>1000</number></property>
+        <property name="singleStep"><number>250</number></property>
        </widget>
       </item>
       <item row="4" column="0">
@@ -59,12 +58,18 @@
       </item>
       <item row="4" column="1">
        <widget class="QComboBox" name="cbBufferSize">
-        <property name="toolTip"><string>Smaller buffers reduce buffering delay but may crackle if the system cannot keep up. The audio driver and device add their own latency. Applies after restarting melonDS.</string></property>
+        <property name="toolTip"><string>Fixed buffer size. Smaller buffers may reduce delay but can crackle if the system cannot keep up. The driver may use a larger period; this is not total audio latency.</string></property>
        </widget>
       </item>
-      <item row="5" column="1">
-       <widget class="QLabel" name="lblBufferRestart">
-        <property name="text"><string>Buffer changes apply after restarting melonDS.</string></property>
+      <item row="4" column="2">
+       <widget class="QPushButton" name="btnApplyBuffer">
+        <property name="text"><string>Preview buffer</string></property>
+        <property name="toolTip"><string>Try this buffer without restarting. OK keeps it; Cancel restores the previous buffer.</string></property>
+       </widget>
+      </item>
+      <item row="5" column="0" colspan="3">
+       <widget class="QLabel" name="lblBufferStatus">
+        <property name="text"><string>Audio output</string></property>
        </widget>
       </item>
       <item row="2" column="0">
