@@ -449,6 +449,8 @@ if (TARGET core)
     target_link_libraries(CartROMBounds PRIVATE core Threads::Threads)
     add_test(NAME gba-rom-input-bounds COMMAND CartROMBounds)
     set_tests_properties(gba-rom-input-bounds PROPERTIES TIMEOUT 10)
+    add_test(NAME cart-nand-import-state COMMAND CartROMBounds nand-import-state)
+    set_tests_properties(cart-nand-import-state PROPERTIES TIMEOUT 15)
 
     add_executable(ARExecution ARExecution.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(ARExecution PRIVATE core Threads::Threads)

@@ -95,6 +95,15 @@ void CartRetailNAND::DoSavestate(Savestate* file)
 void CartRetailNAND::SetSaveMemory(const u8* savedata, u32 savelen)
 {
     CartRetail::SetSaveMemory(savedata, savelen);
+
+    // Raw imports replace save bytes, so the old NAND page must not commit later.
+    // Savestate loads restore this latch separately and must keep pending writes.
+    SRAMAddr = 0;
+    SRAMStatus &= ~(1<<4);
+    SRAMWritePos = 0;
+    SRAMWriteLen = 0;
+    memset(SRAMWriteBuffer, 0, sizeof(SRAMWriteBuffer));
+
     BuildSRAMID();
 }
 

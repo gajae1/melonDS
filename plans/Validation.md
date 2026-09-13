@@ -154,3 +154,6 @@ FS-06의 비공개 생성파일 진단은 [Qt6.11.2의 native rename](https://ra
 
 
 1.1.85 — Windows 전체 빌드·CTest918/918(79.80초, 전체1회, 실패/skip0). R3 실제 변환의 입력 block64/1024 및 동적 속도 변경 PCM 일치, 큐 포화/동시 callback 순서, 합성440Hz 오차5cent 이내, reset 뒤 잔향0을 확인했다. 실제 frontend 상태 로드에서는 성공 시 변환 이력 초기화·실패 시 보존을 확인했다. Qt 설정11조건은 장치 mock이며 화면 배치도 확인했다. 최종 라이브러리로 연결한 실제 게임360frame의 기존/신규1x·2x·0.5x headless 출력은 화면 동일·core drop0이지만 신규 경로는 시작을 포함한 부족3200/2544/4224frame 및 첫 비영 callback 이후896/368/512frame이 남았다. WASAPI128/48kHz 무음 제출은 청감·물리 지연·전체Qt배속 조작·장기/ARM 검증을 대신하지 않는다. AD-08 고품질 채널 보간은 미완료다. GitHub Actions·macOS 빌드는 사용하지 않았다.
+
+
+1.1.86 — Windows 전체 빌드·CTest919/919(98.00초, 전체1회, 실패/skip0). NP-18은 영향을 받는 기존 운영 소스5개의 hash 일치를 확인해 원 실패 증거를 재사용했다. 생성 카트리지 NAND와 실제 MMIO/scheduler의 가져오기/live/cold·일반 pending/cold·실패한 core 상태 load 이후 백업 복구5조건에서 기대 배열과 전체 바이트가 일치했다. 집중9/9도1회 통과했다. 실제 카트리지·UI 가져오기·DSi 내부 NAND 전체 프로토콜·실기 수락으로 확대하지 않는다. r8brain 최소위상 실험은 별도 private native 후보이며 제품 SPU를 바꾸지 않았다. GitHub Actions·macOS 빌드는 사용하지 않았다.
