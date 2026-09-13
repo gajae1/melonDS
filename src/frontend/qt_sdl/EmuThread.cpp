@@ -155,6 +155,7 @@ void EmuThread::run()
 
     bool fastforward = false;
     bool slowmo = false;
+    bool audioSyncInterrupted = false;
     emuInstance->fastForwardToggled = false;
     emuInstance->slowmoToggled = false;
 
@@ -324,6 +325,21 @@ void EmuThread::run()
             emuInstance->audioSetSpeed(outputFPS / 59.8260982880808);
             emuInstance->nds->SPU.SetOutputSkew(emuInstance->audioTimeStretchEnabled
                 ? 1.0 : outputFPS / 59.8260982880808);
+            // A control request can interrupt the previous frame's audio wait
+            // with a nearly full PCM queue. Finish that wait before producing
+            // another frame after resume; otherwise the core may discard PCM.
+            if (audioSyncInterrupted && emuInstance->doAudioSync &&
+                (emuInstance->audioTimeStretchEnabled || !(fastforward || slowmo)))
+            {
+                const auto stop = cheatStopToken();
+                emuInstance->audioSync(static_cast<int>(std::ceil(emuInstance->audioFreq / outputFPS)), stop);
+                if (stop.stop_requested())
+                {
+                    handleMessages();
+                    continue;
+                }
+                audioSyncInterrupted = false;
+            }
             u32 nlines;
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
             {
@@ -419,7 +435,11 @@ void EmuThread::run()
                 emuInstance->audioFreq * nlines / (outputFPS * 263.0)));
             emuInstance->audioPumpTimeStretch(std::max(emuInstance->audioBufSize, outputFrameSamples));
             if (emuInstance->doAudioSync && (emuInstance->audioTimeStretchEnabled || !(fastforward || slowmo)))
-                emuInstance->audioSync(outputFrameSamples, cheatStopToken());
+            {
+                const auto stop = cheatStopToken();
+                emuInstance->audioSync(outputFrameSamples, stop);
+                audioSyncInterrupted = stop.stop_requested();
+            }
 
             double frametimeStep = nlines / (currentFPS * 263.0);
 
