@@ -586,12 +586,78 @@ static bool TestOneShotHold()
     return TestOneShotHoldTiming() && passed;
 }
 
+static std::vector<s16> SampleRateOutput(int change, double outputRate)
+{
+    DSiArgs args;
+    args.JIT.reset(); args.BitDepth = AudioBitDepth::_16Bit;
+    auto nds = std::make_unique<DSi>(std::move(args));
+    nds->Reset();
+    nds->SPU.SetOutputSampleRate(outputRate);
+    nds->SPU.SetInterpolation(AudioInterpolation::None);
+    nds->ARM7Write16(0x04000304, 1);
+    nds->I2S.WriteSndExCnt(0x8008, 0xFFFF); // NITRO only, same constant signal at either clock.
+    for (unsigned i = 0; i < 16; ++i) nds->ARM7Write16(0x02004000 + 2*i, 4096);
+    nds->ARM7Write32(0x04000404, 0x02004000);
+    nds->ARM7Write32(0x04000408, 0xFE00);
+    nds->ARM7Write32(0x0400040C, 8);
+    nds->ARM7Write16(0x04000504, 0x200);
+    nds->ARM7Write16(0x04000500, 0x807F);
+    nds->ARM7Write32(0x04000400, 0xA840007F);
+    std::array<s16, 4096> buffer;
+    std::vector<s16> result;
+    for (unsigned phase = 0; phase < 3; ++phase)
+    {
+        const unsigned cycles = change == 1 && phase == 1 ? 352 : 512;
+        if (phase && change == 1)
+        {
+            // The hardware permits changing bit13 only while I2S is disabled.
+            // Both writes precede the next sample, so no muted sample occurs.
+            nds->I2S.WriteSndExCnt(0, 0xFFFF);
+            nds->I2S.WriteSndExCnt(cycles == 352 ? 0xA008 : 0x8008, 0xFFFF);
+        }
+        if (phase && change == 2) nds->SPU.SetSampleRate(AudioSampleRate::_32KHz);
+        for (unsigned block = 0; block < 64; ++block)
+        {
+            // Equal guest time at both rates, with the same final host rate.
+            for (unsigned clock = 0; clock < 5632; clock += cycles) nds->SPU.Mix(cycles);
+            nds->SPU.BufferAudio();
+            const int count = nds->SPU.ReadOutput(buffer.data(), buffer.size()/2);
+            result.insert(result.end(), buffer.begin(), buffer.begin() + 2*count);
+        }
+    }
+    if (nds->SPU.GetOutputDroppedFrames()) return {};
+    return result;
+}
+
+static bool TestSampleRateContinuity()
+{
+    bool passed = true;
+    for (double outputRate : {44100.0, 48000.0})
+    {
+        const auto reference = SampleRateOutput(0, outputRate);
+        for (int change : {1, 2})
+        {
+            const auto output = SampleRateOutput(change, outputRate);
+            const bool equal = !reference.empty() && output == reference;
+            int maxDifference = 0;
+            for (size_t i = 0; i < std::min(output.size(), reference.size()); ++i)
+                maxDifference = std::max(maxDifference, std::abs(int(output[i]) - reference[i]));
+            std::printf("DSi sample-rate continuity %.0fHz change=%d frames=%zu difference=%d: %s\n",
+                outputRate, change, output.size()/2, maxDifference, equal ? "PASS" : "FAIL");
+            passed &= equal;
+        }
+    }
+    return passed;
+}
+
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "sample-rate") == 0) return TestSampleRateContinuity() ? 0 : 8;
     if (argc == 2 && std::strcmp(argv[1], "one-shot-hold") == 0) return TestOneShotHold() ? 0 : 6;
     if (argc == 2 && std::strcmp(argv[1], "one-shot-state") == 0) return TestOneShotState() ? 0 : 7;
     if (!TestCaptureSource()) return 5;
     if (!TestInitialBitDepth()) return 4;
+    if (!TestSampleRateContinuity()) return 8;
     NDSArgs args;
     args.JIT.reset();
     auto nds = std::make_unique<NDS>(std::move(args));

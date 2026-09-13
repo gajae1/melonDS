@@ -336,7 +336,8 @@ void SPU::SetSampleRate(AudioSampleRate rate)
         MixInterval = 1024;
     }
 
-    memset(OutputLastSamples, 0, sizeof(OutputLastSamples));
+    // The host resampler retains its integrator across a guest clock change.
+    // Keep its last submitted sample as the baseline for the next delta.
 }
 
 

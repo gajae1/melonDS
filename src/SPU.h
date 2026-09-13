@@ -291,7 +291,7 @@ private:
     u32 OutputBufferWritePos = 0;
     u32 OutputBufferReadPos = 0;
     u64 OutputDroppedFrames = 0; // host diagnostic, excluded from savestates
-    s16 OutputLastSamples[2];
+    s16 OutputLastSamples[2]{};
 
     u32 MixInterval;
 

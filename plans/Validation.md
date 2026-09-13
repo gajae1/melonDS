@@ -169,3 +169,8 @@ FS-06의 비공개 생성파일 진단은 [Qt6.11.2의 native rename](https://ra
 
 
 1.1.90 — 최종 Windows 앱 빌드 성공. 오디오 설정11조건과 callback1조건은12/12(3.00초); SDL zero-name 계약 보정 후 영향 callback만1/1(0.60초)로 재검증했다. 최종 UI tooltip 변경은 새 테스트 없이 실제 Qt 창으로 확인했다. runtime 조회 실패가 저장된 WASAPI를 계속 선택 가능하게 하던 기존 동작은 확대 UI 검사1실패로 재현했다. 정상·열거 실패·endpoint 없음·장치 재등장·설정 보존/취소/실패복구는 Qt 설정 테스트에서 장치 facade를 대체해 확인한다. 별도 실제 SDL/WASAPI 열거는 각각 기본값 포함10항목 및 Playback 1/2를 확인했고, WASAPI context 초기화/열거 실패/빈 endpoint 주입3조건은 빈 목록과 오류, 이후 정상 열거 복구를 확인했다. 실제 production 객체를 연결한 Qt 앱2실행에서도 정상 선택 및 사라진 저장 장치의 비활성·다른 기본 장치 선택·취소 보존을 확인했다. 개인 설정 대신 private portable을 사용했으며 ROM 실행·청취·물리 지연/탈착·다른 OS 검증은 아니다. 새 전체 suite는 반복하지 않았다(이전1.1.89의919/919와 구분). GitHub Actions·macOS 빌드는 사용하지 않았다.
+
+
+1.1.91 — Windows 최종 전체 빌드 성공. 기존 실제 SPU/I2S/ReadOutput에서 일정 PCM16을32→47→32kHz로 바꾸거나 같은 rate를 다시 설정한4조건(출력44.1/48kHz)은 수정 전 exit8·최대2348/2308/2309sample 차이를 재현했고, 수정 후 rate 변경 없는 동일 guest 시간의 전체 PCM과 byte-identical이다. 초기 실행파일 경로 오입력은 실행 실패이며 그 뒤 실제 root 실행파일의 exit8을 baseline으로 보존했다. 최종 전체 CTest는918/919(84.82초, 전체1회). 유일한 save-manager-unpublished-pending 실패는 QSaveFile commit의Qt10/Windows 접근거부이며 해당 target은Qt Core만 연결하고 변경한SPU를 연결하지 않는다. 해당 소스는 미변경이고 단독1/1(0.15초) 통과했으나 기존FS-06 원인은 미해결로 유지한다. 실패 기록·assertion은 보존하고 전체 검사를 반복하지 않았다.
+
+AD-08 private 출력 연결은 기존1.1.90 기반14개 DS/DSi 조건에서 원래SPU/capture/I2S/DSP 상태 보존과 DSP-only/음소거 PCM 동일성을 확인했다. 일부 DSP 혼합 조건은 실제DSP clock 뒤 명시된 합성PCM을 주입하므로 게임DSP 음질 수락으로 세지 않는다. 별도1.1.91 후보의32/47kHz 교체 조건에서도 새 보간의DSP-only PCM과 수정된 기존 출력이 일치했다. 고품질 신호의 추가 지연·계수 배포·옵션·전체 이력 상한·실제게임/장치/ARM은 미완료다. 이 버전은 rate 전환 수정만 배포하며 GitHub Actions·macOS 빌드는 사용하지 않았다.
