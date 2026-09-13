@@ -59,7 +59,7 @@ int main()
     header->ARM9ROMOffset = 0x4000; header->ARM7ROMOffset = 0x4004;
     header->ARM9Size = header->ARM7Size = 4;
     std::memcpy(header->GameCode, "ZZZA", 4);
-    for (u32 invalid : {8u, 10u, 15u, UINT32_MAX})
+    for (u32 invalid : {8u, 10u, 18u, UINT32_MAX})
     {
         NDSCart::NDSCartArgs args; args.SPISaveType = invalid;
         if (NDSCart::ParseROM(retail.data(), retail.size(), nullptr, std::move(args))) return 8;
@@ -70,7 +70,7 @@ int main()
         if (NDSCart::ParseROM(std::move(owned), retail.size(), nullptr, std::move(args)) ||
             owned.get() != original) return 9;
     }
-    for (u32 type : {0u, 1u, 7u, 11u, 12u, 13u, 14u})
+    for (u32 type : {0u, 1u, 7u, 11u, 12u, 13u, 14u, 15u, 16u, 17u})
     {
         NDSCart::NDSCartArgs args; args.SPISaveType = type;
         auto cart = NDSCart::ParseROM(retail.data(), retail.size(), nullptr, std::move(args));
@@ -88,14 +88,14 @@ int main()
             !std::strcmp(code, "ASMA") ? dynamic_cast<NDSCart::CartR4*>(automatic.get()) != nullptr :
             dynamic_cast<NDSCart::CartRetailNAND*>(automatic.get()) != nullptr;
         if (!family) return 11;
-        for (u32 type : {0u, 2u, 7u, 11u, 14u})
+        for (u32 type : {0u, 2u, 7u, 11u, 14u, 15u, 16u, 17u})
         {
             NDSCart::NDSCartArgs args; args.SPISaveType = type;
             if (NDSCart::ParseROM(retail.data(), retail.size(), nullptr, std::move(args))) return 12;
         }
     }
     for (const char* code : {"IZZZ", "UZPZ"})
-    for (u32 type : {1u, 11u, 14u})
+    for (u32 type : {1u, 11u, 14u, 15u, 16u, 17u})
     {
         std::memcpy(header->GameCode, code, 4);
         NDSCart::NDSCartArgs args; args.SPISaveType = type;

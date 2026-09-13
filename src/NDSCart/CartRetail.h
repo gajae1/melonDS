@@ -66,7 +66,7 @@ public:
     u8 SPITransmitReceive(u8 val) override;
     u32 GetSaveDelay() const override { return WriteDelay; }
     void CompleteSave() override;
-    void CancelSave() override;
+    void CancelSave(bool powerOff = false) override;
 
     // ROM metadata remains authoritative. This fallback only identifies the
     // SPI capacities we emulate; a large file must not imply a NAND cartridge.
@@ -89,7 +89,7 @@ protected:
     u32 SRAMLength = 0;
     u32 SRAMFileLength = 0;
     u32 SRAMType = 0;
-    // Zero retains the legacy capacity-only behavior; 11..14 identify media.
+    // Zero retains the legacy capacity-only behavior; 11..17 identify media.
     u32 SRAMProfile = 0;
 
     u32 SRAMPos = 0;
@@ -112,6 +112,8 @@ protected:
     u8 WriteCommand = 0;
     u32 WriteAddress = 0, WriteFirst = 0, WriteLength = 0;
     std::array<u8, 256> WriteBuffer {};
+    // M25PE T9HX: volatile write-lock/lock-down bits, one per64KiB sector.
+    std::array<u8, 16> FlashLocks {};
 };
 
 }

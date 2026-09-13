@@ -82,6 +82,7 @@ struct Fixture
         if (saveType <= 7) physical = sizes[saveType];
         else if (saveType >= 11 && saveType <= 13) physical = EEPROMProfiles[saveType - 11].Capacity;
         else if (saveType == 14) physical = 32768; // Infineon FM25W256
+        else if (saveType >= 15 && saveType <= 17) physical = 262144u << (saveType - 15);
         else std::abort();
         const u32 size = physical + padding;
         Sink.Persisted.resize(size);
@@ -1009,11 +1010,171 @@ static void InternalWrite(bool state)
     }
 }
 
+// Explicit M25PE T9HX profiles. BP protects whole upper64KiB sectors;
+// sector locks are a separate volatile mechanism, never EEPROM BP geometry.
+static u8 FlashLock(CartRetail& cart, u32 address)
+{
+    FlashStart(cart, 0xE8, address);
+    const u8 value = cart.SPITransmitReceive(0);
+    Check(cart.SPITransmitReceive(0) == value, "RDLR advanced to a different sector during one CS");
+    cart.SPIRelease();
+    return value;
+}
+
+static void SetFlashLock(CartRetail& cart, u32 address, u8 value, bool enable = true)
+{
+    if (enable) Command(cart, 0x06);
+    FlashStart(cart, 0xE5, address); Send(cart, {value}); cart.SPIRelease();
+}
+
+static bool BeginFlashProfile(Fixture& f)
+{
+    Command(*f.Cart, 0x06);
+    const bool ready = (BusyStatus(*f.Cart) & 3) == 2;
+    Check(ready, "Explicit Flash profile did not decode its WREN/RDSR protocol");
+    return ready;
+}
+
+static void FlashProtection(const std::string_view mode)
+{
+    for (u32 type : {15u, 16u, 17u})
+    {
+        Fixture f(type, 17);
+        if (!BeginFlashProfile(f)) continue;
+        auto& cart = *f.Cart;
+        const u32 capacity = 262144u << (type - 15);
+        cart.SPISelect(); Send(cart, {0x9F});
+        Check(cart.SPITransmitReceive(0) == 0x20 && cart.SPITransmitReceive(0) == 0x80 &&
+              cart.SPITransmitReceive(0) == u8(0x12 + type - 15), "Explicit Flash profile returned the wrong JEDEC ID");
+        cart.SPIRelease();
+        Bytes expected = f.Sink.Persisted;
+        const u8 mask = type == 15 ? 0x8C : 0x9C;
+        if (mode == "flash-protection")
+        {
+            Command(cart, 0x04);
+            WriteStatus(cart, 0xFF, false);
+            Check((BusyStatus(cart) & mask) == 0 && !ChipDelay(cart), "Flash WRSR bypassed WREN");
+            Command(cart, 0x06); cart.SPISelect(); Send(cart, {0x01, 0xFF});
+            Check(!ChipDelay(cart), "Flash WRSR started before CS");
+            cart.SPIRelease();
+            Check(ChipDelay(cart) == 100542 && (BusyStatus(cart) & (mask | 3)) == 3,
+                  "Flash WRSR did not retain old status for its3ms cycle");
+            CompleteChip(cart);
+            Check((BusyStatus(cart) & (mask | 3)) == mask && f.Sink.Notices == 0,
+                  "Flash WRSR mask/completion changed array persistence");
+            cart.Reset();
+            Check((BusyStatus(cart) & mask) == mask, "Chip reset lost nonvolatile Flash BP/SRWD");
+            const unsigned bpCount = type == 15 ? 4 : 8;
+            for (unsigned bp = 0; bp < bpCount; ++bp)
+            {
+                WriteStatus(cart, u8(bp << 2));
+                const u32 protectedBytes = bp ? std::min(capacity, 65536u << (bp - 1)) : 0;
+                const u32 boundary = capacity - protectedBytes;
+                for (u32 address : {boundary ? boundary - 1 : 0u, boundary < capacity ? boundary : capacity - 1})
+                for (u8 command : {u8(0x02), u8(0x0A), u8(0xDB), u8(0xD8)})
+                {
+                    Command(cart, 0x06); FlashStart(cart, command, address | 0x800000u);
+                    if (command == 0x02 || command == 0x0A) Send(cart, {0x36});
+                    const auto notices = f.Sink.Notices;
+                    cart.SPIRelease();
+                    const bool protectedAddress = address >= boundary;
+                    Check(bool(ChipDelay(cart)) == !protectedAddress, "Flash BP boundary/alias accepted or rejected the wrong write");
+                    CheckImage(f, expected);
+                    CompleteChip(cart);
+                    if (!protectedAddress)
+                    {
+                        if (command == 0x02) expected[address] &= 0x36;
+                        else if (command == 0x0A) expected[address] = 0x36;
+                        else
+                        {
+                            const u32 length = command == 0xDB ? 256 : 65536;
+                            std::fill_n(expected.begin() + (address & ~(length - 1)), length, 0xFF);
+                        }
+                    }
+                    CheckImage(f, expected);
+                    Check(f.Sink.Notices == notices + !protectedAddress, "Protected Flash operation notified persistence");
+                }
+            }
+            WriteStatus(cart, 0);
+            Check((BusyStatus(cart) & mask) == 0, "SRWD alone prevented software unprotect without a low W# pin");
+        }
+        else if (mode == "flash-lock")
+        {
+            const u32 target = capacity - 65536;
+            Command(cart, 0x04); SetFlashLock(cart, target, 1, false);
+            Check(FlashLock(cart, target) == 0, "WRLR bypassed WREN");
+            Command(cart, 0x06); FlashStart(cart, 0xE5, target); cart.SPIRelease();
+            Check(FlashLock(cart, target) == 0, "Truncated WRLR changed sector lock");
+            Command(cart, 0x06); FlashStart(cart, 0xE5, target); Send(cart, {1, 0}); cart.SPIRelease();
+            Check(FlashLock(cart, target) == 0, "Overlong WRLR changed sector lock");
+            SetFlashLock(cart, target + 123, 1);
+            Check(!ChipDelay(cart) && !(BusyStatus(cart) & 3) && FlashLock(cart, target | 0x800000u) == 1 &&
+                  FlashLock(cart, target - 1) == 0, "WRLR timing/WEL/sector alias or neighboring lock is wrong");
+            for (u8 command : {u8(0x02), u8(0x0A), u8(0xDB), u8(0xD8)})
+            {
+                Command(cart, 0x06); FlashStart(cart, command, target);
+                if (command == 0x02 || command == 0x0A) Send(cart, {0});
+                cart.SPIRelease();
+                Check(!ChipDelay(cart), "Locked sector began a write cycle");
+                CheckImage(f, expected);
+            }
+            SetFlashLock(cart, target, 3); SetFlashLock(cart, target, 0);
+            Check(FlashLock(cart, target) == 3, "WRLR bypassed lock-down");
+            cart.SetSaveMemory(expected.data(), expected.size());
+            Check(FlashLock(cart, target) == 3, "Save import cleared live sector lock-down");
+            cart.Reset();
+            Check(FlashLock(cart, target) == 0, "Chip reset did not clear volatile sector locks");
+            SetFlashLock(cart, target, 2); SetFlashLock(cart, target, 1);
+            Check(FlashLock(cart, target) == 2, "Lock-down with an unlocked sector was reversible");
+            Command(cart, 0x06); FlashStart(cart, 0x0A, target); Send(cart, {0xA6}); cart.SPIRelease();
+            Check(ChipDelay(cart) && FlashLock(cart, target) == 0xFF, "RDLR was accepted during internal write");
+            CompleteChip(cart); expected[target] = 0xA6; CheckImage(f, expected);
+            Check(FlashLock(cart, target) == 2, "Busy RDLR disturbed the lock register");
+        }
+        else
+        {
+            SetFlashLock(cart, 65536, 3);
+            Command(cart, 0x06); cart.SPISelect(); Send(cart, {0x01, 0x04}); cart.SPIRelease();
+            Savestate saved; cart.DoSavestate(&saved); saved.Finish();
+            Check(!saved.Error && saved.MinorVersion() == 11, "Explicit Flash state did not require14.11");
+            Fixture receiver(type, 17, 0xC3);
+            Bytes received = receiver.Sink.Persisted;
+            std::copy_n(expected.begin(), capacity, received.begin());
+            Savestate load(saved.Buffer(), saved.Length(), false); receiver.Cart->DoSavestate(&load);
+            Check(!load.Error && ChipDelay(*receiver.Cart) == 100542, "Cold restore lost pending Flash status cycle");
+            CompleteChip(*receiver.Cart);
+            Check((BusyStatus(*receiver.Cart) & mask) == 4 && FlashLock(*receiver.Cart, 65536) == 3,
+                  "Cold restore lost Flash BP/lock state");
+            CheckImage(receiver, received);
+            WriteStatus(*receiver.Cart, 0);
+            Command(*receiver.Cart, 0x06); FlashStart(*receiver.Cart, 0xE5, 0); Send(*receiver.Cart, {1});
+            Savestate held; receiver.Cart->DoSavestate(&held); held.Finish();
+            Fixture next(type, 17, 0xC3);
+            Savestate resume(held.Buffer(), held.Length(), false); next.Cart->DoSavestate(&resume);
+            Check(!resume.Error, "Held WRLR failed cold restore");
+            next.Cart->SPIRelease();
+            Check(FlashLock(*next.Cart, 0) == 1, "Restored WRLR lost its CS completion");
+            const auto* bytes = static_cast<const u8*>(held.Buffer());
+            Bytes truncated(bytes, bytes + held.Length() - 1);
+            auto* memory = next.Cart->GetSaveMemory();
+            Savestate broken(truncated.data(), truncated.size(), false); next.Cart->DoSavestate(&broken);
+            Check(broken.Error && next.Cart->GetSaveMemory() == memory && FlashLock(*next.Cart, 0) == 1,
+                  "Truncated Flash lock state replaced live array/locks");
+            Fixture legacy(type - 10, 17);
+            Savestate old; legacy.Cart->DoSavestate(&old); old.Finish();
+            Savestate oldLoad(old.Buffer(), old.Length(), false); next.Cart->DoSavestate(&oldLoad);
+            Check(!oldLoad.Error && FlashLock(*next.Cart, 0) == 0xFF,
+                  "Loading generic Flash state retained the explicit profile's locks");
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
     const std::string_view test = argv[1];
-    if (test == "internal-write") InternalWrite(false);
+    if (test == "flash-protection" || test == "flash-lock" || test == "flash-protection-state") FlashProtection(test);
+    else if (test == "internal-write") InternalWrite(false);
     else if (test == "internal-state") InternalWrite(true);
     else if (test == "control") Control();
     else if (test == "page-ends") PageEnds();

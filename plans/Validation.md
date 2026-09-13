@@ -130,3 +130,8 @@ FS-05는 `save-manager-allocation-capture|save-manager-allocation-publish`, `car
 1.1.77 검증 기록: 최종 Windows SMC69개와 실제far 캐시 소진 후91검사·보존된 interpreter24상태 대조 통과. JIT OFF는SPI13+SMC23=36개 통과. 전체883/884의 유일한 실패는QSaveFile commit 접근 거부이며 단독1회 성공과 최초 실패를 구분한다. SPI 전송 중14.9/실제1.1.76 양방향 허용·거부40회, DS/DSi MMIO 및 개인 입력 보존을 확인했다. native ARM64와 실기 timing은 수락하지 않았다.
 
 1.1.78은 `retail-eeprom-internal-write|internal-state`와 `cart-spi-write-timing`으로 내부 write latch·WIP/WEL·busy 명령·실제MMIO 기한 전/동시/후·저장 통지1회·DS/DSi cold 복원·powered sleep·취소 경계를 검사한다. chip-only 기존 검사는 내부 완료를 명시적으로 전달하며, 실제시간 검사는 production scheduler로만 완료한다. 현재887/887·SMC69·SPI14·JIT OFF44 통과. 보존된1.1.77 소스에서 새2그룹은 실패하며 헤더 편집 없는 전체상태 writer/reader80회가 통과했다. 호환 실행 이후 바뀐 것은 자료 주석/줄바꿈뿐이고 연결한 core는 동일함을 확인했다. 초기 SPI 컴파일 실패 뒤 실행된 구형14개 결과는 제외했다. far-cache는1.1.77 기록이며 이번 버전 재실행으로 세지 않는다. 매체가 불명확한 구형2/3/4·실기/native ARM·모든 게임 수락과 기존FS-06 원인은 남는다.
+
+
+1.1.79의 `retail-flash-protection|lock|protection-state`는 명시 T9HX3용량의 BP 경계·WL/LD·CS 전후·3ms WRSR·busy·부분/손상 상태를 확인한다. `cart-spi-flash-protection`은 실제 DS/DSi·ARM9/7·IR5경로의 전송/전체상태·전원 취소, `cart-replacement-ds-capacity-flash-protection`은 실제 파일의 보호/해제·chip-end wrap·여분·재삽입을 검사한다. 용량이나 JEDEC ID만으로 T9HX를 자동 선택하지 않는다. 새 타입은14.11 필수이고 실제1.1.78/current 상태82회에서 기존 형식 허용·새 형식의 구 reader 거부를 검증했다.
+
+전체890/892의 두 실패는 기존 invalid15 기대값이다. invalid18로 갱신하고 valid15/16/17을 factory/IR/BT·미지원 가족 검사에 추가한 뒤 영향2/2 통과, 최초 로그를 보존했다. JIT OFF48·SMC69, 실제far reset 후91검사·보존 interpreter24상태 대조가 통과했다. 최종 테스트/배포 식별값 변경 뒤 core·호환 소스/바이너리·게임 입력의 hash 일치를 확인해 성공 결과를 재사용했다. 새 Qt 전체 앱 E2E·물리WP/RESET#·전원 손상·raw sav의 보호 비트 영속성·모든 명령/게임·native ARM·실기 timing의 수락은 아니다.

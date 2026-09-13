@@ -219,7 +219,7 @@ int main(int argc, char** argv)
         // Queue distinct QVariant snapshots before consuming any of them.
         // The real dispatcher retains exact chip profiles and legacy codes,
         // including explicit zero separately from Automatic.
-        const std::vector<std::optional<u32>> choices = {0, 11, 12, 13, 14, 7, std::nullopt, 2, 3, 4, 1, std::nullopt};
+        const std::vector<std::optional<u32>> choices = {0, 11, 12, 13, 14, 7, std::nullopt, 2, 3, 4, 1, std::nullopt, 15, 16, 17};
         const int count = static_cast<int>(choices.size());
         std::vector<EmuThread::CartLoadRequest> expected;
         for (int i = 0; i < count; ++i)

@@ -83,8 +83,10 @@ static int DSSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const 
     Check(Write(first, "generated first DS") && Write(second, "generated second DS"), "DS sources");
     const QStringList labels{"Automatic", "No save", "EEPROM - 512 bytes", "EEPROM - 8 KiB",
         "EEPROM - 64 KiB", "EEPROM - 128 KiB", "FRAM - 32 KiB",
-        "Flash - 256 KiB", "Flash - 512 KiB", "Flash - 1 MiB"};
-    const std::optional<u32> values[] = {std::nullopt, 0, 1, 11, 12, 13, 14, 5, 6, 7};
+        "Flash - 256 KiB", "Flash - 512 KiB", "Flash - 1 MiB",
+        "Flash M25PE20 (T9HX) - 256 KiB", "Flash M25PE40 (T9HX) - 512 KiB",
+        "Flash M25PE80 (T9HX) - 1 MiB"};
+    const std::optional<u32> values[] = {std::nullopt, 0, 1, 11, 12, 13, 14, 5, 6, 7, 15, 16, 17};
     int prompts = 0;
     const auto choose = [&](int index, int action, std::stop_source* stop = nullptr) {
         QTimer::singleShot(0, &thread, [&, index, action, stop] {
@@ -164,7 +166,7 @@ static int DSSaveUI(EmuThread& thread, EmuInstance& instance, QDir& root, const 
               "Ordinary DS load inherited an explicit save type");
         QCoreApplication::processEvents();
     }
-    Check(prompts == (mode == "ds-save-choices" ? 20 : 10), "Unexpected DS chooser count");
+    Check(prompts == (mode == "ds-save-choices" ? 26 : 10), "Unexpected DS chooser count");
     Check(!QFile::exists(instance.config.directory + "/manual.sav") &&
           !QFile::exists(instance.config.directory + "/reselection.sav"), "DS chooser wrote a save file");
     std::printf("%s: %d failures (actual Qt chooser; recorded consumer)\n", mode.toUtf8().constData(), failures);

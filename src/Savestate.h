@@ -26,7 +26,7 @@
 
 #define SAVESTATE_MAJOR 14
 #define SAVESTATE_MINOR 2
-#define SAVESTATE_MAX_MINOR 10
+#define SAVESTATE_MAX_MINOR 11
 
 // bitmask for the savestate config word
 enum
@@ -88,7 +88,8 @@ public:
     // explicit EEPROM/FRAM profiles need 14.7;
     // a pending Slot-1 status-control command needs 14.8;
     // an undelivered Slot-1 SPI byte and its CS completion need 14.9;
-    // an internal Slot-1 write or a tiny EEPROM page latch needs 14.10.
+    // an internal Slot-1 write or a tiny EEPROM page latch needs 14.10;
+    // explicit M25PE T9HX profiles and their sector locks need 14.11.
     void RequireMinorVersion(u16 minor);
 
     // TODO rewinds the stream

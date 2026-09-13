@@ -33,10 +33,11 @@ namespace NDSCart
 
 namespace
 {
-constexpr std::array<u32, 15> SaveLengths = {
+constexpr std::array<u32, 18> SaveLengths = {
     0, 512, 8192, 65536, 128*1024, 256*1024, 512*1024, 1024*1024,
     8192*1024, 16384*1024, 65536*1024,
-    8192, 65536, 128*1024, 32*1024
+    8192, 65536, 128*1024, 32*1024,
+    256*1024, 512*1024, 1024*1024
 };
 
 std::optional<u32> SaveTypeForLength(u32 length)
@@ -49,8 +50,8 @@ std::optional<u32> SaveTypeForLength(u32 length)
 u32 SaveProtocol(u32 type)
 {
     if (type <= 1) return type; // None or tiny EEPROM.
-    if (type <= 4 || type >= 11) return 2; // Legacy or explicit EEPROM/FRAM.
-    if (type <= 7) return 3; // SPI Flash.
+    if (type <= 4 || (type >= 11 && type <= 14)) return 2; // Legacy or explicit EEPROM/FRAM.
+    if (type <= 7 || type >= 15) return 3; // SPI Flash.
     return 4; // NAND.
 }
 
@@ -69,10 +70,19 @@ u32 EEPROMPageSize(u32 profile)
 
 u32 WriteCycles(u32 protocol, u8 command, u32 length);
 
-bool IsStatusCommand(u32 protocol, u8 command)
+bool IsFlashProfile(u32 profile) { return profile >= 15 && profile <= 17; }
+
+u8 StatusMask(u32 protocol, u32 profile)
+{
+    if (protocol == 3) return IsFlashProfile(profile) ? (profile == 15 ? 0x8C : 0x9C) : 0;
+    return protocol == 1 ? 0x0C : protocol == 2 ? 0x8C : 0;
+}
+
+bool IsStatusCommand(u32 protocol, u8 command, u32 profile = 0)
 {
     return protocol > 0 && protocol < 4 &&
-        (command == 0x04 || command == 0x06 || (protocol < 3 && command == 0x01));
+        (command == 0x04 || command == 0x06 ||
+         ((protocol < 3 || IsFlashProfile(profile)) && command == 0x01));
 }
 }
 
@@ -125,14 +135,14 @@ CartRetail::~CartRetail() = default;
 void CartRetail::Reset()
 {
     CartCommon::Reset();
-    CancelSave();
+    CancelSave(true);
 
     SRAMPos = 0;
     SRAMCmd = 0;
     SRAMAddr = 0;
     // BP and SRWD/WPEN are nonvolatile within the inserted cartridge. Raw
     // .sav files contain only the array, so reopening still loses these bits.
-    SRAMStatus &= SRAMType == 1 ? 0x0C : SRAMType == 2 ? 0x8C : 0;
+    SRAMStatus &= StatusMask(SRAMType, SRAMProfile);
 
     SRAMSaveAddr = 0;
     SRAMSaveLen = 0;
@@ -142,8 +152,9 @@ void CartRetail::Reset()
 void CartRetail::PrepareSavestate(Savestate* file) const
 {
     if (!file->Saving) return;
-    if (WriteDelay || (SRAMType == 1 && PagePending)) file->RequireMinorVersion(10);
-    else if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd)) file->RequireMinorVersion(8);
+    if (IsFlashProfile(SRAMProfile)) file->RequireMinorVersion(11);
+    else if (WriteDelay || (SRAMType == 1 && PagePending)) file->RequireMinorVersion(10);
+    else if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd, SRAMProfile)) file->RequireMinorVersion(8);
     else if (SRAMProfile) file->RequireMinorVersion(7);
     else if (PagePending) file->RequireMinorVersion(6);
 }
@@ -184,6 +195,7 @@ void CartRetail::DoSavestate(Savestate* file)
     u8 cmd = SRAMCmd, status = SRAMStatus;
     auto pageBuffer = PageBuffer;
     u32 profile = file->Saving ? SRAMProfile : 0;
+    auto locks = file->Saving ? FlashLocks : std::array<u8, 16>{};
     // No-profile records keep the old layout and derived IR/NAND tails. Exact
     // media must be saved even when idle: capacity cannot distinguish them.
     constexpr u32 pendingFlag = 1u << 31, profileFlag = 1u << 30, writeFlag = 1u << 29;
@@ -221,7 +233,18 @@ void CartRetail::DoSavestate(Savestate* file)
         return;
     }
     const u32 protocol = SaveProtocol(hasProfile ? profile : *restoredType);
-    if (!file->Saving && IsStatusCommand(protocol, cmd))
+    if (IsFlashProfile(profile))
+    {
+        file->VarArray(locks.data(), locks.size());
+        if (file->Error || !file->IsAtLeastVersion(14, 11) || (status & ~(StatusMask(protocol, profile) | 3)))
+        { file->Error = true; return; }
+        for (u32 i = 0; i < locks.size(); ++i)
+            if (locks[i] & (i < length / 65536 ? ~3u : ~0u))
+            { file->Error = true; return; }
+        if (cmd == 0xE5 && (pending || saveLen > 0xFF || addr > 0xFFFFFF))
+        { file->Error = true; return; }
+    }
+    if (!file->Saving && IsStatusCommand(protocol, cmd, profile))
     {
         if (legacy)
         {
@@ -273,7 +296,7 @@ void CartRetail::DoSavestate(Savestate* file)
         file->VarArray(writeBuffer.data(), writeBuffer.size());
         const bool tiny = protocol == 1, flash = protocol == 3;
         const u32 pageSize = tiny ? 16 : flash ? 256 : EEPROMPageSize(profile);
-        const bool statusWrite = !flash && writeCommand == 0x01;
+        const bool statusWrite = (!flash || IsFlashProfile(profile)) && writeCommand == 0x01;
         const bool page = writeCommand == 0x02 || ((tiny || flash) && writeCommand == 0x0A);
         const bool erase = flash && (writeCommand == 0xDB || writeCommand == 0xD8);
         const u32 span = writeCommand == 0xD8 ? 65536 : pageSize;
@@ -281,7 +304,7 @@ void CartRetail::DoSavestate(Savestate* file)
             !(writeAddress & (span - 1)) && span <= length - writeAddress;
         if (file->Error || !file->IsAtLeastVersion(14, 10) || !pageSize || pending ||
             (status & 3) != 3 || saveLen || writeDelay != WriteCycles(protocol, writeCommand, writeLength) ||
-            !(statusWrite ? !(writeAddress & ~(tiny ? 0x0Cu : 0x8Cu)) && !writeFirst && !writeLength :
+            !(statusWrite ? !(writeAddress & ~u32(StatusMask(protocol, profile))) && !writeFirst && !writeLength :
               page ? validAddress && writeFirst < pageSize && writeLength > 0 && writeLength <= pageSize :
               erase && validAddress && !writeFirst && writeLength == span))
         {
@@ -300,6 +323,7 @@ void CartRetail::DoSavestate(Savestate* file)
     SRAMFileLength = fileLength;
     SRAMType = protocol;
     SRAMProfile = profile;
+    FlashLocks = locks;
     SRAMPos = pos; SRAMCmd = cmd; SRAMAddr = addr; SRAMStatus = status;
     SRAMSaveAddr = saveAddr; SRAMSaveLen = saveLen;
     PagePending = pending;
@@ -334,7 +358,7 @@ void CartRetail::SPISelect()
 void CartRetail::SPIRelease()
 {
     if (WriteDelay) return;
-    if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd))
+    if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd, SRAMProfile))
     {
         // EEPROM/Flash commands must end at their defined byte boundary.
         // FM25W256 documents only the normal lengths: rejecting malformed
@@ -344,12 +368,22 @@ void CartRetail::SPIRelease()
         else if (SRAMCmd == 0x04 && SRAMPos == 1) SRAMStatus &= ~2;
         else if (SRAMCmd == 0x01 && SRAMPos == 2 && (SRAMStatus & 2))
         {
-            const u8 status = SRAMAddr & (SRAMType == 1 ? 0x0C : 0x8C);
-            if (SRAMType == 1 || EEPROMPageSize(SRAMProfile)) BeginSave(0x01, status, 0, 0);
+            const u8 status = SRAMAddr & StatusMask(SRAMType, SRAMProfile);
+            if (SRAMType == 1 || EEPROMPageSize(SRAMProfile) || IsFlashProfile(SRAMProfile)) BeginSave(0x01, status, 0, 0);
             else SRAMStatus = status; // Legacy capacity-only media and FRAM.
         }
         SRAMPos = 0;
         SRAMCmd = 0;
+        return;
+    }
+    if (IsFlashProfile(SRAMProfile) && SRAMCmd == 0xE5)
+    {
+        if (SRAMPos == 5 && (SRAMStatus & 2))
+        {
+            u8& lock = FlashLocks[(SRAMAddr & (SRAMLength - 1)) >> 16];
+            if (!(lock & 2)) { lock = SRAMSaveLen & 3; SRAMStatus &= ~2; }
+        }
+        SRAMPos = 0; SRAMCmd = 0; SRAMSaveLen = 0;
         return;
     }
     if (PagePending)
@@ -395,7 +429,7 @@ u32 WriteCycles(u32 protocol, u8 command, u32 length)
     // ST M95040/M95640 AC tables; Micron M25PE40 Rev B pp46-47.
     u32 microseconds = 5000;
     if (protocol == 3)
-        microseconds = command == 0x02 ? ((length + 7) / 8) * 25 :
+        microseconds = command == 0x01 ? 3000 : command == 0x02 ? ((length + 7) / 8) * 25 :
                        command == 0x0A ? 11000 : command == 0xDB ? 10000 : 1500000;
     return u32((u64(microseconds) * 33513982 + 999999) / 1000000);
 }
@@ -438,8 +472,9 @@ void CartRetail::CompleteSave()
     WriteAddress = WriteFirst = WriteLength = 0;
 }
 
-void CartRetail::CancelSave()
+void CartRetail::CancelSave(bool powerOff)
 {
+    if (powerOff) FlashLocks.fill(0);
     WriteDelay = 0; WriteCommand = 0;
     WriteAddress = WriteFirst = WriteLength = 0;
     SRAMStatus &= ~3;
@@ -460,11 +495,11 @@ u8 CartRetail::SPITransmitReceive(u8 val)
         // even if the internal write completes before its remaining bytes.
         SRAMCmd = WriteDelay && val != 0x05 ? 0 : val;
         SRAMAddr = 0;
-        if (IsStatusCommand(SRAMType, val)) SRAMSaveAddr = SRAMSaveLen = 0;
+        if (IsStatusCommand(SRAMType, val, SRAMProfile)) SRAMSaveAddr = SRAMSaveLen = 0;
         if (val == 0x04 || val == 0x06) ret = 0;
     }
     else if (!SRAMCmd) return 0xFF;
-    else if (IsStatusCommand(SRAMType, SRAMCmd))
+    else if (IsStatusCommand(SRAMType, SRAMCmd, SRAMProfile))
     {
         if (SRAMCmd == 0x01 && SRAMPos == 1) SRAMAddr = val;
         ret = 0;
@@ -488,6 +523,15 @@ u8 CartRetail::SPITransmitReceive(u8 val)
 
 bool CartRetail::IsWriteProtected(u32 address) const
 {
+    if (SRAMType == 3)
+    {
+        if (!IsFlashProfile(SRAMProfile)) return false;
+        address &= SRAMLength - 1;
+        if (FlashLocks[address >> 16] & 1) return true;
+        const u32 bp = (SRAMStatus >> 2) & 7;
+        const u32 length = bp ? std::min(SRAMLength, 65536u << (bp - 1)) : 0;
+        return address >= SRAMLength - length;
+    }
     // The BP layout is common to M95040/M95xxx and FM25W256. It is not
     // the M25PE Flash lock-register protocol.
     const u32 bp = (SRAMStatus >> 2) & 3;
@@ -633,7 +677,8 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
 {
     // M25PE family: 256-byte page latch; PP only clears bits, PW replaces
     // addressed bytes, and erase restores FF. CS starts the internal write.
-    // Protection and chip variants remain separate work.
+    // T9HX protection is enabled only by an explicit profile; capacity alone
+    // cannot identify the chip revision. The cart API has no W# pin, modeled high.
     switch (SRAMCmd)
     {
     case 0x05: // read status register
@@ -650,7 +695,7 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
         }
         else
         {
-            if (SRAMStatus & (1<<1))
+            if ((SRAMStatus & (1<<1)) && !IsWriteProtected(SRAMSaveAddr))
             {
                 if (!PagePending)
                 {
@@ -699,8 +744,27 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
         }
 
     case 0x9F: // read JEDEC IC
+        if (IsFlashProfile(SRAMProfile))
+        {
+            if (SRAMPos == 1) return 0x20;
+            if (SRAMPos == 2) return 0x80;
+            if (SRAMPos == 3) return u8(0x12 + SRAMProfile - 15);
+        }
         // GBAtek says it should be 0xFF. verify?
         return 0xFF;
+
+    case 0xE5: // write lock register
+    case 0xE8: // read lock register
+        if (!IsFlashProfile(SRAMProfile)) return 0xFF;
+        if (SRAMPos <= 3)
+        {
+            SRAMAddr = (SRAMAddr << 8) | val;
+            SRAMSaveLen = 0;
+        }
+        else if (SRAMCmd == 0xE8)
+            return FlashLocks[(SRAMAddr & (SRAMLength - 1)) >> 16];
+        else if (SRAMPos == 4) SRAMSaveLen = val;
+        return 0;
 
     case 0xD8: // sector erase
     case 0xDB: // page erase
@@ -711,7 +775,7 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
             SRAMSaveAddr = SRAMAddr;
             SRAMSaveLen = 0;
         }
-        if ((SRAMPos == 3) && (SRAMStatus & (1<<1)))
+        if ((SRAMPos == 3) && (SRAMStatus & (1<<1)) && !IsWriteProtected(SRAMSaveAddr))
         {
             PagePending = true;
             PageBuffer.fill(0xFF);

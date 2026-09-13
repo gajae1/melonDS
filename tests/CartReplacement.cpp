@@ -738,6 +738,33 @@ static int DSSaveCapacity(const string& test)
             RequireDSCapacity(ambiguous.Cart().GetROMParams().SaveMemType == 2,
                 "A 32KiB file alone must not identify FRAM");
         }
+        else if (test == "ds-capacity-flash-protection")
+        {
+            for (u32 type : {15u, 16u, 17u})
+            {
+                const u32 capacity = 262144u << (type - 15);
+                DSSaveFixture f(capacity + 17); f.Load(type);
+                DSWrite(f.Cart(), 0x0A, 3, 0x27, QByteArray::fromHex("96"));
+                f.expected[0x27] = char(0x96); f.Flush();
+                auto status = [&](u8 value) {
+                    f.Cart().SPISelect(); f.Cart().SPITransmitReceive(0x06); f.Cart().SPIRelease();
+                    f.Cart().SPISelect(); f.Cart().SPITransmitReceive(0x01);
+                    f.Cart().SPITransmitReceive(value); f.Cart().SPIRelease(); f.Cart().CompleteSave();
+                };
+                status(0x04); // Exactly the highest64KiB sector.
+                DSWrite(f.Cart(), 0x0A, 3, capacity - 65536, QByteArray::fromHex("a6")); f.Flush();
+                status(0);
+                DSWrite(f.Cart(), 0x0A, 3, capacity - 1, QByteArray::fromHex("a619"));
+                f.expected[capacity - 1] = char(0xA6); f.expected[capacity - 256] = char(0x19); f.Flush();
+                f.Load(type);
+                RequireDSCapacity(f.Cart().GetROMParams().SaveMemType == type &&
+                    DSRead(f.Cart(), 0x03, 3, capacity - 1, 1) == QByteArray::fromHex("a6"),
+                    "Explicit Flash profile did not survive reselect/disk reload");
+                f.Load();
+                RequireDSCapacity(f.Cart().GetROMParams().SaveMemType == 2,
+                    "Padded save bytes guessed an explicit Flash revision");
+            }
+        }
         else if (test == "ds-capacity-protection")
         {
             for (u32 type : {11u, 14u})
@@ -1018,7 +1045,7 @@ static int ManualDSSave(const string& test)
                     ReadSaveFile(oldPath) == oldBytes && ndsSaveCalls == callbacks,
                     "rejected manual DS request changed live cart/save ownership, bytes or callbacks");
             };
-            for (u32 type : {8u, 10u, 15u, UINT32_MAX})
+            for (u32 type : {8u, 10u, 18u, UINT32_MAX})
             {
                 RequireDSCapacity(!loader.loadROM({"unread.nds"}, false, error, {}, {}, type) && !error.isEmpty(), "invalid raw DS option accepted");
                 auto data = prepared("unread.nds"); auto* input = data->Bytes.get();

@@ -80,7 +80,7 @@ public:
     // The slot schedules the chip's internal write independently of SPI clocks.
     virtual u32 GetSaveDelay() const { return 0; }
     virtual void CompleteSave() {}
-    virtual void CancelSave() {}
+    virtual void CancelSave(bool powerOff = false) {}
 
     virtual u8* GetSaveMemory() { return nullptr; }
     virtual const u8* GetSaveMemory() const { return nullptr; }

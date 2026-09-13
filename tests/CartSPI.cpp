@@ -730,7 +730,7 @@ static void BeginTimedWrite(FlashFixture& f, u32 type, u8 command, u32 address,
                             const std::vector<u8>& data)
 {
     f.EnableWrite(); f.Begin(command);
-    const unsigned width = type == 1 ? 1 : type == 13 || (type >= 5 && type <= 7) ? 3 : 2;
+    const unsigned width = type == 1 ? 1 : type == 13 || (type >= 5 && type <= 7) || type >= 15 ? 3 : 2;
     for (int shift = int(width - 1) * 8; shift >= 0; shift -= 8) f.Data(u8(address >> shift));
     for (u8 byte : data) f.Data(byte);
 }
@@ -935,11 +935,70 @@ static void TestWriteTimingLifecycle(u32 cpu)
     }
 }
 
+static void TestFlashProtectionTransport(u32 cpu, bool dsi, bool infrared)
+{
+    FlashFixture source(cpu, dsi, infrared, 0x5A, 16);
+    const auto expected = std::vector<u8>(source.Cart->GetSaveMemory(),
+        source.Cart->GetSaveMemory() + FlashFixture::Length);
+    source.EnableWrite(); source.Begin(0x01); source.Data(0x04); source.Release(false);
+    Check(source.Cart->GetSaveDelay() == 100542, "MMIO did not start Flash WRSR's3ms operation");
+    Savestate pending; source.Save(pending, 11);
+    FlashFixture restored(cpu, dsi, infrared, 0x5A, 6);
+    restored.Restore(pending); restored.FinishSave();
+    Check((restored.Status() & 0x1F) == 4, "Whole-console restore lost new Flash profile/status completion");
+    restored.Expect(expected, "WRSR changed save bytes through real SPI");
+    BeginTimedWrite(restored, 16, 0x0A, 0x70000, {0}); restored.Release(false);
+    Check(!restored.Cart->GetSaveDelay(), "Protected sector started a real internal save event");
+    restored.Expect(expected, "Real MMIO bypassed Flash BP protection");
+    const auto lock = [&](u8 value) {
+        restored.EnableWrite(); restored.Begin(0xE5);
+        restored.Data(1); restored.Data(0); restored.Data(7); restored.Data(value);
+    };
+    const auto readLock = [&] {
+        restored.Begin(0xE8); restored.Data(1); restored.Data(0); restored.Data(0);
+        const auto value = restored.Data(0); restored.Release(false); return value;
+    };
+    lock(3);
+    Savestate held; restored.Save(held, 11);
+    source.Restore(held); source.Release(false);
+    Savestate committed; source.Save(committed, 11); restored.Restore(committed);
+    Check(readLock() == 3 && !(restored.Status() & 2), "Held WRLR lost CS completion/lock-down/WEL on cold restore");
+    lock(0); restored.Release(false);
+    Check(readLock() == 3, "MMIO changed a locked-down register");
+    if (dsi)
+    {
+        restored.Machine->ARM7Write16(0x04004010, 4);
+        restored.Machine->ARM7Write16(0x04004010, 8);
+        Check(readLock() == 3, "Clock-off power state discarded volatile locks");
+        restored.Machine->ARM7Write16(0x04004010, 0);
+        restored.Machine->ARM7Write16(0x04004010, 4);
+        restored.Machine->ARM7Write16(0x04004010, 8);
+        Check(readLock() == 0 && (restored.Status() & 0x1C) == 4,
+              "Power cycle failed to clear volatile locks or lost nonvolatile BP");
+    }
+    else
+    {
+        auto cart = restored.Machine->EjectCart();
+        cart->SPISelect(); // Direct read after ejection verifies the chip power boundary.
+        cart->SPITransmitReceive(0xE8);
+        cart->SPITransmitReceive(1); cart->SPITransmitReceive(0); cart->SPITransmitReceive(0);
+        Check(cart->SPITransmitReceive(0) == 0, "Ejected Flash retained volatile locks");
+    }
+    std::printf("Flash protection MMIO %s ARM%u IR=%u\n", dsi ? "DSi" : "DS", cpu ? 7 : 9, infrared);
+}
+
 int main(int argc, char** argv)
 try
 {
     if (argc != 2) return 2;
     const std::string mode = argv[1];
+    if (mode == "flash-protection")
+    {
+        for (u32 cpu : {0u, 1u})
+        for (bool dsi : {false, true}) TestFlashProtectionTransport(cpu, dsi, false);
+        TestFlashProtectionTransport(1, true, true);
+        return Failures ? 1 : 0;
+    }
     if (mode == "write-timing")
     {
         ObserveSaves = true;

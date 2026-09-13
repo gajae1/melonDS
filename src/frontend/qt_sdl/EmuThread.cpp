@@ -1050,8 +1050,10 @@ bool EmuThread::chooseDSSaveType(CartLoadRequest& request, QString& errorstr)
     const QStringList choices{tr("Automatic"), tr("No save"), tr("EEPROM - 512 bytes"),
         tr("EEPROM - 8 KiB"), tr("EEPROM - 64 KiB"), tr("EEPROM - 128 KiB"),
         tr("FRAM - 32 KiB"),
-        tr("Flash - 256 KiB"), tr("Flash - 512 KiB"), tr("Flash - 1 MiB")};
-    const std::optional<u32> types[] = {std::nullopt, 0, 1, 11, 12, 13, 14, 5, 6, 7};
+        tr("Flash - 256 KiB"), tr("Flash - 512 KiB"), tr("Flash - 1 MiB"),
+        tr("Flash M25PE20 (T9HX) - 256 KiB"), tr("Flash M25PE40 (T9HX) - 512 KiB"),
+        tr("Flash M25PE80 (T9HX) - 1 MiB")};
+    const std::optional<u32> types[] = {std::nullopt, 0, 1, 11, 12, 13, 14, 5, 6, 7, 15, 16, 17};
     QInputDialog dialog(emuInstance->getMainWindow());
     dialog.setWindowTitle(tr("DS save type"));
     dialog.setLabelText(tr("Save hardware for %1 (this load only).\n"

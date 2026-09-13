@@ -46,7 +46,7 @@ class NDSCartSlot;
 // are appended; NAND codes 8..10 are never accepted as manual SPI overrides.
 constexpr bool IsSupportedSPISaveType(u32 type)
 {
-    return type <= 7 || (type >= 11 && type <= 14);
+    return type <= 7 || (type >= 11 && type <= 17);
 }
 
 /// Arguments used to create and populate an NDS cart of unknown type.
@@ -74,6 +74,7 @@ struct NDSCartArgs
     /// ROM metadata or existing-file detection. Values match ROMList SaveMemType
     /// 0..7 (none, EEPROM 512B, legacy 8K/64K/128K, Flash 256K/512K/1M),
     /// 11..13 (EEPROM 8K/64K/128K with 32/128/256-byte pages), or 14 (FRAM 32K).
+    /// 15..17 select M25PE20/40/80 T9HX Flash with status/sector protection.
     /// Existing file bytes are retained; this cannot convert NAND/SD cartridges.
     std::optional<u32> SPISaveType = std::nullopt;
 };

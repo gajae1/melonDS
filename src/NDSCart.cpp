@@ -820,7 +820,7 @@ std::unique_ptr<CartCommon> NDSCartSlot::EjectCart() noexcept
 {
     if (!Cart) return nullptr;
     NDS.CancelEvent(SaveEvent);
-    Cart->CancelSave();
+    Cart->CancelSave(true);
     ClearLegacyTransfer();
     // The controller still finishes its clocked byte, but the old target must
     // not receive it after removal or be replaced by a newly inserted cart.
@@ -864,7 +864,7 @@ void NDSCartSlot::SetPowerState(u8 power)
     if (PowerState == 0)
     {
         NDS.CancelEvent(SaveEvent);
-        if (Cart) Cart->CancelSave();
+        if (Cart) Cart->CancelSave(true);
         // state 0 clears the "reset release" bit
         Interfaces[0].ROMCnt &= ~(1<<29);
         Interfaces[1].ROMCnt &= ~(1<<29);
