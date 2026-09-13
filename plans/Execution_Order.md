@@ -612,3 +612,6 @@ AD-08 진행 중 후보(1.1.91 이후, 미배포): 준비된 bank/stream/rendere
 
 
 1.1.94 — Playback1/2의 native min/fundamental/default/max가 모두480(48kHz)임을 직접 확인했다. miniaudio는512 요청의 계산값480이 요청보다 작다는 이유로 IAudioClient3를 시도하지 않아 기존 공유 경로의512 callback이 장치10ms와 어긋났다. low-latency profile은 지원 quantum으로 올림한 뒤 장치 범위에 맞추고, max를 넘는 hint도 지원되는 max로 초기화한다. 보수 profile과 API 실패 때 기존 fallback은 유지한다. 설정 요청값을 바꾸지 않고 Requested buffer/실제값 표시를 구분하며 underrun에 따라 버퍼를 변동시키지 않는다. 다음은 R3의 짧은 첫 출력과 초기 준비 시간, 남은 생산/FPS 대기 및 자동 backend 선택·장치 상실 복구다.
+
+
+1.1.95 — R3와 audio sync가 현재 요청 속도를 제어하는 동안 중복 FPS 대기를 생략한다. 준비 중 첫 PCM 생산도 이 경로를 쓰며 출력 부재·sync OFF·비R3·오디오 하한과 다른 요청 속도는 기존 FPS 제한을 유지한다. 큐 한도·폐기·첫 출력 조건은 변경하지 않았다. 다음 AD-04는 R3 첫 짧은 조각, 0.5배 미만 요청의 기존 출력 속도 하한 불일치, sync OFF에서 남는 overflow와 자동 backend/장치 복구다.

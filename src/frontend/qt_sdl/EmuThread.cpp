@@ -447,7 +447,14 @@ void EmuThread::run()
 
             if (frametimeStep < 0.001) frametimeStep = 0.001;
 
-            if (emuInstance->doLimitFPS)
+            // R3 releases PCM in variable-sized hops. When audio already paces
+            // this speed, a second wall-clock wait can starve its next hop.
+            // Keep the FPS limit if output is unavailable or its clamped rate
+            // differs from the requested speed (including slow motion).
+            const bool audioPacesFrames = emuInstance->audioTimeStretchEnabled &&
+                emuInstance->doAudioSync && outputFPS == currentFPS &&
+                (emuInstance->audioIsRunning() || emuInstance->audioStartRequested);
+            if (emuInstance->doLimitFPS && !audioPacesFrames)
             {
                 double curtime = SDL_GetPerformanceCounter() * perfCountsSec;
 
@@ -466,6 +473,11 @@ void EmuThread::run()
                 }
 
                 lastTime = curtime;
+            }
+            else
+            {
+                lastTime = SDL_GetPerformanceCounter() * perfCountsSec;
+                frameLimitError = 0.0;
             }
 
             nframes++;
