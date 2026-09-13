@@ -753,22 +753,39 @@ void EmuInstance::audioResetOutput()
 
 void EmuInstance::audioEnable()
 {
+    audioDevice.Stop();
+    // Device setup can block. Complete capture setup before allowing playback
+    // to consume the retained queue while the producer is still stopped here.
+    if (micStarted) micOpen();
+    audioStartRequested = static_cast<bool>(audioDevice);
     if (audioDevice)
     {
-        audioDevice.Stop();
         // The device transition runs after filtering, so retained filter state
         // cannot bypass the fade. Reset only the source-shortage history here.
         audioOutputRamp.Reset();
         audioDiagnostics.PreviousStart = 0; // paused time is not callback lateness
-        std::string error;
-        if (!audioDevice.Start(error))
-            Platform::Log(Platform::LogLevel::Error, "Audio start failed: %s\n", error.c_str());
+        audioStartPending();
     }
-    if (micStarted) micOpen();
+}
+
+void EmuInstance::audioStartPending()
+{
+    if (!audioStartRequested || !nds) return;
+    const bool ready = audioTimeStretchEnabled
+        ? audioTimeStretch.QueuedFrames() != 0 : nds->SPU.GetOutputSize() != 0;
+    if (!ready) return;
+    // Do not consume an empty source after boot/load/reopen. The producer calls
+    // again after producing PCM; no queue growth, sample discard or ongoing
+    // underrun suppression is used. Retained PCM resumes immediately.
+    audioStartRequested = false;
+    std::string error;
+    if (!audioDevice.Start(error))
+        Platform::Log(Platform::LogLevel::Error, "Audio start failed: %s\n", error.c_str());
 }
 
 void EmuInstance::audioDisable()
 {
+    audioStartRequested = false;
     audioDevice.Stop();
     audioReportDiagnostics();
     if (micStarted) micClose();

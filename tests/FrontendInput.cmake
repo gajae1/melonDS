@@ -362,6 +362,7 @@ add_custom_command(OUTPUT "${audio_sync}"
 set(audio_device_methods)
 foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(const AudioOutput::Settings& settings, std::string& error)"
         "audioEnable|void EmuInstance::audioEnable()"
+        "audioStartPending|void EmuInstance::audioStartPending()"
         "audioPumpTimeStretch|void EmuInstance::audioPumpTimeStretch(int maxQueued)"
         "audioSetSpeed|void EmuInstance::audioSetSpeed(double speed)"
         "audioTimeStretchFailed|void EmuInstance::audioTimeStretchFailed()"
@@ -437,6 +438,7 @@ target_include_directories(SavestateLoad PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "
 target_link_libraries(SavestateLoad PRIVATE core Threads::Threads)
 target_sources(SavestateLoad PRIVATE "${audio_callback}")
 foreach(pair IN ITEMS "stateAudioEnable|audioEnable" "stateAudioDisable|audioDisable"
+        "stateAudioStartPending|audioStartPending"
         "stateAudioReport|audioReportDiagnostics" "stateAudioReset|audioResetOutput")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 output_name)

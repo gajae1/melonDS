@@ -359,6 +359,11 @@ void EmuThread::run()
                 }
             }
 
+            const int outputFrameSamples = static_cast<int>(std::ceil(
+                emuInstance->audioFreq * nlines / (outputFPS * 263.0)));
+            emuInstance->audioPumpTimeStretch(std::max(emuInstance->audioBufSize, outputFrameSamples));
+            emuInstance->audioStartPending();
+
             emuInstance->retrySaveCapture();
             if (emuInstance->ndsSave)
                 emuInstance->ndsSave->CheckFlush();
@@ -431,9 +436,6 @@ void EmuThread::run()
                 emuInstance->audioVolume = volumeLevel * (256.0 / 31.0);
             }
 
-            const int outputFrameSamples = static_cast<int>(std::ceil(
-                emuInstance->audioFreq * nlines / (outputFPS * 263.0)));
-            emuInstance->audioPumpTimeStretch(std::max(emuInstance->audioBufSize, outputFrameSamples));
             if (emuInstance->doAudioSync && (emuInstance->audioTimeStretchEnabled || !(fastforward || slowmo)))
             {
                 const auto stop = cheatStopToken();

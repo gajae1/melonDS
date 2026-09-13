@@ -248,6 +248,7 @@ private:
     void audioInit();
     void audioDeInit();
     void audioEnable();
+    void audioStartPending();
     void audioDisable();
     void updateAudioMuteByWindowFocus();
     void toggleAudioMute();
@@ -346,6 +347,7 @@ private:
     bool cheatsOn;
 
     AudioOutput audioDevice;
+    bool audioStartRequested = false;
     AudioTimeStretch audioTimeStretch;
     bool audioTimeStretchEnabled = false;
     bool audioOpenOutput(const AudioOutput::Settings& settings, std::string& error);

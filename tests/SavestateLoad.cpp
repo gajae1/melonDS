@@ -94,6 +94,7 @@ struct StateReader
     FixtureConsole* nds;
     std::unique_ptr<Savestate> backupState;
     AudioOutput audioDevice;
+    bool audioStartRequested = false;
     AudioTimeStretch audioTimeStretch;
     bool audioTimeStretchEnabled = false;
     void audioTimeStretchFailed() { std::abort(); }
@@ -118,6 +119,7 @@ struct StateReader
     void micOpen() { std::abort(); }
     void micClose() { std::abort(); }
     void audioEnable();
+    void audioStartPending();
     void audioDisable();
     void audioResetOutput();
     void audioReportDiagnostics();
@@ -161,6 +163,7 @@ struct StateReader
 #define EmuInstance StateReader
 #include "audioCallback.inc"
 #include "stateAudioEnable.inc"
+#include "stateAudioStartPending.inc"
 #include "stateAudioDisable.inc"
 #include "stateAudioReport.inc"
 #include "stateAudioReset.inc"
@@ -228,6 +231,7 @@ static int AudioHistory(const std::string& requestedTest)
         std::array<s16, 256> first{}, next{};
         int queuedBefore = 0, queuedAfter = 0;
         bool corePreserved = false;
+        bool startDeferred = false;
         StateLoadResult result = StateLoadResult::Failed;
     };
     const bool success = test == "audio-success" || test == "audio-rebase";
@@ -283,7 +287,14 @@ static int AudioHistory(const std::string& requestedTest)
         }
         observed.corePreserved = Snapshot(nds) == (load && success ? target : previous);
         observed.queuedAfter = stretch ? reader.audioTimeStretch.QueuedFrames() : nds.SPU.GetOutputSize();
-        observed.first = reader.nextCallback();
+        if (observed.queuedAfter == 0)
+        {
+            reader.audioEnable();
+            observed.startDeferred = reader.audioStartRequested && !reader.audioDevice.IsRunning();
+            reader.audioDisable();
+            if (reader.audioStartRequested) throw std::runtime_error("Pause retained a pending audio start");
+        }
+        else observed.first = reader.nextCallback();
         // Pass the old queue through real callbacks before checking newly
         // produced audio, so a rollback also proves the pending blip history.
         if (stretch)
@@ -295,9 +306,13 @@ static int AudioHistory(const std::string& requestedTest)
             }
         }
         else while (nds.SPU.GetOutputSize()) reader.nextCallback();
-        nds.RunFrame();
-        if (stretch)
+        // A freshly reset converter needs more than one source frame before
+        // it produces host PCM. Exercise that startup instead of requiring an
+        // empty callback to arrive while the converter is still warming up.
+        for (unsigned frame = 0; frame < 16; ++frame)
         {
+            nds.RunFrame();
+            if (!stretch) break;
             std::array<int16_t, 2048> input;
             while (reader.audioTimeStretch.CanPush())
             {
@@ -305,6 +320,7 @@ static int AudioHistory(const std::string& requestedTest)
                 if (!n) break;
                 if (!reader.audioTimeStretch.Push(input.data(), n)) throw std::runtime_error("stretch resume");
             }
+            if (reader.audioTimeStretch.QueuedFrames()) break;
         }
         observed.next = reader.nextCallback(); // Includes the pending blip tail.
         return observed;
@@ -319,7 +335,7 @@ static int AudioHistory(const std::string& requestedTest)
     bool passed = loaded.corePreserved && loaded.queuedBefore > 128 && peak(control.first) > 100;
     if (success)
     {
-        passed &= loaded.result == StateLoadResult::Success && peak(loaded.first) == 0;
+        passed &= loaded.result == StateLoadResult::Success && loaded.queuedAfter == 0 && loaded.startDeferred;
         if (test == "audio-rebase")
             passed &= *std::max_element(loaded.next.begin(), loaded.next.end()) > 500;
         else passed &= peak(loaded.next) == 0;
@@ -328,9 +344,9 @@ static int AudioHistory(const std::string& requestedTest)
         passed &= loaded.result == StateLoadResult::Failed && loaded.queuedAfter == loaded.queuedBefore &&
             loaded.first == control.first && loaded.next == control.next;
     std::printf("%s: %s result=%d queue=%d->%d first_peak=%d next_peak=%d control_peak=%d "
-                "resume_equal=%d core_snapshot_equal=%d backend=dummy\n", requestedTest.c_str(), passed ? "PASS" : "FAIL",
+                "resume_equal=%d core_snapshot_equal=%d start_deferred=%d backend=dummy\n", requestedTest.c_str(), passed ? "PASS" : "FAIL",
         int(loaded.result), loaded.queuedBefore, loaded.queuedAfter, peak(loaded.first), peak(loaded.next),
-        peak(control.first), loaded.first == control.first && loaded.next == control.next, loaded.corePreserved);
+        peak(control.first), loaded.first == control.first && loaded.next == control.next, loaded.corePreserved, loaded.startDeferred);
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     return passed ? 0 : 1;
 }

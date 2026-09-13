@@ -62,6 +62,7 @@ struct AudioState
     SDL_mutex* audioSyncLock = SDL_CreateMutex();
     SDL_cond* audioSyncCond = SDL_CreateCond();
     AudioOutput audioDevice;
+    bool audioStartRequested = false;
     AudioTimeStretch audioTimeStretch;
     bool audioTimeStretchEnabled = false;
     bool fakeRunning = false;
@@ -81,6 +82,7 @@ struct AudioState
     }
     void audioReportDiagnostics() {}
     void audioEnable();
+    void audioStartPending();
     bool micStarted = false;
     void micOpen() {}
 };
@@ -134,6 +136,7 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 #include "audioOpenOutput.inc"
 #include "audioSetOutput.inc"
 #include "audioEnable.inc"
+#include "audioStartPending.inc"
 #include "audioPumpTimeStretch.inc"
 #include "audioSetSpeed.inc"
 #include "audioTimeStretchFailed.inc"
@@ -194,6 +197,7 @@ int main(int argc, char** argv)
         negotiateRate = false;
         device.audioDiagnostics.Enabled = true;
         check(device.audioSetBufferSize(32, error), "Running output reopen failed");
+        deviceConsole.SPU.queuedFrames = 64;
         device.audioEnable();
         SDL_Delay(30);
         device.audioDevice.Stop();
@@ -394,6 +398,7 @@ int main(int argc, char** argv)
         manualPaused = true;
         Console resumeConsole;
         AudioState resume{&resumeConsole};
+        resumeConsole.SPU.queuedFrames = 128;
         resume.audioLowPassCutoff = cutoff;
         resume.audioLowPass.Init(resume.audioFreq);
         resume.audioLowPass.SetCutoffNow(cutoff ? cutoff : resume.audioLowPass.WideOpenCutoff());
@@ -437,6 +442,44 @@ int main(int argc, char** argv)
         check(previous == 1000 && resume.audioDiagnostics.Underruns == 0,
               "Resume remains attenuated or creates a source shortage");
         resume.audioDevice.Close();
+        manualOutput = false;
+    }
+    SDL_AudioQuit();
+
+    // A resumed empty source must not be consumed before emulation has had a
+    // chance to produce PCM. Native delivery may continue with paused silence.
+    if (SDL_AudioInit("dummy") != 0) return 2;
+    {
+        manualOutput = true;
+        manualPaused = true;
+        Console emptyConsole;
+        emptyConsole.SPU.available = 0;
+        AudioState empty{&emptyConsole};
+        empty.audioLowPass.Init(empty.audioFreq);
+        empty.audioOutputRamp.Init(empty.audioFreq);
+        empty.audioDiagnostics.Enabled = true;
+        std::string error;
+        check(empty.audioDevice.Open({AudioOutput::SDL, {}, 128}, AudioState::audioCallback, &empty, error),
+              "Empty-source device open failed");
+        empty.audioEnable();
+        check(!empty.audioDevice.IsRunning(), "Resume started consumption before the first PCM was produced");
+        if (!manualPaused)
+            manualSpec.callback(manualSpec.userdata, reinterpret_cast<Uint8*>(output.data()), 128 * 4);
+        check(empty.audioDiagnostics.Callbacks == 0, "Empty resume consumed a source callback");
+        emptyConsole.SPU.available = 128;
+        emptyConsole.SPU.queuedFrames = 128;
+        empty.audioStartPending();
+        check(empty.audioDevice.IsRunning(), "Prepared PCM did not start pending playback");
+        manualSpec.callback(manualSpec.userdata, reinterpret_cast<Uint8*>(output.data()), 128 * 4);
+        check(empty.audioDiagnostics.SuppliedFrames == 128 && empty.audioDiagnostics.Underruns == 0 &&
+              output[254] == 1000 && output[255] == -1000,
+              "First prepared PCM was lost, attenuated indefinitely or replaced with silence");
+        emptyConsole.SPU.available = 0;
+        emptyConsole.SPU.queuedFrames = 0;
+        empty.audioStartPending();
+        manualSpec.callback(manualSpec.userdata, reinterpret_cast<Uint8*>(output.data()), 128 * 4);
+        check(empty.audioDiagnostics.Underruns == 1, "Startup gate hid a later underrun");
+        empty.audioDevice.Close();
         manualOutput = false;
     }
     SDL_AudioQuit();
