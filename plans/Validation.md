@@ -157,3 +157,6 @@ FS-06의 비공개 생성파일 진단은 [Qt6.11.2의 native rename](https://ra
 
 
 1.1.86 — Windows 전체 빌드·CTest919/919(98.00초, 전체1회, 실패/skip0). NP-18은 영향을 받는 기존 운영 소스5개의 hash 일치를 확인해 원 실패 증거를 재사용했다. 생성 카트리지 NAND와 실제 MMIO/scheduler의 가져오기/live/cold·일반 pending/cold·실패한 core 상태 load 이후 백업 복구5조건에서 기대 배열과 전체 바이트가 일치했다. 집중9/9도1회 통과했다. 실제 카트리지·UI 가져오기·DSi 내부 NAND 전체 프로토콜·실기 수락으로 확대하지 않는다. r8brain 최소위상 실험은 별도 private native 후보이며 제품 SPU를 바꾸지 않았다. GitHub Actions·macOS 빌드는 사용하지 않았다.
+
+
+1.1.87 — Windows 최종 빌드·CTest919/919(91.23초, 전체1회, 실패/skip0). 실제 WASAPI 무음 장치 검사에서 preflight의 client 호출0·일시정지/재개/종료·동시2출력·잘못된 장치 이후 재개방과 진행 중 callback을 유지한 idempotent Start/Stop 대기를 확인했다. 무음 headless 블랙360프레임×요청128/256/512, 각100ms 일시정지3회에서 기존5281/5761/7233→최종321/2027/1025 공급 부족과 코어 PCM 폐기0·동일 최종 화면·개인 입력 보존을 확인했다. 재개 첫 callback부터20ms의9구간 부족0은 실제Qt설정창·청취·물리 지연 증거가 아니다. 최종 버전 증가 전 동일 오디오 라이브러리의 게임 결과를 재사용했으며, core archive는 버전 문자열을 포함한NDS.cpp 재빌드로 달라져 동일 binary로 세지 않는다. 시작/실행 중 부족·장치 상실/재연결·ARM·고품질 보간은 미완료다. 공유 스트림이 열린 동안 일시정지 무음을 유지하며 Close에서 해제한다. GitHub Actions·macOS 빌드는 사용하지 않았다.

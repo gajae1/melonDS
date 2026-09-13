@@ -35,7 +35,9 @@ public:
     bool Open(const Settings&, Callback, void* userdata, std::string& error);
     void Close();
     bool Start(std::string& error);
-    void Stop(); // waits until callbacks finish
+    // Waits until client callbacks finish. A shared stream may remain active
+    // delivering silence; Close releases the device itself.
+    void Stop();
     explicit operator bool() const;
     bool IsRunning() const;
     const Spec& GetSpec() const { return spec; }

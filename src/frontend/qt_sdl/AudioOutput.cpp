@@ -16,16 +16,31 @@ struct AudioOutput::Impl
     Callback callback = nullptr;
     void* userdata = nullptr;
     std::atomic<bool> running{false};
-    bool forward = false; // changed only while callbacks are stopped
 #ifdef _WIN32
+    static constexpr unsigned Paused = 1, InCallback = 2;
+    std::atomic<unsigned> callbackState{Paused};
     ma_context context{};
     ma_device device{};
     bool contextReady = false, deviceReady = false;
     static void Render(ma_device* device, void* output, const void*, ma_uint32 frames)
     {
         auto& self = *static_cast<Impl*>(device->pUserData);
-        if (!self.forward) { std::memset(output, 0, frames * 4); return; }
+        unsigned expected = 0;
+        if (!self.callbackState.compare_exchange_strong(expected, InCallback,
+                std::memory_order_acquire, std::memory_order_relaxed))
+        { std::memset(output, 0, frames * 4); return; }
         self.callback(self.userdata, static_cast<uint8_t*>(output), static_cast<int>(frames * 4));
+        if (self.callbackState.fetch_and(~InCallback, std::memory_order_release) & Paused)
+            self.callbackState.notify_all();
+    }
+    void PauseCallbacks()
+    {
+        unsigned state = callbackState.fetch_or(Paused, std::memory_order_acq_rel) | Paused;
+        while (state & InCallback)
+        {
+            callbackState.wait(state, std::memory_order_acquire);
+            state = callbackState.load(std::memory_order_acquire);
+        }
     }
     static void Notify(const ma_device_notification* notification)
     {
@@ -40,7 +55,11 @@ struct AudioOutput::Impl
     {
         if (sdl) SDL_CloseAudioDevice(sdl);
 #ifdef _WIN32
-        if (deviceReady) ma_device_uninit(&device);
+        if (deviceReady)
+        {
+            PauseCallbacks();
+            ma_device_uninit(&device);
+        }
         if (contextReady) ma_context_uninit(&context);
 #endif
     }
@@ -51,6 +70,10 @@ AudioOutput::~AudioOutput() = default;
 AudioOutput::operator bool() const { return impl != nullptr; }
 bool AudioOutput::IsRunning() const
 {
+#ifdef _WIN32
+    if (impl && !impl->sdl && (impl->callbackState.load(std::memory_order_acquire) & Impl::Paused))
+        return false;
+#endif
     return impl && impl->running.load(std::memory_order_relaxed);
 }
 void AudioOutput::Close() { impl.reset(); }
@@ -111,11 +134,10 @@ bool AudioOutput::Open(const Settings& requested, Callback callback, void* userd
         if (result != MA_SUCCESS) { error = ma_result_description(result); return false; }
         output->deviceReady = true;
         // Validate start before accepting a new preference, including when the
-        // emulator is paused. This preflight emits silence and never reads SPU.
+        // emulator is paused. Keep the stream primed with silence until Start
+        // opens client delivery; stopping here would empty the native buffer.
         result = ma_device_start(&output->device);
         if (result != MA_SUCCESS) { error = ma_result_description(result); return false; }
-        ma_device_stop(&output->device);
-        output->forward = true;
         obtained.rate = output->device.sampleRate;
         obtained.frames = output->device.playback.internalPeriodSizeInFrames;
         obtained.bufferFrames = output->device.wasapi.actualBufferSizeInFramesPlayback;
@@ -125,7 +147,7 @@ bool AudioOutput::Open(const Settings& requested, Callback callback, void* userd
     else { error = "Requested audio output backend is unavailable"; return false; }
     settings = std::move(next);
     spec = std::move(obtained);
-    impl = std::move(output); // initialized output remains stopped
+    impl = std::move(output); // client delivery remains paused
     return true;
 }
 
@@ -140,8 +162,12 @@ bool AudioOutput::Start(std::string& error)
         return true;
     }
 #ifdef _WIN32
-    const auto result = ma_device_start(&impl->device);
-    if (result != MA_SUCCESS) { error = ma_result_description(result); return false; }
+    if (!impl->running.load(std::memory_order_relaxed))
+    {
+        const auto result = ma_device_start(&impl->device);
+        if (result != MA_SUCCESS) { error = ma_result_description(result); return false; }
+    }
+    impl->callbackState.fetch_and(~Impl::Paused, std::memory_order_release);
     // The notification owns running state so a device-loss stop cannot be overwritten here.
     return true;
 #else
@@ -152,11 +178,17 @@ bool AudioOutput::Start(std::string& error)
 void AudioOutput::Stop()
 {
     if (!impl) return;
-    if (impl->sdl) SDL_PauseAudioDevice(impl->sdl, 1);
+    if (impl->sdl)
+    {
+        SDL_PauseAudioDevice(impl->sdl, 1);
+        impl->running.store(false, std::memory_order_relaxed);
+    }
 #ifdef _WIN32
-    else ma_device_stop(&impl->device); // synchronous WASAPI worker acknowledges stop
+    // Keep the shared stream fed with silence during emulator pauses. Closing
+    // still stops/releases it. Restarting an emptied WASAPI buffer consumes a
+    // burst of PCM before the next producer frame, even with a fast callback.
+    else impl->PauseCallbacks();
 #endif
-    impl->running.store(false, std::memory_order_relaxed);
 }
 
 std::vector<AudioOutput::DeviceInfo> AudioOutput::Enumerate(int backend, std::string& error)
