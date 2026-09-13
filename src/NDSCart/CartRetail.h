@@ -64,7 +64,7 @@ public:
     void SPISelect() override;
     void SPIRelease() override;
     u8 SPITransmitReceive(u8 val) override;
-    u32 GetSaveDelay() const override { return WriteDelay; }
+    u32 GetSaveDelay() const override { return WriteDelay ? WriteDelay : PowerDelay; }
     void CompleteSave() override;
     void CancelSave(bool powerOff = false) override;
 
@@ -114,6 +114,12 @@ protected:
     std::array<u8, 256> WriteBuffer {};
     // M25PE T9HX: volatile write-lock/lock-down bits, one per64KiB sector.
     std::array<u8, 16> FlashLocks {};
+    // Power transitions share the internal-operation event, but never set WIP
+    // or overlap a write. CS selected before wake completion stays rejected.
+    enum class FlashPower : u8 { Awake, Entering, Asleep, Waking };
+    FlashPower PowerState = FlashPower::Awake;
+    u32 PowerDelay = 0;
+    bool PowerBlocked = false;
 };
 
 }

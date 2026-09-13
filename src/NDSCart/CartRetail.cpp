@@ -74,6 +74,15 @@ bool IsFlashProfile(u32 profile) { return profile >= 15 && profile <= 17; }
 
 bool IsExtendedErase(u8 command) { return command == 0x20 || command == 0xC7; }
 
+bool IsPowerCommand(u8 command) { return command == 0xB9 || command == 0xAB; }
+
+u32 PowerCycles(bool waking)
+{
+    // ST M25PE20/40/80 T9HX tDP/tRDP maximums, 3us/30us. No typical values
+    // are specified; this is a deterministic bound, not measured chip timing.
+    return u32((u64(waking ? 30 : 3) * 33513982 + 999999) / 1000000);
+}
+
 u32 FlashEraseSize(u8 command, u32 length, u32 profile)
 {
     if (command == 0xDB) return 256;
@@ -168,7 +177,10 @@ void CartRetail::PrepareSavestate(Savestate* file, u8 pendingSPI) const
         const bool extended = (WriteDelay && IsExtendedErase(WriteCommand)) ||
             (SRAMPos && IsExtendedErase(SRAMCmd)) ||
             (!SRAMPos && !WriteDelay && IsExtendedErase(pendingSPI));
-        file->RequireMinorVersion(extended ? 12 : 11);
+        const bool power = PowerState != FlashPower::Awake || PowerBlocked ||
+            (SRAMPos && IsPowerCommand(SRAMCmd)) ||
+            (!SRAMPos && !WriteDelay && IsPowerCommand(pendingSPI));
+        file->RequireMinorVersion(power ? 13 : extended ? 12 : 11);
     }
     else if (WriteDelay || (SRAMType == 1 && PagePending)) file->RequireMinorVersion(10);
     else if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd, SRAMProfile)) file->RequireMinorVersion(8);
@@ -215,10 +227,11 @@ void CartRetail::DoSavestate(Savestate* file)
     auto locks = file->Saving ? FlashLocks : std::array<u8, 16>{};
     // No-profile records keep the old layout and derived IR/NAND tails. Exact
     // media must be saved even when idle: capacity cannot distinguish them.
-    constexpr u32 pendingFlag = 1u << 31, profileFlag = 1u << 30, writeFlag = 1u << 29;
+    constexpr u32 pendingFlag = 1u << 31, profileFlag = 1u << 30, writeFlag = 1u << 29, powerFlag = 1u << 28;
     if (file->Saving && PagePending) saveLen |= pendingFlag;
     if (file->Saving && profile) saveLen |= profileFlag;
     if (file->Saving && WriteDelay) saveLen |= writeFlag;
+    if (file->Saving && (PowerState != FlashPower::Awake || PowerBlocked)) saveLen |= powerFlag;
     const bool legacy = !file->Saving && file->MajorVersion() == 13;
     if (!legacy) file->Var32(&pos);
     file->Var8(&cmd);
@@ -232,7 +245,8 @@ void CartRetail::DoSavestate(Savestate* file)
     const bool pending = !legacy && (saveLen & pendingFlag);
     const bool hasProfile = !legacy && (saveLen & profileFlag);
     const bool writing = !legacy && (saveLen & writeFlag);
-    if (!legacy) saveLen &= ~(pendingFlag | profileFlag | writeFlag);
+    const bool powered = !legacy && (saveLen & powerFlag);
+    if (!legacy) saveLen &= ~(pendingFlag | profileFlag | writeFlag | powerFlag);
     if (hasProfile)
     {
         file->Var32(&profile);
@@ -260,6 +274,9 @@ void CartRetail::DoSavestate(Savestate* file)
             { file->Error = true; return; }
         if (cmd == 0xE5 && (pending || saveLen > 0xFF || addr > 0xFFFFFF))
         { file->Error = true; return; }
+        // Old writers could leave these unsupported opcodes in the latch.
+        // Keep their transaction ignored instead of retroactively entering DPD.
+        if (!file->Saving && !file->IsAtLeastVersion(14, 13) && IsPowerCommand(cmd)) cmd = 0;
     }
     if (!file->Saving && IsStatusCommand(protocol, cmd, profile))
     {
@@ -338,6 +355,22 @@ void CartRetail::DoSavestate(Savestate* file)
         file->Error = true;
         return;
     }
+    u8 powerState = 0, powerBlocked = 0;
+    u32 powerDelay = 0;
+    if (powered)
+    {
+        if (file->Saving)
+        {
+            powerState = u8(PowerState); powerDelay = PowerDelay; powerBlocked = PowerBlocked;
+        }
+        file->Var8(&powerState); file->Var32(&powerDelay); file->Var8(&powerBlocked);
+        const bool transitioning = powerState == u8(FlashPower::Entering) || powerState == u8(FlashPower::Waking);
+        if (file->Error || !file->IsAtLeastVersion(14, 13) || !IsFlashProfile(profile) ||
+            powerState > u8(FlashPower::Waking) || powerBlocked > 1 || writing || pending || saveLen ||
+            (!powerState && !powerBlocked) || (powerBlocked && cmd) ||
+            powerDelay != (transitioning ? PowerCycles(powerState == u8(FlashPower::Waking)) : 0))
+        { file->Error = true; return; }
+    }
     if (file->Error || file->Saving) return;
     SRAM = std::move(restored);
     SRAMLength = length;
@@ -352,6 +385,7 @@ void CartRetail::DoSavestate(Savestate* file)
     WriteDelay = writeDelay; WriteCommand = writeCommand;
     WriteAddress = writeAddress; WriteFirst = writeFirst; WriteLength = writeLength;
     WriteBuffer = writeBuffer;
+    PowerState = FlashPower(powerState); PowerDelay = powerDelay; PowerBlocked = powerBlocked != 0;
     // Pre-14.6 states already contain their transmitted bytes. Keep those
     // bytes and legacy dirty range; newly received data uses the page latch.
     if (SRAM)
@@ -372,13 +406,32 @@ void CartRetail::SetSaveMemory(const u8* savedata, u32 savelen)
 void CartRetail::SPISelect()
 {
     SRAMPos = 0;
+    PowerBlocked = PowerState == FlashPower::Entering || PowerState == FlashPower::Waking;
+    if (PowerBlocked) SRAMCmd = 0;
     PagePending = false;
     if (SRAMType == 1 || SRAMType == 3 || EEPROMPageSize(SRAMProfile)) SRAMSaveLen = 0;
 }
 
 void CartRetail::SPIRelease()
 {
-    if (WriteDelay) return;
+    if (PowerBlocked)
+    {
+        PowerBlocked = false; SRAMPos = 0; SRAMCmd = 0;
+        return;
+    }
+    if (WriteDelay || PowerDelay) return;
+    if (IsFlashProfile(SRAMProfile) && SRAMPos && IsPowerCommand(SRAMCmd))
+    {
+        const bool waking = SRAMCmd == 0xAB;
+        if (SRAMPos == 1 && PowerState == (waking ? FlashPower::Asleep : FlashPower::Awake))
+        {
+            PowerState = waking ? FlashPower::Waking : FlashPower::Entering;
+            PowerDelay = PowerCycles(waking);
+        }
+        SRAMPos = 0; SRAMCmd = 0; SRAMSaveLen = 0;
+        return;
+    }
+    if (PowerState != FlashPower::Awake) return;
     if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd, SRAMProfile))
     {
         // EEPROM/Flash commands must end at their defined byte boundary.
@@ -487,6 +540,12 @@ void CartRetail::BeginSave(u8 command, u32 address, u32 first, u32 length)
 
 void CartRetail::CompleteSave()
 {
+    if (PowerDelay)
+    {
+        PowerDelay = 0;
+        PowerState = PowerState == FlashPower::Entering ? FlashPower::Asleep : FlashPower::Awake;
+        return;
+    }
     if (!WriteDelay) return;
     WriteDelay = 0; // A repeated callback cannot replay a program or notification.
     if (WriteCommand == 0x01)
@@ -516,7 +575,13 @@ void CartRetail::CompleteSave()
 
 void CartRetail::CancelSave(bool powerOff)
 {
-    if (powerOff) FlashLocks.fill(0);
+    if (powerOff)
+    {
+        FlashLocks.fill(0);
+        PowerState = FlashPower::Awake; PowerDelay = 0; PowerBlocked = false;
+    }
+    // Importing array bytes cancels writes, but keeps chip power and any
+    // transaction already rejected during wake. Power-off resets both.
     WriteDelay = 0; WriteCommand = 0;
     WriteAddress = WriteFirst = WriteLength = 0;
     SRAMStatus &= ~3;
@@ -528,11 +593,17 @@ void CartRetail::CancelSave(bool powerOff)
 u8 CartRetail::SPITransmitReceive(u8 val)
 {
     if (SRAMType == 0) return 0;
+    if (PowerBlocked) return 0xFF;
 
     u8 ret = 0xFF;
 
     if (SRAMPos == 0)
     {
+        if (PowerState != FlashPower::Awake && !(PowerState == FlashPower::Asleep && val == 0xAB))
+        {
+            PowerBlocked = true; SRAMCmd = 0;
+            return 0xFF;
+        }
         // A command rejected while busy stays rejected for this entire CS,
         // even if the internal write completes before its remaining bytes.
         SRAMCmd = WriteDelay && val != 0x05 ? 0 : val;
@@ -807,6 +878,10 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
             return FlashLocks[(SRAMAddr & (SRAMLength - 1)) >> 16];
         else if (SRAMPos == 4) SRAMSaveLen = val;
         return 0;
+
+    case 0xB9: // deep power-down/release: no serial data, handled at CS
+    case 0xAB:
+        return 0xFF;
 
     case 0xC7: // bulk erase: the opcode is committed at CS, with no data bytes
         return IsFlashProfile(SRAMProfile) ? 0 : 0xFF;

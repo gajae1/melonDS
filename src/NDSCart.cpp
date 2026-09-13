@@ -796,15 +796,17 @@ void NDSCartSlot::ScheduleSave(u64 timestamp)
     if (!Cart || NDS.EventScheduled(SaveEvent)) return;
     const u32 delay = Cart->GetSaveDelay();
     if (!delay) return;
-    if (timestamp > UINT64_MAX - delay) { Cart->CancelSave(); return; }
+    if (timestamp > UINT64_MAX - delay) { Cart->CancelSave(true); return; }
     NDS.ScheduleEventAt(SaveEvent, timestamp + delay, 0, 0);
 }
 
 void NDSCartSlot::SetSaveMemory(const u8* savedata, u32 savelen) noexcept
 {
-    NDS.CancelEvent(SaveEvent);
     if (Cart)
         Cart->SetSaveMemory(savedata, savelen);
+    // Import cancels array writes, not a powered chip's entry/wake deadline.
+    // Retain the existing scheduled timestamp; never restart that transition.
+    if (!Cart || !Cart->GetSaveDelay()) NDS.CancelEvent(SaveEvent);
 }
 
 void NDSCartSlot::SetupDirectBoot(const std::string& romname) noexcept

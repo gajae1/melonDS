@@ -1276,11 +1276,178 @@ static void FlashExtendedErase(bool state)
     }
 }
 
+// Unlike Command(), leave the internal power transition to its completion event.
+static void PowerCommand(CartRetail& cart, u8 command)
+{
+    cart.SPISelect(); Send(cart, {command}); cart.SPIRelease();
+}
+
+static void FlashPower()
+{
+    for (u32 type : {15u, 16u, 17u})
+    {
+        Fixture f(type, 17); auto& cart = *f.Cart;
+        auto expected = f.Sink.Persisted;
+        PowerCommand(cart, 0xAB);
+        Check(!ChipDelay(cart) && !BusyStatus(cart), "Awake AB started a power transition");
+        cart.SPISelect(); Send(cart, {0xB9, 0}); cart.SPIRelease();
+        Check(!ChipDelay(cart), "Overlong B9 entered deep power-down");
+        // Neither power instruction requires WREN.
+        cart.SPISelect(); Send(cart, {0xB9});
+        Check(!ChipDelay(cart), "Deep power-down started before CS rose");
+        cart.SPIRelease();
+        Check(ChipDelay(cart) == 101, "B9 did not start the specified 3us entry bound");
+        if (ChipDelay(cart) != 101) continue; // Useful negative baseline, no cascade.
+        PowerCommand(cart, 0xAB);
+        Check(ChipDelay(cart) == 101 && BusyStatus(cart) == 0xFF,
+              "Early AB/status changed entry timing or drove the serial output");
+        CompleteChip(cart);
+        Check(!ChipDelay(cart) && BusyStatus(cart) == 0xFF, "Entered chip still answered RDSR");
+        for (u8 command : {0x03, 0x05, 0x06, 0x01, 0x9F, 0xB9})
+        {
+            cart.SPISelect();
+            for (u8 byte : {command, u8(0xAB), u8(0), u8(0)})
+                Check(cart.SPITransmitReceive(byte) == 0xFF, "Sleeping chip drove data or reinterpreted a rejected command");
+            cart.SPIRelease();
+            Check(!ChipDelay(cart), "Ignored sleeping command started an operation");
+        }
+        cart.SPISelect(); Send(cart, {0xAB, 0}); cart.SPIRelease();
+        Check(!ChipDelay(cart) && BusyStatus(cart) == 0xFF, "Overlong AB woke the chip");
+        PowerCommand(cart, 0xAB);
+        Check(ChipDelay(cart) == 1006, "AB did not start the specified 30us release bound");
+        PowerCommand(cart, 0xB9);
+        Check(ChipDelay(cart) == 1006, "Early B9 restarted or replaced the release deadline");
+        // CS fell during tRDP; even the first byte arriving after completion
+        // belongs to the rejected transaction. Only a new CS may issue RDSR.
+        cart.SPISelect(); CompleteChip(cart);
+        Check(cart.SPITransmitReceive(0x05) == 0xFF && cart.SPITransmitReceive(0) == 0xFF,
+              "A transaction selected during wake became valid at completion");
+        cart.SPIRelease();
+        Check(!BusyStatus(cart) && !ChipDelay(cart), "Awake chip retained WIP or failed to answer");
+        CheckImage(f, expected);
+        Check(f.Sink.Notices == 0, "Power commands published array writes");
+
+        WriteStatus(cart, 0x84); SetFlashLock(cart, 0, 2); SetFlashLock(cart, 65536, 1);
+        Command(cart, 0x06);
+        PowerCommand(cart, 0xB9); CompleteChip(cart);
+        PowerCommand(cart, 0xAB); CompleteChip(cart);
+        Check(BusyStatus(cart) == 0x86 && FlashLock(cart, 0) == 2 && FlashLock(cart, 65536) == 1,
+              "Power-down lost WEL, protection or volatile sector locks");
+        PowerCommand(cart, 0xB9); CompleteChip(cart);
+        expected[0x27] = 0x96;
+        cart.SetSaveMemory(expected.data(), 0x28);
+        Check(BusyStatus(cart) == 0xFF && !ChipDelay(cart), "Raw save import woke a sleeping chip");
+        PowerCommand(cart, 0xAB); CompleteChip(cart);
+        Check(BusyStatus(cart) == 0x84 && FlashLock(cart, 65536) == 1,
+              "Import changed protection/locks or power completion restored stale WEL");
+        CheckImage(f, expected);
+        Check(f.Sink.Notices == 1, "Import/power cycle notified more than the imported range");
+
+        WriteStatus(cart, 0);
+        // Sector zero has LD only, so this program must start normally.
+        Command(cart, 0x06); FlashStart(cart, 0x0A, 0x27); Send(cart, {0x5B}); cart.SPIRelease();
+        const auto delay = ChipDelay(cart);
+        PowerCommand(cart, 0xB9); PowerCommand(cart, 0xAB);
+        Check(delay && ChipDelay(cart) == delay && (BusyStatus(cart) & 3) == 3,
+              "Power command interrupted an internal write");
+        CompleteChip(cart); expected[0x27] = 0x5B;
+        CheckImage(f, expected);
+        for (unsigned phase = 0; phase < 3; ++phase)
+        {
+            PowerCommand(cart, 0xB9);
+            if (phase) CompleteChip(cart);
+            if (phase == 2) PowerCommand(cart, 0xAB);
+            cart.CancelSave(true);
+            Check(!ChipDelay(cart) && !BusyStatus(cart) && !FlashLock(cart, 0),
+                  "Physical power-off did not cancel entry/sleep/release and clear volatile locks");
+        }
+        CheckImage(f, expected);
+        Check(f.Sink.Notices == 2, "Power cancellation notified persistence");
+    }
+    for (u32 type : {5u, 6u, 7u})
+    {
+        Fixture f(type, 17); const auto expected = f.Sink.Persisted;
+        Command(*f.Cart, 0x06); PowerCommand(*f.Cart, 0xB9); PowerCommand(*f.Cart, 0xAB);
+        Check(!ChipDelay(*f.Cart) && BusyStatus(*f.Cart) == 2 && f.Sink.Notices == 0,
+              "Capacity-only Flash guessed the T9HX power protocol");
+        CheckImage(f, expected);
+    }
+}
+
+static void FlashPowerState()
+{
+    for (u32 type : {15u, 16u, 17u})
+    for (unsigned phase = 0; phase < 6; ++phase)
+    {
+        // Held B9, entering, asleep, held AB, waking, awake but blocked CS.
+        Fixture source(type, 17); auto& cart = *source.Cart;
+        WriteStatus(cart, 0x84); Command(cart, 0x06);
+        cart.SPISelect(); Send(cart, {0xB9});
+        if (phase) cart.SPIRelease();
+        if (phase >= 2) CompleteChip(cart);
+        if (phase >= 3) { cart.SPISelect(); Send(cart, {0xAB}); }
+        if (phase >= 4) cart.SPIRelease();
+        if (phase == 5) { cart.SPISelect(); CompleteChip(cart); }
+        Savestate saved; cart.DoSavestate(&saved); saved.Finish();
+        Check(!saved.Error && saved.MinorVersion() == 13, "Active power state must require14.13");
+        if (saved.Error || saved.MinorVersion() != 13) continue;
+        if (type == 16 && phase == 4)
+        for (unsigned damage = 0; damage < 3; ++damage)
+        {
+            Bytes corrupt(static_cast<const u8*>(saved.Buffer()),
+                          static_cast<const u8*>(saved.Buffer()) + saved.Length());
+            if (damage == 0) corrupt.back() = 2; // Invalid blocked flag.
+            else if (damage == 1) corrupt[corrupt.size() - 6] = 4; // Unknown power phase.
+            else
+            {
+                corrupt.pop_back();
+                const u32 length = corrupt.size(), section = length - 16;
+                std::memcpy(corrupt.data() + 8, &length, 4);
+                std::memcpy(corrupt.data() + 20, &section, 4);
+            }
+            const auto* live = cart.GetSaveMemory(); const auto notices = source.Sink.Notices;
+            const auto delay = ChipDelay(cart);
+            Savestate bad(corrupt.data(), corrupt.size(), false); cart.DoSavestate(&bad);
+            Check(bad.Error && cart.GetSaveMemory() == live && source.Sink.Notices == notices && ChipDelay(cart) == delay,
+                  "Malformed power payload replaced live memory, deadline or persistence");
+        }
+        Fixture receiver(type - 10, 17, 0xC3);
+        auto expected = receiver.Sink.Persisted;
+        std::copy_n(cart.GetSaveMemory(), expected.size() - 17, expected.begin());
+        Savestate load(saved.Buffer(), saved.Length(), false); receiver.Cart->DoSavestate(&load);
+        Check(!load.Error, "Cold power-state load failed");
+        auto& restored = *receiver.Cart;
+        CheckImage(receiver, expected);
+        const auto notices = receiver.Sink.Notices;
+        if (phase == 0 || phase == 3) restored.SPIRelease();
+        if (phase < 2) { Check(ChipDelay(restored) == 101, "Cold entry delay differs"); CompleteChip(restored); }
+        if (phase <= 2)
+        {
+            Check(BusyStatus(restored) == 0xFF, "Restored sleeping chip answers status");
+            PowerCommand(restored, 0xAB);
+        }
+        if (phase < 5) { Check(ChipDelay(restored) == 1006, "Cold wake delay differs"); CompleteChip(restored); }
+        else
+        {
+            Check(restored.SPITransmitReceive(0x05) == 0xFF && restored.SPITransmitReceive(0) == 0xFF,
+                  "Cold restore lost a transaction blocked before wake completion");
+            restored.SPIRelease();
+        }
+        Check(BusyStatus(restored) == 0x86 && !ChipDelay(restored), "Cold power completion lost WEL/protection");
+        Check(receiver.Sink.Notices == notices, "Cold power completion published a save");
+        CheckImage(receiver, expected);
+        Savestate idle; restored.DoSavestate(&idle); idle.Finish();
+        Check(!idle.Error && idle.MinorVersion() == 11, "Completed power state did not return to14.11");
+    }
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
     const std::string_view test = argv[1];
-    if (test == "flash-extended-erase") FlashExtendedErase(false);
+    if (test == "flash-power") FlashPower();
+    else if (test == "flash-power-state") FlashPowerState();
+    else if (test == "flash-extended-erase") FlashExtendedErase(false);
     else if (test == "flash-extended-state") FlashExtendedErase(true);
     else if (test == "flash-protection" || test == "flash-lock" || test == "flash-protection-state") FlashProtection(test);
     else if (test == "internal-write") InternalWrite(false);

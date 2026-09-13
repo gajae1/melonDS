@@ -77,7 +77,7 @@ public:
     virtual void SPIRelease() { SPISelected = false; };
     virtual u8 SPITransmitReceive(u8 val) { return 0xFF; }
 
-    // The slot schedules the chip's internal write independently of SPI clocks.
+    // The slot schedules internal writes/power transitions independently of SPI clocks.
     virtual u32 GetSaveDelay() const { return 0; }
     virtual void CompleteSave() {}
     virtual void CancelSave(bool powerOff = false) {}

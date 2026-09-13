@@ -1044,6 +1044,242 @@ static void TestFlashExtendedTransport(u32 cpu, bool dsi, bool infrared, u8 comm
     std::printf("Extended erase MMIO %s ARM%u IR=%u cmd=%02X\n", dsi ? "DSi" : "DS", cpu ? 7 : 9, infrared, command);
 }
 
+static void TestFlashPowerTransport(u32 cpu, bool dsi, bool infrared)
+{
+    std::printf("Flash power MMIO %s ARM%u IR=%u\n", dsi ? "DSi" : "DS", cpu ? 7 : 9, infrared);
+    std::fflush(stdout);
+    auto active = std::make_unique<FlashFixture>(cpu, dsi, infrared, 0x5A, 16);
+    auto expected = std::vector<u8>(active->Cart->GetSaveMemory(),
+                                  active->Cart->GetSaveMemory() + FlashFixture::Length);
+    unsigned calls = SaveCalls;
+    const auto unchanged = [&] {
+        active->Expect(expected, "Flash power operation changed the save array");
+        Check(SaveCalls == calls, "Flash power operation published a save callback");
+    };
+    const auto now = [&] {
+        return cpu ? active->Machine->ARM7Timestamp
+                   : active->Machine->ARM9Timestamp >> active->Machine->ARM9ClockShift;
+    };
+    const auto finishByte = [&] {
+        if (dsi) active->Machine->RunFrame();
+        else static_cast<Console&>(*active->Machine).Finish(cpu);
+        Check(!(active->Machine->NDSCartSlots[0]->ReadSPICnt(cpu) & 0x80),
+              "Flash power SPI completion left controller busy");
+        return cpu ? active->Machine->ARM7Read8(0x040001A2)
+                   : active->Machine->ARM9Read8(0x040001A2);
+    };
+    const auto cold = [&] {
+        unchanged();
+        const bool scheduled = active->Machine->EventScheduled(Event_CartSave);
+        const auto deadline = active->Machine->SchedList[Event_CartSave].Timestamp;
+        const u32 delay = active->Cart->GetSaveDelay();
+        const auto spiEvent = cpu ? Event_CartSPITransfer7 : Event_CartSPITransfer9;
+        const bool bytePending = active->Machine->EventScheduled(spiEvent);
+        const auto byteEnd = active->Machine->SchedList[spiEvent].Timestamp;
+        Savestate state; active->Save(state, 13);
+        // Every receiver starts as generic6, with different SRAM and RAM. No
+        // live chip phase/profile or manually altered state header can help it.
+        auto restored = std::make_unique<FlashFixture>(cpu, dsi, infrared, 0xC3, 6);
+        restored->Restore(state);
+        Check(restored->Cart->GetSaveDelay() == delay &&
+              restored->Machine->EventScheduled(Event_CartSave) == scheduled &&
+              (!scheduled || restored->Machine->SchedList[Event_CartSave].Timestamp == deadline),
+              "Cold power restore lost/restarted the internal operation");
+        Check(restored->Machine->EventScheduled(spiEvent) == bytePending &&
+              (!bytePending || restored->Machine->SchedList[spiEvent].Timestamp == byteEnd),
+              "Cold power restore lost/restarted the controller byte");
+        active = std::move(restored);
+        calls = SaveCalls; // State loading may publish the restored array.
+        unchanged();
+    };
+    const auto importPower = [&](u8 first) {
+        unchanged();
+        const auto deadline = active->Machine->SchedList[Event_CartSave].Timestamp;
+        const u32 delay = active->Cart->GetSaveDelay();
+        const u8 prefix[] = {first, 0x19};
+        active->Machine->SetNDSSave(prefix, sizeof(prefix)); // Real slot import, including event handling.
+        std::copy(std::begin(prefix), std::end(prefix), expected.begin());
+        Check(SaveCalls == calls + 1 && SaveOffset == 0 && SaveLength == sizeof(prefix) && SaveBytes == expected,
+              "Power-phase import published more than its explicit prefix update");
+        calls = SaveCalls; // Import has its own legitimate array notification.
+        Check(delay && active->Cart->GetSaveDelay() == delay &&
+              active->Machine->EventScheduled(Event_CartSave) &&
+              active->Machine->SchedList[Event_CartSave].Timestamp == deadline,
+              "Raw import cancelled/restarted the original power deadline");
+        unchanged();
+    };
+    const auto cancelPower = [&] {
+        unchanged();
+        Savestate state; active->Save(state, 13);
+        const auto deadline = active->Machine->SchedList[Event_CartSave].Timestamp;
+        FlashFixture cancelled(cpu, dsi, infrared, 0xC3, 6);
+        cancelled.Restore(state);
+        const auto afterLoad = SaveCalls;
+        if (dsi)
+        {
+            cancelled.Machine->ARM7Write16(0x04004010, 0);
+            Check(!(cancelled.Machine->ARM7Read16(0x04004010) & 0xC),
+                  "Flash power cancellation did not power Slot-1 off");
+            cancelled.Machine->ARM7Write16(0x04004010, 4);
+            cancelled.Machine->ARM7Write16(0x04004010, 8);
+        }
+        else cancelled.Machine->Reset();
+        Check(!cancelled.Cart->GetSaveDelay() && !cancelled.Machine->EventScheduled(Event_CartSave),
+              "Reset/power-off retained a Flash power operation");
+        if (dsi) cancelled.Machine->RunFrame();
+        else static_cast<Console&>(*cancelled.Machine).AdvanceTo(deadline + 1006);
+        // Reset clears the DS slot owner and ROM reset-release bit.
+        cancelled.Machine->ARM9Write16(0x04000204, cpu ? 0x0800 : 0);
+        if (cpu) cancelled.Machine->ARM7Write32(0x040001A4, 1u << 29);
+        else cancelled.Machine->ARM9Write32(0x040001A4, 1u << 29);
+        Check(cancelled.Status() == 0, "Reset/power-off did not return Flash to awake without WIP/WEL");
+        cancelled.Begin(0x03); cancelled.Data(0); cancelled.Data(0); cancelled.Data(0x27);
+        Check(cancelled.Data(0) == expected[0x27], "Reset/power-off left Flash READ blocked");
+        cancelled.Release(false);
+        { Savestate idle; cancelled.Save(idle, 11); }
+        cancelled.Expect(expected, "Cancelled power operation later changed the array");
+        Check(SaveCalls == afterLoad, "Cancelled power operation later published a save callback");
+        calls = SaveCalls;
+    };
+
+    Check(active->Status() == 0, "Flash power fixture did not start awake without WREN");
+    { Savestate idle; active->Save(idle, 11); }
+    active->Control(0xA040);
+    if (infrared) active->Data(0);
+    active->Data(0xB9, false); // Selected, but the opcode is still in the controller.
+    Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+          "Controller-pending B9 started power entry before opcode delivery/CS");
+    cold();
+    Check(finishByte() == 0xFF, "B9 drove a response instead of pulled-up High-Z");
+    cold(); // Delivered opcode held under CS also requires14.13.
+    Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+          "Held B9 started its power timer before CS release");
+    const auto entryEdge = now();
+    active->Release(false);
+    Check(active->Cart->GetSaveDelay() == 101 && active->Machine->EventScheduled(Event_CartSave),
+          "Opcode-only B9 without WREN did not start101-cycle power entry");
+    if (!active->Machine->EventScheduled(Event_CartSave)) return;
+    const auto entryEnd = active->Machine->SchedList[Event_CartSave].Timestamp;
+    Check(entryEnd == entryEdge + 101, "Power entry deadline was not anchored to B9 CS release");
+    if (!dsi) static_cast<Console&>(*active->Machine).AdvanceTo(entryEdge + 37);
+    importPower(0xA6); // DS elapsed time makes restarting the full delay observable.
+    cold(); // Entering phase plus its original scheduler deadline.
+    cancelPower();
+    if (!dsi)
+    {
+        static_cast<Console&>(*active->Machine).AdvanceTo(entryEnd - 1);
+        Check(active->Cart->GetSaveDelay() == 101 && active->Machine->EventScheduled(Event_CartSave),
+              "Flash power entry completed before cycle101");
+    }
+    // Select AB while entering. On DS the first byte lands after entry ends;
+    // on DSi a whole frame exceeds101 cycles (IR first sends its prefix).
+    active->Control(0xA040); active->Data(infrared ? 0 : 0xAB, false);
+    if (!dsi)
+    {
+        static_cast<Console&>(*active->Machine).AdvanceTo(entryEnd);
+        Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+              "Flash power entry did not finish exactly at cycle101");
+    }
+    const auto entryReply = finishByte();
+    if (infrared) Check(active->Data(0xAB) == 0xFF, "Entering IR passthrough accepted AB");
+    else Check(entryReply == 0xFF, "Entering transaction drove an AB response");
+    active->Release(false);
+    Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+          "AB selected during entry revived at its later delivery/CS release");
+    cold(); // Asleep has no timer, but still requires14.13.
+    cancelPower();
+    Check(active->Status() == 0xFF, "Asleep Flash accepted RDSR");
+    active->Begin(0x03);
+    for (u8 byte : {0x00, 0x00, 0x27, 0x00})
+        Check(active->Data(byte) == 0xFF, "Asleep Flash accepted READ/address bytes");
+    active->Release(false);
+
+    active->Control(0xA040);
+    if (infrared) active->Data(0);
+    active->Data(0xAB, false);
+    cold(); // A queued AB must survive before delivery, including IR routing.
+    Check(finishByte() == 0xFF, "AB returned ID/data instead of pulled-up High-Z");
+    cold(); // Held AB must remain asleep until CS rises.
+    if (dsi) active->Machine->RunFrame();
+    else static_cast<Console&>(*active->Machine).AdvanceTo(now() + 1007);
+    Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+          "Held AB started waking before CS release");
+    const auto wakeEdge = now();
+    active->Release(false);
+    Check(active->Cart->GetSaveDelay() == 1006 && active->Machine->EventScheduled(Event_CartSave),
+          "Asleep opcode-only AB did not start1006-cycle wake without WREN");
+    if (!active->Machine->EventScheduled(Event_CartSave)) return;
+    const auto wakeEnd = active->Machine->SchedList[Event_CartSave].Timestamp;
+    Check(wakeEnd == wakeEdge + 1006, "Wake deadline was not anchored to AB CS release");
+    if (!dsi) static_cast<Console&>(*active->Machine).AdvanceTo(wakeEdge + 503);
+    importPower(0x3C);
+    cold(); // Waking phase, without restarting the remaining delay.
+    cancelPower();
+    if (!dsi)
+    {
+        static_cast<Console&>(*active->Machine).AdvanceTo(wakeEnd - 1);
+        Check(active->Cart->GetSaveDelay() == 1006 && active->Machine->EventScheduled(Event_CartSave),
+              "Flash wake completed before cycle1006");
+    }
+    active->Control(0xA040); active->Data(infrared ? 0 : 0x05, false);
+    if (!dsi)
+    {
+        // SPISelect must block now, before any opcode byte reaches the chip.
+        static_cast<Console&>(*active->Machine).AdvanceTo(wakeEnd);
+        Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+              "Flash wake did not finish exactly at cycle1006");
+        cold(); // Awake + blocked CS + still-undelivered RDSR requires14.13.
+        Check(finishByte() == 0xFF, "RDSR selected before wake drove an opcode response");
+    }
+    else
+    {
+        const auto reply = finishByte(); // Coarse DSi completion, not a cycle-boundary assertion.
+        if (!infrared) Check(reply == 0xFF, "Waking DSi drove an RDSR response");
+        Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+              "DSi frame did not complete Flash wake");
+        cold(); // The blocked transaction must outlive the completed power event.
+        if (infrared) Check(active->Data(0x05) == 0xFF, "IR prefix selected during wake lost its blocked CS");
+    }
+    for (u8 byte : {0x00, 0x03, 0x00, 0x00, 0x27, 0x00, 0x06})
+        Check(active->Data(byte) == 0xFF, "Blocked CS accepted status/READ/WREN after wake completed");
+    unchanged();
+    active->Release(false);
+    { Savestate idle; active->Save(idle, 11); }
+    Check(active->Status() == 0, "Fresh CS after wake retained WIP or accepted the blocked WREN");
+    active->Begin(0x03); active->Data(0); active->Data(0); active->Data(0x27);
+    Check(active->Data(0) == expected[0x27], "Fresh CS after wake did not accept READ");
+    active->Release(false);
+    active->Control(0xA040);
+    if (infrared) active->Data(0);
+    active->Data(0xAB, false);
+    { Savestate queued; active->Save(queued, 13); } // Awake, so only the pending opcode requires14.13.
+    Check(finishByte() == 0xFF, "Already-awake AB drove a response");
+    { Savestate held; active->Save(held, 13); }
+    active->Release(false);
+    Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+          "Already-awake AB started a power operation");
+    { Savestate idle; active->Save(idle, 11); }
+    unchanged();
+
+    // The same public import must still cancel a real pending array write.
+    BeginTimedWrite(*active, 16, 0x0A, 0x27, {0x96}); active->Release(false);
+    Check(active->Cart->GetSaveDelay() && active->Machine->EventScheduled(Event_CartSave),
+          "Flash import cancellation fixture did not start an internal write");
+    const auto writeEnd = active->Machine->SchedList[Event_CartSave].Timestamp;
+    const u8 prefix[] = {0x71, 0xD2};
+    active->Machine->SetNDSSave(prefix, sizeof(prefix));
+    std::copy(std::begin(prefix), std::end(prefix), expected.begin());
+    Check(SaveCalls == calls + 1 && SaveOffset == 0 && SaveLength == sizeof(prefix) && SaveBytes == expected,
+          "Write-cancelling import published more than its explicit prefix update");
+    calls = SaveCalls;
+    Check(!active->Cart->GetSaveDelay() && !active->Machine->EventScheduled(Event_CartSave),
+          "Raw import retained an internal array write");
+    if (dsi) active->Machine->RunFrame();
+    else static_cast<Console&>(*active->Machine).AdvanceTo(writeEnd);
+    Check(active->Status() == 0, "Raw import left Flash busy or asleep");
+    unchanged();
+}
+
 int main(int argc, char** argv)
 try
 {
@@ -1058,6 +1294,15 @@ try
             for (bool dsi : {false, true}) TestFlashExtendedTransport(cpu, dsi, false, command);
             TestFlashExtendedTransport(1, true, true, command);
         }
+        return Failures ? 1 : 0;
+    }
+    if (mode == "flash-power-state")
+    {
+        ObserveSaves = true;
+        for (u32 cpu : {0u, 1u})
+        for (bool dsi : {false, true}) TestFlashPowerTransport(cpu, dsi, false);
+        TestFlashPowerTransport(1, true, true);
+        std::printf("Cart SPI flash-power-state: %u failures\n", Failures);
         return Failures ? 1 : 0;
     }
     if (mode == "flash-protection")
