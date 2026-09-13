@@ -62,6 +62,11 @@ void CartRetailIR::Reset()
     IRPos = 0;
 }
 
+void CartRetailIR::PrepareSavestate(Savestate* file, u8 pendingSPI) const
+{
+    CartRetail::PrepareSavestate(file, IRPos && IRCmd == 0 ? pendingSPI : 0);
+}
+
 void CartRetailIR::DoSavestate(Savestate* file)
 {
     u32 sectionEnd = 0;

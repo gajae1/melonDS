@@ -1169,11 +1169,120 @@ static void FlashProtection(const std::string_view mode)
     }
 }
 
+static void FlashExtendedErase(bool state)
+{
+    for (u32 type : {15u, 16u, 17u})
+    for (u8 command : {0x20, 0xC7})
+    {
+        Fixture f(type, 17);
+        auto& cart = *f.Cart;
+        Bytes expected = f.Sink.Persisted;
+        const u32 capacity = expected.size() - 17;
+        const u32 start = command == 0x20 ? capacity - 4096 : 0;
+        const u32 count = command == 0x20 ? 4096 : capacity;
+        const auto begin = [&] {
+            if (command == 0x20) FlashStart(cart, command, (capacity - 1) | 0x800000);
+            else { cart.SPISelect(); Send(cart, {command}); }
+        };
+        if (!state)
+        {
+            begin(); cart.SPIRelease();
+            Check(!ChipDelay(cart), "Extended erase bypassed WREN");
+            CheckImage(f, expected);
+            Command(cart, 0x06);
+            begin(); Send(cart, {0}); cart.SPIRelease();
+            Check(!ChipDelay(cart) && (BusyStatus(cart) & 2), "Overlong extended erase started or consumed WEL");
+            CheckImage(f, expected);
+            if (command == 0x20)
+            {
+                cart.SPISelect(); Send(cart, {0x20, 1, 2}); cart.SPIRelease();
+                Check(!ChipDelay(cart) && (BusyStatus(cart) & 2), "Truncated SSE changed WEL or started erase");
+            }
+            WriteStatus(cart, 4); // BP protects the highest64KiB sector.
+            Command(cart, 0x06); begin(); cart.SPIRelease();
+            Check(!ChipDelay(cart) && (BusyStatus(cart) & 2), "BP failed to reject the whole extended erase");
+            CheckImage(f, expected);
+            WriteStatus(cart, 0);
+            for (u32 sector : {0u, capacity / 2, capacity - 65536})
+            {
+                SetFlashLock(cart, sector, 1);
+                Command(cart, 0x06);
+                if (command == 0x20) FlashStart(cart, command, sector + 0x123);
+                else begin();
+                cart.SPIRelease();
+                Check(!ChipDelay(cart) && (BusyStatus(cart) & 2), "Sector WL failed to reject extended erase");
+                CheckImage(f, expected);
+                SetFlashLock(cart, sector, 0);
+            }
+            SetFlashLock(cart, start, 2); // LD without WL must allow erase.
+        }
+        Command(cart, 0x06); begin();
+        Check(!ChipDelay(cart), "Extended erase started before CS");
+        CheckImage(f, expected);
+        if (state)
+        {
+            Savestate held(capacity + 1024); cart.DoSavestate(&held); held.Finish();
+            Check(!held.Error && held.MinorVersion() == 12, "Held extended erase must require14.12");
+            Fixture restored(type, 17);
+            Savestate load(held.Buffer(), held.Length(), false); restored.Cart->DoSavestate(&load);
+            Check(!load.Error, "Held extended erase failed cold restore");
+            restored.Cart->SPIRelease();
+            Check(ChipDelay(*restored.Cart) && (BusyStatus(*restored.Cart) & 3) == 1,
+                  "Cold restored extended erase did not start its internal operation");
+            CheckImage(restored, expected);
+            Savestate pending(capacity + 1024); restored.Cart->DoSavestate(&pending); pending.Finish();
+            Check(!pending.Error && pending.MinorVersion() == 12, "Internal extended erase must require14.12");
+            Bytes truncated(static_cast<const u8*>(pending.Buffer()),
+                            static_cast<const u8*>(pending.Buffer()) + pending.Length() - 1);
+            const u32 total = truncated.size(), section = total - 16;
+            std::memcpy(truncated.data() + 8, &total, 4);
+            std::memcpy(truncated.data() + 20, &section, 4);
+            const auto* live = cart.GetSaveMemory(); const auto notices = f.Sink.Notices;
+            Savestate broken(truncated.data(), truncated.size(), false); cart.DoSavestate(&broken);
+            Check(broken.Error && cart.GetSaveMemory() == live && f.Sink.Notices == notices,
+                  "Truncated internal erase changed live save or emitted persistence");
+            Savestate resume(pending.Buffer(), pending.Length(), false); cart.DoSavestate(&resume);
+            Check(!resume.Error, "Pending extended erase failed cold restore");
+        }
+        else cart.SPIRelease();
+        const u32 microseconds = command == 0x20 ? 40000 : type == 15 ? 4500000 : type == 16 ? 5000000 : 10000000;
+        Check(ChipDelay(cart) == (u64(microseconds) * 33513982 + 999999) / 1000000 &&
+              (BusyStatus(cart) & 3) == 1, "Extended erase did not start its specified typical delay or consume WEL");
+        CheckImage(f, expected);
+        const auto notices = f.Sink.Notices;
+        const auto delay = ChipDelay(cart);
+        cart.SPISelect(); Send(cart, {0xC7}); cart.SPIRelease();
+        Check(ChipDelay(cart) == delay && f.Sink.Notices == notices,
+              "Busy erase replaced or completed the running operation");
+        CompleteChip(cart);
+        std::fill_n(expected.begin() + start, count, 0xFF);
+        CheckImage(f, expected);
+        Check(!(BusyStatus(cart) & 3) && f.Sink.Notices == notices + 1,
+              "Extended erase completion did not consume WEL or notify once");
+        CompleteChip(cart);
+        Check(f.Sink.Notices == notices + 1, "Duplicate extended erase completion notified again");
+    }
+    if (!state)
+    for (u32 type : {5u, 6u, 7u})
+    for (u8 command : {0x20, 0xC7})
+    {
+        Fixture f(type, 17); const auto expected = f.Sink.Persisted;
+        Command(*f.Cart, 0x06);
+        if (command == 0x20) FlashStart(*f.Cart, command, 0x12345);
+        else { f.Cart->SPISelect(); Send(*f.Cart, {command}); }
+        f.Cart->SPIRelease();
+        Check(!ChipDelay(*f.Cart) && f.Sink.Notices == 0, "Generic Flash guessed T9HX extended erase");
+        CheckImage(f, expected);
+    }
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
     const std::string_view test = argv[1];
-    if (test == "flash-protection" || test == "flash-lock" || test == "flash-protection-state") FlashProtection(test);
+    if (test == "flash-extended-erase") FlashExtendedErase(false);
+    else if (test == "flash-extended-state") FlashExtendedErase(true);
+    else if (test == "flash-protection" || test == "flash-lock" || test == "flash-protection-state") FlashProtection(test);
     else if (test == "internal-write") InternalWrite(false);
     else if (test == "internal-state") InternalWrite(true);
     else if (test == "control") Control();

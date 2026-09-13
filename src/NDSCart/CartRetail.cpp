@@ -72,6 +72,17 @@ u32 WriteCycles(u32 protocol, u8 command, u32 length);
 
 bool IsFlashProfile(u32 profile) { return profile >= 15 && profile <= 17; }
 
+bool IsExtendedErase(u8 command) { return command == 0x20 || command == 0xC7; }
+
+u32 FlashEraseSize(u8 command, u32 length, u32 profile)
+{
+    if (command == 0xDB) return 256;
+    if (command == 0xD8) return 65536;
+    if (!IsFlashProfile(profile)) return 0;
+    if (command == 0x20) return 4096;
+    return command == 0xC7 ? length : 0;
+}
+
 u8 StatusMask(u32 protocol, u32 profile)
 {
     if (protocol == 3) return IsFlashProfile(profile) ? (profile == 15 ? 0x8C : 0x9C) : 0;
@@ -149,10 +160,16 @@ void CartRetail::Reset()
     PagePending = false;
 }
 
-void CartRetail::PrepareSavestate(Savestate* file) const
+void CartRetail::PrepareSavestate(Savestate* file, u8 pendingSPI) const
 {
     if (!file->Saving) return;
-    if (IsFlashProfile(SRAMProfile)) file->RequireMinorVersion(11);
+    if (IsFlashProfile(SRAMProfile))
+    {
+        const bool extended = (WriteDelay && IsExtendedErase(WriteCommand)) ||
+            (SRAMPos && IsExtendedErase(SRAMCmd)) ||
+            (!SRAMPos && !WriteDelay && IsExtendedErase(pendingSPI));
+        file->RequireMinorVersion(extended ? 12 : 11);
+    }
     else if (WriteDelay || (SRAMType == 1 && PagePending)) file->RequireMinorVersion(10);
     else if (SRAMPos && IsStatusCommand(SRAMType, SRAMCmd, SRAMProfile)) file->RequireMinorVersion(8);
     else if (SRAMProfile) file->RequireMinorVersion(7);
@@ -268,12 +285,13 @@ void CartRetail::DoSavestate(Savestate* file)
         const bool tiny = protocol == 1;
         const u32 pageSize = tiny ? 16 : flash ? 256 : EEPROMPageSize(profile);
         const bool page = cmd == 0x02 || ((tiny || flash) && cmd == 0x0A);
-        const bool erase = flash && (cmd == 0xDB || cmd == 0xD8);
+        const u32 eraseSize = flash ? FlashEraseSize(cmd, length, profile) : 0;
         const u32 addressBytes = tiny ? 1 : flash || length > 65536 ? 3 : 2;
         if (!file->IsAtLeastVersion(14, tiny ? 10 : flash ? 6 : 7) || !pageSize || !(status & 2) ||
             saveAddr >= (tiny ? 512u : 1u << (addressBytes * 8)) ||
             !(page ? pos >= addressBytes + 2 && saveLen > 0 && saveLen <= pageSize :
-              erase && pos == 4 && saveLen == (cmd == 0xDB ? 256u : 65536u)))
+              eraseSize && cmd != 0xC7 && pos == 4 && saveLen == eraseSize) ||
+            (IsExtendedErase(cmd) && !file->IsAtLeastVersion(14, 12)))
         {
             file->Error = true;
             return;
@@ -298,15 +316,18 @@ void CartRetail::DoSavestate(Savestate* file)
         const u32 pageSize = tiny ? 16 : flash ? 256 : EEPROMPageSize(profile);
         const bool statusWrite = (!flash || IsFlashProfile(profile)) && writeCommand == 0x01;
         const bool page = writeCommand == 0x02 || ((tiny || flash) && writeCommand == 0x0A);
-        const bool erase = flash && (writeCommand == 0xDB || writeCommand == 0xD8);
-        const u32 span = writeCommand == 0xD8 ? 65536 : pageSize;
+        const u32 eraseSize = flash ? FlashEraseSize(writeCommand, length, profile) : 0;
+        const bool extended = eraseSize && IsExtendedErase(writeCommand);
+        const u32 span = eraseSize ? eraseSize : pageSize;
         const bool validAddress = span && writeAddress < length &&
             !(writeAddress & (span - 1)) && span <= length - writeAddress;
         if (file->Error || !file->IsAtLeastVersion(14, 10) || !pageSize || pending ||
-            (status & 3) != 3 || saveLen || writeDelay != WriteCycles(protocol, writeCommand, writeLength) ||
+            (status & 3) != (extended ? 1 : 3) || saveLen ||
+            (extended && !file->IsAtLeastVersion(14, 12)) ||
+            writeDelay != WriteCycles(protocol, writeCommand, writeLength) ||
             !(statusWrite ? !(writeAddress & ~u32(StatusMask(protocol, profile))) && !writeFirst && !writeLength :
               page ? validAddress && writeFirst < pageSize && writeLength > 0 && writeLength <= pageSize :
-              erase && validAddress && !writeFirst && writeLength == span))
+              eraseSize && validAddress && !writeFirst && writeLength == span))
         {
             file->Error = true;
             return;
@@ -386,14 +407,28 @@ void CartRetail::SPIRelease()
         SRAMPos = 0; SRAMCmd = 0; SRAMSaveLen = 0;
         return;
     }
+    if (IsFlashProfile(SRAMProfile) && SRAMCmd == 0xC7)
+    {
+        // Bulk erase is all-or-nothing: BP or any write-locked sector rejects
+        // it. Lock-down alone only protects the lock register, not the array.
+        const bool locked = (SRAMStatus & 0x1C) ||
+            std::any_of(FlashLocks.begin(), FlashLocks.begin() + SRAMLength / 65536,
+                        [](u8 value) { return value & 1; });
+        if (SRAMPos == 1 && (SRAMStatus & 2) && !locked)
+            BeginSave(0xC7, 0, 0, SRAMLength);
+        SRAMPos = 0; SRAMCmd = 0; SRAMSaveLen = 0;
+        return;
+    }
     if (PagePending)
     {
         const u32 pageSize = SRAMType == 1 ? 16 : SRAMType == 3 ? 256 : EEPROMPageSize(SRAMProfile);
-        const u32 length = SRAMCmd == 0xD8 ? 65536 : pageSize;
+        const u32 eraseSize = SRAMType == 3 ? FlashEraseSize(SRAMCmd, SRAMLength, SRAMProfile) : 0;
+        const u32 length = eraseSize ? eraseSize : pageSize;
         const u32 address = (SRAMSaveAddr & (SRAMLength - 1)) & ~(length - 1);
-        const u32 first = SRAMCmd == 0xDB || SRAMCmd == 0xD8 ? 0 :
+        const u32 first = eraseSize ? 0 :
                           (SRAMAddr - SRAMSaveLen) & (pageSize - 1);
         BeginSave(SRAMCmd, address, first, SRAMSaveLen);
+        if (IsExtendedErase(SRAMCmd)) { SRAMPos = 0; SRAMCmd = 0; }
         PagePending = false;
         SRAMSaveAddr = SRAMSaveLen = 0;
         return;
@@ -427,9 +462,12 @@ u32 WriteCycles(u32 protocol, u8 command, u32 length)
     // Deterministic chip model: EEPROM's specified 5ms bound; M25PE40's
     // typical PP/PW/PE/SE times. These are not measured per-cartridge timings.
     // ST M95040/M95640 AC tables; Micron M25PE40 Rev B pp46-47.
+    // T9HX SSE/BE typical times: ST M25PE20 p52, M25PE40 p50, M25PE80 p51.
     u32 microseconds = 5000;
     if (protocol == 3)
         microseconds = command == 0x01 ? 3000 : command == 0x02 ? ((length + 7) / 8) * 25 :
+                       command == 0x20 ? 40000 :
+                       command == 0xC7 ? (length == 262144 ? 4500000 : length == 524288 ? 5000000 : 10000000) :
                        command == 0x0A ? 11000 : command == 0xDB ? 10000 : 1500000;
     return u32((u64(microseconds) * 33513982 + 999999) / 1000000);
 }
@@ -441,7 +479,10 @@ void CartRetail::BeginSave(u8 command, u32 address, u32 first, u32 length)
     WriteFirst = first; WriteLength = length;
     WriteBuffer = PageBuffer;
     WriteDelay = WriteCycles(SRAMType, command, length);
-    SRAMStatus |= 1; // WEL clears at completion; WIP is independent of SPI busy.
+    SRAMStatus |= 1; // WIP is independent of the controller's SPI busy bit.
+    // T9HX SSE/BE clear WEL at an unspecified point before completion. Choose
+    // acceptance; rejecting a protected/malformed command keeps the latch.
+    if (IsExtendedErase(command)) SRAMStatus &= ~2;
 }
 
 void CartRetail::CompleteSave()
@@ -453,7 +494,8 @@ void CartRetail::CompleteSave()
     else
     {
         const u32 pageSize = SRAMType == 1 ? 16 : SRAMType == 3 ? 256 : EEPROMPageSize(SRAMProfile);
-        u32 offset = WriteAddress, length = WriteCommand == 0xD8 ? 65536 : pageSize;
+        const u32 eraseSize = SRAMType == 3 ? FlashEraseSize(WriteCommand, SRAMLength, SRAMProfile) : 0;
+        u32 offset = WriteAddress, length = eraseSize ? eraseSize : pageSize;
         if (WriteCommand == 0x02 || WriteCommand == 0x0A)
         {
             for (u32 i = 0; i < WriteLength; ++i)
@@ -766,6 +808,12 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
         else if (SRAMPos == 4) SRAMSaveLen = val;
         return 0;
 
+    case 0xC7: // bulk erase: the opcode is committed at CS, with no data bytes
+        return IsFlashProfile(SRAMProfile) ? 0 : 0xFF;
+
+    case 0x20: // T9HX subsector erase
+        if (!IsFlashProfile(SRAMProfile)) return 0xFF;
+        [[fallthrough]];
     case 0xD8: // sector erase
     case 0xDB: // page erase
         if (SRAMPos <= 3)
@@ -779,7 +827,7 @@ u8 CartRetail::SRAMWrite_FLASH(u8 val)
         {
             PagePending = true;
             PageBuffer.fill(0xFF);
-            SRAMSaveLen = SRAMCmd == 0xDB ? 256 : 65536;
+            SRAMSaveLen = FlashEraseSize(SRAMCmd, SRAMLength, SRAMProfile);
         }
         else if (SRAMPos > 3)
         {

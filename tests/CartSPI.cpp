@@ -283,8 +283,10 @@ struct FlashFixture
         if (Machine->ConsoleType == 0) static_cast<Console*>(Machine.get())->FinishSave();
         else
         {
-            // At most two emulated seconds, including the 1.5s sector erase.
-            for (unsigned frame = 0; Cart->GetSaveDelay() && frame < 120; ++frame) Machine->RunFrame();
+            // Bound the actual frame scheduler by the chip's full operation
+            // duration, including multi-second bulk erase. DS runs <60fps.
+            const u32 frames = Cart->GetSaveDelay() / (33513982 / 60) + 2;
+            for (unsigned frame = 0; Cart->GetSaveDelay() && frame < frames; ++frame) Machine->RunFrame();
             Check(!Cart->GetSaveDelay(), "DSi scheduler did not finish internal save operation");
         }
     }
@@ -987,11 +989,77 @@ static void TestFlashProtectionTransport(u32 cpu, bool dsi, bool infrared)
     std::printf("Flash protection MMIO %s ARM%u IR=%u\n", dsi ? "DSi" : "DS", cpu ? 7 : 9, infrared);
 }
 
+static void TestFlashExtendedTransport(u32 cpu, bool dsi, bool infrared, u8 command)
+{
+    FlashFixture source(cpu, dsi, infrared, 0x5A, 16);
+    auto expected = std::vector<u8>(source.Cart->GetSaveMemory(),
+                                  source.Cart->GetSaveMemory() + FlashFixture::Length);
+    source.EnableWrite(); source.Control(0xA040);
+    if (infrared) source.Data(0);
+    source.Data(command, false); // Opcode is still in the controller, not the chip.
+    Savestate byte; source.Save(byte, 12);
+    FlashFixture restored(cpu, dsi, infrared, 0x5A, 6);
+    restored.Restore(byte);
+    if (dsi) restored.Machine->RunFrame();
+    else static_cast<Console&>(*restored.Machine).Finish(cpu);
+    if (command == 0x20) { restored.Data(0x87); restored.Data(0xFF); restored.Data(0xFD); }
+    Savestate held; restored.Save(held, 12);
+    restored.Expect(expected, "New erase opcode/address changed memory before CS");
+    restored.Release(false);
+    const u32 delay = command == 0x20 ? 1340560 : 167569910;
+    Check(restored.Cart->GetSaveDelay() == delay, "MMIO extended erase has incorrect typical delay");
+    if (!dsi)
+    {
+        auto& machine = static_cast<Console&>(*restored.Machine);
+        const auto deadline = machine.SaveDeadline();
+        Check((restored.Status() & 3) == 1 && machine.SaveDeadline() == deadline,
+              "RDSR lost WIP/consumed WEL or restarted extended erase");
+        machine.AdvanceTo(deadline - 1);
+        restored.Expect(expected, "Extended erase became visible before its deadline");
+    }
+    Savestate pending; restored.Save(pending, 12);
+    source.Restore(pending);
+    const auto calls = SaveCalls;
+    source.FinishSave();
+    const u32 offset = command == 0x20 ? FlashFixture::Length - 4096 : 0;
+    const u32 length = command == 0x20 ? 4096 : FlashFixture::Length;
+    std::fill_n(expected.begin() + offset, length, 0xFF);
+    source.Expect(expected, "Cold restored extended erase changed the wrong region");
+    Check(SaveCalls == calls + 1 && SaveOffset == offset && SaveLength == length && SaveBytes == expected,
+          "Real extended erase did not publish exactly its completed region once");
+    Check(!(source.Status() & 3), "Completed extended erase left WIP/WEL");
+    source.FinishSave();
+    Check(SaveCalls == calls + 1, "Completed erase fired a duplicate scheduler save");
+    { Savestate idle; source.Save(idle, 11); }
+    // Cancel a held/started operation through the actual device lifecycle.
+    source.Restore(held); source.Release(false);
+    if (dsi) source.Machine->ARM7Write16(0x04004010, 0);
+    else source.Machine->Reset();
+    Check(!source.Cart->GetSaveDelay(), "Power/reset retained an internal extended erase");
+    const auto cancelledCalls = SaveCalls;
+    if (dsi) source.Machine->RunFrame();
+    else static_cast<Console&>(*source.Machine).AdvanceTo(167569910);
+    Check(SaveCalls == cancelledCalls && !(source.Cart->GetSaveDelay()),
+          "Cancelled extended erase completed or notified later");
+    std::printf("Extended erase MMIO %s ARM%u IR=%u cmd=%02X\n", dsi ? "DSi" : "DS", cpu ? 7 : 9, infrared, command);
+}
+
 int main(int argc, char** argv)
 try
 {
     if (argc != 2) return 2;
     const std::string mode = argv[1];
+    if (mode == "flash-extended-erase")
+    {
+        ObserveSaves = true;
+        for (u8 command : {0x20, 0xC7})
+        {
+            for (u32 cpu : {0u, 1u})
+            for (bool dsi : {false, true}) TestFlashExtendedTransport(cpu, dsi, false, command);
+            TestFlashExtendedTransport(1, true, true, command);
+        }
+        return Failures ? 1 : 0;
+    }
     if (mode == "flash-protection")
     {
         for (u32 cpu : {0u, 1u})

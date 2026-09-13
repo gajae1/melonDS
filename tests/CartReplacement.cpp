@@ -765,6 +765,161 @@ static int DSSaveCapacity(const string& test)
                     "Padded save bytes guessed an explicit Flash revision");
             }
         }
+        else if (test == "ds-capacity-flash-extended-erase")
+        {
+            // T9HX sub-sector (20) and bulk (C7) erase commit at CS, so these
+            // fixtures drive short transactions and inspect the chip before
+            // delivering completion instead of using the one-shot DSWrite path.
+            auto wren = [](DSSaveFixture& f)
+            {
+                auto& cart = f.Cart();
+                cart.SPISelect(); cart.SPITransmitReceive(0x06); cart.SPIRelease();
+            };
+            auto readStatus = [](DSSaveFixture& f)
+            {
+                auto& cart = f.Cart();
+                cart.SPISelect(); cart.SPITransmitReceive(0x05);
+                const u8 value = cart.SPITransmitReceive(0); cart.SPIRelease();
+                return value;
+            };
+            auto writeStatus = [&wren](DSSaveFixture& f, u8 value)
+            {
+                auto& cart = f.Cart();
+                wren(f);
+                cart.SPISelect(); cart.SPITransmitReceive(0x01);
+                cart.SPITransmitReceive(value); cart.SPIRelease(); cart.CompleteSave();
+            };
+            auto writeLock = [&wren](DSSaveFixture& f, u32 sector, u8 value)
+            {
+                auto& cart = f.Cart();
+                wren(f);
+                cart.SPISelect(); cart.SPITransmitReceive(0xE5);
+                for (int shift = 16; shift >= 0; shift -= 8) cart.SPITransmitReceive(u8(sector >> shift));
+                cart.SPITransmitReceive(value); cart.SPIRelease();
+            };
+            auto lockValue = [](DSSaveFixture& f, u32 sector)
+            {
+                return u8(DSRead(f.Cart(), 0xE8, 3, sector, 1)[0]);
+            };
+            auto subsectorErase = [](DSSaveFixture& f, u32 address)
+            {
+                auto& cart = f.Cart();
+                cart.SPISelect(); cart.SPITransmitReceive(0x20);
+                for (int shift = 16; shift >= 0; shift -= 8) cart.SPITransmitReceive(u8(address >> shift));
+                cart.SPIRelease(); // Exactly three address bytes, then CS.
+            };
+            auto bulkErase = [](DSSaveFixture& f)
+            {
+                auto& cart = f.Cart();
+                cart.SPISelect(); cart.SPITransmitReceive(0xC7); cart.SPIRelease();
+                // C7 takes no address; any further byte invalidates the command.
+            };
+
+            for (u32 type : {15u, 16u, 17u})
+            {
+                const u32 capacity = 262144u << (type - 15);
+                DSSaveFixture f(capacity + 17); f.Load(type);
+                DSWrite(f.Cart(), 0x0A, 3, 0x27, QByteArray::fromHex("96"));
+                f.expected[0x27] = char(0x96); f.Flush();
+
+                // The chip's last byte with every bit above the capacity set:
+                // the command must use the low capacity bits and round down.
+                const u32 alias = (0xFFFFFFu & ~(capacity - 1)) | (capacity - 1);
+
+                // WREN is required: without it neither opcode starts a cycle.
+                auto calls = ndsSaveCalls;
+                subsectorErase(f, alias);
+                bulkErase(f);
+                RequireDSCapacity(!(readStatus(f) & 3), "an erase without WREN set WIP or WEL");
+                f.Cart().CompleteSave();
+                RequireDSCapacity(ndsSaveCalls == calls, "an erase without WREN published a save callback");
+                f.Flush();
+
+                // Accepted at CS: WIP set, WEL cleared, and every byte stays
+                // until completion is delivered.
+                wren(f); subsectorErase(f, alias);
+                RequireDSCapacity((readStatus(f) & 3) == 1, "sub-sector erase did not set WIP and clear WEL");
+                f.Flush();
+                f.Cart().CompleteSave();
+                RequireDSCapacity(!(readStatus(f) & 3), "sub-sector erase did not clear WIP/WEL at completion");
+                f.expected.replace(capacity - 4096, 4096, QByteArray(4096, '\xFF'));
+                f.Flush();
+                f.Load(type);
+                RequireDSCapacity(f.Cart().GetROMParams().SaveMemType == type &&
+                    DSRead(f.Cart(), 0x03, 3, capacity - 4097, 2) == f.expected.mid(capacity - 4097, 2),
+                    "sub-sector erase did not round the aliased address down to the last 4KiB");
+                RequireDSCapacity(DSRead(f.Cart(), 0x03, 3, capacity - 1, 1) == QByteArray::fromHex("ff"),
+                    "sub-sector erase lost its last erased byte or the explicit profile");
+
+                // BP=1 protects exactly the highest 64KiB sector; the bulk
+                // erase must still reject the whole chip, not just that range.
+                writeStatus(f, 0x04);
+                RequireDSCapacity((readStatus(f) & 0x1C) == 0x04, "WRSR did not protect the highest sector");
+                calls = ndsSaveCalls;
+                wren(f); bulkErase(f);
+                RequireDSCapacity(!(readStatus(f) & 1), "BP-protected bulk erase left the chip busy");
+                f.Cart().CompleteSave();
+                RequireDSCapacity(ndsSaveCalls == calls, "BP-protected bulk erase published a save callback");
+                f.Flush();
+
+                // One write-locked 64KiB sector rejects the whole chip too.
+                writeStatus(f, 0);
+                RequireDSCapacity(!(readStatus(f) & 0x1C), "BP could not be cleared for the lock test");
+                writeLock(f, 0, 1);
+                RequireDSCapacity(lockValue(f, 0) == 1, "E5 did not set the sector write lock");
+                calls = ndsSaveCalls;
+                wren(f); bulkErase(f);
+                RequireDSCapacity(!(readStatus(f) & 1), "sector-locked bulk erase left the chip busy");
+                f.Cart().CompleteSave();
+                RequireDSCapacity(ndsSaveCalls == calls, "sector-locked bulk erase published a save callback");
+                f.Flush();
+                writeLock(f, 0, 0);
+                RequireDSCapacity(lockValue(f, 0) == 0, "E5 could not clear the sector write lock");
+
+                // Lock-down alone (LD bit1) freezes the lock register, not the
+                // array: the whole physical chip erases and padding survives.
+                writeLock(f, 0, 2);
+                RequireDSCapacity(lockValue(f, 0) == 2, "E5 did not store the lock-down bit");
+                const QByteArray padding = ReadSaveFile(f.path).mid(capacity, 17);
+                wren(f); bulkErase(f);
+                RequireDSCapacity((readStatus(f) & 3) == 1, "bulk erase did not set WIP and clear WEL");
+                f.Flush();
+                f.Cart().CompleteSave();
+                RequireDSCapacity(!(readStatus(f) & 3), "bulk erase did not clear WIP/WEL at completion");
+                f.expected.replace(0, capacity, QByteArray(capacity, '\xFF'));
+                f.Flush();
+                RequireDSCapacity(ReadSaveFile(f.path).mid(capacity, 17) == padding,
+                    "bulk erase changed or dropped the opaque file padding");
+                f.Load(type);
+                RequireDSCapacity(f.Cart().GetROMParams().SaveMemType == type &&
+                    f.Cart().GetSaveMemoryLength() == capacity + 17 &&
+                    DSRead(f.Cart(), 0x03, 3, 0, 1) == QByteArray::fromHex("ff") &&
+                    DSRead(f.Cart(), 0x03, 3, capacity - 1, 1) == QByteArray::fromHex("ff"),
+                    "bulk erase did not clear the whole physical array or lost the explicit profile");
+                f.Load();
+                RequireDSCapacity(f.Cart().GetROMParams().SaveMemType == 2,
+                    "all-FF padded bytes guessed an explicit Flash revision");
+            }
+
+            // Capacity-only Flash has no T9HX profile: both opcodes must stay
+            // inert there and leave the primed file and dirty range alone.
+            for (u32 type : {5u, 6u, 7u})
+            {
+                const u32 capacity = 262144u << (type - 5);
+                DSSaveFixture f(capacity + 17); f.Load(type);
+                RequireDSCapacity(f.Cart().GetROMParams().SaveMemType == type,
+                    "capacity-only Flash fixture did not keep its explicit legacy type");
+                DSWrite(f.Cart(), 0x0A, 3, 0x27, QByteArray::fromHex("96"));
+                f.expected[0x27] = char(0x96); f.Flush();
+                const auto calls = ndsSaveCalls;
+                wren(f); subsectorErase(f, 0xFFFFFF);
+                wren(f); bulkErase(f);
+                f.Cart().CompleteSave();
+                RequireDSCapacity(ndsSaveCalls == calls, "capacity-only Flash accepted a T9HX erase");
+                f.Flush();
+                f.Load();
+            }
+        }
         else if (test == "ds-capacity-protection")
         {
             for (u32 type : {11u, 14u})

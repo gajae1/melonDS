@@ -243,7 +243,12 @@ void NDSCartSlot::PrepareSavestate(Savestate* file) const noexcept
 {
     if (file->Saving)
         for (const auto& inter : Interfaces)
-            if (inter.SPIFlags & Interface::SPIPending) file->RequireMinorVersion(9);
+            if (inter.SPIFlags & Interface::SPIPending)
+            {
+                file->RequireMinorVersion(9);
+                if (Cart && (inter.SPIFlags & Interface::SPIToCart))
+                    Cart->PrepareSavestate(file, inter.SPIOut);
+            }
     if (Cart) Cart->PrepareSavestate(file);
 }
 

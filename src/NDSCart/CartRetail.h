@@ -57,7 +57,7 @@ public:
     void Reset() override;
 
     void DoSavestate(Savestate* file) override;
-    void PrepareSavestate(Savestate* file) const override;
+    void PrepareSavestate(Savestate* file, u8 pendingSPI = 0) const override;
 
     void SetSaveMemory(const u8* savedata, u32 savelen) override;
 

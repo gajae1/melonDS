@@ -36,6 +36,7 @@ public:
     void Reset() override;
 
     void DoSavestate(Savestate* file) override;
+    void PrepareSavestate(Savestate* file, u8 pendingSPI = 0) const override;
 
     void SPISelect() override;
     u8 SPITransmitReceive(u8 val) override;
