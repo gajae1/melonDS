@@ -23939,14 +23939,25 @@ static ma_result ma_device_init_internal__wasapi(ma_context* pContext, ma_device
                         /* The period needs to be clamped between minPeriodInFrames and maxPeriodInFrames. */
                         actualPeriodInFrames = ma_clamp(actualPeriodInFrames, minPeriodInFrames, maxPeriodInFrames);
 
+                        /* melonDS: a low-latency request is a period hint. Round
+                        up to a supported quantum when possible, or use the
+                        largest supported period. Falling back merely because
+                        512 is above a device's fixed 480-frame period produces
+                        callbacks that drift against its native wakeups. */
+                        if (pData->performanceProfile == ma_performance_profile_low_latency) {
+                            ma_uint64 roundedPeriodInFrames = ((ma_uint64)desiredPeriodInFrames + fundamentalPeriodInFrames - 1) / fundamentalPeriodInFrames * fundamentalPeriodInFrames;
+                            actualPeriodInFrames = (ma_uint32)ma_clamp(roundedPeriodInFrames, (ma_uint64)minPeriodInFrames, (ma_uint64)maxPeriodInFrames);
+                        }
+
                         ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "[WASAPI] Trying IAudioClient3_InitializeSharedAudioStream(actualPeriodInFrames=%d)\n", actualPeriodInFrames);
                         ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "    defaultPeriodInFrames=%d\n", defaultPeriodInFrames);
                         ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "    fundamentalPeriodInFrames=%d\n", fundamentalPeriodInFrames);
                         ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "    minPeriodInFrames=%d\n", minPeriodInFrames);
                         ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "    maxPeriodInFrames=%d\n", maxPeriodInFrames);
 
-                        /* If the client requested a largish buffer than we don't actually want to use low latency shared mode because it forces small buffers. */
-                        if (actualPeriodInFrames >= desiredPeriodInFrames) {
+                        /* Preserve the upstream large-buffer fallback for conservative profiles.
+                        Low-latency callers prefer a supported engine period to an unaligned hint. */
+                        if (actualPeriodInFrames >= desiredPeriodInFrames || pData->performanceProfile == ma_performance_profile_low_latency) {
                             /*
                             MA_AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | MA_AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY must not be in the stream flags. If either of these are specified,
                             IAudioClient3_InitializeSharedAudioStream() will fail.

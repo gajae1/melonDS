@@ -97,13 +97,13 @@
       </item>
       <item row="7" column="0">
        <widget class="QLabel" name="lblBufferSize">
-        <property name="text"><string>Output buffer:</string></property>
+        <property name="text"><string>Requested buffer:</string></property>
         <property name="buddy"><cstring>cbBufferSize</cstring></property>
        </widget>
       </item>
       <item row="7" column="1">
        <widget class="QComboBox" name="cbBufferSize">
-        <property name="toolTip"><string>Fixed buffer size. Smaller buffers may reduce delay but can crackle if the system cannot keep up. The driver may use a larger period; this is not total audio latency.</string></property>
+        <property name="toolTip"><string>Buffer size requested from the output device. WASAPI shared may use a smaller or larger supported period, shown below. Smaller buffers can crackle if the system cannot keep up. This setting does not adapt to underruns and is not total audio latency.</string></property>
        </widget>
       </item>
       <item row="7" column="2">

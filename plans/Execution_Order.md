@@ -609,3 +609,6 @@ AD-08 진행 중 후보(1.1.91 이후, 미배포): 준비된 bank/stream/rendere
 
 
 1.1.93 — 출력 source가 비어 있는 boot/load/reopen에서는 첫 PCM 생산 뒤 client 출력을 시작한다. 기존 PCM이 있으면 바로 시작하고 pause는 대기 중 시작을 취소한다. 변환/시작 처리는 RunFrame 직후, 저장/화면 표시보다 앞에 둔다. 버퍼 증가·PCM 폐기·실행 중 underrun 감춤은 없다. 실제 블랙 장면의 micStarted=false를 확인했으므로 처음 의심한 마이크 재개방을 이 증상의 원인으로 주장하지 않는다. 마이크 설정이 필요하면 출력 소비보다 먼저 완료한다. 다음 AD-04는 512 요청의 실제10/20ms 전달 변동과 생산/FPS 대기를 추적하고, 선택형 R3의 짧은 첫 출력·초기 지연을 줄이는 것이다. 시작을 늦춘 시간을 지연 개선으로 세지 않는다.
+
+
+1.1.94 — Playback1/2의 native min/fundamental/default/max가 모두480(48kHz)임을 직접 확인했다. miniaudio는512 요청의 계산값480이 요청보다 작다는 이유로 IAudioClient3를 시도하지 않아 기존 공유 경로의512 callback이 장치10ms와 어긋났다. low-latency profile은 지원 quantum으로 올림한 뒤 장치 범위에 맞추고, max를 넘는 hint도 지원되는 max로 초기화한다. 보수 profile과 API 실패 때 기존 fallback은 유지한다. 설정 요청값을 바꾸지 않고 Requested buffer/실제값 표시를 구분하며 underrun에 따라 버퍼를 변동시키지 않는다. 다음은 R3의 짧은 첫 출력과 초기 준비 시간, 남은 생산/FPS 대기 및 자동 backend 선택·장치 상실 복구다.

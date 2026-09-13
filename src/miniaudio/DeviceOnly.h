@@ -1,5 +1,7 @@
 // miniaudio 0.11.25, upstream 9634bedb5b5a2ca38c1ee7108a9358a4e233f14d.
 // https://github.com/mackron/miniaudio ; distributed under the MIT option in LICENSE.
+// Local patch: negotiate supported WASAPI periods for the low-latency profile,
+// including when the requested hint exceeds the device's maximum shared period.
 // Keep the same configuration in the C implementation and its C++ callers.
 #pragma once
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
