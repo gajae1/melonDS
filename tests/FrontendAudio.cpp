@@ -87,6 +87,11 @@ struct AudioState
 static int failedOpens = 0;
 static bool negotiateRate = false;
 static bool manualOutput = false, manualPaused = true;
+static int enumerationCount = -2; // -2 uses the real SDL driver.
+static int CountOutputs(int capture)
+{
+    return enumerationCount == -2 ? SDL_GetNumAudioDevices(capture) : enumerationCount;
+}
 static SDL_AudioSpec manualSpec{};
 static SDL_AudioDeviceID OpenOutput(const char* name, int capture, const SDL_AudioSpec* desired,
                                    SDL_AudioSpec* obtained, int changes)
@@ -116,9 +121,11 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 }
 #define SDL_OpenAudioDevice OpenOutput
 #define SDL_PauseAudioDevice PauseOutput
+#define SDL_GetNumAudioDevices CountOutputs
 #include "AudioOutput.cpp"
 #undef SDL_OpenAudioDevice
 #undef SDL_PauseAudioDevice
+#undef SDL_GetNumAudioDevices
 #define EmuInstance AudioState
 #include "audioCallback.inc"
 #define SDL_CondWaitTimeout ObserveSyncWait
@@ -196,6 +203,19 @@ int main(int argc, char** argv)
               device.audioDevice && device.audioDevice.GetSettings() == previous,
               "Unavailable backend lost the previous complete output settings");
         const auto outputs = AudioOutput::Enumerate(AudioOutput::SDL, error);
+        check(error.empty() && !outputs.empty(), "Initialized dummy output was not enumerated");
+        enumerationCount = 0;
+        const auto defaultOnly = AudioOutput::Enumerate(AudioOutput::SDL, error);
+        check(defaultOnly.size() == 1 && defaultOnly[0].id.empty() && error.empty(),
+              "SDL zero-name enumeration incorrectly blocked default output");
+        enumerationCount = -1;
+        SDL_SetError("Unrelated stale SDL error");
+        const auto unnamed = AudioOutput::Enumerate(AudioOutput::SDL, error);
+        check(unnamed.size() == 1 && unnamed[0].id.empty() && error.empty(),
+              "SDL driver without enumeration lost its default output");
+        enumerationCount = -2;
+        check(AudioOutput::Enumerate(99, error).empty() && !error.empty(),
+              "Unsupported backend exposed a usable default");
         if (outputs.size() > 1)
         {
             const AudioOutput::Settings selected{AudioOutput::SDL, outputs[1].id, 64};
@@ -207,6 +227,11 @@ int main(int argc, char** argv)
         std::printf("SDL output reopen: 32/64 frames, pause, rollback, recovery, rate and callbacks verified\n");
     }
     SDL_AudioQuit();
+    {
+        std::string error;
+        check(AudioOutput::Enumerate(AudioOutput::SDL, error).empty() && !error.empty(),
+              "Uninitialized audio exposed a usable default");
+    }
     // Exercise the real SDL wait: a control request must not depend on the
     // 500ms starvation fallback, and a spurious wake must recheck the queue.
     using namespace std::chrono_literals;

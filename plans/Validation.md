@@ -166,3 +166,6 @@ FS-06의 비공개 생성파일 진단은 [Qt6.11.2의 native rename](https://ra
 
 
 1.1.89 — Windows 최종 빌드·CTest919/919(88.65초, 전체1회, 실패/skip0). 실제 AudioOutput에 등록된 SDL callback을 수동 구동한 정지/재개 회귀는 필터OFF/20Hz/6kHz×16/128/512의9조건에서 기존 최대1000sample 불연속9실패→최종21sample로 감소했다(입력 진폭1000). SDL 초기화를 빠뜨렸던 최초 실행기 실패는 별도로 보존하고 수정된 baseline만 근거로 쓴다. 별도 native SDL/WASAPI의 진행 중 callback·반복 Start·Stop 대기·재개/Close 검사가 통과했다. 최종1.1.89의 실제Qt/EmuThread/설정창·Playback 1/2·양 backend×128/512의4조건은 PCM 폐기0, 각3회 정상 재개였으나 SDL128은 첫 설정창 이후219frame 부족이 남았다. 다른3조건은 해당 구간 추가 부족0이며 시작/상태 복원 부족은 유지된다. 무음/offscreen 실행을 청취·물리 지연·장기/ARM/장치 상실 수락으로 세지 않는다. GitHub Actions·macOS 빌드는 사용하지 않았다.
+
+
+1.1.90 — 최종 Windows 앱 빌드 성공. 오디오 설정11조건과 callback1조건은12/12(3.00초); SDL zero-name 계약 보정 후 영향 callback만1/1(0.60초)로 재검증했다. 최종 UI tooltip 변경은 새 테스트 없이 실제 Qt 창으로 확인했다. runtime 조회 실패가 저장된 WASAPI를 계속 선택 가능하게 하던 기존 동작은 확대 UI 검사1실패로 재현했다. 정상·열거 실패·endpoint 없음·장치 재등장·설정 보존/취소/실패복구는 Qt 설정 테스트에서 장치 facade를 대체해 확인한다. 별도 실제 SDL/WASAPI 열거는 각각 기본값 포함10항목 및 Playback 1/2를 확인했고, WASAPI context 초기화/열거 실패/빈 endpoint 주입3조건은 빈 목록과 오류, 이후 정상 열거 복구를 확인했다. 실제 production 객체를 연결한 Qt 앱2실행에서도 정상 선택 및 사라진 저장 장치의 비활성·다른 기본 장치 선택·취소 보존을 확인했다. 개인 설정 대신 private portable을 사용했으며 ROM 실행·청취·물리 지연/탈착·다른 OS 검증은 아니다. 새 전체 suite는 반복하지 않았다(이전1.1.89의919/919와 구분). GitHub Actions·macOS 빌드는 사용하지 않았다.

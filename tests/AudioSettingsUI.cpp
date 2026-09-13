@@ -32,6 +32,7 @@ struct AudioInstance
     int failBuffer = -1;
     QString failDevice;
     inline static bool enumerationFails = false;
+    inline static bool wasapiMissing = false;
     std::vector<Call> calls;
     std::vector<StretchCall> stretchCalls;
 
@@ -46,8 +47,9 @@ struct AudioInstance
         if (enumerationFails)
         {
             error = "AudioSettingsUI simulated enumeration failure";
-            return {{"", "System default"}};
+            return {};
         }
+        if (backend == 1 && wasapiMissing) return {};
         const QString prefix = backend == 1 ? "wasapi:" : "sdl:";
         return {{"", "System default"}, {prefix + "speakers", "Test speakers"},
                 {prefix + "broadcast", "Test broadcast output"}};
@@ -551,37 +553,60 @@ static void Scenario(const QString& name)
         Require(!(backends->model()->flags(backends->model()->index(backends->currentIndex(), 0)) & Qt::ItemIsEnabled),
                 "Saved unsupported backend was offered as an available backend");
 #endif
-        Require(backends->currentData().toInt() == 1 && instance.calls.empty() &&
-                Widget<QComboBox>(*dialog, "cbOutputDevice")->currentText().contains("unavailable", Qt::CaseInsensitive),
-                "Opening settings silently replaced an unavailable saved output");
+        auto* devices = Widget<QComboBox>(*dialog, "cbOutputDevice");
+        Require(devices->currentText().contains("unavailable", Qt::CaseInsensitive) &&
+                !(devices->model()->flags(devices->model()->index(devices->currentIndex(), 0)) & Qt::ItemIsEnabled) &&
+                !Widget<QPushButton>(*dialog, "btnApplyBuffer")->isEnabled(),
+                "Removed saved device was offered for selection or application");
         CheckRoute(*dialog, instance, 1, "removed:endpoint");
         SelectBuffer(*dialog, 64);
-        {
-            ExpectedWarning warning(*dialog, "The requested audio output could not be applied.");
-            Click(Widget<QPushButton>(*dialog, "btnApplyBuffer"));
-            warning.Check();
-        }
-        CheckCall(instance, 1, 64, 512);
-        CheckRouteCall(instance, 1, "removed:endpoint", 1, "removed:endpoint");
-        CheckOutput(*dialog, instance, 512);
-        CheckRoute(*dialog, instance, 1, "removed:endpoint");
-        Finish(*dialog, QDialogButtonBox::Cancel);
+        Finish(*dialog, QDialogButtonBox::Ok);
+        Require(instance.calls.empty(), "Accepting other settings reopened an unavailable saved output");
+        ReadBack(512, 1, "removed:endpoint");
 
         AudioInstance::enumerationFails = true;
         dialog = Open(window);
-        Require(instance.calls.size() == 1 && Widget<QLabel>(*dialog, "lblOutputDeviceStatus")->isVisible() &&
+        backends = Widget<QComboBox>(*dialog, "cbOutputBackend");
+        Require(!(backends->model()->flags(backends->model()->index(backends->currentIndex(), 0)) & Qt::ItemIsEnabled),
+                "Runtime-unavailable saved backend was offered as available");
+        Require(instance.calls.empty() && Widget<QLabel>(*dialog, "lblOutputDeviceStatus")->isVisible() &&
                 Widget<QLabel>(*dialog, "lblOutputDeviceStatus")->text().contains("simulated enumeration failure"),
                 "Device enumeration failure was hidden or caused an output reopen");
         CheckRoute(*dialog, instance, 1, "removed:endpoint");
-        AudioInstance::enumerationFails = false;
-        {
-            ExpectedWarning warning(*dialog, "The requested audio output could not be applied.");
-            Finish(*dialog, QDialogButtonBox::Ok);
-            warning.Check();
-        }
-        CheckCall(instance, 2, 512, 512);
-        CheckRoute(*dialog, instance, 1, "removed:endpoint");
+        Require(!Widget<QPushButton>(*dialog, "btnApplyBuffer")->isEnabled(),
+                "Enumeration failure left output application enabled");
+        Finish(*dialog, QDialogButtonBox::Ok);
+        Require(instance.calls.empty(), "Accepting a failed enumeration changed the output");
         ReadBack(512, 1, "removed:endpoint");
+
+        AudioInstance::enumerationFails = false;
+        AudioInstance::wasapiMissing = true;
+        dialog = Open(window);
+        backends = Widget<QComboBox>(*dialog, "cbOutputBackend");
+        Require(!(backends->model()->flags(backends->model()->index(backends->currentIndex(), 0)) & Qt::ItemIsEnabled),
+                "Backend with no endpoints was offered as available");
+        SelectOutput(*dialog, 512, 0, {});
+        Require(Widget<QPushButton>(*dialog, "btnApplyBuffer")->isEnabled(),
+                "Available automatic output could not be selected after device loss");
+        Finish(*dialog, QDialogButtonBox::Ok);
+        CheckRoute(*dialog, instance, 0, {});
+        Require(instance.calls.size() == 1, "Selecting available output did not apply exactly once");
+        ReadBack(512);
+
+        dialog = Open(window);
+        backends = Widget<QComboBox>(*dialog, "cbOutputBackend");
+        Require(backends->findData(1) < 0, "Unused unavailable WASAPI backend was still offered");
+        Finish(*dialog, QDialogButtonBox::Cancel);
+        AudioInstance::wasapiMissing = false;
+        dialog = Open(window);
+#ifdef Q_OS_WIN
+        backends = Widget<QComboBox>(*dialog, "cbOutputBackend");
+        const int returned = backends->findData(1);
+        Require(returned >= 0 && (backends->model()->flags(backends->model()->index(returned, 0)) & Qt::ItemIsEnabled),
+                "Reopening settings did not rediscover an available backend");
+#endif
+        Finish(*dialog, QDialogButtonBox::Cancel);
+        Require(instance.calls.size() == 1, "Refreshing availability reopened an active output");
     }
     else if (name == "secondary")
     {

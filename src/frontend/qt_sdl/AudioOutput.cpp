@@ -215,11 +215,15 @@ void AudioOutput::Stop()
 std::vector<AudioOutput::DeviceInfo> AudioOutput::Enumerate(int backend, std::string& error)
 {
     error.clear();
-    std::vector<DeviceInfo> result{{"", "System default"}};
+    std::vector<DeviceInfo> result;
     if (backend == SDL)
     {
+        if (!SDL_GetCurrentAudioDriver())
+        { error = "SDL audio is not initialized"; return result; }
         const int count = SDL_GetNumAudioDevices(0);
-        if (count < 0) error = SDL_GetError();
+        // SDL permits <= 0 when a driver cannot enumerate names but can still
+        // open its default output. Only Open can determine whether it works.
+        result.push_back({"", "System default"});
         for (int i = 0; i < count; ++i)
             if (const char* name = SDL_GetAudioDeviceName(i, 0)) result.push_back({name, name});
     }
@@ -235,6 +239,9 @@ std::vector<AudioOutput::DeviceInfo> AudioOutput::Enumerate(int backend, std::st
         ma_uint32 count = 0;
         status = ma_context_get_devices(&owner.context, &devices, &count, nullptr, nullptr);
         if (status != MA_SUCCESS) { error = ma_result_description(status); return result; }
+        if (!count)
+        { error = "No WASAPI output devices are available"; return result; }
+        result.push_back({"", "System default"});
         for (ma_uint32 i = 0; i < count; ++i)
         {
             char id[256]{};

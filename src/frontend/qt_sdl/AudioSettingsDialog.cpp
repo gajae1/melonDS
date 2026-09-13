@@ -77,19 +77,27 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
             .arg(frames).arg(frames / 48.0, 0, 'f', 1), frames);
     {
         const QSignalBlocker blocker(ui->cbOutputBackend);
-        ui->cbOutputBackend->addItem(tr("SDL (automatic)"), 0);
-#ifdef Q_OS_WIN
-        ui->cbOutputBackend->addItem(tr("WASAPI shared"), 1);
-#else
-        if (oldOutputBackend != 0)
+        const auto addBackend = [&](int backend, const QString& name)
         {
-            // Display a saved Windows preference without offering it or
-            // silently replacing it just because this dialog was opened.
-            ui->cbOutputBackend->addItem(tr("WASAPI shared (unavailable on this platform)"), oldOutputBackend);
+            QString error;
+            const auto devices = EmuInstance::audioOutputDevices(backend, error);
+            const bool available = error.isEmpty() && !devices.isEmpty();
+            if (!available && backend != oldOutputBackend) return;
+            ui->cbOutputBackend->addItem(available ? name : tr("%1 (unavailable)").arg(name), backend);
+            auto* model = qobject_cast<QStandardItemModel*>(ui->cbOutputBackend->model());
+            model->item(ui->cbOutputBackend->count() - 1)->setEnabled(available);
+        };
+        addBackend(0, tr("SDL (automatic)"));
+#ifdef Q_OS_WIN
+        addBackend(1, tr("WASAPI shared"));
+#endif
+        if (ui->cbOutputBackend->findData(oldOutputBackend) < 0)
+        {
+            // Preserve a preference imported from another platform/version.
+            ui->cbOutputBackend->addItem(tr("Saved output method (unavailable)"), oldOutputBackend);
             auto* model = qobject_cast<QStandardItemModel*>(ui->cbOutputBackend->model());
             model->item(ui->cbOutputBackend->count() - 1)->setEnabled(false);
         }
-#endif
     }
     restoreOutputSelection();
     ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
@@ -347,10 +355,24 @@ void AudioSettingsDialog::populateOutputDevices(int backend, const QString& devi
         ui->cbOutputDevice->addItem(device.isEmpty() ? tr("System default (unavailable)")
                                                    : tr("Unavailable saved device"), device);
         index = ui->cbOutputDevice->count() - 1;
+        auto* model = qobject_cast<QStandardItemModel*>(ui->cbOutputDevice->model());
+        model->item(index)->setEnabled(false);
     }
     ui->cbOutputDevice->setCurrentIndex(index);
     ui->lblOutputDeviceStatus->setText(error);
     ui->lblOutputDeviceStatus->setVisible(!error.isEmpty());
+    on_cbOutputDevice_currentIndexChanged(index);
+}
+
+void AudioSettingsDialog::on_cbOutputDevice_currentIndexChanged(int)
+{
+    const auto available = [](QComboBox* combo)
+    {
+        return combo->currentIndex() >= 0 &&
+            (combo->model()->flags(combo->model()->index(combo->currentIndex(), 0)) & Qt::ItemIsEnabled);
+    };
+    ui->btnApplyBuffer->setEnabled(emuInstance->getInstanceID() == 0 &&
+        available(ui->cbOutputBackend) && available(ui->cbOutputDevice));
 }
 
 void AudioSettingsDialog::restoreOutputSelection()
@@ -387,6 +409,7 @@ bool AudioSettingsDialog::applyOutput(int frames, int backend, const QString& de
 
 void AudioSettingsDialog::on_btnApplyBuffer_clicked()
 {
+    if (!ui->btnApplyBuffer->isEnabled()) return;
     QString error;
     if (!applyOutput(ui->cbBufferSize->currentData().toInt(),
                      ui->cbOutputBackend->currentData().toInt(),

@@ -64,7 +64,7 @@
       </item>
       <item row="4" column="1" colspan="2">
        <widget class="QComboBox" name="cbOutputBackend">
-        <property name="toolTip"><string>WASAPI shared allows other apps to play audio and supports broadcast routing. The supported callback period depends on the driver.</string></property>
+        <property name="toolTip"><string>Output methods are detected when this dialog opens. SDL selects its platform driver automatically; some drivers expose only a default output. WASAPI shared allows other apps to play audio and supports broadcast routing. Availability and the callback period are confirmed when applying the output.</string></property>
        </widget>
       </item>
       <item row="5" column="0">

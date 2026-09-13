@@ -71,6 +71,7 @@ private slots:
     void on_chkLowPass_toggled(bool checked);
     void on_chkTimeStretch_toggled(bool checked);
     void on_cbOutputBackend_currentIndexChanged(int idx);
+    void on_cbOutputDevice_currentIndexChanged(int idx);
     void on_btnApplyBuffer_clicked();
     void on_chkSyncDSiVolume_clicked(bool checked);
     void onChangeMicMode(int mode);
