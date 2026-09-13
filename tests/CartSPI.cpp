@@ -540,6 +540,136 @@ static void TestFlashEraseState(u32 cpu, bool dsi)
     restored.Save(idle, 2);
 }
 
+static void TestOwnershipState(u32 cpu, bool switchOwner, bool hold)
+{
+    std::printf("Ownership state ARM%u switch=%u hold=%u\n", cpu ? 7 : 9, switchOwner, hold);
+    std::fflush(stdout);
+    Fixture original(cpu, false, 11);
+    // Keep ROM reset released on both interfaces, isolating EXMEMCNT ownership
+    // from cartridge reset. All transitions use the real MMIO producer.
+    original.Machine->ARM9Write32(0x040001A4, 1u << 29);
+    original.Machine->ARM7Write32(0x040001A4, 1u << 29);
+    original.Machine->CurCPU = cpu;
+    original.Control(hold ? 0xA040 : 0xA000); original.Data(0x06, false);
+    const auto deadline = original.Machine->SPIDeadline(cpu);
+    original.Machine->AdvanceTo(deadline - 1);
+    Check(original.Cart->Selects == 1 && original.Cart->Delivered.empty() && original.Cart->Releases == 0,
+          "Ownership-state fixture did not retain an undelivered selected byte");
+    const u32 owner = switchOwner ? cpu ^ 1 : cpu;
+    if (switchOwner) original.Machine->ARM9Write16(0x04000204, owner ? 0x0800 : 0);
+    original.High(0x80); // A clears its own SPI mode after ownership may have moved to B.
+    Check((original.Count() & 0x2080) == 0x0080 &&
+          original.Machine->SPIDeadline(cpu) == deadline && original.Cart->Delivered.empty(),
+          "Mode disable changed the pending deadline or delivered the unfinished byte");
+    original.Machine->ARM9Write32(0x02000200, 0x12345678);
+    const auto selected = original.Cart->Selects, released = original.Cart->Releases;
+    Savestate saved;
+    const bool saveResult = original.Machine->DoSavestate(&saved);
+    const bool saveOK = saveResult && !saved.Error;
+    std::printf("  before completion: AUXSPICNT=%04X owner=ARM%u deadline=%llu "
+                "select=%u delivered=%zu release=%u save-return=%u error=%u version=%u.%u\n",
+                original.Count(), owner ? 7 : 9, static_cast<unsigned long long>(deadline),
+                selected, original.Cart->Delivered.size(), released,
+                saveResult, saved.Error, saved.MajorVersion(), saved.MinorVersion());
+    std::fflush(stdout);
+    Check(saveOK, "Whole-console save rejected its own MMIO-produced pending ownership/mode state");
+    if (saveOK) saved.Finish();
+
+    // The byte remains bound to its starting controller. Its mode-disable edge
+    // cancels delivery even when EXMEMCNT now grants new transfers to the other
+    // CPU. This is the emulator's cancellation policy, not a physical timing test.
+    original.Machine->Finish(cpu);
+    const auto delivered = original.Cart->Delivered;
+    const auto completionSelects = original.Cart->Selects - selected;
+    const auto completionReleases = original.Cart->Releases - released;
+    Check(delivered.empty() && released == 1 && completionReleases == 0,
+          "Mode disable delivered the cancelled byte or lost/repeated its CS release after ownership changed");
+    original.Machine->AdvanceTo(deadline + 1);
+    Check(original.Cart->Delivered == delivered && original.Cart->Selects == selected + completionSelects &&
+          original.Cart->Releases == released + completionReleases,
+          "Ownership-state live completion repeated a byte or CS edge");
+    Savestate completed;
+    const bool completedResult = original.Machine->DoSavestate(&completed);
+    Check(completedResult && !completed.Error, "Completed ownership/mode state remained unsaveable");
+    std::printf("  after completion: AUXSPICNT=%04X delivered=%zu first=%02X "
+                "select=%u release=%u save-return=%u error=%u\n",
+                original.Count(), delivered.size(), delivered.empty() ? 0xFF : delivered.front(),
+                original.Cart->Selects, original.Cart->Releases, completedResult, completed.Error);
+    if (!saveOK) return; // The rejected producer image is not a valid cold-load input.
+
+    Fixture restored(cpu, false, 11);
+    Savestate load(saved.Buffer(), saved.Length(), false);
+    const bool loadResult = restored.Machine->DoSavestate(&load);
+    std::printf("  cold restore: return=%u error=%u\n", loadResult, load.Error);
+    Check(loadResult && !load.Error, "Cold console rejected its producer's ownership/mode snapshot");
+    if (!loadResult || load.Error) return;
+    Check(restored.Machine->ARM9Read32(0x02000200) == 0x12345678 &&
+          ((restored.Machine->ARM9Read16(0x04000204) >> 11) & 1) == owner &&
+          (restored.Count() & 0x2080) == 0x0080 && restored.Machine->SPIDeadline(cpu) == deadline,
+          "Cold ownership state lost RAM, owner, disabled mode, busy byte or its original deadline");
+    restored.Machine->AdvanceTo(deadline - 1);
+    Check(restored.Cart->Delivered.empty() && restored.Cart->Selects == 0 && restored.Cart->Releases == 0,
+          "Cold ownership load delivered a byte or synthesized a CS edge before completion");
+    restored.Machine->Finish(cpu);
+    restored.Machine->AdvanceTo(deadline + 1);
+    Check(restored.Cart->Delivered == delivered && restored.Cart->Selects == completionSelects &&
+          restored.Cart->Releases == completionReleases && restored.Count() == original.Count(),
+          "Cold ownership continuation changed/replayed the live byte, CS edges or controller result");
+    for (Fixture* next : {&original, &restored})
+    {
+        next->Cart->ClearCounts();
+        // Mode may be restored before ownership returns. A cancelled held
+        // transfer must not make the next byte skip its fresh chip select.
+        if (switchOwner) next->Control(0xA000);
+        next->Machine->ARM9Write16(0x04000204, cpu ? 0x0800 : 0);
+        next->Control(0xA000); next->Data(0x06);
+        Check(next->Cart->Delivered == std::vector<u8>{0x06} &&
+              next->Cart->Selects == 1 && next->Cart->Releases == 1,
+              "Ownership cancellation left CS stuck or replayed an old byte in the next transaction");
+    }
+}
+
+static void TestOwnershipCancellationCollision(u32 cpu)
+{
+    Fixture f(cpu, false, 11);
+    f.Machine->ARM9Write32(0x040001A4, 1u << 29);
+    f.Machine->ARM7Write32(0x040001A4, 1u << 29);
+    f.Machine->CurCPU = cpu;
+    f.Control(0xA043); f.Data(0x03, false); // A's slow byte is still clocking.
+    const auto deadline = f.Machine->SPIDeadline(cpu);
+    f.Machine->ARM9Write16(0x04000204, cpu ? 0 : 0x800);
+    f.CPU = cpu ^ 1;
+    f.Control(0xA040); f.Data(0x06); // B has a completed WREN, still held.
+    Check(f.Cart->Delivered == std::vector<u8>{0x06} && f.Cart->Releases == 0,
+          "Collision fixture did not retain B's held WREN while A was pending");
+    f.CPU = cpu; f.High(0x80);
+    Check(f.Cart->Releases == 0 && f.Cart->Delivered == std::vector<u8>{0x06},
+          "A's cancellation released or changed B's held transaction");
+    Savestate saved;
+    const bool saveOK = f.Machine->DoSavestate(&saved) && !saved.Error;
+    Check(saveOK, "Cancellation during B's held transaction cannot be saved");
+    if (saveOK) saved.Finish();
+    f.Machine->Finish(cpu); f.Machine->AdvanceTo(deadline + 1);
+    Check(f.Cart->Releases == 0 && f.Cart->Delivered == std::vector<u8>{0x06},
+          "A's cancelled completion changed B's held transaction");
+    f.CPU = cpu ^ 1; f.High(0x80);
+    Check(f.Cart->Releases == 1, "B's mode disable did not release its own transaction exactly once");
+    f.Control(0xA040); f.Data(0x05); f.Control(0xA000); f.Data(0);
+    const auto status = f.CPU ? f.Machine->ARM7Read8(0x040001A2) : f.Machine->ARM9Read8(0x040001A2);
+    Check(status & 2, "Cancelling A discarded B's valid WREN command");
+    if (!saveOK) return;
+    Fixture restored(cpu, false, 11);
+    Savestate load(saved.Buffer(), saved.Length(), false);
+    const bool loadOK = restored.Machine->DoSavestate(&load) && !load.Error;
+    Check(loadOK, "Cold collision state was rejected");
+    if (!loadOK) return;
+    restored.Machine->Finish(cpu); restored.Machine->AdvanceTo(deadline + 1);
+    Check(restored.Cart->Delivered.empty() && restored.Cart->Releases == 0,
+          "Cold collision continuation replayed A or released B");
+    restored.CPU = cpu ^ 1; restored.High(0x80);
+    Check(restored.Cart->Releases == 1, "Cold B transaction lost its final CS edge");
+}
+
 static void TestByteCompletion(u32 cpu)
 {
     std::printf("Byte completion ARM%u\n", cpu ? 7 : 9);
@@ -1328,6 +1458,15 @@ try
     {
         for (u32 cpu : {0u, 1u}) TestByteCompletion(cpu);
         std::printf("Cart SPI byte-completion: %u failures\n", Failures);
+        return Failures ? 1 : 0;
+    }
+    if (mode == "ownership-state")
+    {
+        for (u32 cpu : {0u, 1u})
+        for (bool switchOwner : {false, true})
+        for (bool hold : {false, true}) TestOwnershipState(cpu, switchOwner, hold);
+        for (u32 cpu : {0u, 1u}) TestOwnershipCancellationCollision(cpu);
+        std::printf("Cart SPI ownership-state: %u failures\n", Failures);
         return Failures ? 1 : 0;
     }
     if (mode == "status-protection")

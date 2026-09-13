@@ -1383,7 +1383,7 @@ void NDSCartSlot::Interface::WriteSPICnt(u16 val, u16 mask)
     val &= mask;
     const u16 newCnt = (SPICnt & (~mask | 0x0080)) | (val & 0xE043);
 
-    if (SPISelected && Parent.CartActive && Parent.CPUSelect == Num)
+    if (SPISelected && Parent.CartActive)
     {
         // Bit 13 selects between ROM and SPI modes.
         // Clearing bit 13 during a SPI transfer causes the SPI chipselect line to go high.
@@ -1395,15 +1395,25 @@ void NDSCartSlot::Interface::WriteSPICnt(u16 val, u16 mask)
 
         // A lower-byte write leaves the mode bit untouched. Compare the
         // effective register value so it cannot end a held SPI transaction.
-        if (SPICnt & ~newCnt & (1<<13))
+        const bool owner = Parent.CPUSelect == Num;
+        if ((SPICnt & ~newCnt & (1<<13)) && (owner || (SPIFlags & SPIOwnsCS)))
         {
             // A byte whose clocks have not finished cannot cross this CS edge.
+            // The starting controller can cancel its byte after EXMEMCNT
+            // changes, but cannot end a transaction selected by the new owner.
             SPIFlags &= ~SPIToCart;
-            Parent.Cart->SPIRelease();
-            Parent.ScheduleSave(timestamp);
+            if (owner || !Parent.Interfaces[Parent.CPUSelect].SPISelected)
+            {
+                Parent.Cart->SPIRelease();
+                Parent.ScheduleSave(timestamp);
+            }
+            if (!owner) DetachSPI();
         }
         else if (~SPICnt & newCnt & (1<<13))
-            Parent.Cart->SPISelect();
+        {
+            if (owner) Parent.Cart->SPISelect();
+            else DetachSPI(); // Reacquiring ownership must start with fresh CS.
+        }
     }
 
     SPICnt = newCnt;
