@@ -289,6 +289,8 @@ def deploy(build, runtime, prefix, manifest, license_supplement=None):
         for relative, source, expected in licenses:
             add_input(plan, relative, source, expected)
         add_input(plan, 'LICENSE', source_file(ROOT / 'LICENSE', ROOT))
+        add_input(plan, 'third-party-licenses/miniaudio/LICENSE',
+                  source_file(ROOT / 'src/miniaudio/LICENSE', ROOT))
         add_input(plan, 'release-version.txt', version_file)
         add_input(plan, 'README.txt', (f'melonDS Windows runtime\r\nRun {exe_name} or run-melonDS.cmd.\r\n'
                   'No games, BIOS, firmware, saves or user settings are included.\r\n'

@@ -95,7 +95,8 @@ else()
     target_link_libraries(AudioSettingsUI PRIVATE Qt5::Test)
 endif()
 foreach(case IN ITEMS filter-cancel buffer-preview-cancel buffer-accept
-        buffer-failure buffer-cancel-failure secondary)
+        buffer-failure buffer-cancel-failure secondary
+        output-preview-cancel output-failure output-unavailable)
     add_test(NAME audio-settings-ui-${case} COMMAND AudioSettingsUI ${case})
     set_tests_properties(audio-settings-ui-${case} PROPERTIES TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;SDL_AUDIODRIVER=dummy")
@@ -357,9 +358,9 @@ add_custom_command(OUTPUT "${audio_sync}"
         "void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)" "${audio_sync}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
 set(audio_device_methods)
-foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(int frames)"
+foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(const AudioOutput::Settings& settings, std::string& error)"
         "audioEnable|void EmuInstance::audioEnable()"
-        "audioSetBufferSize|bool EmuInstance::audioSetBufferSize(int frames, std::string& error)")
+        "audioSetOutput|bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::string& error)")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
     list(GET parts 1 signature)
@@ -373,6 +374,9 @@ endforeach()
 add_executable(FrontendAudio "${CMAKE_SOURCE_DIR}/tests/FrontendAudio.cpp" "${audio_callback}" "${audio_sync}" ${audio_device_methods})
 target_include_directories(FrontendAudio PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FrontendAudio PRIVATE PkgConfig::SDL2 Threads::Threads)
+if (WIN32)
+    target_link_libraries(FrontendAudio PRIVATE melonds-wasapi)
+endif()
 melonds_configure_audio_kernels(FrontendAudio)
 add_test(NAME audio-callback-buffer COMMAND FrontendAudio)
 set_tests_properties(audio-callback-buffer PROPERTIES TIMEOUT 30)
@@ -433,7 +437,7 @@ foreach(pair IN ITEMS "stateAudioEnable|audioEnable" "stateAudioDisable|audioDis
         DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
     target_sources(SavestateLoad PRIVATE "${output}")
 endforeach()
-target_link_libraries(SavestateLoad PRIVATE PkgConfig::SDL2)
+target_link_libraries(SavestateLoad PRIVATE PkgConfig::SDL2 melonds-audio-output)
 melonds_configure_audio_kernels(SavestateLoad)
 foreach(case IN ITEMS audio-success audio-rebase audio-rollback audio-preflight)
     add_test(NAME savestate-load-${case} COMMAND SavestateLoad ${case} interpreter)

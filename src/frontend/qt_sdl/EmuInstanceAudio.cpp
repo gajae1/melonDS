@@ -44,18 +44,24 @@ void EmuInstance::audioInit()
     audioSyncLock = SDL_CreateMutex();
 
     audioFreq = 48000;
-    audioRequestedBuffer = std::bit_ceil(static_cast<unsigned>(
-        std::clamp(globalCfg.GetInt("Audio.BufferSize"), 32, 1024)));
-    audioBufSize = audioRequestedBuffer;
-    if (!audioOpenOutput(audioRequestedBuffer))
+    AudioOutput::Settings settings{globalCfg.GetInt("Audio.OutputBackend"),
+        globalCfg.GetString("Audio.OutputDevice"), globalCfg.GetInt("Audio.BufferSize")};
+    audioBufSize = settings.frames;
+    std::string error;
+    if (!audioOpenOutput(settings, error))
     {
-        Platform::Log(Platform::LogLevel::Error, "Audio init failed: %s\n", SDL_GetError());
+        Platform::Log(Platform::LogLevel::Error, "Audio init failed: %s\n", error.c_str());
+        // A saved endpoint may be absent on another computer/platform. Keep
+        // the preference in the config and expose the actual fallback below.
+        if ((settings.backend != AudioOutput::SDL || !settings.device.empty()) &&
+            !audioOpenOutput({AudioOutput::SDL, {}, settings.frames}, error))
+            Platform::Log(Platform::LogLevel::Error, "Fallback audio init failed: %s\n", error.c_str());
     }
-    else
+    if (audioDevice)
     {
+        Platform::Log(Platform::LogLevel::Info, "Audio output backend: %s\n", audioDevice.GetSpec().backend.c_str());
         Platform::Log(Platform::LogLevel::Info, "Audio output frequency: %d Hz\n", audioFreq);
         Platform::Log(Platform::LogLevel::Info, "Audio output buffer size: %d samples\n", audioBufSize);
-        SDL_PauseAudioDevice(audioDevice, 1);
     }
 
     audioLowPass.Init(audioFreq);
@@ -73,49 +79,40 @@ void EmuInstance::audioInit()
     setupMicInputData();
 }
 
-bool EmuInstance::audioOpenOutput(int frames)
+bool EmuInstance::audioOpenOutput(const AudioOutput::Settings& settings, std::string& error)
 {
-    SDL_AudioSpec wanted{}, obtained{};
-    wanted.freq = 48000;
-    wanted.format = AUDIO_S16SYS;
-    wanted.channels = 2;
-    wanted.samples = frames;
-    wanted.callback = audioCallback;
-    wanted.userdata = this;
-    audioDevice = SDL_OpenAudioDevice(nullptr, 0, &wanted, &obtained, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-    if (!audioDevice) return false;
-    // Newly opened devices are paused. Publish the complete callback state
+    if (!audioDevice.Open(settings, audioCallback, this, error)) return false;
+    // Newly opened devices are stopped. Publish the complete callback state
     // before the emulation thread resumes delivery.
-    audioFreq = obtained.freq;
-    audioBufSize = obtained.samples;
-    audioRequestedBuffer = frames;
+    audioFreq = audioDevice.GetSpec().rate;
+    audioBufSize = audioDevice.GetSpec().frames;
     return true;
 }
 
-bool EmuInstance::audioSetBufferSize(int frames, std::string& error)
+bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::string& error)
 {
-    // The UI has stopped the producer and waits for SDL callbacks to finish.
+    // The UI has stopped the producer and waits for output callbacks to finish.
     // Open/close stay on the original UI thread: WASAPI's COM lifetime is
     // thread-affine, even though the audio callback itself runs elsewhere.
-    frames = std::bit_ceil(static_cast<unsigned>(std::clamp(frames, 32, 1024)));
+    auto settings = requested;
+    settings.frames = std::bit_ceil(static_cast<unsigned>(std::clamp(settings.frames, 32, 1024)));
     error.clear();
-    if (audioDevice && frames == audioRequestedBuffer) return true;
-    const bool hadDevice = audioDevice != 0;
-    const int previousBuffer = audioRequestedBuffer;
+    if (audioDevice && settings == audioDevice.GetSettings()) return true;
+    const bool hadDevice = static_cast<bool>(audioDevice);
+    const auto previous = audioDevice.GetSettings();
     const int previousRate = audioFreq;
     if (audioDevice)
     {
-        SDL_PauseAudioDevice(audioDevice, 1);
+        audioDevice.Stop();
         audioReportDiagnostics();
-        SDL_CloseAudioDevice(audioDevice);
-        audioDevice = 0;
+        audioDevice.Close();
     }
-    const bool applied = audioOpenOutput(frames);
+    const bool applied = audioOpenOutput(settings, error);
     if (!applied)
     {
-        error = SDL_GetError();
-        if (hadDevice && !audioOpenOutput(previousBuffer))
-            error += std::string("; previous output could not be reopened: ") + SDL_GetError();
+        std::string recovery;
+        if (hadDevice && !audioOpenOutput(previous, recovery))
+            error += std::string("; previous output could not be reopened: ") + recovery;
     }
     if (audioDevice)
     {
@@ -140,18 +137,42 @@ QString EmuInstance::audioOutputDescription() const
 {
     // UI reads this only between its synchronous output-change requests.
     if (!audioDevice) return QObject::tr("Audio output unavailable");
-    return QObject::tr("Active: %1 frames at %2 Hz (%3 ms per callback)")
-        .arg(audioBufSize).arg(audioFreq).arg(audioBufSize * 1000.0 / audioFreq, 0, 'f', 2);
+    const auto& spec = audioDevice.GetSpec();
+    QString description = QObject::tr("%1: %2 frames at %3 Hz (%4 ms period)")
+        .arg(QString::fromStdString(spec.backend)).arg(audioBufSize).arg(audioFreq)
+        .arg(audioBufSize * 1000.0 / audioFreq, 0, 'f', 2);
+    if (spec.bufferFrames > 0)
+        description += QObject::tr("; device capacity %1 frames").arg(spec.bufferFrames);
+    return description;
 }
 
 bool EmuInstance::changeAudioBuffer(int frames, QString& error)
 {
-    frames = std::bit_ceil(static_cast<unsigned>(std::clamp(frames, 32, 1024)));
+    const auto& current = audioDevice.GetSettings();
+    return changeAudioOutput(frames, current.backend, QString::fromStdString(current.device), error);
+}
+
+QList<QPair<QString, QString>> EmuInstance::audioOutputDevices(int backend, QString& error)
+{
+    std::string detail;
+    const auto devices = AudioOutput::Enumerate(backend, detail);
+    QList<QPair<QString, QString>> result;
+    for (const auto& device : devices)
+        result.push_back({QString::fromStdString(device.id), device.id.empty()
+            ? QObject::tr("System default") : QString::fromStdString(device.name)});
+    error = QString::fromStdString(detail);
+    return result;
+}
+
+bool EmuInstance::changeAudioOutput(int frames, int backend, const QString& device, QString& error)
+{
+    AudioOutput::Settings settings{backend, device.toStdString(), static_cast<int>(
+        std::bit_ceil(static_cast<unsigned>(std::clamp(frames, 32, 1024))))};
     error.clear();
-    if (audioDevice && frames == audioRequestedBuffer) return true;
+    if (audioDevice && settings == audioDevice.GetSettings()) return true;
     emuThread->emuPause(false);
     std::string detail;
-    const bool applied = audioSetBufferSize(frames, detail);
+    const bool applied = audioSetOutput(settings, detail);
     emuThread->emuUnpause(false);
     error = QString::fromStdString(detail);
     return applied;
@@ -159,8 +180,7 @@ bool EmuInstance::changeAudioBuffer(int frames, QString& error)
 
 void EmuInstance::audioDeInit()
 {
-    if (audioDevice) SDL_CloseAudioDevice(audioDevice);
-    audioDevice = 0;
+    audioDevice.Close();
     audioReportDiagnostics();
     micClose();
     micStarted = false;
@@ -216,7 +236,7 @@ void EmuInstance::updateFastForwardMute(bool fastForward)
 
 void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
 {
-    if (audioDevice && !stopToken.stop_requested())
+    if (audioIsRunning() && !stopToken.stop_requested())
     {
         // The producer advances a whole emulated frame at once. A small SDL
         // callback can be delivered in a larger backend burst; waiting for
@@ -231,7 +251,7 @@ void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
             SDL_UnlockMutex(audioSyncLock);
         });
         SDL_LockMutex(audioSyncLock);
-        while (!stopToken.stop_requested() && nds->SPU.GetOutputSize() >= maxQueued)
+        while (!stopToken.stop_requested() && audioIsRunning() && nds->SPU.GetOutputSize() >= maxQueued)
         {
             int ret = SDL_CondWaitTimeout(audioSyncCond, audioSyncLock, 500);
             if (ret == SDL_MUTEX_TIMEDOUT) break;
@@ -630,18 +650,19 @@ void EmuInstance::audioEnable()
 {
     if (audioDevice)
     {
-        SDL_LockAudioDevice(audioDevice);
+        audioDevice.Stop();
         audioOutputRamp.FadeIn();
         audioDiagnostics.PreviousStart = 0; // paused time is not callback lateness
-        SDL_UnlockAudioDevice(audioDevice);
-        SDL_PauseAudioDevice(audioDevice, 0);
+        std::string error;
+        if (!audioDevice.Start(error))
+            Platform::Log(Platform::LogLevel::Error, "Audio start failed: %s\n", error.c_str());
     }
     if (micStarted) micOpen();
 }
 
 void EmuInstance::audioDisable()
 {
-    if (audioDevice) SDL_PauseAudioDevice(audioDevice, 1);
+    audioDevice.Stop();
     audioReportDiagnostics();
     if (micStarted) micClose();
 }

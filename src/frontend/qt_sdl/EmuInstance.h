@@ -36,6 +36,7 @@
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
+#include "AudioOutput.h"
 
 const int kMaxWindows = 4;
 
@@ -97,6 +98,8 @@ public:
     EmuThread* getEmuThread() { return emuThread; }
     QString audioOutputDescription() const;
     bool changeAudioBuffer(int frames, QString& error);
+    bool changeAudioOutput(int frames, int backend, const QString& device, QString& error);
+    static QList<QPair<QString, QString>> audioOutputDevices(int backend, QString& error);
     melonDS::NDS* getNDS() { return nds; }
     // Only on the emulation thread, or while that producer is paused.
     void retrySaveCapture();
@@ -249,7 +252,6 @@ private:
     void audioSync(int frameSamples, std::stop_token stopToken = {});
     void audioReportDiagnostics();
     void audioUpdateSettings();
-    bool audioSetBufferSize(int frames, std::string& error);
 
     void micOpen();
     void micClose();
@@ -337,9 +339,10 @@ private:
     std::unique_ptr<melonDS::ARCodeFile> cheatFile;
     bool cheatsOn;
 
-    SDL_AudioDeviceID audioDevice;
-    bool audioOpenOutput(int frames);
-    int audioRequestedBuffer;
+    AudioOutput audioDevice;
+    bool audioOpenOutput(const AudioOutput::Settings& settings, std::string& error);
+    bool audioSetOutput(const AudioOutput::Settings& settings, std::string& error);
+    bool audioIsRunning() const { return audioDevice.IsRunning(); }
     int audioFreq;
     int audioBufSize;
     AudioLowPass audioLowPass;

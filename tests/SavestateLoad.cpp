@@ -22,6 +22,7 @@
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
+#include "AudioOutput.h"
 using namespace melonDS;
 
 enum class ReadFailure { None, Short, Error, Oversize };
@@ -91,7 +92,7 @@ struct StateReader
 {
     FixtureConsole* nds;
     std::unique_ptr<Savestate> backupState;
-    SDL_AudioDeviceID audioDevice = 0;
+    AudioOutput audioDevice;
     SDL_mutex* audioSyncLock = SDL_CreateMutex();
     SDL_cond* audioSyncCond = SDL_CreateCond();
     SDL_sem* captured = SDL_CreateSemaphore(0);
@@ -105,7 +106,7 @@ struct StateReader
     std::array<s16, 256> pcm{};
     ~StateReader()
     {
-        if (audioDevice) SDL_CloseAudioDevice(audioDevice);
+        audioDevice.Close();
         SDL_DestroySemaphore(captured);
         SDL_DestroyCond(audioSyncCond);
         SDL_DestroyMutex(audioSyncLock);
@@ -119,10 +120,7 @@ struct StateReader
     static void audioCallback(void*, Uint8*, int);
     bool openAudio()
     {
-        SDL_AudioSpec wanted{}, obtained{};
-        wanted.freq = audioFreq; wanted.format = AUDIO_S16SYS;
-        wanted.channels = 2; wanted.samples = audioBufSize; wanted.userdata = this;
-        wanted.callback = [](void* data, Uint8* stream, int len) {
+        const auto callback = [](void* data, Uint8* stream, int len) {
             auto& self = *static_cast<StateReader*>(data);
             // Consume exactly one callback per resume; further dummy-device
             // requests stay silent until the main thread pauses it again.
@@ -136,11 +134,12 @@ struct StateReader
             }
             std::memset(stream, 0, len); // Never submit probe PCM to a real device.
         };
-        audioDevice = SDL_OpenAudioDevice(nullptr, 0, &wanted, &obtained, 0);
+        std::string error;
+        if (!audioDevice.Open({AudioOutput::SDL, {}, audioBufSize}, callback, this, error)) return false;
         audioLowPass.Init(audioFreq);
         audioLowPass.SetCutoffNow(audioLowPassCutoff);
         audioOutputRamp.Init(audioFreq);
-        return audioDevice != 0;
+        return static_cast<bool>(audioDevice);
     }
     std::array<s16, 256> nextCallback()
     {

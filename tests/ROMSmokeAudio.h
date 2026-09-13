@@ -25,6 +25,7 @@ struct SmokeAudio
     std::atomic<int> audioLowPassCutoff{0}, audioVolume{256};
     bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
     bool Started = false;
+    bool audioIsRunning() const { return audioDevice && SDL_GetAudioDeviceStatus(audioDevice) == SDL_AUDIO_PLAYING; }
     double LastTime = 0, FrameLimitError = 0;
 
     ~SmokeAudio()

@@ -17,7 +17,10 @@
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
+#include "AudioOutput.h"
+#include "Platform.h"
 using namespace melonDS;
+namespace melonDS::Platform { void Log(LogLevel, const char*, ...) {} }
 
 // Drive the production SDL callback with a deterministic sample producer.
 // Guard samples catch writes past the requested device buffer.
@@ -48,7 +51,6 @@ struct AudioState
     Console* nds;
     double curFPS = 60, targetFPS = 60;
     int audioBufSize = 512;
-    int audioRequestedBuffer = 512;
     int audioFreq = 48000;
     AudioLowPass audioLowPass;
     AudioOutputRamp audioOutputRamp;
@@ -58,12 +60,19 @@ struct AudioState
     bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
     SDL_mutex* audioSyncLock = SDL_CreateMutex();
     SDL_cond* audioSyncCond = SDL_CreateCond();
-    SDL_AudioDeviceID audioDevice = 0;
-    ~AudioState() { if (audioDevice > 1) SDL_CloseAudioDevice(audioDevice); SDL_DestroyCond(audioSyncCond); SDL_DestroyMutex(audioSyncLock); }
+    AudioOutput audioDevice;
+    bool fakeRunning = false;
+    bool audioIsRunning() const { return fakeRunning || audioDevice.IsRunning(); }
+    ~AudioState() { audioDevice.Close(); SDL_DestroyCond(audioSyncCond); SDL_DestroyMutex(audioSyncLock); }
     static void audioCallback(void* data, Uint8* stream, int len);
     void audioSync(int frameSamples, std::stop_token stopToken = {});
-    bool audioOpenOutput(int frames);
-    bool audioSetBufferSize(int frames, std::string& error);
+    bool audioOpenOutput(const AudioOutput::Settings& settings, std::string& error);
+    bool audioSetOutput(const AudioOutput::Settings& requested, std::string& error);
+    bool audioSetBufferSize(int frames, std::string& error)
+    {
+        auto settings = audioDevice.GetSettings(); settings.frames = frames;
+        return audioSetOutput(settings, error);
+    }
     void audioReportDiagnostics() {}
     void audioEnable();
     bool micStarted = false;
@@ -90,15 +99,16 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
     syncWaitEntered.release();
     return SDL_CondWaitTimeout(cond, mutex, timeout);
 }
+#define SDL_OpenAudioDevice OpenOutput
+#include "AudioOutput.cpp"
+#undef SDL_OpenAudioDevice
 #define EmuInstance AudioState
 #include "audioCallback.inc"
 #define SDL_CondWaitTimeout ObserveSyncWait
 #include "audioSync.inc"
 #undef SDL_CondWaitTimeout
-#define SDL_OpenAudioDevice OpenOutput
 #include "audioOpenOutput.inc"
-#undef SDL_OpenAudioDevice
-#include "audioSetBufferSize.inc"
+#include "audioSetOutput.inc"
 #include "audioEnable.inc"
 #undef EmuInstance
 
@@ -137,17 +147,16 @@ int main(int argc, char** argv)
         for (int buffer : {512, 64, 32})
         {
             check(device.audioSetBufferSize(buffer, error), "SDL buffer reopen failed");
-            check(device.audioBufSize == buffer && device.audioRequestedBuffer == buffer &&
-                  SDL_GetAudioDeviceStatus(device.audioDevice) == SDL_AUDIO_PAUSED,
+            check(device.audioBufSize == buffer && device.audioDevice.GetSettings().frames == buffer &&
+                  !device.audioDevice.IsRunning(),
                   "Buffer change lost the requested size or resumed paused playback");
         }
         const int before = deviceConsole.SPU.historyResets;
-        const auto unchanged = device.audioDevice;
-        check(device.audioSetBufferSize(32, error) && device.audioDevice == unchanged &&
+        check(device.audioSetBufferSize(32, error) &&
               deviceConsole.SPU.historyResets == before, "Unchanged buffer reopened or cleared output");
         failedOpens = 1;
         check(!device.audioSetBufferSize(64, error) && !error.empty() && device.audioDevice &&
-              device.audioRequestedBuffer == 32, "Failed reopen did not restore the previous output");
+              device.audioDevice.GetSettings().frames == 32, "Failed reopen did not restore the previous output");
         failedOpens = 2;
         check(!device.audioSetBufferSize(64, error) && !device.audioDevice &&
               error.find("previous output") != std::string::npos,
@@ -160,8 +169,21 @@ int main(int argc, char** argv)
         check(device.audioSetBufferSize(32, error), "Running output reopen failed");
         device.audioEnable();
         SDL_Delay(30);
-        SDL_PauseAudioDevice(device.audioDevice, 1);
+        device.audioDevice.Stop();
         check(device.audioDiagnostics.Callbacks > 0, "Reopened running output did not deliver callbacks");
+        const auto previous = device.audioDevice.GetSettings();
+        check(!device.audioSetOutput({99, "unavailable", 64}, error) && !error.empty() &&
+              device.audioDevice && device.audioDevice.GetSettings() == previous,
+              "Unavailable backend lost the previous complete output settings");
+        const auto outputs = AudioOutput::Enumerate(AudioOutput::SDL, error);
+        if (outputs.size() > 1)
+        {
+            const AudioOutput::Settings selected{AudioOutput::SDL, outputs[1].id, 64};
+            check(device.audioSetOutput(selected, error) && device.audioDevice.GetSettings() == selected,
+                  "Explicit output device was not applied");
+            check(device.audioSetOutput(previous, error) && device.audioDevice.GetSettings() == previous,
+                  "Previous output device was not restored");
+        }
         std::printf("SDL output reopen: 32/64 frames, pause, rollback, recovery, rate and callbacks verified\n");
     }
     SDL_AudioQuit();
@@ -172,7 +194,7 @@ int main(int argc, char** argv)
     AudioState sync{&syncConsole};
     syncConsole.SPU.queuedFrames = 4096;
     sync.audioSync(800); // No device: no wait.
-    sync.audioDevice = 1; // Only the predicate uses this ID; no device is opened.
+    sync.fakeRunning = true; // Only the sync predicate is substituted; waits are real SDL.
     std::stop_source alreadyStopped;
     alreadyStopped.request_stop();
     sync.audioSync(800, alreadyStopped.get_token());

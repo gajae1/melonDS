@@ -20,6 +20,8 @@
 #include <SDL2/SDL.h>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QSignalBlocker>
+#include <QStandardItemModel>
 
 #include "types.h"
 #include "Platform.h"
@@ -49,6 +51,8 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     oldBitDepth = cfg.GetInt("Audio.BitDepth");
     oldLowPassCutoff = cfg.GetInt("Audio.LowPassCutoff");
     oldBufferSize = cfg.GetInt("Audio.BufferSize");
+    oldOutputBackend = cfg.GetInt("Audio.OutputBackend");
+    oldOutputDevice = cfg.GetQString("Audio.OutputDevice");
     oldVolume = instcfg.GetInt("Audio.Volume");
     oldDSiSync = instcfg.GetBool("Audio.DSiVolumeSync");
 
@@ -70,8 +74,23 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     for (int frames : {32, 64, 128, 256, 512, 1024})
         ui->cbBufferSize->addItem(QString("%1 frames (%2 ms at 48 kHz)")
             .arg(frames).arg(frames / 48.0, 0, 'f', 1), frames);
-    ui->cbBufferSize->setCurrentIndex(ui->cbBufferSize->findData(
-        static_cast<int>(std::bit_ceil(static_cast<unsigned>(cfg.GetInt("Audio.BufferSize"))))));
+    {
+        const QSignalBlocker blocker(ui->cbOutputBackend);
+        ui->cbOutputBackend->addItem(tr("SDL (automatic)"), 0);
+#ifdef Q_OS_WIN
+        ui->cbOutputBackend->addItem(tr("WASAPI shared"), 1);
+#else
+        if (oldOutputBackend != 0)
+        {
+            // Display a saved Windows preference without offering it or
+            // silently replacing it just because this dialog was opened.
+            ui->cbOutputBackend->addItem(tr("WASAPI shared (unavailable on this platform)"), oldOutputBackend);
+            auto* model = qobject_cast<QStandardItemModel*>(ui->cbOutputBackend->model());
+            model->item(ui->cbOutputBackend->count() - 1)->setEnabled(false);
+        }
+#endif
+    }
+    restoreOutputSelection();
     ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
 
     ui->sbLowPassCutoff->blockSignals(true);
@@ -142,6 +161,8 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
         ui->cbInterpolation->setEnabled(false);
         ui->cbBitDepth->setEnabled(false);
         ui->cbBufferSize->setEnabled(false);
+        ui->cbOutputBackend->setEnabled(false);
+        ui->cbOutputDevice->setEnabled(false);
         ui->btnApplyBuffer->setEnabled(false);
         ui->chkLowPass->setEnabled(false);
         ui->sbLowPassCutoff->setEnabled(false);
@@ -185,8 +206,8 @@ void AudioSettingsDialog::on_AudioSettingsDialog_accepted()
     cfg.SetQString("Mic.Device", ui->cbMic->currentText());
     cfg.SetInt("Mic.InputType", grpMicMode->checkedId());
     cfg.SetQString("Mic.WavPath", ui->txtMicWavPath->text());
-    // Apply is explicit so a failed device reopen cannot silently save a buffer
-    // that never became active. Unapplied combo changes are applied on OK too.
+    // Apply the complete output selection once, before saving. A failed reopen
+    // keeps the last successful configuration, including its backend/device.
     if (ui->btnApplyBuffer->isEnabled()) on_btnApplyBuffer_clicked();
 
     Config::SaveWithDialog(this);
@@ -207,14 +228,14 @@ void AudioSettingsDialog::on_AudioSettingsDialog_rejected()
     cfg.SetInt("Audio.Interpolation", oldInterp);
     cfg.SetInt("Audio.BitDepth", oldBitDepth);
     cfg.SetInt("Audio.LowPassCutoff", oldLowPassCutoff);
-    if (cfg.GetInt("Audio.BufferSize") != oldBufferSize)
+    if (cfg.GetInt("Audio.BufferSize") != oldBufferSize ||
+        cfg.GetInt("Audio.OutputBackend") != oldOutputBackend ||
+        cfg.GetQString("Audio.OutputDevice") != oldOutputDevice)
     {
         QString error;
-        if (emuInstance->changeAudioBuffer(oldBufferSize, error))
-            cfg.SetInt("Audio.BufferSize", oldBufferSize);
-        else
+        if (!applyOutput(oldBufferSize, oldOutputBackend, oldOutputDevice, error))
             QMessageBox::warning(this, tr("Audio output"),
-                tr("The previous output buffer could not be restored.\n%1").arg(error));
+                tr("The previous audio output could not be restored.\n%1").arg(error));
     }
     instcfg.SetInt("Audio.Volume", oldVolume);
     instcfg.SetBool("Audio.DSiVolumeSync", oldDSiSync);
@@ -278,19 +299,68 @@ void AudioSettingsDialog::on_chkLowPass_toggled(bool checked)
     emit updateAudioSettings();
 }
 
+void AudioSettingsDialog::populateOutputDevices(int backend, const QString& device)
+{
+    const QSignalBlocker blocker(ui->cbOutputDevice);
+    ui->cbOutputDevice->clear();
+    QString error;
+    const auto devices = EmuInstance::audioOutputDevices(backend, error);
+    for (const auto& entry : devices)
+        ui->cbOutputDevice->addItem(entry.second, entry.first);
+    int index = ui->cbOutputDevice->findData(device);
+    if (index < 0)
+    {
+        ui->cbOutputDevice->addItem(device.isEmpty() ? tr("System default (unavailable)")
+                                                   : tr("Unavailable saved device"), device);
+        index = ui->cbOutputDevice->count() - 1;
+    }
+    ui->cbOutputDevice->setCurrentIndex(index);
+    ui->lblOutputDeviceStatus->setText(error);
+    ui->lblOutputDeviceStatus->setVisible(!error.isEmpty());
+}
+
+void AudioSettingsDialog::restoreOutputSelection()
+{
+    auto& cfg = emuInstance->getGlobalConfig();
+    const QSignalBlocker blocker(ui->cbOutputBackend);
+    ui->cbBufferSize->setCurrentIndex(ui->cbBufferSize->findData(
+        static_cast<int>(std::bit_ceil(static_cast<unsigned>(cfg.GetInt("Audio.BufferSize"))))));
+    const int backend = cfg.GetInt("Audio.OutputBackend");
+    ui->cbOutputBackend->setCurrentIndex(ui->cbOutputBackend->findData(backend));
+    populateOutputDevices(backend, cfg.GetQString("Audio.OutputDevice"));
+}
+
+void AudioSettingsDialog::on_cbOutputBackend_currentIndexChanged(int idx)
+{
+    if (idx < 0) return;
+    auto& cfg = emuInstance->getGlobalConfig();
+    const int backend = ui->cbOutputBackend->currentData().toInt();
+    // Device IDs belong to their backend. Returning to the committed backend
+    // restores its saved ID, including an unavailable one.
+    populateOutputDevices(backend, backend == cfg.GetInt("Audio.OutputBackend")
+        ? cfg.GetQString("Audio.OutputDevice") : QString());
+}
+
+bool AudioSettingsDialog::applyOutput(int frames, int backend, const QString& device, QString& error)
+{
+    if (!emuInstance->changeAudioOutput(frames, backend, device, error)) return false;
+    auto& cfg = emuInstance->getGlobalConfig();
+    cfg.SetInt("Audio.BufferSize", frames);
+    cfg.SetInt("Audio.OutputBackend", backend);
+    cfg.SetQString("Audio.OutputDevice", device);
+    return true;
+}
+
 void AudioSettingsDialog::on_btnApplyBuffer_clicked()
 {
-    const int frames = ui->cbBufferSize->currentData().toInt();
     QString error;
-    if (emuInstance->changeAudioBuffer(frames, error))
-        emuInstance->getGlobalConfig().SetInt("Audio.BufferSize", frames);
-    else
+    if (!applyOutput(ui->cbBufferSize->currentData().toInt(),
+                     ui->cbOutputBackend->currentData().toInt(),
+                     ui->cbOutputDevice->currentData().toString(), error))
     {
-        ui->cbBufferSize->setCurrentIndex(ui->cbBufferSize->findData(
-            static_cast<int>(std::bit_ceil(static_cast<unsigned>(
-                emuInstance->getGlobalConfig().GetInt("Audio.BufferSize"))))));
+        restoreOutputSelection();
         QMessageBox::warning(this, tr("Audio output"),
-            tr("The requested output buffer could not be applied.\n%1").arg(error));
+            tr("The requested audio output could not be applied.\n%1").arg(error));
     }
     ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
 }

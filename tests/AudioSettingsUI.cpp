@@ -14,12 +14,21 @@
 
 struct AudioInstance
 {
-    struct Call { int requested, configuredBefore, activeBefore; };
+    struct Call
+    {
+        int requested, configuredBefore, activeBefore;
+        int backend, backendBefore;
+        QString device, deviceBefore;
+    };
     Config::Table global = Config::GetGlobalTable();
     Config::Table local;
     int instanceID;
     int activeBuffer = 512;
+    int activeBackend = 0;
+    QString activeDevice;
     int failBuffer = -1;
+    QString failDevice;
+    inline static bool enumerationFails = false;
     std::vector<Call> calls;
 
     explicit AudioInstance(int instance) : local(Config::GetLocalTable(instance)), instanceID(instance) {}
@@ -28,23 +37,38 @@ struct AudioInstance
     int getInstanceID() { return instanceID; }
     bool emuIsActive() { return false; }
     melonDS::NDS* getNDS() { return nullptr; }
-    bool changeAudioBuffer(int frames, QString& error)
+    static QList<QPair<QString, QString>> audioOutputDevices(int backend, QString& error)
     {
-        calls.push_back({frames, global.GetInt("Audio.BufferSize"), activeBuffer});
-        if (frames == failBuffer)
+        if (enumerationFails)
+        {
+            error = "AudioSettingsUI simulated enumeration failure";
+            return {{"", "System default"}};
+        }
+        const QString prefix = backend == 1 ? "wasapi:" : "sdl:";
+        return {{"", "System default"}, {prefix + "speakers", "Test speakers"},
+                {prefix + "broadcast", "Test broadcast output"}};
+    }
+    bool changeAudioOutput(int frames, int backend, const QString& device, QString& error)
+    {
+        calls.push_back({frames, global.GetInt("Audio.BufferSize"), activeBuffer,
+                         backend, global.GetInt("Audio.OutputBackend"), device,
+                         global.GetQString("Audio.OutputDevice")});
+        if (frames == failBuffer || (!failDevice.isEmpty() && device == failDevice))
         {
             error = "AudioSettingsUI simulated device-open failure";
             return false;
         }
         activeBuffer = frames;
+        activeBackend = backend;
+        activeDevice = device;
         return true;
     }
     QString audioOutputDescription() const
     {
         // Deliberately different obtained period: the label must show the
         // output result, not infer a device period from the requested choice.
-        return QString("Test output: requested %1 frames; obtained 256 frames at 44100 Hz")
-            .arg(activeBuffer);
+        return QString("Test output: requested %1 frames; obtained 256 frames at 44100 Hz; backend %2, %3")
+            .arg(activeBuffer).arg(activeBackend).arg(activeDevice.isEmpty() ? "System default" : activeDevice);
     }
 };
 class AudioWindow : public QWidget
@@ -168,24 +192,73 @@ static void Preview64(AudioSettingsDialog& dialog, AudioInstance& instance)
     const QString capture = qEnvironmentVariable("MELONDS_AUDIO_UI_CAPTURE");
     if (!capture.isEmpty()) Require(dialog.grab().save(capture), "Could not capture the actual Qt dialog");
 }
-static void ReadBack(int frames)
+static void ReadBack(int frames, int backend = 0, const QString& device = {})
 {
     QProcess child;
     child.start(QCoreApplication::applicationFilePath(),
-                {"readback", configDirectory, QString::number(frames)});
+                {"readback", configDirectory, QString::number(frames), QString::number(backend), device});
     const bool finished = child.waitForFinished(10000);
     const QByteArray output = child.readAllStandardOutput() + child.readAllStandardError();
     std::fwrite(output.constData(), 1, output.size(), stdout);
     if (!finished) { child.kill(); child.waitForFinished(1000); }
     Require(finished && child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0,
-            "Fresh Config::Load process did not recover the successfully applied buffer");
+            "Fresh Config::Load process did not recover the successful output tuple");
 }
+static void SelectOutput(AudioSettingsDialog& dialog, int frames, int backend, const QString& device)
+{
+    auto* backends = Widget<QComboBox>(dialog, "cbOutputBackend");
+    const int index = backends->findData(backend);
+    Require(index >= 0, "Requested output backend is absent");
+    backends->setCurrentIndex(index);
+    auto* devices = Widget<QComboBox>(dialog, "cbOutputDevice");
+    Require(devices->findData(device) >= 0, "Requested stable output device ID is absent");
+    devices->setCurrentIndex(devices->findData(device));
+    SelectBuffer(dialog, frames);
+}
+static void CheckRoute(AudioSettingsDialog& dialog, AudioInstance& instance, int backend, const QString& device)
+{
+    Require(instance.activeBackend == backend && instance.activeDevice == device &&
+            instance.global.GetInt("Audio.OutputBackend") == backend &&
+            instance.global.GetQString("Audio.OutputDevice") == device &&
+            Widget<QComboBox>(dialog, "cbOutputBackend")->currentData().toInt() == backend &&
+            Widget<QComboBox>(dialog, "cbOutputDevice")->currentData().toString() == device,
+            "Active, configured and selected output backend/device disagree");
+}
+static void CheckRouteCall(const AudioInstance& instance, int backend, const QString& device,
+                           int previousBackend, const QString& previousDevice)
+{
+    Require(!instance.calls.empty(), "Output tuple was not applied");
+    const auto& call = instance.calls.back();
+    Require(call.backend == backend && call.device == device && call.backendBefore == previousBackend &&
+            call.deviceBefore == previousDevice, "Backend/device configuration changed before successful apply");
+}
+#ifdef Q_OS_WIN
+static constexpr int PreviewBackend = 1;
+static const QString PreviewDevice = "wasapi:broadcast";
+#else
+static constexpr int PreviewBackend = 0;
+static const QString PreviewDevice = "sdl:broadcast";
+#endif
 static void Scenario(const QString& name)
 {
     AudioWindow window(name == "secondary" ? 1 : 0);
     auto& instance = window.instance;
     auto& cfg = instance.global;
-    if (name == "secondary") cfg.SetInt("Audio.LowPassCutoff", 9000);
+    if (name == "secondary")
+    {
+        cfg.SetInt("Audio.LowPassCutoff", 9000);
+        cfg.SetInt("Audio.OutputBackend", PreviewBackend);
+        cfg.SetQString("Audio.OutputDevice", PreviewDevice);
+        instance.activeBackend = PreviewBackend;
+        instance.activeDevice = PreviewDevice;
+    }
+    if (name == "output-unavailable")
+    {
+        cfg.SetInt("Audio.OutputBackend", 1);
+        cfg.SetQString("Audio.OutputDevice", "removed:endpoint");
+        instance.activeBackend = 1;
+        instance.activeDevice = instance.failDevice = "removed:endpoint";
+    }
     auto dialog = Open(window);
 
     if (name == "filter-cancel")
@@ -220,7 +293,7 @@ static void Scenario(const QString& name)
         if (name == "buffer-cancel-failure")
         {
             instance.failBuffer = 512;
-            ExpectedWarning warning(*dialog, "The previous output buffer could not be restored.");
+            ExpectedWarning warning(*dialog, "The previous audio output could not be restored.");
             Finish(*dialog, QDialogButtonBox::Cancel);
             warning.Check();
             Require(instance.activeBuffer == 64 && cfg.GetInt("Audio.BufferSize") == 64,
@@ -251,7 +324,7 @@ static void Scenario(const QString& name)
         instance.failBuffer = 32;
         SelectBuffer(*dialog, 32);
         {
-            ExpectedWarning warning(*dialog, "The requested output buffer could not be applied.");
+            ExpectedWarning warning(*dialog, "The requested audio output could not be applied.");
             Click(Widget<QPushButton>(*dialog, "btnApplyBuffer"));
             warning.Check();
         }
@@ -261,7 +334,7 @@ static void Scenario(const QString& name)
                 "Failed Preview did not restore the successful choice and keep the dialog open");
         SelectBuffer(*dialog, 32);
         {
-            ExpectedWarning warning(*dialog, "The requested output buffer could not be applied.");
+            ExpectedWarning warning(*dialog, "The requested audio output could not be applied.");
             Finish(*dialog, QDialogButtonBox::Ok);
             warning.Check();
         }
@@ -279,7 +352,7 @@ static void Scenario(const QString& name)
                 "Non-power-of-two preference did not display the rounded buffer choice");
         SelectBuffer(*dialog, 32);
         {
-            ExpectedWarning warning(*dialog, "The requested output buffer could not be applied.");
+            ExpectedWarning warning(*dialog, "The requested audio output could not be applied.");
             Click(Widget<QPushButton>(*dialog, "btnApplyBuffer"));
             warning.Check();
         }
@@ -293,21 +366,129 @@ static void Scenario(const QString& name)
         Require(instance.calls.size() == 1 && cfg.GetInt("Audio.BufferSize") == 33,
                 "Cancel unnecessarily reconfigured the unchanged non-power-of-two preference");
     }
+    else if (name == "output-preview-cancel")
+    {
+        // Keep the buffer unchanged: Cancel must notice backend/device-only
+        // changes, not just compare the original frame count.
+        SelectOutput(*dialog, 512, PreviewBackend, PreviewDevice);
+        Require(instance.calls.empty() && cfg.GetInt("Audio.OutputBackend") == 0 &&
+                cfg.GetQString("Audio.OutputDevice").isEmpty(),
+                "Selecting a backend/device opened output or changed configuration before Preview");
+        Click(Widget<QPushButton>(*dialog, "btnApplyBuffer"));
+        CheckCall(instance, 1, 512, 512);
+        CheckOutput(*dialog, instance, 512);
+        CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
+        CheckRouteCall(instance, PreviewBackend, PreviewDevice, 0, {});
+        const QString capture = qEnvironmentVariable("MELONDS_AUDIO_UI_CAPTURE");
+        if (!capture.isEmpty()) Require(dialog->grab().save(capture), "Could not capture the output selection");
+        Finish(*dialog, QDialogButtonBox::Cancel);
+        CheckCall(instance, 2, 512, 512);
+        CheckRouteCall(instance, 0, {}, PreviewBackend, PreviewDevice);
+        Require(instance.activeBuffer == 512 && cfg.GetInt("Audio.BufferSize") == 512,
+                "Cancel did not restore the original tuple's buffer");
+        ReadBack(512);
+
+        dialog = Open(window);
+        CheckRoute(*dialog, instance, 0, {});
+        SelectOutput(*dialog, 32, PreviewBackend, PreviewDevice);
+        Require(instance.calls.size() == 2, "Selecting a new output reopened it before OK");
+        Finish(*dialog, QDialogButtonBox::Ok);
+        CheckCall(instance, 3, 32, 512);
+        CheckRouteCall(instance, PreviewBackend, PreviewDevice, 0, {});
+        CheckOutput(*dialog, instance, 32);
+        CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
+        ReadBack(32, PreviewBackend, PreviewDevice);
+    }
+    else if (name == "output-failure")
+    {
+        SelectOutput(*dialog, 64, PreviewBackend, PreviewDevice);
+        Preview64(*dialog, instance);
+        SelectOutput(*dialog, 32, 0, "sdl:speakers");
+        instance.failBuffer = 32;
+        {
+            ExpectedWarning warning(*dialog, "The requested audio output could not be applied.");
+            Click(Widget<QPushButton>(*dialog, "btnApplyBuffer"));
+            warning.Check();
+        }
+        CheckCall(instance, 2, 32, 64);
+        CheckRouteCall(instance, 0, "sdl:speakers", PreviewBackend, PreviewDevice);
+        CheckOutput(*dialog, instance, 64);
+        CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
+        Require(Widget<QComboBox>(*dialog, "cbBufferSize")->currentData().toInt() == 64,
+                "Failed tuple apply did not restore the last successful buffer choice");
+        instance.failBuffer = 512;
+        {
+            ExpectedWarning warning(*dialog, "The previous audio output could not be restored.");
+            Finish(*dialog, QDialogButtonBox::Cancel);
+            warning.Check();
+        }
+        CheckCall(instance, 3, 512, 64);
+        CheckRouteCall(instance, 0, {}, PreviewBackend, PreviewDevice);
+        CheckOutput(*dialog, instance, 64);
+        CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
+        ReadBack(512); // A failed rollback keeps the live success without saving a canceled draft.
+    }
+    else if (name == "output-unavailable")
+    {
+        auto* backends = Widget<QComboBox>(*dialog, "cbOutputBackend");
+#ifndef Q_OS_WIN
+        Require(!(backends->model()->flags(backends->model()->index(backends->currentIndex(), 0)) & Qt::ItemIsEnabled),
+                "Saved unsupported backend was offered as an available backend");
+#endif
+        Require(backends->currentData().toInt() == 1 && instance.calls.empty() &&
+                Widget<QComboBox>(*dialog, "cbOutputDevice")->currentText().contains("unavailable", Qt::CaseInsensitive),
+                "Opening settings silently replaced an unavailable saved output");
+        CheckRoute(*dialog, instance, 1, "removed:endpoint");
+        SelectBuffer(*dialog, 64);
+        {
+            ExpectedWarning warning(*dialog, "The requested audio output could not be applied.");
+            Click(Widget<QPushButton>(*dialog, "btnApplyBuffer"));
+            warning.Check();
+        }
+        CheckCall(instance, 1, 64, 512);
+        CheckRouteCall(instance, 1, "removed:endpoint", 1, "removed:endpoint");
+        CheckOutput(*dialog, instance, 512);
+        CheckRoute(*dialog, instance, 1, "removed:endpoint");
+        Finish(*dialog, QDialogButtonBox::Cancel);
+
+        AudioInstance::enumerationFails = true;
+        dialog = Open(window);
+        Require(instance.calls.size() == 1 && Widget<QLabel>(*dialog, "lblOutputDeviceStatus")->isVisible() &&
+                Widget<QLabel>(*dialog, "lblOutputDeviceStatus")->text().contains("simulated enumeration failure"),
+                "Device enumeration failure was hidden or caused an output reopen");
+        CheckRoute(*dialog, instance, 1, "removed:endpoint");
+        AudioInstance::enumerationFails = false;
+        {
+            ExpectedWarning warning(*dialog, "The requested audio output could not be applied.");
+            Finish(*dialog, QDialogButtonBox::Ok);
+            warning.Check();
+        }
+        CheckCall(instance, 2, 512, 512);
+        CheckRoute(*dialog, instance, 1, "removed:endpoint");
+        ReadBack(512, 1, "removed:endpoint");
+    }
     else if (name == "secondary")
     {
         auto* combo = Widget<QComboBox>(*dialog, "cbBufferSize");
         auto* preview = Widget<QPushButton>(*dialog, "btnApplyBuffer");
         auto* filter = Widget<QCheckBox>(*dialog, "chkLowPass");
         auto* cutoff = Widget<QSpinBox>(*dialog, "sbLowPassCutoff");
-        Require(!combo->isEnabled() && !preview->isEnabled() && !filter->isEnabled() && !cutoff->isEnabled(),
+        auto* backends = Widget<QComboBox>(*dialog, "cbOutputBackend");
+        auto* devices = Widget<QComboBox>(*dialog, "cbOutputDevice");
+        Require(!combo->isEnabled() && !preview->isEnabled() && !filter->isEnabled() && !cutoff->isEnabled() &&
+                !backends->isEnabled() && !devices->isEnabled(),
                 "Secondary instance exposes shared output/filter controls");
         QTest::keyClick(combo, Qt::Key_Up);
         Click(preview); Click(filter);
         QTest::keyClick(cutoff, Qt::Key_Down);
+        QTest::keyClick(backends, Qt::Key_Up);
+        QTest::keyClick(devices, Qt::Key_Up);
         Finish(*dialog, QDialogButtonBox::Ok);
         Require(instance.calls.empty() && cfg.GetInt("Audio.BufferSize") == 512 &&
                 cfg.GetInt("Audio.LowPassCutoff") == 9000,
                 "Secondary instance changed global output/filter settings through UI or OK");
+        CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
+        ReadBack(512, PreviewBackend, PreviewDevice);
     }
     else throw std::runtime_error("Unknown AudioSettingsUI scenario");
 }
@@ -324,14 +505,19 @@ int main(int argc, char** argv)
     watchdog.setSingleShot(true); watchdog.start(15000);
     try
     {
-        if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "readback")
+        if (argc == 6 && QString::fromLocal8Bit(argv[1]) == "readback")
         {
             configDirectory = QString::fromLocal8Bit(argv[2]);
             const int frames = QString::fromLocal8Bit(argv[3]).toInt();
+            const int backend = QString::fromLocal8Bit(argv[4]).toInt();
+            const QString device = QString::fromLocal8Bit(argv[5]);
             Require(Config::Load(), "Fresh process could not load the generated configuration");
-            Require(Config::GetGlobalTable().GetInt("Audio.BufferSize") == frames,
-                    "Saved buffer was absent or changed during fresh Config::Load");
-            std::printf("Fresh Config::Load: Audio.BufferSize=%d PASS\n", frames);
+            auto cfg = Config::GetGlobalTable();
+            Require(cfg.GetInt("Audio.BufferSize") == frames && cfg.GetInt("Audio.OutputBackend") == backend &&
+                    cfg.GetQString("Audio.OutputDevice") == device,
+                    "Saved output tuple was absent or changed during fresh Config::Load");
+            std::printf("Fresh Config::Load: buffer=%d backend=%d device=%s PASS\n",
+                        frames, backend, device.toUtf8().constData());
             return 0;
         }
         Require(argc == 2, "Expected one AudioSettingsUI scenario name");

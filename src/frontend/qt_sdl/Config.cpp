@@ -84,6 +84,7 @@ DefaultList<int> DefaultInts =
     {"MP.RecvTimeout", 25},
     {"Instance*.Audio.Volume", 256},
     {"Audio.BufferSize", 512},
+    {"Audio.OutputBackend", 0},
     {"Mic.InputType", 1},
     {"Mouse.HideSeconds", 5},
     {"Instance*.DSi.Battery.Level", 0xF},
@@ -102,6 +103,7 @@ RangeList IntRanges =
     {"3D.GL.ScaleFactor", {1, 16}},
     {"Audio.Interpolation", {0, 4}},
     {"Audio.BufferSize", {32, 1024}},
+    {"Audio.OutputBackend", {0, 1}},
     {"Audio.LowPassCutoff", {0, 20000}},
     {"3D.Soft.PixelConversion", {0, 3}},
     {"Instance*.Audio.Volume", {0, 256}},
@@ -143,6 +145,7 @@ DefaultList<bool> DefaultBools =
 
 DefaultList<std::string> DefaultStrings =
 {
+    {"Audio.OutputDevice",              ""},
     {"DLDI.ImagePath",                  "dldi.bin"},
     {"DSi.SD.ImagePath",                "dsisd.bin"},
     {"Instance*.Firmware.Username",     "melonDS"}
