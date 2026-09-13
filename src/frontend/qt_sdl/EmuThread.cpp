@@ -436,7 +436,9 @@ void EmuThread::run()
                 emuInstance->audioVolume = volumeLevel * (256.0 / 31.0);
             }
 
-            if (emuInstance->doAudioSync && (emuInstance->audioTimeStretchEnabled || !(fastforward || slowmo)))
+            const bool synchronizeAudio = emuInstance->doAudioSync &&
+                (emuInstance->audioTimeStretchEnabled || !(fastforward || slowmo));
+            if (synchronizeAudio)
             {
                 const auto stop = cheatStopToken();
                 emuInstance->audioSync(outputFrameSamples, stop);
@@ -447,12 +449,11 @@ void EmuThread::run()
 
             if (frametimeStep < 0.001) frametimeStep = 0.001;
 
-            // R3 releases PCM in variable-sized hops. When audio already paces
-            // this speed, a second wall-clock wait can starve its next hop.
+            // When audio already paces this speed, a second wall-clock wait
+            // delays the next producer frame and can starve device delivery.
             // Keep the FPS limit if output is unavailable or its clamped rate
             // differs from the requested speed (including slow motion).
-            const bool audioPacesFrames = emuInstance->audioTimeStretchEnabled &&
-                emuInstance->doAudioSync && outputFPS == currentFPS &&
+            const bool audioPacesFrames = synchronizeAudio && outputFPS == currentFPS &&
                 (emuInstance->audioIsRunning() || emuInstance->audioStartRequested);
             if (emuInstance->doLimitFPS && !audioPacesFrames)
             {
