@@ -97,7 +97,8 @@ endif()
 foreach(case IN ITEMS filter-cancel buffer-preview-cancel buffer-accept
         buffer-failure buffer-cancel-failure secondary
         output-preview-cancel output-failure output-unavailable
-        time-stretch-preview-cancel time-stretch-failure)
+        time-stretch-preview-cancel time-stretch-failure
+        interpolation-preview-cancel interpolation-accept interpolation-failure)
     add_test(NAME audio-settings-ui-${case} COMMAND AudioSettingsUI ${case})
     set_tests_properties(audio-settings-ui-${case} PROPERTIES TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;SDL_AUDIODRIVER=dummy")

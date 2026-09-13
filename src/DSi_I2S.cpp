@@ -151,6 +151,7 @@ void DSi_I2S::WriteSndExCnt(u16 val, u16 mask)
 
 void DSi_I2S::SampleClock(s16 output[2])
 {
+    DSi.SPU.ObserveDSPOutput(SndExCnt, nullptr);
     if (!(SndExCnt & (1<<15)))
     {
         // I2S interface disabled
@@ -167,6 +168,7 @@ void DSi_I2S::SampleClock(s16 output[2])
     DSi.DSP.SampleClock(output_dsp, mic_input);
 
     WriteMicData(mic_input);
+    DSi.SPU.ObserveDSPOutput(SndExCnt, output_dsp);
 
     if (SndExCnt & (1<<14))
     {

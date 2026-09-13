@@ -3,6 +3,10 @@ include(FixInterfaceIncludes)
 add_library(core STATIC
     ARCodeFile.cpp
     ARDatabaseDAT.cpp
+    AudioInterpolationBank.cpp
+    AudioInterpolationRenderer.cpp
+    AudioInterpolationRenderer.h
+    AudioInterpolationStream.h
     AREngine.cpp
     ARM.cpp
     ARM_InstrTable.h
@@ -85,6 +89,19 @@ add_library(core STATIC
     xxhash/xxhash.c
 
     blip-buf/blip_buf.c)
+
+# Coefficients are immutable build inputs, not filters generated during playback.
+foreach(interval IN ITEMS 352 512)
+    set(bank_input "${CMAKE_CURRENT_SOURCE_DIR}/audio_interpolation/bank-${interval}.coeff")
+    set(bank_output "${CMAKE_CURRENT_BINARY_DIR}/AudioInterpolation${interval}.cpp")
+    add_custom_command(OUTPUT "${bank_output}"
+        COMMAND "${CMAKE_COMMAND}" "-DINPUT_FILE=${bank_input}" "-DOUTPUT_FILE=${bank_output}"
+            "-DVAR_NAME=AudioInterpolation${interval}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/MakeBinaryEmbed.cmake"
+        DEPENDS "${bank_input}" "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/MakeBinaryEmbed.cmake"
+        VERBATIM)
+    target_sources(core PRIVATE "${bank_output}")
+endforeach()
 
 # Public headers use modern standard library facilities; consumers need this mode too.
 target_compile_features(core PUBLIC cxx_std_26)

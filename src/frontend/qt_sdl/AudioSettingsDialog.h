@@ -80,6 +80,7 @@ private slots:
 private:
     void populateOutputDevices(int backend, const QString& device);
     void restoreOutputSelection();
+    bool applyInterpolation(int mode, QString& error);
     bool applyOutput(int frames, int backend, const QString& device, QString& error);
     bool applyTimeStretch(bool enabled, QString& error);
 

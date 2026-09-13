@@ -45,6 +45,7 @@
 #include "MPInterface.h"
 
 #include "NDS.h"
+#include "AudioInterpolationRenderer.h"
 #include "DSi.h"
 #include "SPI.h"
 #include "RTC.h"
@@ -1522,19 +1523,27 @@ bool EmuInstance::updateConsole(bool directBoot) noexcept
     }
 
     std::unique_ptr<NDS> replacement;
-    if (!nds || requestedType != nds->ConsoleType)
+    std::unique_ptr<AudioInterpolationRenderer> preparedInterpolation;
+    try
     {
-        try
+        if (!nds || requestedType != nds->ConsoleType)
         {
             if (requestedType == 1)
                 replacement = std::make_unique<DSi>(std::move(dsiargs.value()), this);
             else
                 replacement = std::make_unique<NDS>(std::move(ndsargs), this);
         }
-        catch (const std::bad_alloc&)
+        else if (args->Interpolation == AudioInterpolation::MinimumPhase &&
+                 nds->SPU.GetInterpolation() != AudioInterpolation::MinimumPhase)
         {
-            return false;
+            // Finish all fallible preparation before changing the current console.
+            preparedInterpolation = AudioInterpolationRenderer::Prepare();
         }
+    }
+    catch (const std::exception& failure)
+    {
+        Log(LogLevel::Error, "Console preparation failed: %s\n", failure.what());
+        return false;
     }
 
     QMutexLocker lock(&renderLock);
@@ -1566,7 +1575,10 @@ bool EmuInstance::updateConsole(bool directBoot) noexcept
         nds->SetFirmware(std::move(args->Firmware));
         nds->SetJITArgs(args->JIT);
         nds->SetGdbArgs(args->GDB);
-        nds->SPU.SetInterpolation(args->Interpolation);
+        if (preparedInterpolation)
+            nds->SPU.SetInterpolationRenderer(std::move(preparedInterpolation));
+        else
+            nds->SPU.SetInterpolation(args->Interpolation);
         nds->SPU.SetDegrade10Bit(args->BitDepth);
 
         if (consoleType == 1)

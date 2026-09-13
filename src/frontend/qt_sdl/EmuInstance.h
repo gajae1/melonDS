@@ -98,6 +98,7 @@ public:
     int getConsoleType() { return consoleType; }
     EmuThread* getEmuThread() { return emuThread; }
     QString audioOutputDescription() const;
+    bool changeAudioInterpolation(int mode, QString& error);
     bool changeAudioBuffer(int frames, QString& error);
     bool changeAudioOutput(int frames, int backend, const QString& device, QString& error);
     bool changeAudioTimeStretch(bool enabled, QString& error);

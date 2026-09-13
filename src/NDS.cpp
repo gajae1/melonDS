@@ -76,7 +76,7 @@ const s32 kIterationCycleMargin = 8;
 
 thread_local NDS* NDS::Current = nullptr;
 
-NDS::NDS() noexcept :
+NDS::NDS() :
     NDS(
         NDSArgs {
             std::make_unique<ARM9BIOSImage>(FreeBIOSGetNtrArm9()),
@@ -87,7 +87,7 @@ NDS::NDS() noexcept :
 {
 }
 
-NDS::NDS(NDSArgs&& args, int type, void* userdata) noexcept :
+NDS::NDS(NDSArgs&& args, int type, void* userdata) :
     ConsoleType(type),
     UserData(userdata),
     ARM7BIOS(*args.ARM7BIOS),

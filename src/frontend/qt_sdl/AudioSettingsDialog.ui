@@ -36,6 +36,14 @@
       <string>Audio output</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_2">
+      <item row="12" column="0" colspan="3">
+       <widget class="QLabel" name="lblInterpolationInfo">
+        <property name="text"><string>High-quality interpolation uses extra CPU and memory and adds processing delay. It changes the sound from DS hardware.</string></property>
+        <property name="textFormat"><enum>Qt::PlainText</enum></property>
+        <property name="wordWrap"><bool>true</bool></property>
+        <property name="visible"><bool>false</bool></property>
+       </widget>
+      </item>
       <item row="11" column="0" colspan="3">
        <widget class="QCheckBox" name="chkTimeStretch">
         <property name="text"><string>Preserve pitch when changing speed (adds latency)</string></property>

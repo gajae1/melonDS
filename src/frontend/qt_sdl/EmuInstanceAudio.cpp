@@ -18,6 +18,7 @@
 
 #include <bit>
 #include <cstring>
+#include <exception>
 #include "Config.h"
 #include "NDS.h"
 #include "SPU.h"
@@ -183,6 +184,31 @@ bool EmuInstance::changeAudioOutput(int frames, int backend, const QString& devi
     const bool applied = audioSetOutput(settings, detail);
     emuThread->emuUnpause(false);
     error = QString::fromStdString(detail);
+    return applied;
+}
+
+bool EmuInstance::changeAudioInterpolation(int mode, QString& error)
+{
+    error.clear();
+    if (mode < 0 || mode > int(AudioInterpolation::MinimumPhase))
+    {
+        error = QObject::tr("Unknown interpolation mode");
+        return false;
+    }
+    if (!nds || nds->SPU.GetInterpolation() == static_cast<AudioInterpolation>(mode)) return true;
+    emuThread->emuPause(false);
+    audioDevice.Stop();
+    bool applied = false;
+    try
+    {
+        nds->SPU.SetInterpolation(static_cast<AudioInterpolation>(mode));
+        applied = true;
+    }
+    catch (const std::exception& failure)
+    {
+        error = QString::fromUtf8(failure.what());
+    }
+    emuThread->emuUnpause(false);
     return applied;
 }
 

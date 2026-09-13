@@ -21,6 +21,7 @@
 
 #include "Savestate.h"
 #include "Platform.h"
+#include <memory>
 
 struct blip_t;
 
@@ -29,6 +30,8 @@ namespace melonDS
 
 class NDS;
 class SPU;
+class DSi_I2S;
+class AudioInterpolationRenderer;
 
 enum class AudioSampleRate
 {
@@ -49,7 +52,8 @@ enum class AudioInterpolation
     Linear,
     Cosine,
     Cubic,
-    SNESGaussian
+    SNESGaussian,
+    MinimumPhase
 };
 
 class SPUChannel
@@ -249,8 +253,17 @@ public:
 
     void SetSampleRate(AudioSampleRate rate);
 
-    // 0=none 1=linear 2=cosine 3=cubic
+    // MinimumPhase prepares its renderer before changing the active mode and
+    // may throw. Call between frames with output stopped for live UI changes.
     void SetInterpolation(AudioInterpolation type);
+    AudioInterpolation GetInterpolation() const;
+
+    // Prepare the renderer/banks before entering the audio processing path.
+    // Ownership and all mutable history belong to this SPU. Call on its
+    // emulation thread, or while it is paused and output is stopped; nullptr
+    // returns to the existing interpolation path.
+    // This host-only state is intentionally excluded from savestates.
+    void SetInterpolationRenderer(std::unique_ptr<AudioInterpolationRenderer> renderer);
 
     void SetBias(u16 bias);
     void SetDegrade10Bit(bool enable);
@@ -278,6 +291,11 @@ public:
     void Write32(u32 addr, u32 val);
 
 private:
+    friend class SPUChannel;
+    friend class DSi_I2S;
+    void ObserveDSPOutput(u16 control, const s16* samples);
+    std::unique_ptr<AudioInterpolationRenderer> InterpolationRenderer;
+
     u32 OutputBufferSize = 0;
     double OutputSampleRate;
     double OutputSkew = 1.0;

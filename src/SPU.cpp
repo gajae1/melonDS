@@ -28,6 +28,7 @@
 
 #include "blip-buf/blip_buf.h"
 
+#include "AudioInterpolationRenderer.h"
 #define INTERNAL_SAMPLE_RATE 16756991.f
 
 namespace melonDS
@@ -181,6 +182,8 @@ const std::array<s16, 0x200> InterpSNESGauss = {
 };
 
 SPU::SPU(melonDS::NDS& nds, AudioBitDepth bitdepth, AudioInterpolation interpolation, double outputSampleRate) :
+    InterpolationRenderer(interpolation == AudioInterpolation::MinimumPhase
+        ? AudioInterpolationRenderer::Prepare() : nullptr),
     NDS(nds),
     Channels {
         SPUChannel(0, nds, interpolation),
@@ -253,6 +256,7 @@ void SPU::Reset()
     Capture[0].Reset();
     Capture[1].Reset();
 
+    if (auto* quality = InterpolationRenderer.get()) quality->Reset();
     NDS.ScheduleEvent(Event_SPU, false, 1024, 0, 0);
 }
 
@@ -268,6 +272,7 @@ void SPU::Stop()
     OutputBufferReadPos = 0;
     OutputBufferWritePos = 0;
     Platform::Mutex_Unlock(AudioLock);
+    if (auto* quality = InterpolationRenderer.get()) { quality->Reset(); quality->LastOutput = {}; }
 }
 
 void SPU::ResetOutputHistory()
@@ -279,6 +284,7 @@ void SPU::ResetOutputHistory()
     // resampler without changing that serialized sample or the guest clock.
     blip_add_delta(BlipLeft, 0, OutputLastSamples[0]);
     blip_add_delta(BlipRight, 0, OutputLastSamples[1]);
+    if (auto* quality = InterpolationRenderer.get()) quality->LastOutput = {OutputLastSamples[0], OutputLastSamples[1]};
 }
 
 void SPU::PrepareSavestate(Savestate* file) const
@@ -336,15 +342,53 @@ void SPU::SetSampleRate(AudioSampleRate rate)
         MixInterval = 1024;
     }
 
-    // The host resampler retains its integrator across a guest clock change.
-    // Keep its last submitted sample as the baseline for the next delta.
+    // Preserve the last submitted sample across a guest rate change.
 }
 
 
+AudioInterpolation SPU::GetInterpolation() const
+{
+    return InterpolationRenderer ? AudioInterpolation::MinimumPhase : Channels[0].InterpType;
+}
+
 void SPU::SetInterpolation(AudioInterpolation type)
 {
+    if (GetInterpolation() == type) return;
+    if (type == AudioInterpolation::MinimumPhase)
+    {
+        SetInterpolationRenderer(AudioInterpolationRenderer::Prepare());
+        return;
+    }
+    SetInterpolationRenderer(nullptr);
     for (SPUChannel& channel : Channels)
         channel.InterpType = type;
+}
+
+void SPU::SetInterpolationRenderer(std::unique_ptr<AudioInterpolationRenderer> renderer)
+{
+    // Returning to the legacy path must keep its delta baseline paired with
+    // the still-live blip integrator. Do not flush queued PCM during a switch.
+    if (InterpolationRenderer)
+    {
+        blip_add_delta(BlipLeft, BlipTimer,
+            int(OutputLastSamples[0]) - InterpolationRenderer->LastOutput[0]);
+        blip_add_delta(BlipRight, BlipTimer,
+            int(OutputLastSamples[1]) - InterpolationRenderer->LastOutput[1]);
+    }
+    if (renderer)
+    {
+        renderer->Reset();
+        renderer->LastOutput = {OutputLastSamples[0], OutputLastSamples[1]};
+        // Decode and capture retain the unfiltered hardware path; only the
+        // final host output uses the prepared reconstruction.
+        for (auto& channel : Channels) channel.InterpType = AudioInterpolation::None;
+    }
+    InterpolationRenderer = std::move(renderer);
+}
+
+void SPU::ObserveDSPOutput(u16 control, const s16* samples)
+{
+    if (InterpolationRenderer) InterpolationRenderer->ObserveI2S(control, samples);
 }
 
 void SPU::SetBias(u16 bias)
@@ -381,7 +425,7 @@ void SPU::SetDegrade10Bit(AudioBitDepth depth)
 SPUChannel::SPUChannel(u32 num, melonDS::NDS& nds, AudioInterpolation interpolation) :
     NDS(nds),
     Num(num),
-    InterpType(interpolation)
+    InterpType(interpolation == AudioInterpolation::MinimumPhase ? AudioInterpolation::None : interpolation)
 {
 }
 
@@ -693,6 +737,7 @@ void SPUChannel::NextSample_Noise()
 template<u32 type>
 s32 SPUChannel::Run(u32 cycles)
 {
+    auto* quality = NDS.SPU.InterpolationRenderer.get();
     // Busy clears at the BEGIN of the last one-shot sample period. Continue
     // that period, HOLD and interpolation without reading further samples.
     // https://problemkaputt.de/gbatek.htm#dssoundnotes
@@ -705,6 +750,7 @@ s32 SPUChannel::Run(u32 cycles)
     if (KeyOn)
     {
         Start();
+        if (quality) quality->Observe(*this, quality->End()-cycles);
         KeyOn = false;
     }
 
@@ -714,6 +760,7 @@ s32 SPUChannel::Run(u32 cycles)
 
     while (Timer >> 16)
     {
+        const u64 point = quality ? quality->End()-(Timer-0x10000) : 0;
         Timer = TimerReload + (Timer - 0x10000);
 
         // for optional interpolation: save previous samples
@@ -729,6 +776,7 @@ s32 SPUChannel::Run(u32 cycles)
         if (!(Cnt & (1<<31)))
         {
             if (!(Cnt & (1<<15))) CurSample = 0;
+            if (quality) quality->Observe(*this, point);
             continue;
         }
 
@@ -740,6 +788,7 @@ s32 SPUChannel::Run(u32 cycles)
         case 3: NextSample_PSG(); break;
         case 4: NextSample_Noise(); break;
         }
+        if (quality) quality->Observe(*this, point);
 
     }
 
@@ -943,6 +992,8 @@ static s32 GetCaptureSample(u8 cnt, s32 mixer, s32 channel, s32 other)
 
 void SPU::Mix(u32 spucycles)
 {
+    auto* quality = InterpolationRenderer.get();
+    if (quality) quality->Begin(spucycles, MixInterval >> 1, Channels.data(), Cnt, MasterVolume, Mute);
     s32 left = 0, right = 0;
     s32 leftoutput = 0, rightoutput = 0;
 
@@ -1035,6 +1086,7 @@ void SPU::Mix(u32 spucycles)
         }
     }
 
+    if (quality) quality->Finish(Channels.data());
     leftoutput = ((s64)leftoutput * MasterVolume) >> 7;
     rightoutput = ((s64)rightoutput * MasterVolume) >> 7;
 
@@ -1078,13 +1130,22 @@ void SPU::Mix(u32 spucycles)
         output[1] &= 0xFFC0;
     }
 
+    std::array<s16,2> reconstructed;
+    s16* delivered = output;
+    s16* previous = OutputLastSamples;
+    if (quality)
+    {
+        reconstructed = quality->Output(ApplyBias, Bias, Mute, NDS.ConsoleType == 1, Degrade10Bit);
+        delivered = reconstructed.data(); previous = quality->LastOutput.data();
+    }
     BlipTimer += spucycles;
 
-    if (output[0] != OutputLastSamples[0])
-        blip_add_delta(BlipLeft, BlipTimer, (int) output[0] - OutputLastSamples[0]);
-    if (output[1] != OutputLastSamples[1])
-        blip_add_delta(BlipRight, BlipTimer, (int) output[1] - OutputLastSamples[1]);
+    if (delivered[0] != previous[0])
+        blip_add_delta(BlipLeft, BlipTimer, (int) delivered[0] - previous[0]);
+    if (delivered[1] != previous[1])
+        blip_add_delta(BlipRight, BlipTimer, (int) delivered[1] - previous[1]);
 
+    previous[0] = delivered[0]; previous[1] = delivered[1];
     OutputLastSamples[0] = output[0];
     OutputLastSamples[1] = output[1];
 

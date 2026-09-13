@@ -65,7 +65,12 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     ui->cbInterpolation->addItem("Cosine");
     ui->cbInterpolation->addItem("Cubic");
     ui->cbInterpolation->addItem("Gaussian (SNES)");
-    ui->cbInterpolation->setCurrentIndex(oldInterp);
+    ui->cbInterpolation->addItem(tr("Minimum-phase (high quality)"));
+    {
+        const QSignalBlocker blocker(ui->cbInterpolation);
+        ui->cbInterpolation->setCurrentIndex(oldInterp);
+    }
+    ui->lblInterpolationInfo->setVisible(oldInterp == int(AudioInterpolation::MinimumPhase));
 
     ui->cbBitDepth->addItem("Automatic");
     ui->cbBitDepth->addItem("10-bit");
@@ -240,7 +245,10 @@ void AudioSettingsDialog::on_AudioSettingsDialog_rejected()
 
     auto& cfg = emuInstance->getGlobalConfig();
     auto& instcfg = emuInstance->getLocalConfig();
-    cfg.SetInt("Audio.Interpolation", oldInterp);
+    QString interpolationError;
+    if (!applyInterpolation(oldInterp, interpolationError))
+        QMessageBox::warning(this, tr("Audio output"),
+            tr("The previous interpolation mode could not be restored.\n%1").arg(interpolationError));
     cfg.SetInt("Audio.BitDepth", oldBitDepth);
     cfg.SetInt("Audio.LowPassCutoff", oldLowPassCutoff);
     if (cfg.GetInt("Audio.BufferSize") != oldBufferSize ||
@@ -282,12 +290,17 @@ void AudioSettingsDialog::on_cbBitDepth_currentIndexChanged(int idx)
 void AudioSettingsDialog::on_cbInterpolation_currentIndexChanged(int idx)
 {
     // prevent a spurious change
-    if (ui->cbInterpolation->count() < 5) return;
+    if (ui->cbInterpolation->count() < 6) return;
 
-    auto& cfg = emuInstance->getGlobalConfig();
-    cfg.SetInt("Audio.Interpolation", ui->cbInterpolation->currentIndex());
-
-    emit updateAudioSettings();
+    QString error;
+    if (!applyInterpolation(idx, error))
+    {
+        const QSignalBlocker blocker(ui->cbInterpolation);
+        ui->cbInterpolation->setCurrentIndex(emuInstance->getGlobalConfig().GetInt("Audio.Interpolation"));
+        QMessageBox::warning(this, tr("Audio output"),
+            tr("The requested interpolation mode could not be applied.\n%1").arg(error));
+    }
+    ui->lblInterpolationInfo->setVisible(ui->cbInterpolation->currentIndex() == int(AudioInterpolation::MinimumPhase));
 }
 
 void AudioSettingsDialog::on_slVolume_valueChanged(int val)
@@ -395,6 +408,15 @@ void AudioSettingsDialog::on_cbOutputBackend_currentIndexChanged(int idx)
     // restores its saved ID, including an unavailable one.
     populateOutputDevices(backend, backend == cfg.GetInt("Audio.OutputBackend")
         ? cfg.GetQString("Audio.OutputDevice") : QString());
+}
+
+bool AudioSettingsDialog::applyInterpolation(int mode, QString& error)
+{
+    auto& cfg = emuInstance->getGlobalConfig();
+    if (cfg.GetInt("Audio.Interpolation") == mode) return true;
+    if (!emuInstance->changeAudioInterpolation(mode, error)) return false;
+    cfg.SetInt("Audio.Interpolation", mode);
+    return true;
 }
 
 bool AudioSettingsDialog::applyOutput(int frames, int backend, const QString& device, QString& error)

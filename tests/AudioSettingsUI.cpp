@@ -24,6 +24,9 @@ struct AudioInstance
     Config::Table global = Config::GetGlobalTable();
     Config::Table local;
     int instanceID;
+    int activeInterpolation = 0;
+    int failInterpolation = -1;
+    std::vector<int> interpolationCalls;
     int activeBuffer = 512;
     int activeBackend = 0;
     QString activeDevice;
@@ -67,6 +70,17 @@ struct AudioInstance
         activeBuffer = frames;
         activeBackend = backend;
         activeDevice = device;
+        return true;
+    }
+    bool changeAudioInterpolation(int mode, QString& error)
+    {
+        interpolationCalls.push_back(mode);
+        if (mode == failInterpolation)
+        {
+            error = "AudioSettingsUI simulated interpolation failure";
+            return false;
+        }
+        activeInterpolation = mode;
         return true;
     }
     bool changeAudioTimeStretch(bool enabled, QString& error)
@@ -301,6 +315,11 @@ static void Scenario(const QString& name)
         cfg.SetQString("Audio.OutputDevice", "removed:endpoint");
         instance.activeBackend = 1;
         instance.activeDevice = instance.failDevice = "removed:endpoint";
+    }
+    if (name.startsWith("interpolation-"))
+    {
+        cfg.SetInt("Audio.Interpolation", 3);
+        instance.activeInterpolation = 3;
     }
     auto dialog = Open(window);
 
@@ -633,6 +652,45 @@ static void Scenario(const QString& name)
         CheckRoute(*dialog, instance, PreviewBackend, PreviewDevice);
         CheckTimeStretch(*dialog, instance, true, 0);
         ReadBack(512, PreviewBackend, PreviewDevice, true);
+    }
+    else if (name.startsWith("interpolation-"))
+    {
+        auto* interpolation = Widget<QComboBox>(*dialog, "cbInterpolation");
+        auto* description = Widget<QLabel>(*dialog, "lblInterpolationInfo");
+        Require(interpolation->count() == 6 && interpolation->currentIndex() == 3,
+                "Interpolation choices or existing selection changed");
+        if (name == "interpolation-failure")
+        {
+            instance.failInterpolation = 5;
+            ExpectedWarning warning(*dialog, "The requested interpolation mode could not be applied.",
+                                    "AudioSettingsUI simulated interpolation failure");
+            interpolation->setCurrentIndex(5);
+            warning.Check();
+            Require(interpolation->currentIndex() == 3 && instance.activeInterpolation == 3 &&
+                    cfg.GetInt("Audio.Interpolation") == 3 && description->isHidden(),
+                    "Failed preparation changed the configured or active interpolation");
+            instance.failInterpolation = -1;
+        }
+        interpolation->setCurrentIndex(5);
+        Require(cfg.GetInt("Audio.Interpolation") == 5 && instance.activeInterpolation == 5 &&
+                !description->isHidden(), "High-quality interpolation preview or delay notice missing");
+        const auto count = instance.interpolationCalls.size();
+        Widget<QComboBox>(*dialog, "cbBitDepth")->setCurrentIndex(2);
+        Require(instance.interpolationCalls.size() == count, "Unrelated setting rebuilt interpolation");
+        if (name == "interpolation-accept")
+        {
+            Finish(*dialog, QDialogButtonBox::Ok);
+            Config::GetGlobalTable().SetInt("Audio.Interpolation", 0);
+            Require(Config::Load(), "Could not reload saved interpolation");
+            Require(Config::GetGlobalTable().GetInt("Audio.Interpolation") == 5,
+                    "Saved high-quality mode did not survive config reload");
+        }
+        else
+        {
+            Finish(*dialog, QDialogButtonBox::Cancel);
+            Require(cfg.GetInt("Audio.Interpolation") == 3 && instance.activeInterpolation == 3,
+                    "Cancel did not restore the prior interpolation");
+        }
     }
     else throw std::runtime_error("Unknown AudioSettingsUI scenario");
 }

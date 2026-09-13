@@ -18,6 +18,7 @@
 #include <QSaveFile>
 #include <QTemporaryDir>
 #include "NDS.h"
+#include "AudioInterpolationRenderer.h"
 #include "DSi.h"
 #include "NDS_Header.h"
 #include "NDSCart/CartRetail.h"

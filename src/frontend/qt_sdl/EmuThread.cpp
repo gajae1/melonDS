@@ -867,7 +867,11 @@ void EmuThread::handleMessages()
             const auto settings = msg.param.toList();
             if (emuInstance->nds)
             {
-                emuInstance->nds->SPU.SetInterpolation(static_cast<AudioInterpolation>(settings[0].toInt()));
+                // The dialog prepares the high-quality mode with output stopped.
+                // Unrelated filter/microphone edits must not allocate or reset it.
+                const auto interpolation = static_cast<AudioInterpolation>(settings[0].toInt());
+                if (interpolation != AudioInterpolation::MinimumPhase)
+                    emuInstance->nds->SPU.SetInterpolation(interpolation);
                 emuInstance->nds->SPU.SetDegrade10Bit(static_cast<AudioBitDepth>(settings[1].toInt()));
             }
             if (settings[2].toBool()) emuInstance->audioUpdateSettings();

@@ -564,8 +564,8 @@ protected:
     u32 RunFrame();
 
 public:
-    NDS(NDSArgs&& args, void* userdata = nullptr) noexcept : NDS(std::move(args), 0, userdata) {}
-    NDS() noexcept;
+    NDS(NDSArgs&& args, void* userdata = nullptr) : NDS(std::move(args), 0, userdata) {}
+    NDS();
     virtual ~NDS() noexcept;
     NDS(const NDS&) = delete;
     NDS& operator=(const NDS&) = delete;
@@ -574,7 +574,7 @@ public:
 
     static thread_local NDS* Current;
 protected:
-    explicit NDS(NDSArgs&& args, int type, void* userdata) noexcept;
+    explicit NDS(NDSArgs&& args, int type, void* userdata);
     virtual u32 GetSavestateConfig();
     virtual void DoSavestateExtra(Savestate* file) {}
 };
