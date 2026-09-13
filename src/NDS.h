@@ -83,6 +83,10 @@ enum
     Event_DSi_Cart1Power,
     Event_DSi_Cart2Power,
 
+    // Appended in state14.10; older states retain their 25-event layout.
+    Event_CartSave,
+    Event_DSi_Cart2Save,
+
     Event_MAX
 };
 
@@ -427,6 +431,8 @@ public: // TODO: Encapsulate the rest of these members
     void RegisterEventFuncs(u32 id, void* that, const EventFuncList& funcs);
     void UnregisterEventFuncs(u32 id);
     void ScheduleEvent(u32 id, bool periodic, s32 delay, u32 funcid, u32 param);
+    void ScheduleEventAt(u32 id, u64 timestamp, u32 funcid, u32 param);
+    bool EventScheduled(u32 id) const { return (SchedListMask & (1u << id)) != 0; }
     void CancelEvent(u32 id);
 
     void debug(u32 p);

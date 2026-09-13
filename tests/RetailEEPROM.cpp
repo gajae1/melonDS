@@ -135,11 +135,33 @@ static void Send(CartRetail& cart, std::initializer_list<u8> bytes)
     for (u8 byte : bytes) cart.SPITransmitReceive(byte);
 }
 
+static void CompleteChip(CartRetail& cart)
+{
+#if SAVESTATE_MAX_MINOR >= 10
+    cart.CompleteSave();
+#endif
+}
+static u32 ChipDelay(const CartRetail& cart)
+{
+#if SAVESTATE_MAX_MINOR >= 10
+    return cart.GetSaveDelay();
+#else
+    return 0;
+#endif
+}
+// Existing chip-only cases inspect the completed transaction. Actual deadline
+// delivery belongs to the real scheduler tests in CartSPI.
+static void ReleaseAndComplete(CartRetail& cart)
+{
+    cart.SPIRelease();
+    CompleteChip(cart);
+}
+
 static void Command(CartRetail& cart, u8 command)
 {
     cart.SPISelect();
     cart.SPITransmitReceive(command);
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
 }
 
 static u8 Status(CartRetail& cart)
@@ -147,7 +169,7 @@ static u8 Status(CartRetail& cart)
     cart.SPISelect();
     cart.SPITransmitReceive(0x05);
     const u8 result = cart.SPITransmitReceive(0);
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
     return result;
 }
 
@@ -163,7 +185,7 @@ static void CheckRead(CartRetail& cart, u16 addr, std::initializer_list<u8> expe
     Send(cart, {u8(addr >= 0x100 ? 0x0B : 0x03), u8(addr)});
     for (u8 value : expected)
         Check(cart.SPITransmitReceive(0) == value, "Tiny EEPROM READ returned the wrong byte");
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
 }
 
 static void Control()
@@ -173,24 +195,24 @@ static void Control()
     Bytes expected = f.Sink.Persisted;
     StartTinyWrite(cart, 0x32); // WREN is required.
     Send(cart, {0xA1, 0xB2});
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
     CheckImage(f, expected);
     Check(f.Sink.Notices == 0 && !(Status(cart) & 2), "Disabled WRITE changed persistence or WEL");
 
     Command(cart, 0x06);
     StartTinyWrite(cart, 0x32); // Address-only WRITE has no data to commit.
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
     Check(f.Sink.Notices == 0 && (Status(cart) & 2), "Empty WRITE consumed WEL or notified a save");
     StartTinyWrite(cart, 0x32);
     Send(cart, {0xE7, 0xD4, 0xC3});
     Check(f.Sink.Notices == 0, "WRITE notified persistence before CS release");
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
     expected[0x32] = 0xE7;
     expected[0x33] = 0xD4;
     expected[0x34] = 0xC3;
     CheckImage(f, expected);
     Check(f.Sink.Notices == 1 && !(Status(cart) & 2), "WRITE did not commit once and clear WEL");
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
     Check(f.Sink.Notices == 1, "Repeated CS release committed the same WRITE again");
     CheckRead(cart, 0x32, {0xE7, 0xD4, 0xC3});
 
@@ -198,7 +220,7 @@ static void Control()
     Command(cart, 0x04); // WRDI must still protect later writes.
     StartTinyWrite(cart, 0x32);
     Send(cart, {0x11});
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
     CheckImage(f, expected);
     Check(f.Sink.Notices == 1 && !(Status(cart) & 2), "WRDI failed to disable WRITE");
     // READ advances through pages/banks and wraps across the entire 512 bytes.
@@ -219,7 +241,7 @@ static void PageEnds()
         StartTinyWrite(*f.Cart, edge.Last);
         Send(*f.Cart, {0xA1, 0xB2, 0xC3});
         Check(f.Sink.Notices == 0, "Page WRITE committed before CS release");
-        f.Cart->SPIRelease();
+        ReleaseAndComplete(*f.Cart);
         expected[edge.Last] = 0xA1;
         expected[edge.First] = 0xB2;
         expected[edge.Second] = 0xC3;
@@ -237,7 +259,7 @@ static void PageOverflow()
         Command(*f.Cart, 0x06);
         StartTinyWrite(*f.Cart, 0xF8);
         for (u8 byte = 0x80; byte < 0xA8; ++byte) f.Cart->SPITransmitReceive(byte);
-        f.Cart->SPIRelease();
+        ReleaseAndComplete(*f.Cart);
         // Forty bytes from offset 8: the last full page is 98..9F,A0..A7.
         constexpr std::array<u8, 16> finalPage{0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F,
                                              0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7};
@@ -251,7 +273,7 @@ static void PageOverflow()
         StartTinyWrite(*f.Cart, 0x1F0);
         // Thirty-two laps also expose an incorrectly masked dirty length of 0.
         for (unsigned i = 0; i < 512; ++i) f.Cart->SPITransmitReceive(u8(i));
-        f.Cart->SPIRelease();
+        ReleaseAndComplete(*f.Cart);
         constexpr std::array<u8, 16> finalPage{0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
                                              0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF};
         std::copy(finalPage.begin(), finalPage.end(), expected.begin() + 0x1F0);
@@ -270,9 +292,8 @@ static void RestoreWrite()
     Send(cart, {0xA1});
     Savestate saved(1024);
     cart.DoSavestate(&saved);
-    // Fixed 14.1 CartCommon + 512B CartRetail record, including global/section
-    // headers. No new serialized fields are needed to retain the page latch.
-    Check(saved.Length() == 589, "512B CartRetail changed its existing 14.1 record length");
+    const auto recordEnd = saved.Length();
+    Check(saved.MinorVersion() == 10, "Tiny uncommitted page must require14.10");
     saved.Section("TAIL");
     u32 marker = 0x1234ABCD;
     saved.Var32(&marker);
@@ -282,19 +303,19 @@ static void RestoreWrite()
     Bytes bytes(static_cast<const u8*>(saved.Buffer()), static_cast<const u8*>(saved.Buffer()) + saved.Length());
 
     Send(cart, {0xEE, 0xDD}); // Disturb both the live position and memory.
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
     Savestate loaded(bytes.data(), u32(bytes.size()), false);
     cart.DoSavestate(&loaded);
-    Check(!loaded.Error && loaded.Length() == 589, "Mid-WRITE restore changed the record boundary");
+    Check(!loaded.Error && loaded.Length() == recordEnd, "Mid-WRITE restore changed the record boundary");
     loaded.Section("TAIL");
     marker = 0;
     loaded.Var32(&marker);
     Check(!loaded.Error && marker == 0x1234ABCD, "Retail restore consumed the following section");
-    expected[0x1FF] = 0xA1;
-    CheckImage(f, expected); // Existing load callback must restore persisted bytes too.
+    CheckImage(f, expected); // The old array persists while the page is uncommitted.
     f.Sink.Notices = 0;
     Send(cart, {0xB2, 0xC3}); // Continue the same selected WRITE, without a new header.
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
+    expected[0x1FF] = 0xA1;
     expected[0x1F0] = 0xB2;
     expected[0x1F1] = 0xC3;
     CheckImage(f, expected);
@@ -308,7 +329,7 @@ static void RegularControl()
     Command(*f.Cart, 0x06);
     f.Cart->SPISelect();
     Send(*f.Cart, {0x02, 0, 0x0F, 0xA1, 0xB2});
-    f.Cart->SPIRelease();
+    ReleaseAndComplete(*f.Cart);
     // An 8KiB device may be FRAM: do not apply the tiny EEPROM's page mask.
     expected[0x0F] = 0xA1;
     expected[0x10] = 0xB2;
@@ -317,7 +338,7 @@ static void RegularControl()
     Send(*f.Cart, {0x03, 0, 0x0F});
     Check(f.Cart->SPITransmitReceive(0) == 0xA1 && f.Cart->SPITransmitReceive(0) == 0xB2,
           "Regular EEPROM/FRAM sequential read changed");
-    f.Cart->SPIRelease();
+    ReleaseAndComplete(*f.Cart);
 }
 
 // Micron M25PE40 Rev B, pp29/31/34/36: 256-byte page latch, last data wins,
@@ -340,7 +361,7 @@ static void Flash(const std::string_view test)
         if (test == "flash-program")
         {
             FlashStart(cart, 0x02, 0x127);
-            Send(cart, {0x3C, 0xFF}); cart.SPIRelease();
+            Send(cart, {0x3C, 0xFF}); ReleaseAndComplete(cart);
             CheckImage(f, expected);
             Check(f.Sink.Notices == 0, "PROGRAM without WREN changed the save");
             for (u8 byte : {0x3C, 0xF0, 0xFF})
@@ -348,14 +369,14 @@ static void Flash(const std::string_view test)
                 Command(cart, 0x06);
                 FlashStart(cart, 0x02, 0x127); Send(cart, {byte});
                 CheckImage(f, expected); // The memory array changes at CS release.
-                cart.SPIRelease(); expected[0x127] &= byte;
+                ReleaseAndComplete(cart); expected[0x127] &= byte;
                 CheckImage(f, expected);
                 Check(!(Status(cart) & 2), "PROGRAM did not consume WEL");
             }
             Command(cart, 0x06);
-            FlashStart(cart, 0x0A, 0x127); Send(cart, {0xFF}); cart.SPIRelease();
+            FlashStart(cart, 0x0A, 0x127); Send(cart, {0xFF}); ReleaseAndComplete(cart);
             expected[0x127] = 0xFF; CheckImage(f, expected);
-            const auto notices = f.Sink.Notices; cart.SPIRelease();
+            const auto notices = f.Sink.Notices; ReleaseAndComplete(cart);
             Check(f.Sink.Notices == notices, "Duplicate CS release repeated a Flash operation");
         }
         else if (test == "flash-page")
@@ -368,7 +389,7 @@ static void Flash(const std::string_view test)
                 // High unused address bits alias the same chip; never file padding.
                 FlashStart(cart, command, 0xF00000 | (physical - 1));
                 Send(cart, {0x55, 0xA6, 0x19});
-                CheckImage(f, expected); cart.SPIRelease();
+                CheckImage(f, expected); ReleaseAndComplete(cart);
                 expected[physical - 1] = command == 2 ? before[physical - 1] & 0x55 : 0x55;
                 expected[page] = command == 2 ? before[page] & 0xA6 : 0xA6;
                 expected[page + 1] = command == 2 ? before[page + 1] & 0x19 : 0x19;
@@ -379,7 +400,7 @@ static void Flash(const std::string_view test)
                 for (unsigned i = 0; i < 256; ++i) cart.SPITransmitReceive(0);
                 for (unsigned i = 0; i < 256; ++i) cart.SPITransmitReceive(0xA5);
                 cart.SPITransmitReceive(0x3C);
-                CheckImage(f, expected); cart.SPIRelease();
+                CheckImage(f, expected); ReleaseAndComplete(cart);
                 for (u32 i = page; i < physical; ++i)
                 {
                     const u8 last = i == physical - 1 ? 0x3C : 0xA5;
@@ -393,7 +414,7 @@ static void Flash(const std::string_view test)
                     if (read == 0x0B) cart.SPITransmitReceive(0);
                     Check(cart.SPITransmitReceive(0) == expected[physical - 1] &&
                           cart.SPITransmitReceive(0) == expected[0], "Flash READ did not wrap at physical capacity");
-                    cart.SPIRelease();
+                    ReleaseAndComplete(cart);
                 }
             }
         }
@@ -403,17 +424,17 @@ static void Flash(const std::string_view test)
             {
                 const u32 start = command == 0xDB ? 0x12300 : 0x10000;
                 const u32 count = command == 0xDB ? 256 : 65536;
-                FlashStart(cart, command, 0x12345); cart.SPIRelease();
+                FlashStart(cart, command, 0x12345); ReleaseAndComplete(cart);
                 CheckImage(f, expected);
                 Command(cart, 0x06);
-                cart.SPISelect(); Send(cart, {command, 1, 0x23}); cart.SPIRelease();
+                cart.SPISelect(); Send(cart, {command, 1, 0x23}); ReleaseAndComplete(cart);
                 CheckImage(f, expected);
                 Check(Status(cart) & 2, "Truncated ERASE consumed WEL");
-                FlashStart(cart, command, 0x12345); Send(cart, {0}); cart.SPIRelease();
+                FlashStart(cart, command, 0x12345); Send(cart, {0}); ReleaseAndComplete(cart);
                 CheckImage(f, expected); // Extra data invalidates an address-only command.
                 Check(Status(cart) & 2, "Overlong ERASE consumed WEL");
                 FlashStart(cart, command, 0x12345);
-                CheckImage(f, expected); cart.SPIRelease();
+                CheckImage(f, expected); ReleaseAndComplete(cart);
                 std::fill_n(expected.begin() + start, count, 0xFF);
                 CheckImage(f, expected);
                 Check(!(Status(cart) & 2), "ERASE did not consume WEL");
@@ -472,7 +493,7 @@ static void Flash(const std::string_view test)
                 }
                 else std::fill_n(expected.begin() + (command == 0xDB ? 0x12300 : 0x10000),
                                  command == 0xDB ? 256 : 65536, 0xFF);
-                restored.Cart->SPIRelease(); CheckImage(restored, expected);
+                ReleaseAndComplete(*restored.Cart); CheckImage(restored, expected);
                 // Continue with the restored owner; original pending bytes are abandoned by Reset.
                 cart.Reset(); cart.SetSaveMemory(expected.data(), expected.size());
                 Savestate idle(physical + 1024); cart.DoSavestate(&idle); idle.Finish();
@@ -495,7 +516,7 @@ static void RegularRead(CartRetail& cart, u32 addressBytes, u32 address,
     RegularStart(cart, addressBytes, 0x03, address);
     for (u8 byte : expected)
         Check(cart.SPITransmitReceive(0) == byte, "Profile READ did not advance linearly at a page/chip boundary");
-    cart.SPIRelease();
+    ReleaseAndComplete(cart);
 }
 
 static void ProfilePage()
@@ -509,7 +530,7 @@ static void ProfilePage()
         RegularStart(cart, profile.AddressBytes, 0x02, profile.Page - 1);
         Send(cart, {0xA1, 0xB2});
         CheckImage(f, expected);
-        cart.SPIRelease();
+        ReleaseAndComplete(cart);
         CheckImage(f, expected);
         Check(f.Sink.Notices == 0 && !(Status(cart) & 2), "Profile WRITE without WREN mutated memory/persistence");
 
@@ -522,13 +543,13 @@ static void ProfilePage()
             Send(cart, {0xA1, 0xB2, 0xC3});
             CheckImage(f, expected); // Neither memory nor the save sink commits while CS is low.
             Check(f.Sink.Notices == notices, "EEPROM profile notified before CS release");
-            cart.SPIRelease();
+            ReleaseAndComplete(cart);
             expected[last] = 0xA1;
             expected[last + 1 - profile.Page] = 0xB2;
             expected[last + 2 - profile.Page] = 0xC3;
             CheckImage(f, expected); // Includes the next page and opaque file padding.
             Check(f.Sink.Notices == notices + 1 && !(Status(cart) & 2), "EEPROM release did not commit once and clear WEL");
-            cart.SPIRelease();
+            ReleaseAndComplete(cart);
             Check(f.Sink.Notices == notices + 1, "EEPROM repeated CS release replayed a page");
         }
 
@@ -539,7 +560,7 @@ static void ProfilePage()
         cart.SPITransmitReceive(0x3C);
         const auto notices = f.Sink.Notices;
         CheckImage(f, expected);
-        cart.SPIRelease();
+        ReleaseAndComplete(cart);
         std::fill_n(expected.begin() + 0x800, profile.Page, 0xA5);
         expected[0x800] = 0x3C; // Last received byte wins over both earlier laps.
         CheckImage(f, expected);
@@ -557,7 +578,7 @@ static void ProfilePage()
         Send(*legacy.Cart, {0x19, 0xE7});
         linear[profile.Page - 1] = 0x19; linear[profile.Page] = 0xE7;
         CheckMemory(legacy, linear, "Exact EEPROM profile changed legacy 2/3/4 write semantics");
-        legacy.Cart->SPIRelease();
+        ReleaseAndComplete(*legacy.Cart);
         CheckImage(legacy, linear);
     }
 }
@@ -570,7 +591,7 @@ static void ProfileFRAM()
     auto& cart = *f.Cart;
     Bytes expected = f.Sink.Persisted;
     RegularStart(cart, 2, 0x02, 0x1F); Send(cart, {0xA1, 0xB2});
-    CheckImage(f, expected); cart.SPIRelease(); CheckImage(f, expected);
+    CheckImage(f, expected); ReleaseAndComplete(cart); CheckImage(f, expected);
     Check(f.Sink.Notices == 0 && !(Status(cart) & 2), "FRAM WRITE without WREN was accepted");
     for (u32 last : {0x1Fu, 0x7FFFu})
     {
@@ -584,14 +605,14 @@ static void ProfileFRAM()
         cart.SPITransmitReceive(0xB2); expected[last == 0x7FFF ? 0 : 0x20] = 0xB2;
         CheckMemory(f, expected, "FRAM second byte wrapped at an EEPROM page or entered padding");
         Check(f.Sink.Notices == notices && f.Sink.Persisted == before, "FRAM host save committed before CS release");
-        cart.SPIRelease(); CheckImage(f, expected);
+        ReleaseAndComplete(cart); CheckImage(f, expected);
         Check(f.Sink.Notices == notices + 1 && !(Status(cart) & 2), "FRAM release did not publish its bytes and clear WEL");
-        cart.SPIRelease();
+        ReleaseAndComplete(cart);
         Check(f.Sink.Notices == notices + 1, "FRAM release duplicated persistence");
         RegularRead(cart, 2, last, {0xA1, 0xB2});
     }
     Command(cart, 0x06); Command(cart, 0x04);
-    RegularStart(cart, 2, 0x02, 0x1F); Send(cart, {0}); cart.SPIRelease();
+    RegularStart(cart, 2, 0x02, 0x1F); Send(cart, {0}); ReleaseAndComplete(cart);
     CheckImage(f, expected);
     Check(!(Status(cart) & 2) && f.Sink.Notices == 2, "FRAM WRDI did not protect later writes");
 }
@@ -664,7 +685,7 @@ static void ProfileState()
         receiver.Sink.Notices = 0;
         Send(*receiver.Cart, {0xB2, 0xC3});
         CheckImage(receiver, expected);
-        receiver.Cart->SPIRelease();
+        ReleaseAndComplete(*receiver.Cart);
         expected[profile.Capacity - 1] = 0xA1;
         expected[profile.Capacity - profile.Page] = 0xB2;
         expected[profile.Capacity - profile.Page + 1] = 0xC3;
@@ -686,7 +707,7 @@ static void ProfileState()
             CheckImage(receiver, expected);
             Send(*receiver.Cart, {0xB2, 0xC3}); expected[0x20] = 0xB2; expected[0x21] = 0xC3;
             CheckMemory(receiver, expected, "Legacy 14.2 loaded into exact EEPROM retained page-latched semantics");
-            receiver.Cart->SPIRelease(); CheckImage(receiver, expected);
+            ReleaseAndComplete(*receiver.Cart); CheckImage(receiver, expected);
             SaveRetail(receiver, 8192, 0, false);
         }
     }
@@ -703,7 +724,7 @@ static void ProfileState()
             CheckImage(receiver, expected);
             Send(*receiver.Cart, {0xB2}); expected[0] = 0xB2;
             CheckMemory(receiver, expected, "Restored FRAM lost immediate write or physical address wrap");
-            receiver.Cart->SPIRelease(); CheckImage(receiver, expected);
+            ReleaseAndComplete(*receiver.Cart); CheckImage(receiver, expected);
             Check(!(Status(*receiver.Cart) & 2), "Restored FRAM failed to consume WEL");
         }
     }
@@ -747,7 +768,7 @@ static void ProfileState()
         CheckImage(receiver, expected);
         Send(*receiver.Cart, {0xB2});
         CheckImage(receiver, expected);
-        receiver.Cart->SPIRelease(); expected[0x5F] = 0xA6; expected[0x40] = 0xB2;
+        ReleaseAndComplete(*receiver.Cart); expected[0x5F] = 0xA6; expected[0x40] = 0xB2;
         CheckImage(receiver, expected);
         Check(receiver.Sink.Notices == notices + 1 && !(Status(*receiver.Cart) & 2),
               "Rejected profile state disturbed the receiver's pending page/protocol");
@@ -759,7 +780,7 @@ static void ProfileState()
 static void WriteStatus(CartRetail& cart, u8 value, bool enable = true)
 {
     if (enable) Command(cart, 0x06);
-    cart.SPISelect(); Send(cart, {0x01, value}); cart.SPIRelease();
+    cart.SPISelect(); Send(cart, {0x01, value}); ReleaseAndComplete(cart);
 }
 
 static void StatusRegister()
@@ -789,7 +810,7 @@ static void StatusRegister()
     f.Cart->SPISelect(); Send(*f.Cart, {0x01, 0x0C});
     // Starting another selection abandons a held transaction without release.
     Check((Status(*f.Cart) & 0x0E) == 2, "WRSR committed before CS release");
-    f.Cart->SPISelect(); Send(*f.Cart, {0x01, 0x0C, 0x00}); f.Cart->SPIRelease();
+    f.Cart->SPISelect(); Send(*f.Cart, {0x01, 0x0C, 0x00}); ReleaseAndComplete(*f.Cart);
     Check((Status(*f.Cart) & 0x0E) == 2, "Overlong EEPROM WRSR changed status or consumed WEL");
     Command(*f.Cart, 0x01);
     Check((Status(*f.Cart) & 0x0E) == 2, "Truncated WRSR consumed WEL");
@@ -813,7 +834,7 @@ static void WriteProtection()
             Command(cart, 0x06);
             if (medium.Type == 1) StartTinyWrite(cart, u16(address));
             else RegularStart(cart, medium.AddressBytes, 0x02, address);
-            cart.SPITransmitReceive(0xA6); cart.SPIRelease();
+            cart.SPITransmitReceive(0xA6); ReleaseAndComplete(cart);
             if (address < protection.second) expected[address] = 0xA6;
             CheckImage(f, expected);
         }
@@ -831,7 +852,7 @@ static void WriteProtection()
     CheckMemory(fram, expected, "Unprotected FRAM byte was not written immediately");
     for (unsigned i = 0; i <= 32768; ++i) fram.Cart->SPITransmitReceive(0xC3);
     CheckMemory(fram, expected, "FRAM continued or wrapped a burst after entering protection");
-    fram.Cart->SPIRelease(); CheckImage(fram, expected);
+    ReleaseAndComplete(*fram.Cart); CheckImage(fram, expected);
     Check(!(Status(*fram.Cart) & 2), "FRAM burst completion failed to clear WEL");
 }
 
@@ -850,7 +871,7 @@ static void StatusState()
         Check(!saved.Error && saved.MinorVersion() == 8, "Pending status control must require 14.8");
         Savestate load(saved.Buffer(), saved.Length(), false); receiver.Cart->DoSavestate(&load);
         Check(!load.Error, "Pending status command could not be restored");
-        receiver.Cart->SPIRelease();
+        ReleaseAndComplete(*receiver.Cart);
         const u8 expected = command == 0x06 ? 2 : command == 0x01 ? 0x0C : 0;
         Check((Status(*receiver.Cart) & 0x0E) == expected, "Restored status control lost its CS completion");
         Savestate idle; receiver.Cart->DoSavestate(&idle); idle.Finish();
@@ -875,9 +896,116 @@ static void StatusState()
         Savestate load(broken.data(), broken.size(), false); receiver.Cart->DoSavestate(&load);
         Check(load.Error && receiver.Cart->GetSaveMemory() == memory && receiver.Sink.Notices == 0,
               "Malformed status command replaced retail SRAM or notified persistence");
-        receiver.Cart->SPIRelease();
+        ReleaseAndComplete(*receiver.Cart);
         Check((Status(*receiver.Cart) & 0x0E) == 4, "Malformed status state disturbed the live command");
         CheckImage(receiver, before);
+    }
+}
+
+static u8 BusyStatus(CartRetail& cart)
+{
+    cart.SPISelect(); Send(cart, {0x05});
+    const u8 status = cart.SPITransmitReceive(0);
+    cart.SPIRelease();
+    return status;
+}
+
+static void InternalWrite(bool state)
+{
+    for (u32 type : {1u, 11u, 12u, 13u, 6u, 14u})
+    {
+        std::printf("Internal write type=%u state=%d\n", type, state);
+        Fixture f(type, 17);
+        auto& cart = *f.Cart;
+        Bytes expected = f.Sink.Persisted;
+        const u32 addressBytes = type == 1 ? 1 : type == 13 || type == 6 ? 3 : 2;
+        const u32 page = type == 1 ? 16 : type == 11 ? 32 : type == 12 ? 128 : 256;
+        const u32 first = type == 14 ? 31 : page - 1;
+        Command(cart, 0x06);
+        if (type == 1) StartTinyWrite(cart, first);
+        else RegularStart(cart, addressBytes, type == 6 ? 0x0A : 0x02, first);
+        Send(cart, {0xA1, 0xB2});
+        if (type != 14) CheckImage(f, expected);
+        cart.SPIRelease();
+        if (type == 14)
+        {
+            expected[first] = 0xA1; expected[first + 1] = 0xB2;
+            Check(ChipDelay(cart) == 0 && !(BusyStatus(cart) & 1), "FRAM acquired EEPROM write latency");
+            CheckImage(f, expected);
+            continue;
+        }
+        Check(ChipDelay(cart) > 0 && (BusyStatus(cart) & 3) == 3, "CS failed to begin WIP with WEL held");
+        CheckImage(f, expected);
+        Check(f.Sink.Notices == 0, "Internal write notified persistence before completion");
+        for (u8 command : {u8(0x04), u8(0x06)})
+        {
+            cart.SPISelect(); Send(cart, {command}); cart.SPIRelease();
+        }
+        Check((BusyStatus(cart) & 3) == 3, "Busy WRDI/WREN disturbed the pending operation");
+        cart.SPISelect(); Send(cart, {0x03, 0, 0, 0});
+        Check(cart.SPITransmitReceive(0) == 0xFF, "Busy READ was accepted");
+        cart.SPIRelease();
+        if (state)
+        {
+            Savestate saved; cart.DoSavestate(&saved); saved.Finish();
+            Check(!saved.Error && saved.MinorVersion() == 10, "Internal write state did not require14.10");
+            Fixture receiver(type, 17, 0xC3);
+            Bytes restoredExpected = receiver.Sink.Persisted;
+            const u32 capacity = cart.GetSaveMemoryLength() - 17;
+            std::copy_n(expected.begin(), capacity, restoredExpected.begin());
+            Savestate load(saved.Buffer(), saved.Length(), false); receiver.Cart->DoSavestate(&load);
+            Check(!load.Error && ChipDelay(*receiver.Cart) == ChipDelay(cart), "Cold chip lost internal operation");
+            CheckImage(receiver, restoredExpected);
+            const auto notices = receiver.Sink.Notices;
+            CompleteChip(*receiver.Cart);
+            restoredExpected[first] = 0xA1; restoredExpected[0] = 0xB2;
+            CheckImage(receiver, restoredExpected);
+            Check(receiver.Sink.Notices == notices + 1, "Restored operation failed to notify once at completion");
+            CompleteChip(*receiver.Cart);
+            Check(receiver.Sink.Notices == notices + 1, "Restored operation was completed twice");
+        }
+        // A READ rejected at its opcode must remain rejected when WIP clears
+        // during this same CS; the next command can observe the new array.
+        cart.SPISelect(); Send(cart, {0x03});
+        CompleteChip(cart);
+        Check(cart.SPITransmitReceive(0) == 0xFF, "Completion revived a command rejected while busy");
+        cart.SPIRelease();
+        expected[first] = 0xA1; expected[0] = 0xB2;
+        CheckImage(f, expected);
+        Check(!ChipDelay(cart) && !(BusyStatus(cart) & 3) && f.Sink.Notices == 1,
+              "Completion failed to clear WIP/WEL and publish exactly once");
+        CompleteChip(cart);
+        Check(f.Sink.Notices == 1, "Repeated completion replayed the save notification");
+    }
+    if (state)
+    {
+        for (u8 command : {u8(0xDB), u8(0xD8)})
+        {
+            Fixture source(6, 17); Command(*source.Cart, 0x06);
+            FlashStart(*source.Cart, command, 0x12345); source.Cart->SPIRelease();
+            Savestate saved; source.Cart->DoSavestate(&saved); saved.Finish();
+            Check(!saved.Error && saved.MinorVersion() == 10, "Unaligned-address erase could not save its internal latch");
+            Fixture receiver(6, 17, 0xC3);
+            Bytes expected = receiver.Sink.Persisted;
+            std::copy_n(source.Cart->GetSaveMemory(), 524288, expected.begin());
+            Savestate load(saved.Buffer(), saved.Length(), false); receiver.Cart->DoSavestate(&load);
+            Check(!load.Error && ChipDelay(*receiver.Cart), "Erase internal latch failed cold load");
+            CheckImage(receiver, expected);
+            CompleteChip(*receiver.Cart);
+            const u32 length = command == 0xDB ? 256 : 65536;
+            const u32 base = 0x12345 & ~(length - 1);
+            std::fill_n(expected.begin() + base, length, 0xFF);
+            CheckImage(receiver, expected);
+        }
+    }
+    for (u32 type : {1u, 11u, 12u, 13u})
+    {
+        Fixture f(type); auto& cart = *f.Cart;
+        Command(cart, 0x06); cart.SPISelect(); Send(cart, {0x01, 0x0C}); cart.SPIRelease();
+        Check((BusyStatus(cart) & 0x0F) == 3, "WRSR changed protection bits before its write cycle ended");
+        CompleteChip(cart);
+        Check((BusyStatus(cart) & 0x0F) == 0x0C && f.Sink.Notices == 0,
+              "WRSR completion lost protection or notified array persistence");
     }
 }
 
@@ -885,7 +1013,9 @@ int main(int argc, char** argv)
 {
     if (argc != 2) return 2;
     const std::string_view test = argv[1];
-    if (test == "control") Control();
+    if (test == "internal-write") InternalWrite(false);
+    else if (test == "internal-state") InternalWrite(true);
+    else if (test == "control") Control();
     else if (test == "page-ends") PageEnds();
     else if (test == "page-overflow") PageOverflow();
     else if (test == "restore-write") RestoreWrite();

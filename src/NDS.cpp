@@ -725,7 +725,8 @@ bool NDS::DoSavestate(Savestate* file)
         u32 Param;
     } schedState[Event_MAX] {};
     u32 schedMask = SchedListMask;
-    for (int i = 0; i < (legacy ? 17 : Event_MAX); i++)
+    const int eventCount = legacy ? 17 : file->IsAtLeastVersion(14, 10) ? Event_MAX : Event_CartSave;
+    for (int i = 0; i < eventCount; i++)
     {
         const SchedEvent& evt = SchedList[i];
         auto& state = schedState[i];
@@ -761,7 +762,7 @@ bool NDS::DoSavestate(Savestate* file)
     if (!file->Saving)
     {
         if (file->Error) return false;
-        if (u64(schedMask) >> Event_MAX)
+        if (u64(schedMask) >> (legacy ? Event_MAX : eventCount))
         {
             Log(LogLevel::Error, "savestate: invalid scheduler mask %08X\n", schedMask);
             return false;
@@ -839,6 +840,18 @@ bool NDS::DoSavestate(Savestate* file)
     if (!file->Saving)
     {
         if (file->Error) return false;
+        for (unsigned slot = 0; slot < 2; ++slot)
+        {
+            const auto* cart = NDSCartSlots[slot] ? NDSCartSlots[slot]->GetCart() : nullptr;
+            const bool pending = cart && cart->GetSaveDelay();
+            const u32 event = slot ? Event_DSi_Cart2Save : Event_CartSave;
+            if (pending != bool(schedMask & (1u << event)) ||
+                (pending && (schedState[event].FuncID != 0 || schedState[event].Param != 0)))
+            {
+                file->Error = true;
+                return false;
+            }
+        }
         // DSP HLE can recreate its callbacks during DoSavestateExtra. Validate
         // against those registrations, without restoring old callback pointers.
         for (int i = 0; i < Event_MAX; i++)
@@ -973,7 +986,7 @@ u64 NDS::NextTargetSleep()
     for (int i = 0; i < Event_MAX; i++)
     {
         if (!mask) break;
-        if (i == Event_SPU || i == Event_RTC)
+        if (i == Event_SPU || i == Event_RTC || i == Event_CartSave || i == Event_DSi_Cart2Save)
         {
             if (mask & 0x1)
             {
@@ -997,7 +1010,7 @@ void NDS::RunSystemSleep(u64 timestamp)
     for (int i = 0; i < Event_MAX; i++)
     {
         if (!mask) break;
-        if (i == Event_RTC)
+        if (i == Event_RTC || i == Event_CartSave || i == Event_DSi_Cart2Save)
         {
             if (mask & 0x1)
             {
@@ -1232,30 +1245,24 @@ void NDS::UnregisterEventFuncs(u32 id)
 
 void NDS::ScheduleEvent(u32 id, bool periodic, s32 delay, u32 funcid, u32 param)
 {
-    if (SchedListMask & (1<<id))
+    const u64 start = periodic ? SchedList[id].Timestamp :
+        CurCPU == 0 ? ARM9Timestamp >> ARM9ClockShift : ARM7Timestamp;
+    ScheduleEventAt(id, start + delay, funcid, param);
+}
+
+void NDS::ScheduleEventAt(u32 id, u64 timestamp, u32 funcid, u32 param)
+{
+    if (SchedListMask & (1u << id))
     {
         Log(LogLevel::Debug, "!! EVENT %d ALREADY SCHEDULED\n", id);
-        return; 
+        return;
     }
-
     SchedEvent& evt = SchedList[id];
-
-    if (periodic)
-        evt.Timestamp += delay;
-    else
-    {
-        if (CurCPU == 0)
-            evt.Timestamp = (ARM9Timestamp >> ARM9ClockShift) + delay;
-        else
-            evt.Timestamp = ARM7Timestamp + delay;
-    }
-
+    evt.Timestamp = timestamp;
     evt.FuncID = funcid;
     evt.Param = param;
-
-    SchedListMask |= (1<<id);
-
-    Reschedule(evt.Timestamp);
+    SchedListMask |= (1u << id);
+    Reschedule(timestamp);
 }
 
 void NDS::CancelEvent(u32 id)

@@ -439,7 +439,8 @@ endif()
 if (TARGET core)
     add_executable(CartSPI CartSPI.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(CartSPI PRIVATE core Threads::Threads)
-    foreach(case IN ITEMS control arm9-low arm7-low busy-low mode-control ownership state-resume key1-state state-bounds flash-state profile-state status-protection byte-completion)
+    target_compile_definitions(CartSPI PRIVATE MELONDS_TEST_CART_SAVE)
+    foreach(case IN ITEMS control arm9-low arm7-low busy-low mode-control ownership state-resume key1-state state-bounds flash-state profile-state status-protection byte-completion write-timing)
         add_test(NAME cart-spi-${case} COMMAND CartSPI ${case})
         set_tests_properties(cart-spi-${case} PROPERTIES TIMEOUT 15)
     endforeach()
@@ -473,6 +474,7 @@ add_test(NAME nds-rom-header-bounds COMMAND ROMHeaderBounds)
 set(rtc_methods)
 foreach(pair IN ITEMS
         "ScheduleEvent|void NDS::ScheduleEvent(u32 id, bool periodic, s32 delay, u32 funcid, u32 param)"
+        "ScheduleEventAt|void NDS::ScheduleEventAt(u32 id, u64 timestamp, u32 funcid, u32 param)"
         "RegisterEventFuncs|void NDS::RegisterEventFuncs(u32 id, void* that, const std::initializer_list<EventFunc>& funcs)"
         "UnregisterEventFuncs|void NDS::UnregisterEventFuncs(u32 id)"
         "Reschedule|void NDS::Reschedule(u64 target)"
@@ -509,7 +511,7 @@ add_executable(RetailEEPROM RetailEEPROM.cpp
     ../src/NDSCart/CartRetail.cpp ../src/NDSCart/CartCommon.cpp
     ../src/Savestate.cpp ../src/CRC32.cpp ../src/Utils.cpp)
 target_include_directories(RetailEEPROM PRIVATE ../src)
-foreach(case IN ITEMS control page-ends page-overflow restore-write regular-control profile-page profile-fram profile-state status-register write-protection status-state)
+foreach(case IN ITEMS control page-ends page-overflow restore-write regular-control profile-page profile-fram profile-state status-register write-protection status-state internal-write internal-state)
     add_test(NAME retail-eeprom-${case} COMMAND RetailEEPROM ${case})
     set_tests_properties(retail-eeprom-${case} PROPERTIES TIMEOUT 15)
 endforeach()

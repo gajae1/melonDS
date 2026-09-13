@@ -163,6 +163,10 @@ private:
     void LoadLegacyState(Savestate* file) noexcept;
     void LegacyTransferState(Savestate* file) noexcept;
     void ClearLegacyTransfer() noexcept { LegacyROMData.clear(); LegacyROMPos = 0; LegacyROMWrite = false; }
+    void CompleteSave(u32 param);
+    void AdvanceSave(u64 timestamp);
+    void ScheduleSave(u64 timestamp);
+    u32 SaveEvent;
     std::vector<u32> LegacyROMData;
     u32 LegacyROMPos = 0;
     u8 LegacyROMCPU = 0;

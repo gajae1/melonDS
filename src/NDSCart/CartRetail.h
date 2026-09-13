@@ -64,6 +64,9 @@ public:
     void SPISelect() override;
     void SPIRelease() override;
     u8 SPITransmitReceive(u8 val) override;
+    u32 GetSaveDelay() const override { return WriteDelay; }
+    void CompleteSave() override;
+    void CancelSave() override;
 
     // ROM metadata remains authoritative. This fallback only identifies the
     // SPI capacities we emulate; a large file must not imply a NAND cartridge.
@@ -74,6 +77,7 @@ public:
     u32 GetSaveMemoryLength() const override { return SRAMFileLength; }
 
 protected:
+    void BeginSave(u8 command, u32 address, u32 first, u32 length);
     bool IsWriteProtected(u32 address) const;
     u8 SRAMWrite_EEPROMTiny(u8 val);
     u8 SRAMWrite_EEPROM(u8 val);
@@ -102,6 +106,12 @@ protected:
     // each offset is committed; FRAM writes directly without this buffer.
     std::array<u8, 256> PageBuffer {};
     bool PagePending = false;
+
+    // The internal program latch survives new SPI transactions (including RDSR).
+    u32 WriteDelay = 0;
+    u8 WriteCommand = 0;
+    u32 WriteAddress = 0, WriteFirst = 0, WriteLength = 0;
+    std::array<u8, 256> WriteBuffer {};
 };
 
 }

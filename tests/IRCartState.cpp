@@ -152,6 +152,9 @@ int main(int argc, char** argv)
             if (flash) Send(*cart, {0}, {0});
             Send(*cart, {0x12, 0x34, 0x77, 0x66}, {0, 0, 0, 0});
             cart->SPIRelease();
+            // The emulated chip finishes an internal write after the SPI
+            // clocks stop; EEPROM capacity-only media already committed.
+            cart->CompleteSave();
             Check(cart->GetSaveMemory()[0x1234] == 0x77 && cart->GetSaveMemory()[0x1235] == 0x66,
                   "IR passthrough changed save write behavior");
             Check(notices.size() == 1 && notices[0].total == cart->GetSaveMemoryLength() &&
@@ -236,6 +239,7 @@ int main(int argc, char** argv)
         notices.clear(); // The base loader already notified the restored whole save.
         Send(*cart, {0x66}, {0});
         cart->SPIRelease();
+        cart->CompleteSave(); // The resumed Flash program completes after CS rises.
         Check(cart->GetSaveMemory()[0x1234] == 0x77 && cart->GetSaveMemory()[0x1235] == 0x66,
               "Mid-write restore did not resume at the next SRAM address");
         Check(notices.size() == 1 && notices[0].offset == 0x1234 && notices[0].length == 2,

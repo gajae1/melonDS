@@ -7,6 +7,7 @@
 #include "DSi.h"
 #include "NDSCart/CartRetail.h"
 #include "NDSCart/CartRetailIR.h"
+#include "Platform.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,23 @@ static unsigned Failures = 0;
 static void Check(bool ok, const char* reason)
 {
     if (!ok) { ++Failures; std::fprintf(stderr, "%s\n", reason); }
+}
+
+static bool ObserveSaves = false;
+static unsigned SaveCalls = 0;
+static u32 SaveOffset = 0, SaveLength = 0;
+static std::vector<u8> SaveBytes;
+namespace melonDS::Platform
+{
+void WriteNDSSave(const u8* bytes, u32 total, u32 offset, u32 length, void*)
+{
+    if (!ObserveSaves) return;
+    ++SaveCalls;
+    Check(offset <= total && length <= total - offset, "Save callback range exceeds backing storage");
+    SaveOffset = offset; SaveLength = length;
+    SaveBytes.assign(bytes, bytes + total);
+}
+void WriteGBASave(const u8*, u32, u32, u32, void*) {}
 }
 
 struct ObservedCart : NDSCart::CartRetail
@@ -73,6 +91,18 @@ struct Console : NDS
         AdvanceTo(SPIDeadline(cpu));
         if (NDSCartSlots[0]->ReadSPICnt(cpu) & 0x80) throw std::runtime_error("SPI event did not clear busy");
     }
+    bool SaveScheduled() const { return SchedListMask & (1u << Event_CartSave); }
+    u64 SaveDeadline() const
+    {
+        if (!SaveScheduled()) throw std::runtime_error("Internal save event was not scheduled");
+        return SchedList[Event_CartSave].Timestamp;
+    }
+    void FinishSave()
+    {
+        if (!GetNDSCart() || !GetNDSCart()->GetSaveDelay()) return;
+        AdvanceTo(SaveDeadline());
+        Check(!GetNDSCart()->GetSaveDelay() && !SaveScheduled(), "Internal save event did not complete");
+    }
 };
 
 struct Fixture
@@ -122,12 +152,15 @@ struct Fixture
         Data(0x02);
         Data(0x05);
         Data(0xA1);
-        if (Cart->GetSaveMemory()[5] != 0xA1) throw std::runtime_error("Initial EEPROM write failed");
+        Check(Cart->GetSaveMemory()[5] == 0xFF, "Held tiny EEPROM write committed before CS release");
     }
     void EndWrite()
     {
         Data(0xB2);
         Control(0x8041); // actual bit13 falling edge terminates WRITE
+        Check(Cart->GetSaveMemory()[5] == 0xFF && Cart->GetSaveMemory()[6] == 0xFF,
+              "Tiny EEPROM committed before internal write completion");
+        Machine->FinishSave();
         Check(Cart->GetSaveMemory()[5] == 0xA1 && Cart->GetSaveMemory()[6] == 0xB2,
               "A partial control write lost EEPROM data in a held transaction");
         Check(Cart->Selects == 1 && Cart->Releases == 1, "Unexpected chip-select edges during WRITE");
@@ -229,8 +262,9 @@ struct FlashFixture
         if (CPU) Machine->ARM7Write16(0x040001A0, value);
         else Machine->ARM9Write16(0x040001A0, value);
     }
-    u8 Data(u8 value)
+    u8 Data(u8 value, bool finish = true)
     {
+        Machine->CurCPU = CPU; // Match the CPU that a real execution loop is running.
         if (CPU) Machine->ARM7Write8(0x040001A2, value);
         else Machine->ARM9Write8(0x040001A2, value);
         const auto busy = [&] {
@@ -238,12 +272,27 @@ struct FlashFixture
                         : Machine->ARM9Read16(0x040001A0)) & 0x80;
         };
         if (!busy()) throw std::runtime_error("Flash MMIO transfer did not become busy");
+        if (!finish) return 0;
         if (Machine->ConsoleType == 1) Machine->RunFrame();
         else static_cast<Console*>(Machine.get())->Finish(CPU);
         if (busy()) throw std::runtime_error("Flash scheduler did not complete MMIO transfer");
         return CPU ? Machine->ARM7Read8(0x040001A2) : Machine->ARM9Read8(0x040001A2);
     }
-    void Release() { Control(0x8040); } // AUXSPICNT bit 13 falling edge, actual CS high
+    void FinishSave()
+    {
+        if (Machine->ConsoleType == 0) static_cast<Console*>(Machine.get())->FinishSave();
+        else
+        {
+            // At most two emulated seconds, including the 1.5s sector erase.
+            for (unsigned frame = 0; Cart->GetSaveDelay() && frame < 120; ++frame) Machine->RunFrame();
+            Check(!Cart->GetSaveDelay(), "DSi scheduler did not finish internal save operation");
+        }
+    }
+    void Release(bool complete = true)
+    {
+        Control(0x8040); // AUXSPICNT bit 13 falling edge, actual CS high.
+        if (complete) FinishSave();
+    }
     void Begin(u8 command)
     {
         Control(0xA040);
@@ -251,6 +300,8 @@ struct FlashFixture
         Data(command);
     }
     void EnableWrite() { Begin(0x06); Release(); }
+    u8 Status()
+    { Begin(0x05); const u8 value = Data(0); Release(false); return value; }
     void Expect(const std::vector<u8>& expected, const char* reason)
     {
         Check(Cart->GetSaveMemoryLength() == expected.size(), "Flash backing length changed");
@@ -583,13 +634,16 @@ static void TestByteCompletion(u32 cpu)
                   "Completed held payload committed before CS release");
             restored.Control(0x8040);
         }
+        Check(restored.Cart->GetSaveMemory()[5] == 0xFF && restored.Cart->GetSaveMemory()[6] == 0xFF,
+              "SPI completion bypassed the internal EEPROM write cycle");
+        restored.Machine->AdvanceTo(deadline + 1);
+        Check(restored.Cart->Delivered.size() == 1 && restored.Cart->Releases == 1,
+              "Restored SPI completion was repeated");
+        restored.Machine->FinishSave();
         Check(restored.Cart->GetSaveMemory()[4] == 0xFF && restored.Cart->GetSaveMemory()[5] == 0xA1 &&
               restored.Cart->GetSaveMemory()[6] == 0xB2 && restored.Cart->GetSaveMemory()[7] == 0xFF &&
               restored.Cart->DeliveredAtRelease == 1,
               "Restored completion/release lost previous page bytes or changed neighbors");
-        restored.Machine->AdvanceTo(deadline + 1);
-        Check(restored.Cart->Delivered.size() == 1 && restored.Cart->Releases == 1,
-              "Restored SPI completion was repeated");
     }
 
     {
@@ -604,6 +658,7 @@ static void TestByteCompletion(u32 cpu)
         f.Machine->Finish(cpu);
         Check(f.Cart->Delivered == std::vector<u8>({0x02, 0, 5, 0xA1}) && f.Cart->Releases == 1,
               "Mode clear delivered the aborted byte or duplicated CS release");
+        f.Machine->FinishSave();
         Check(f.Cart->GetSaveMemory()[5] == 0xA1 && f.Cart->GetSaveMemory()[6] == 0xFF,
               "Aborting a byte lost completed page data or committed unfinished data");
     }
@@ -671,11 +726,232 @@ static void TestByteCompletion(u32 cpu)
           "Power cycling prevented a fresh scheduled SPI transfer");
 }
 
+static void BeginTimedWrite(FlashFixture& f, u32 type, u8 command, u32 address,
+                            const std::vector<u8>& data)
+{
+    f.EnableWrite(); f.Begin(command);
+    const unsigned width = type == 1 ? 1 : type == 13 || (type >= 5 && type <= 7) ? 3 : 2;
+    for (int shift = int(width - 1) * 8; shift >= 0; shift -= 8) f.Data(u8(address >> shift));
+    for (u8 byte : data) f.Data(byte);
+}
+
+static void TestWriteTiming(u32 cpu)
+{
+    // Durations are the chosen chip contract, independently of GetSaveDelay().
+    struct Operation { u32 type; u8 command; u32 address, microseconds; std::vector<u8> data; };
+    for (const auto& op : {Operation{1, 0x02, 5, 5000, {0x96, 0x3C}},
+                          Operation{11, 0x02, 0x27, 5000, {0x96, 0x3C}},
+                          Operation{6, 0x02, 0x127, 50, std::vector<u8>(9, 0x0F)},
+                          Operation{6, 0x0A, 0x127, 11000, {0x96, 0x3C}},
+                          Operation{6, 0xDB, 0x12345, 10000, {}},
+                          Operation{6, 0xD8, 0x12345, 1500000, {}}})
+    {
+        std::printf("WIP ARM%u type=%u command=%02X\n", cpu ? 7 : 9, op.type, op.command);
+        FlashFixture f(cpu, false, false, 0x5A, op.type);
+        auto& machine = *static_cast<Console*>(f.Machine.get());
+        const std::vector<u8> before(f.Cart->GetSaveMemory(), f.Cart->GetSaveMemory() + FlashFixture::Length);
+        SaveCalls = 0;
+        BeginTimedWrite(f, op.type, op.command, op.address, op.data);
+        f.Expect(before, "Timed write changed SRAM before CS release");
+        Check(!f.Cart->GetSaveDelay() && !machine.SaveScheduled() && SaveCalls == 0,
+              "Internal operation started before the command-ending CS edge");
+        const u64 edge = cpu ? machine.ARM7Timestamp : machine.ARM9Timestamp >> machine.ARM9ClockShift;
+        // Deliberately make CurCPU and the other CPU clock unsuitable as the
+        // source of a manually driven MMIO edge's absolute timestamp.
+        machine.CurCPU = cpu ^ 1;
+        if (cpu) machine.ARM9Timestamp += 1000 << machine.ARM9ClockShift;
+        else machine.ARM7Timestamp += 1000;
+        f.Release(false);
+        const u64 cycles = (u64(op.microseconds) * 33513982 + 999999) / 1000000;
+        const u64 deadline = machine.SaveDeadline();
+        Check(deadline == edge + cycles && f.Cart->GetSaveDelay() == cycles,
+              "Save deadline used the wrong CPU/time unit or chip duration");
+        f.Expect(before, "CS release committed the internal write early");
+        Check(SaveCalls == 0 && (f.Status() & 3) == 3,
+              "Busy write published a callback or lost WIP/WEL");
+        Check(machine.SaveDeadline() == deadline, "Status polling restarted the write timer");
+        machine.AdvanceTo(deadline - 1);
+        f.Expect(before, "Internal write committed before its deadline");
+        Check(SaveCalls == 0 && f.Cart->GetSaveDelay(), "Callback or idle state preceded write completion");
+        machine.AdvanceTo(deadline); // No SPI read is needed to complete the array.
+        auto expected = before;
+        const u32 offset = op.command == 0xDB ? 0x12300 : op.command == 0xD8 ? 0x10000 : op.address;
+        const u32 length = op.command == 0xDB ? 256 : op.command == 0xD8 ? 65536 : op.data.size();
+        if (op.command == 0xDB || op.command == 0xD8)
+            std::fill(expected.begin() + offset, expected.begin() + offset + length, 0xFF);
+        else for (u32 i = 0; i < length; ++i)
+            expected[offset + i] = op.type == 6 && op.command == 0x02 ? before[offset + i] & op.data[i] : op.data[i];
+        f.Expect(expected, "Scheduled completion lost data or changed neighbors/padding");
+        Check(!f.Cart->GetSaveDelay() && !machine.SaveScheduled() && SaveCalls == 1 &&
+              SaveOffset == offset && SaveLength == length && SaveBytes == expected,
+              "Completion did not publish exactly one correct array snapshot/range");
+        machine.AdvanceTo(deadline + 1);
+        Check((f.Status() & 3) == 0 && SaveCalls == 1, "WIP/WEL remained set or completion callback repeated");
+    }
+}
+
+static void TestWriteTimingState(u32 cpu)
+{
+    FlashFixture original(cpu, false, false, 0x5A, 11);
+    auto& machine = *static_cast<Console*>(original.Machine.get());
+    const auto initial = std::vector<u8>(original.Cart->GetSaveMemory(), original.Cart->GetSaveMemory() + FlashFixture::Length);
+    auto expected = initial;
+    Savestate oldIdle; original.Save(oldIdle, 7); // Existing implicit 25-event layout.
+    original.EnableWrite(); original.Begin(0x02); original.Data(0); original.Data(0x27);
+    original.Control(0xA000); original.Data(0x96, false);
+    const u64 byteEnd = machine.SPIDeadline(cpu);
+    machine.CurCPU = cpu ^ 1;
+    machine.AdvanceTo(byteEnd + 19); // Intentionally late callback must use its scheduled edge.
+    Check(machine.SaveDeadline() == byteEnd + 167570, "Automatic CS deadline was anchored to late callback time");
+    const auto deadline = machine.SaveDeadline();
+    original.Expect(expected, "Automatic CS committed before the internal deadline");
+    Savestate pending; original.Save(pending, 10);
+    // Build a contradictory whole-console image through the real scheduler
+    // API, without duplicating offsets in the serialized NDSG record.
+    machine.CancelEvent(Event_CartSave);
+    Savestate missingEvent; original.Save(missingEvent, 10);
+    {
+        FlashFixture rejected(cpu, false, false, 0x5A, 11);
+        Savestate invalid(missingEvent.Buffer(), missingEvent.Length(), false);
+        Check(!rejected.Machine->DoSavestate(&invalid) && invalid.Error,
+              "State accepted an internal chip write without its scheduler event");
+        // This checks rejection, not atomic rollback of every console device.
+    }
+    FlashFixture restored(cpu, false, false, 0x5A, 11);
+    restored.Restore(pending);
+    auto& receiver = *static_cast<Console*>(restored.Machine.get());
+    Check(receiver.SaveDeadline() == deadline && restored.Cart->GetSaveDelay() == 167570,
+          "Cold restore restarted or lost the internal write timer");
+    SaveCalls = 0; // State load may publish its restored, still-unmodified array.
+    restored.Expect(expected, "WIP state restore committed pending bytes");
+
+    // READ rejected while busy must stay rejected past the deadline, even if
+    // its remaining bytes resemble an address or a fresh WREN command.
+    restored.Begin(0x03);
+    receiver.AdvanceTo(deadline - 1);
+    Check(SaveCalls == 0, "Restored internal write callback ran early");
+    receiver.AdvanceTo(deadline);
+    expected[0x27] = 0x96;
+    restored.Data(0); restored.Data(0x27);
+    Check(restored.Data(0) == 0xFF && restored.Data(0x06) == 0xFF,
+          "Busy-rejected READ resumed within the same CS after completion");
+    restored.Release(false);
+    restored.Expect(expected, "Busy-rejected command damaged the independent pending latch");
+    Check(SaveCalls == 1 && (restored.Status() & 3) == 0,
+          "Busy-rejected opcode revived after completion or callback repeated");
+    restored.Begin(0x03); restored.Data(0); restored.Data(0x27);
+    Check(restored.Data(0) == 0x96, "A fresh READ after CS release did not see completed data");
+    restored.Release(false);
+
+    // Poll data ends exactly when the next array operation completes. The
+    // lower-numbered SPI event must not observe stale WIP from event ordering.
+    BeginTimedWrite(restored, 11, 0x02, 0x28, {0x3C}); restored.Release(false);
+    const auto simultaneous = receiver.SaveDeadline();
+    restored.Begin(0x05);
+    receiver.AdvanceTo(simultaneous - 64);
+    restored.Control(0xA000); restored.Data(0, false);
+    Check(receiver.SPIDeadline(cpu) == simultaneous, "Simultaneous SPI/save fixture missed its deadline");
+    receiver.Finish(cpu);
+    const u8 status = cpu ? receiver.ARM7Read8(0x040001A2) : receiver.ARM9Read8(0x040001A2);
+    Check(!(status & 3) && restored.Cart->GetSaveMemory()[0x28] == 0x3C && SaveCalls == 2,
+          "Same-timestamp RDSR observed old WIP or duplicated completion");
+
+    restored.EnableWrite(); restored.Begin(0x01); restored.Data(0x04); restored.Release(false);
+    const auto statusEnd = receiver.SaveDeadline();
+    Check((restored.Status() & 0x0F) == 3, "EEPROM WRSR changed BP before its internal deadline");
+    receiver.AdvanceTo(statusEnd);
+    Check((restored.Status() & 0x0F) == 4 && SaveCalls == 2,
+          "WRSR completion lost BP/WEL/WIP semantics or published an array callback");
+
+    BeginTimedWrite(restored, 11, 0x02, 0x29, {0xA6}); restored.Release(false);
+    const auto cancelled = receiver.SaveDeadline();
+    restored.Restore(oldIdle);
+    const auto afterRestore = SaveCalls;
+    Check(!restored.Cart->GetSaveDelay() && !receiver.SaveScheduled(),
+          "Old implicit-format idle state retained the receiver's new save event");
+    receiver.AdvanceTo(cancelled);
+    restored.Expect(initial, "Old idle state was overwritten by the discarded internal write");
+    Check(SaveCalls == afterRestore, "Old-state load allowed a stale internal save callback");
+}
+
+static void TestWriteTimingLifecycle(u32 cpu)
+{
+    for (unsigned action = 0; action < 3; ++action)
+    {
+        FlashFixture f(cpu, false, false, 0x5A, 11);
+        auto& machine = *static_cast<Console*>(f.Machine.get());
+        auto expected = std::vector<u8>(f.Cart->GetSaveMemory(), f.Cart->GetSaveMemory() + FlashFixture::Length);
+        BeginTimedWrite(f, 11, 0x02, 0x27, {0x96}); f.Release(false);
+        const auto deadline = machine.SaveDeadline();
+        std::unique_ptr<NDSCart::CartCommon> ejected;
+        if (action == 0) machine.Reset();
+        else if (action == 1) ejected = machine.EjectCart();
+        else
+        {
+            const u8 prefix[] = {0xA6, 0x19};
+            machine.SetNDSSave(prefix, sizeof(prefix));
+            std::copy(std::begin(prefix), std::end(prefix), expected.begin());
+        }
+        SaveCalls = 0; // The explicit import has its own legitimate callback.
+        Check(!f.Cart->GetSaveDelay() && !machine.SaveScheduled(), "Reset/eject/import left an internal save scheduled");
+        machine.AdvanceTo(deadline);
+        f.Expect(expected, "Cancelled internal write later committed across lifecycle boundary");
+        Check(SaveCalls == 0, "Cancelled internal write published a future save callback");
+    }
+    for (bool powerOff : {false, true})
+    {
+        FlashFixture f(cpu, true);
+        const auto before = std::vector<u8>(f.Cart->GetSaveMemory(), f.Cart->GetSaveMemory() + FlashFixture::Length);
+        BeginTimedWrite(f, 6, 0x0A, 0x27, {0x96}); f.Release(false);
+        f.Expect(before, "DSi write committed before internal completion");
+        Check(f.Cart->GetSaveDelay() != 0, "DSi did not start its internal write timer");
+        std::unique_ptr<FlashFixture> restored;
+        if (!powerOff)
+        {
+            Savestate pending; f.Save(pending, 10);
+            restored = std::make_unique<FlashFixture>(cpu, true, false, 0xC3);
+            restored->Restore(pending);
+            Check(restored->Machine->SchedList[Event_CartSave].Timestamp == f.Machine->SchedList[Event_CartSave].Timestamp &&
+                  restored->Cart->GetSaveDelay() == f.Cart->GetSaveDelay(),
+                  "DSi cold restore restarted or lost its internal save deadline");
+        }
+        FlashFixture& active = restored ? *restored : f;
+        SaveCalls = 0;
+        active.Machine->ARM7Write16(0x04004010, powerOff ? 0 : 4);
+        Check((active.Machine->ARM7Read16(0x04004010) & 0xC) == (powerOff ? 0 : 4),
+              "DSi lifecycle fixture missed the requested slot power state");
+        if (!powerOff)
+        {
+            Check(active.Cart->GetSaveDelay() != 0, "Clock-off power state 1 cancelled a powered internal write");
+            active.Machine->ARM7Write8(0x04000301, 0xC0); // Real HALTCNT sleep request.
+            Check(active.Machine->CPUStop & CPUStop_Sleep, "HALTCNT did not enter emulated sleep");
+        }
+        active.Machine->RunFrame(); // No SPI polling; powered writes progress during sleep.
+        auto expected = before;
+        if (!powerOff) expected[0x27] = 0x96;
+        active.Expect(expected, "DSi power/sleep policy lost a completed write or revived a cancelled one");
+        Check(!active.Cart->GetSaveDelay() && SaveCalls == (powerOff ? 0u : 1u),
+              "DSi internal timer did not progress/cancel independently of SPI clocks");
+    }
+}
+
 int main(int argc, char** argv)
 try
 {
     if (argc != 2) return 2;
     const std::string mode = argv[1];
+    if (mode == "write-timing")
+    {
+        ObserveSaves = true;
+        for (u32 cpu : {0u, 1u})
+        {
+            TestWriteTiming(cpu);
+            TestWriteTimingState(cpu);
+            TestWriteTimingLifecycle(cpu);
+        }
+        std::printf("Cart SPI write-timing: %u failures\n", Failures);
+        return Failures ? 1 : 0;
+    }
     if (mode == "byte-completion")
     {
         for (u32 cpu : {0u, 1u}) TestByteCompletion(cpu);

@@ -619,6 +619,7 @@ static void DSWrite(NDSCart::CartRetail& cart, u8 command, unsigned addressBytes
         cart.SPITransmitReceive(u8(address >> shift));
     for (char byte : data) cart.SPITransmitReceive(u8(byte));
     cart.SPIRelease();
+    cart.CompleteSave(); // Chip-only consumer: deliver its internal completion before disk flush.
 }
 static QByteArray DSRead(NDSCart::CartRetail& cart, u8 command, unsigned addressBytes,
                           u32 address, unsigned count)
@@ -751,7 +752,7 @@ static int DSSaveCapacity(const string& test)
                 {
                     cart.SPISelect(); cart.SPITransmitReceive(0x06); cart.SPIRelease();
                     cart.SPISelect(); cart.SPITransmitReceive(0x01);
-                    cart.SPITransmitReceive(value); cart.SPIRelease();
+                    cart.SPITransmitReceive(value); cart.SPIRelease(); cart.CompleteSave();
                 };
                 auto readStatus = [&]()
                 {

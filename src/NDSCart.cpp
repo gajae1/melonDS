@@ -201,6 +201,8 @@ void NDSCartSlot::Key2_Encrypt(const u8* data, u32 len) noexcept
 NDSCartSlot::NDSCartSlot(melonDS::NDS& nds, u32 num, std::unique_ptr<CartCommon>&& rom) noexcept
 : NDS(nds), Num(num)
 {
+    SaveEvent = Num ? Event_DSi_Cart2Save : Event_CartSave;
+    NDS.RegisterEventFuncs(SaveEvent, this, {MakeEventThunk(NDSCartSlot, CompleteSave)});
     SetLogicalNum(Num);
 
     if (rom)
@@ -209,11 +211,14 @@ NDSCartSlot::NDSCartSlot(melonDS::NDS& nds, u32 num, std::unique_ptr<CartCommon>
 
 NDSCartSlot::~NDSCartSlot() noexcept
 {
+    NDS.CancelEvent(SaveEvent);
+    NDS.UnregisterEventFuncs(SaveEvent);
     // Cart is cleaned up automatically because it's a unique_ptr
 }
 
 void NDSCartSlot::Reset() noexcept
 {
+    NDS.CancelEvent(SaveEvent);
     ClearLegacyTransfer();
     SetLogicalNum(Num);
 
@@ -765,8 +770,34 @@ void NDSCartSlot::SetCart(std::unique_ptr<CartCommon>&& cart) noexcept
     Log(LogLevel::Info, "ROM entry: %08X %08X\n", romparams.ROMSize, romparams.SaveMemType);
 }
 
+void NDSCartSlot::CompleteSave(u32 param)
+{
+    if (Cart) Cart->CompleteSave();
+}
+
+void NDSCartSlot::AdvanceSave(u64 timestamp)
+{
+    // A status byte at the exact deadline must see completion even when its
+    // SPI event has a lower scheduler index than the internal write event.
+    if (NDS.EventScheduled(SaveEvent) && NDS.SchedList[SaveEvent].Timestamp <= timestamp)
+    {
+        NDS.CancelEvent(SaveEvent);
+        CompleteSave(0);
+    }
+}
+
+void NDSCartSlot::ScheduleSave(u64 timestamp)
+{
+    if (!Cart || NDS.EventScheduled(SaveEvent)) return;
+    const u32 delay = Cart->GetSaveDelay();
+    if (!delay) return;
+    if (timestamp > UINT64_MAX - delay) { Cart->CancelSave(); return; }
+    NDS.ScheduleEventAt(SaveEvent, timestamp + delay, 0, 0);
+}
+
 void NDSCartSlot::SetSaveMemory(const u8* savedata, u32 savelen) noexcept
 {
+    NDS.CancelEvent(SaveEvent);
     if (Cart)
         Cart->SetSaveMemory(savedata, savelen);
 }
@@ -788,6 +819,8 @@ void NDSCartSlot::SetupDirectBoot(const std::string& romname) noexcept
 std::unique_ptr<CartCommon> NDSCartSlot::EjectCart() noexcept
 {
     if (!Cart) return nullptr;
+    NDS.CancelEvent(SaveEvent);
+    Cart->CancelSave();
     ClearLegacyTransfer();
     // The controller still finishes its clocked byte, but the old target must
     // not receive it after removal or be replaced by a newly inserted cart.
@@ -830,6 +863,8 @@ void NDSCartSlot::SetPowerState(u8 power)
 
     if (PowerState == 0)
     {
+        NDS.CancelEvent(SaveEvent);
+        if (Cart) Cart->CancelSave();
         // state 0 clears the "reset release" bit
         Interfaces[0].ROMCnt &= ~(1<<29);
         Interfaces[1].ROMCnt &= ~(1<<29);
@@ -1336,6 +1371,8 @@ void NDSCartSlot::Interface::WriteROMData(u32 val, u32 mask)
 
 void NDSCartSlot::Interface::WriteSPICnt(u16 val, u16 mask)
 {
+    const u64 timestamp = Num ? Parent.NDS.ARM7Timestamp : Parent.NDS.ARM9Timestamp >> Parent.NDS.ARM9ClockShift;
+    Parent.AdvanceSave(timestamp);
     val &= mask;
     const u16 newCnt = (SPICnt & (~mask | 0x0080)) | (val & 0xE043);
 
@@ -1356,6 +1393,7 @@ void NDSCartSlot::Interface::WriteSPICnt(u16 val, u16 mask)
             // A byte whose clocks have not finished cannot cross this CS edge.
             SPIFlags &= ~SPIToCart;
             Parent.Cart->SPIRelease();
+            Parent.ScheduleSave(timestamp);
         }
         else if (~SPICnt & newCnt & (1<<13))
             Parent.Cart->SPISelect();
@@ -1381,6 +1419,7 @@ u8 NDSCartSlot::Interface::ReadSPIData() const
 
 void NDSCartSlot::Interface::WriteSPIData(u8 val)
 {
+    Parent.AdvanceSave(Num ? Parent.NDS.ARM7Timestamp : Parent.NDS.ARM9Timestamp >> Parent.NDS.ARM9ClockShift);
     if (!(SPICnt & (1<<15))) return;
     if (!(SPICnt & (1<<13))) return;
     if (SPICnt & (1<<7)) return;
@@ -1416,6 +1455,8 @@ void NDSCartSlot::Interface::WriteSPIData(u8 val)
 
 void NDSCartSlot::Interface::SPITransferDone(u32 param)
 {
+    const u64 timestamp = Parent.NDS.SchedList[SPITransferEvent].Timestamp;
+    Parent.AdvanceSave(timestamp);
     const u8 flags = SPIFlags;
     SPIFlags = 0;
     if ((flags & SPIToCart) && Parent.CartActive)
@@ -1425,6 +1466,7 @@ void NDSCartSlot::Interface::SPITransferDone(u32 param)
         if (SPISelected && Parent.CartActive && (SPICnt & (1<<13)))
             Parent.Cart->SPIRelease();
         SPISelected = false;
+        Parent.ScheduleSave(timestamp);
     }
     SPICnt &= ~(1<<7);
 }

@@ -50,6 +50,7 @@ public:
     void RegisterEventFuncs(u32 id, void* that, const std::initializer_list<EventFunc>& funcs);
     void UnregisterEventFuncs(u32 id);
     void ScheduleEvent(u32 id, bool periodic, s32 delay, u32 funcid, u32 param);
+    void ScheduleEventAt(u32 id, u64 timestamp, u32 funcid, u32 param);
     void Reschedule(u64 target);
     void RunSystem(u64 timestamp);
     void CancelEvent(u32 id);
@@ -64,6 +65,7 @@ public:
 using Platform::Log;
 using Platform::LogLevel;
 #include "RTCScheduleEvent.inc"
+#include "RTCScheduleEventAt.inc"
 #include "RTCRegisterEventFuncs.inc"
 #include "RTCUnregisterEventFuncs.inc"
 #include "RTCReschedule.inc"
