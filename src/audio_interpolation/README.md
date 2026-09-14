@@ -10,7 +10,7 @@ Channel gain and pan are applied to timestamped input events before reconstructi
 Stereo tails retain those weights when the game stops and reuses a channel, so a
 new note cannot amplify or repan the previous note's residual. Both sides share
 the same kernel lookup; identical dense L/R histories also share accumulation.
-This does not change the frozen frequency response or guest audio capture.
+This does not change guest audio capture.
 
 The reference step responses were generated with
 [r8brain-free-src 7.5, commit 9e73d2dd59fd5b95108fdb4f590083e35758b45f](https://github.com/avaneev/r8brain-free-src/commit/9e73d2dd59fd5b95108fdb4f590083e35758b45f).
@@ -18,7 +18,7 @@ The local 57-file upstream snapshot was checked byte-for-byte against that commi
 archive. Its MIT notice is included in `LICENSE.r8brain` and Windows packages.
 
 For decoder period P and mixer interval M (352 or 512 clocks), the reference uses
-grid G=min(P,256), cutoff 1/(G*max(1,M/P)), transition band 10, attenuation 96 dB,
+grid G=min(P,256), cutoff 1/(G*max(1,M/P)), transition band 8, attenuation 96 dB,
 minimum phase and gain G. Each phase is normalized to unity DC (deviation is
 required to be below 1e-4 before normalization); the integrated step response is
 linearly sampled between grid points. These are design parameters, not measured
@@ -26,15 +26,29 @@ whole-game attenuation or physical latency guarantees.
 
 P1–256 residuals are fitted in blocks of M clocks with 16 Chebyshev coefficients
 (degree 15). P257–M-1 use 256-point blocks expanded once during preparation.
-P>=M shares one 19,843-value step response. P1–32 retain a trailing zero-support
+P>=M shares one 24,613-value step response. P1–32 retain a trailing zero-support
 block from the original dense fit. The loader validates record sizes and finite
 coefficients. Fits used NumPy 2.4.2 least squares; platform BLAS/SVD differences
 can change coefficient bits.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| bank-352.coeff | 3,805,348 | 300961fde06ef30a8182b345fd9a422ccb33842f16886ad8692d38fa47353227 |
-| bank-512.coeff | 6,202,532 | 1c2914cbdf11a347a591f3518b6129678e0e00dfa4e2f3f4bc213e1983deabef |
+| bank-352.coeff | 4,719,796 | a0b65302427e18271eab0186675c582d274434ae73c1aec4220093fd90fbdea9 |
+| bank-512.coeff | 7,705,396 | 42a73e6f5554221ac3fedbd104b875ec52a90d94e60437fdc62e5c1bf2e56320 |
+
+Version 1.1.121 replaces the previous 10-percent transition profile in the same
+option. The transition parameter measures the distance from the -3 dB point to
+cutoff. At 90 percent of the lower source/mixer Nyquist frequency, the normalized
+grid response is about -0.61 dB instead of -3.01 dB; at 95 percent it is about
+-13.82 dB instead of -20.41 dB. This preserves more upper-band detail while
+retaining the 96 dB stopband design target. Longer support increases processing
+cost; it is not a CPU optimization or a physical-latency guarantee.
+
+Independent raw-reference comparisons measured maximum fitted-step knot errors
+of 3.45e-7 (previous profile: 1.52e-7). Actual stereo stream checks with randomized
+full-scale samples, gain/pan changes and fixed/variable periods measured at most
+0.025 PCM units of error before rounding; rounded differences were at most one
+unit. These are bounded test results, not universal mixed-channel error bounds.
 
 To independently regenerate candidates, install NumPy (the verified run used
 2.4.2), provide GCC or Clang with C++20 support, then run from the repository root:

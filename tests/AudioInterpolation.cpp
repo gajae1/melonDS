@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <memory>
 #include <new>
+#include <numbers>
 #include <stdexcept>
 #include <vector>
 using namespace melonDS;
@@ -220,11 +221,42 @@ static void SilentChannelReuse()
     std::puts("silent channel reuse preserves previous note gain and pan PASS");
 }
 
+static void UpperPassband()
+{
+    for (const auto data : {std::span<const u8>(AudioInterpolation352, AudioInterpolation352Size),
+                            std::span<const u8>(AudioInterpolation512, AudioInterpolation512Size)})
+    {
+        auto bank = AudioInterpolationBank::Create(data);
+        AudioInterpolationStream stream(bank, 2048, 1);
+        const unsigned mix = bank->MixInterval();
+        // A coherent tone at 90% of Nyquist measures retained source detail,
+        // independently of the kernel's coefficient representation or phase.
+        constexpr unsigned warmup = 400, count = 2000;
+        constexpr double amplitude = 12000, omega = std::numbers::pi * 0.9;
+        double sine = 0, cosine = 0;
+        for (unsigned n = 0; n < warmup + count; ++n)
+        {
+            const double input = std::round(amplitude * std::sin(omega * n));
+            stream.Push(u64(n) * mix, {input, input}, mix);
+            const double output = stream.Read(u64(n) * mix)[0];
+            if (n >= warmup)
+            {
+                sine += output * std::sin(omega * n);
+                cosine += output * std::cos(omega * n);
+            }
+        }
+        const double gain = 2 * std::hypot(sine, cosine) / (count * amplitude);
+        Require(gain > 0.90 && gain < 1.01, "Minimum-phase upper passband loses source detail");
+    }
+    std::puts("minimum-phase upper passband retains 90-percent-Nyquist source detail PASS");
+}
+
 int main() try
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SparseStreamReference();
     SilentChannelReuse();
+    UpperPassband();
     for (bool dsi : {false, true})
     {
         auto plain = Make(dsi, AudioInterpolation::None);

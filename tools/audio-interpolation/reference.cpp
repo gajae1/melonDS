@@ -33,7 +33,7 @@ static std::vector<double> Step(unsigned period, unsigned mix, double& maxAdjust
     const unsigned grid = std::min(period, 256u);
     auto& filter = r8b::CDSPFIRFilterCache::getLPFilter(
         1.0 / (grid * std::max(1.0, double(mix) / period)),
-        10, 96, r8b::fprMinPhase, grid, 1);
+        8, 96, r8b::fprMinPhase, grid, 1);
     r8b::CDSPRealFFTKeeper fft(filter.getBlockLenBits() + 1);
     std::vector<double> taps(fft->getLen());
     std::copy_n(filter.getKernelBlock(), taps.size(), taps.data());
