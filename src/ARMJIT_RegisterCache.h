@@ -104,9 +104,9 @@ public:
         return LiteralsLoaded & (1 << reg);
     }
 
-    void PrepareExit()
+    void PrepareExit(u16 mask = 0xFFFF)
     {
-        BitSet16 dirtyRegs(DirtyRegs);
+        BitSet16 dirtyRegs(DirtyRegs & mask);
         for (int reg : dirtyRegs)
             Compiler->SaveReg(reg, Mapping[reg]);
     }

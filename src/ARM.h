@@ -145,13 +145,15 @@ public:
     void SetupCodeMem(u32 addr);
 
 
-    virtual void DataRead8(u32 addr, u32* val) = 0;
-    virtual void DataRead16(u32 addr, u32* val) = 0;
-    virtual void DataRead32(u32 addr, u32* val) = 0;
+    // False means the access entered an exception; single-transfer handlers
+    // must return before changing destinations or applying base writeback.
+    virtual bool DataRead8(u32 addr, u32* val) = 0;
+    virtual bool DataRead16(u32 addr, u32* val) = 0;
+    virtual bool DataRead32(u32 addr, u32* val) = 0;
     virtual void DataRead32S(u32 addr, u32* val) = 0;
-    virtual void DataWrite8(u32 addr, u8 val) = 0;
-    virtual void DataWrite16(u32 addr, u16 val) = 0;
-    virtual void DataWrite32(u32 addr, u32 val) = 0;
+    virtual bool DataWrite8(u32 addr, u8 val) = 0;
+    virtual bool DataWrite16(u32 addr, u16 val) = 0;
+    virtual bool DataWrite32(u32 addr, u32 val) = 0;
     virtual void DataWrite32S(u32 addr, u32 val) = 0;
 
     virtual void AddCycles_C() = 0;
@@ -266,13 +268,13 @@ public:
     // all code accesses are forced nonseq 32bit
     u32 CodeRead32(u32 addr, bool branch);
 
-    void DataRead8(u32 addr, u32* val) override;
-    void DataRead16(u32 addr, u32* val) override;
-    void DataRead32(u32 addr, u32* val) override;
+    bool DataRead8(u32 addr, u32* val) override;
+    bool DataRead16(u32 addr, u32* val) override;
+    bool DataRead32(u32 addr, u32* val) override;
     void DataRead32S(u32 addr, u32* val) override;
-    void DataWrite8(u32 addr, u8 val) override;
-    void DataWrite16(u32 addr, u16 val) override;
-    void DataWrite32(u32 addr, u32 val) override;
+    bool DataWrite8(u32 addr, u8 val) override;
+    bool DataWrite16(u32 addr, u16 val) override;
+    bool DataWrite32(u32 addr, u32 val) override;
     void DataWrite32S(u32 addr, u32 val) override;
 
     void AddCycles_C() override
@@ -346,6 +348,8 @@ public:
     u32 ITCMSize;
     u32 DTCMBase, DTCMMask;
     s32 RegionCodeCycles;
+    // Keep the active MPU pointer in A64 immediate load range as well.
+    u8* PU_Map;
 
     u8 ITCM[ITCMPhysicalSize];
     u8* DTCM;
@@ -366,10 +370,6 @@ public:
     // 0=dataR 1=dataW 2=codeR 4=datacache 5=datawrite 6=codecache
     u8 PU_PrivMap[0x100000];
     u8 PU_UserMap[0x100000];
-
-    // games operate under system mode, generally
-    //#define PU_Map PU_PrivMap
-    u8* PU_Map;
 
     // code/16N/32N/32S
     u8 MemTimings[0x100000][4];
@@ -414,13 +414,13 @@ public:
         return BusRead32(addr);
     }
 
-    void DataRead8(u32 addr, u32* val) override;
-    void DataRead16(u32 addr, u32* val) override;
-    void DataRead32(u32 addr, u32* val) override;
+    bool DataRead8(u32 addr, u32* val) override;
+    bool DataRead16(u32 addr, u32* val) override;
+    bool DataRead32(u32 addr, u32* val) override;
     void DataRead32S(u32 addr, u32* val) override;
-    void DataWrite8(u32 addr, u8 val) override;
-    void DataWrite16(u32 addr, u16 val) override;
-    void DataWrite32(u32 addr, u32 val) override;
+    bool DataWrite8(u32 addr, u8 val) override;
+    bool DataWrite16(u32 addr, u16 val) override;
+    bool DataWrite32(u32 addr, u32 val) override;
     void DataWrite32S(u32 addr, u32 val) override;
     void AddCycles_C() override;
     void AddCycles_CI(s32 num) override;

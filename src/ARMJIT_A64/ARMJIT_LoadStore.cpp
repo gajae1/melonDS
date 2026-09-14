@@ -26,6 +26,8 @@
 
 using namespace Arm64Gen;
 
+extern "C" void ARM_Ret();
+
 namespace melonDS
 {
 
@@ -62,6 +64,35 @@ u8* Compiler::RewriteMemAccess(u8* pc)
     abort();
 }
 
+void Compiler::Comp_MemPermission(ARM64Reg address, bool store)
+{
+    if (Num != 0) return;
+    if (Thumb ? CurInstr.Info.Kind >= ARMInstrInfo::tk_PUSH
+                  && CurInstr.Info.Kind <= ARMInstrInfo::tk_STMIA
+              : CurInstr.Info.Kind == ARMInstrInfo::ak_LDM || CurInstr.Info.Kind == ARMInstrInfo::ak_STM)
+        return;
+    // W0 (effective address) and W4 (aliased store value) stay live on success.
+    static_assert(offsetof(ARMv5, PU_Map) < 4096 * 8);
+    LSR(W1, address, 12);
+    LDR(INDEX_UNSIGNED, X2, RCPU, offsetof(ARMv5, PU_Map));
+    LDRB(W1, X2, ArithOption(X1));
+    const auto allowed = TBNZ(W1, store ? 1 : 0);
+    RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);
+    SaveCPSR(false);
+    MOVI2R(W0, R15);
+    STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, R[15]));
+    // The helper adds exception-refill cycles to memory. Publish the prior
+    // native cycles first, then reload both values that ARM_Ret writes back.
+    if (ConstantCycles) ADD(RCycles, RCycles, ConstantCycles);
+    SaveCycles();
+    MOV(X0, RCPU);
+    QuickCallFunction(X1, JITDataAbort);
+    LoadCycles();
+    LDR(INDEX_UNSIGNED, RCPSR, RCPU, offsetof(ARM, CPSR));
+    QuickTailCall(X0, ARM_Ret);
+    SetJumpTarget(allowed);
+}
+
 bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
 {
     u32 localAddr = NDS.JIT.LocaliseCodeAddress(Num, addr);
@@ -73,6 +104,10 @@ bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
         return false;
     }
 
+    if (Num == 0) {
+        MOVI2R(W0, addr);
+        Comp_MemPermission(W0, false);
+    }
     Comp_AddCycles_CDI();
 
     u32 val;
@@ -122,10 +157,6 @@ void Compiler::Comp_MemAccess(int rd, int rn, Op2 offset, int size, int flags)
             return;
     }
     
-    if (flags & memop_Store)
-        Comp_AddCycles_CD();
-    else
-        Comp_AddCycles_CDI();
 
     ARM64Reg rdMapped = MapReg(rd);
     ARM64Reg rnMapped = MapReg(rn);
@@ -145,6 +176,7 @@ void Compiler::Comp_MemAccess(int rd, int rn, Op2 offset, int size, int flags)
     ARM64Reg finalAddr = W0;
     if (flags & memop_Post)
     {
+        Comp_MemPermission(rnMapped, flags & memop_Store);
         finalAddr = rnMapped;
         MOV(W0, rnMapped);
     }
@@ -183,6 +215,10 @@ void Compiler::Comp_MemAccess(int rd, int rn, Op2 offset, int size, int flags)
         else
             ADD(finalAddr, rnMapped, offset.Reg.Rm, offset.ToArithOption());
     }
+
+    if (!(flags & memop_Post)) Comp_MemPermission(W0, flags & memop_Store);
+    if (flags & memop_Store) Comp_AddCycles_CD();
+    else Comp_AddCycles_CDI();
 
     if (!(flags & memop_Post) && (flags & memop_Writeback))
         MOV(rnMapped, W0);

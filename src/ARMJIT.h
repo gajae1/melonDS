@@ -56,6 +56,7 @@ public:
     void CompileBlock(ARM* cpu) noexcept;
     void ResetBlockCache() noexcept;
     void PrepareCodeRemap() noexcept;
+    void NotifyDataAbort() noexcept { CompileException = CompilingBlock; }
     ARM* ExecutingCPU = nullptr;
     bool ExecutingNative = false;
 
@@ -91,6 +92,7 @@ private:
     bool FastMemory = false;
     bool CompilingBlock = false;
     bool CompileMappingChanged = false;
+    bool CompileException = false;
     TinyVector<u32> CompileWriteAddrs {};
     void RemoveBlock(JitBlock* block) noexcept;
 

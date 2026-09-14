@@ -171,6 +171,8 @@ public:
         memop_Store = 1 << 3,
         memop_SubtractOffset = 1 << 4
     };
+    u16 AbortDirtyRegs = 0;
+    void Comp_MemPermission(const Gen::OpArg& address, bool store);
     void Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flags);
     s32 Comp_MemAccessBlock(int rn, Common::BitSet16 regs, bool store, bool preinc, bool decrement, bool usermode, bool skipLoadingRn);
     bool Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr);

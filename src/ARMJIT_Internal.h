@@ -82,6 +82,8 @@ struct __attribute__((packed)) AddressRange
 
 
 typedef void (*InterpreterFunc)(ARM* cpu);
+void JITDataAbort(ARMv5* cpu);
+
 extern InterpreterFunc InterpretARM[];
 extern InterpreterFunc InterpretTHUMB[];
 

@@ -51,6 +51,8 @@ public:
     RegisterCache<Compiler, ARM64Reg> RegCache;
     ARM* CurCPU = nullptr;
     bool Thumb = false, Exit = false, IrregularCycles = false;
+    u16 AbortDirtyRegs = 0;
+    void Comp_MemPermission(ARM64Reg address, bool store);
     u32 Num = 0, R15 = 0, CodeRegion = 0, ConstantCycles = 0;
     u32 JitMemMainSize = 1024 * 1024, JitMemSecondarySize = 1024 * 1024;
     ptrdiff_t OtherCodeRegion = JitMemMainSize;
@@ -117,6 +119,7 @@ std::array<Compiler::CompileFunc, ARMInstrInfo::tk_Count> T_Comp{};
 #include "ARM64JitSaveCPSR.inc"
 #include "ARM64JitLoadReg.inc"
 #include "ARM64JitSaveReg.inc"
+#include "ARM64JitMemPermission.inc"
 #include "ARM64JitTriOp.inc"
 #include "ARM64JitGetOp2.inc"
 #include "ARM64JitShiftReg.inc"
@@ -436,6 +439,43 @@ int ExportMultiplyBlocks()
 }
 #endif
 
+int ExportMPUGuards()
+{
+    NDSArgs args;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    for (unsigned num : {0u, 1u}) for (bool thumb : {false, true}) for (bool store : {false, true})
+    {
+        std::array<u32, 256> code{};
+        Compiler compiler(*nds);
+        compiler.SetCodeBase(reinterpret_cast<u8*>(code.data()), reinterpret_cast<u8*>(code.data()));
+        compiler.Num = num;
+        compiler.Thumb = thumb;
+        compiler.CurInstr.Info.Kind = thumb ? ARMInstrInfo::tk_LDR_IMM : ARMInstrInfo::ak_LDR_IMM;
+        compiler.R15 = 0x02000C00 + (thumb ? 4 : 8);
+        compiler.ConstantCycles = 13;
+        compiler.CPSRDirty = true;
+        compiler.RegCache = RegisterCache<Compiler, ARM64Reg>(&compiler, nullptr, 0);
+        compiler.RegCache.Mapping[0] = W19;
+        compiler.RegCache.Mapping[1] = W20;
+        compiler.RegCache.LoadedRegs = compiler.RegCache.DirtyRegs = 3;
+        compiler.AbortDirtyRegs = 1; // r1 was allocated for the unexecuted load.
+        compiler.Comp_MemPermission(W0, store);
+        compiler.STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, R[4]));
+        compiler.STR(INDEX_UNSIGNED, W4, RCPU, offsetof(ARM, R[5]));
+        compiler.QuickTailCall(X0, ARM_Ret);
+        const auto words = std::span(code).first(compiler.GetCodeOffset() / 4);
+        std::printf("{\"num\":%u,\"thumb\":%u,\"store\":%u,\"base\":%llu,\"return\":%llu,\"abort\":%llu,"
+                    "\"regOffset\":%u,\"cpsrOffset\":%u,\"cyclesOffset\":%u,\"mapOffset\":%u,\"words\":[",
+            num, unsigned(thumb), unsigned(store), (unsigned long long)code.data(),
+            (unsigned long long)&ARM_Ret, (unsigned long long)&JITDataAbort,
+            unsigned(offsetof(ARM, R)), unsigned(offsetof(ARM, CPSR)),
+            unsigned(offsetof(ARM, Cycles)), unsigned(offsetof(ARMv5, PU_Map)));
+        for (size_t i = 0; i < words.size(); ++i) std::printf("%s%u", i ? "," : "", words[i]);
+        std::puts("]}");
+    }
+    return 0;
+}
+
 int TestConditionalCycles()
 {
     NDSArgs args;
@@ -529,6 +569,7 @@ int main(int argc, char** argv)
     const std::string_view filter = argc == 2 ? argv[1] : "all";
 #ifdef ARM64_JIT_BLOCK_TEST
 #ifdef ARM64_JIT_MUL_TEST
+    if (filter == "export-mpu") return A64Test::ExportMPUGuards();
     if (filter == "export-mul-cycles") return A64Test::ExportMultiplyBlocks();
 #endif
     if (filter == "conditional-cycles") return A64Test::TestConditionalCycles();

@@ -7,6 +7,7 @@
 #include "Args.h"
 #include "ARM.h"
 #include "NDS.h"
+#include "Savestate.h"
 
 #include <cstdio>
 #include <memory>
@@ -277,5 +278,154 @@ int TestCacheMPUDisabled(NDSArgs&& args, bool jit)
         }
     }
     std::printf("{\"summary\":true,\"checked\":%u,\"failures\":%u}\n", checked, failures);
+    return failures ? 1 : 0;
+}
+
+// ARM946E-S TRM 2.2.1: a denied single transfer restores the base and
+// preserves the destination. Exercise real tracing and reused native blocks.
+int TestMPUDataAbort(NDSArgs&& args, bool jit)
+{
+    if (args.JIT) {
+        args.JIT->MaxBlockSize = 4;
+        args.JIT->BranchOptimizations = false;
+        args.JIT->LiteralOptimizations = true;
+    }
+    args.ARM9BIOS = std::make_unique<ARM9BIOSImage>();
+    for (size_t i = 0; i < args.ARM9BIOS->size(); i += 4) {
+        (*args.ARM9BIOS)[i] = 0xFE;
+        (*args.ARM9BIOS)[i+1] = 0xFF;
+        (*args.ARM9BIOS)[i+2] = 0xFF;
+        (*args.ARM9BIOS)[i+3] = 0xEA;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    NDS::Current = nds.get();
+    auto& cpu = nds->ARM9;
+    constexpr u32 code = Driver+0xC00, data = Driver+0x1000;
+    constexpr u32 flags = 0x6800005F; // ADDS r3,#1: FFFFFFFF+1 => Z,C; preserve Q,F
+    struct Probe { const char* name; u32 op; bool thumb, store; u32 bits; bool pre, wb; bool user = false, skip = false; u32 deniedAP = 0; };
+    const Probe probes[] = {
+        {"ldr-post", 0xE4910004, false, false, 32, false, true},
+        {"ldr-user", 0xE4910004, false, false, 32, false, true, true, false, 1},
+        {"str-readonly", 0xE4810004, false, true, 32, false, true, false, false, 5},
+        {"ldr-ne-skipped", 0x14910004, false, false, 32, false, true, false, true},
+        {"ldr-pre", 0xE5B10004, false, false, 32, true, true},
+        {"str-post", 0xE4810004, false, true, 32, false, true},
+        {"str-pre", 0xE5A10004, false, true, 32, true, true},
+        {"ldrb-post", 0xE4D10004, false, false, 8, false, true},
+        {"strb-post", 0xE4C10004, false, true, 8, false, true},
+        {"ldrh-pre", 0xE1F100B4, false, false, 16, true, true},
+        {"strh-pre", 0xE1E100B4, false, true, 16, true, true},
+        {"ldrsb-post", 0xE0D100D4, false, false, 9, false, true},
+        {"ldrsh-post", 0xE0D100F4, false, false, 17, false, true},
+        {"ldr-literal", 0xE59F03F0, false, false, 32, false, false},
+        {"thumb-ldr", 0x6808, true, false, 32, false, false},
+        {"thumb-str", 0x6008, true, true, 32, false, false},
+        {"thumb-ldrsb", 0x5708, true, false, 9, false, false},
+        {"thumb-ldrsh", 0x5F08, true, false, 17, false, false},
+        {"thumb-strh", 0x8008, true, true, 16, false, false},
+        {"thumb-literal", 0x48FE, true, false, 32, false, false},
+    };
+    unsigned failures = 0, checked = 0;
+    for (const auto& probe : probes)
+    {
+        nds->Reset();
+        nds->CurCPU = 0;
+        const unsigned width = probe.thumb ? 2 : 4;
+        if (probe.thumb) {
+            nds->ARM9Write16(code, 0x4610); // MOV r0,r2: dirty destination before load
+            nds->ARM9Write16(code+2, 0x3301); // ADDS r3,#1
+            nds->ARM9Write16(code+4, probe.op);
+            nds->ARM9Write16(code+6, 0x2601); // MOVS r6,#1: must not run after fault
+            nds->ARM9Write16(code+8, 0xE7FE);
+        } else {
+            nds->ARM9Write32(code, 0xE1A00002); // MOV r0,r2
+            nds->ARM9Write32(code+4, 0xE2933001); // ADDS r3,r3,#1
+            nds->ARM9Write32(code+8, probe.op);
+            nds->ARM9Write32(code+12, 0xE3B06001); // MOVS r6,#1
+            nds->ARM9Write32(code+16, 0xEAFFFFFE);
+        }
+        cpu.CP15Write(0x600, Vectors | 0x17);
+        cpu.CP15Write(0x610, Driver | 0x17);
+        cpu.CP15Write(0x620, data | 0x17);
+        cpu.CP15Write(0x503, 0x33);
+        cpu.CP15Write(0x502, 0x333);
+        cpu.CP15Write(0x100, 0x2001);
+        // Cold denial, permission restored for training, warmed denial, recovery.
+        for (unsigned phase = 0; phase < 4; ++phase)
+        {
+            const bool deny = !(phase & 1);
+            bool cached = false;
+#ifdef JIT_ENABLED
+            cached = jit && nds->JIT.JitBlocks9.contains(code | unsigned(probe.thumb));
+#endif
+            const u32 old = cpu.CPSR;
+            const u32 modeFlags = (flags & ~0x1Fu) | (probe.user ? 0x10 : 0x1F);
+            cpu.CPSR = (InitialCPSR & ~0x1Fu) | (probe.user ? 0x10 : 0x1F) | (probe.thumb ? 0x20 : 0);
+            cpu.UpdateMode(old, cpu.CPSR);
+            cpu.CP15Write(0x502, deny ? 0x33 | (probe.deniedAP << 8) : 0x333);
+            // Store-side permission faults must not affect the target bytes.
+            // Do not invalidate a tracked literal by rewriting identical bytes
+            // between warm phases; the revoked load must use its cached block.
+            if (phase == 0 || probe.store) nds->ARM9Write32(data, Stored);
+            cpu.R[0] = 0x1234;
+            cpu.R[1] = data - (probe.pre ? 4 : 0);
+            const u32 base = cpu.R[1];
+            cpu.R[2] = Sentinel;
+            cpu.R[3] = 0xFFFFFFFF;
+            cpu.R[4] = 0; // Thumb register-offset probes
+            cpu.R[6] = 0x9999;
+            cpu.R_ABT[2] = SPSRSentinel;
+            cpu.StopExecution = 0;
+            cpu.JumpTo(code | unsigned(probe.thumb));
+            cpu.Cycles = 0;
+            nds->ARM9Timestamp = 0;
+            for (unsigned step = 0; step < 4; ++step)
+            {
+                nds->ARM9Target = nds->ARM9Timestamp + 1;
+#ifdef JIT_ENABLED
+                if (jit) cpu.Execute<CPUExecuteMode::JIT>();
+                else
+#endif
+                    cpu.Execute<CPUExecuteMode::Interpreter>();
+                if ((cpu.CPSR & 0x1F) == 0x17 || cpu.R[6] == 1) break;
+            }
+            u32 loaded = Stored;
+            if (probe.bits == 8) loaded &= 0xFF;
+            if (probe.bits == 16) loaded &= 0xFFFF;
+            if (probe.bits == 9) loaded = u32(s32(s8(Stored)));
+            if (probe.bits == 17) loaded = u32(s32(s16(Stored)));
+            const u32 mask = probe.bits == 8 ? 0xFF : probe.bits == 16 ? 0xFFFF : ~0u;
+            const u32 expectedMemory = !deny && probe.store ? (Stored & ~mask) | (Sentinel & mask) : Stored;
+            const u32 expectedValue = deny || probe.store || probe.skip ? Sentinel : loaded;
+            const u32 expectedBase = !deny && probe.wb && !probe.skip ? base + 4 : base;
+            bool ok = cpu.R[0] == expectedValue && cpu.R[1] == expectedBase &&
+                cpu.R[3] == 0 && nds->ARM9Read32(data) == expectedMemory &&
+                (!jit || phase < 2 || cached) &&
+                (!jit || phase != 1 || probe.skip || !cached);
+            if (deny && !probe.skip) {
+                ok &= cpu.R[15] == Vectors+0x14 && cpu.R[14] == code+2*width+8 &&
+                    cpu.CPSR == ((modeFlags & ~0xBFu) | 0x97) &&
+                    cpu.R_ABT[2] == (modeFlags | (probe.thumb ? 0x20 : 0)) && cpu.R[6] == 0x9999;
+            } else ok &= cpu.R[6] == 1 && (cpu.CPSR & 0x3F) == ((probe.user ? 0x10u : 0x1Fu) | (probe.thumb ? 0x20u : 0u));
+            if (&probe == &probes[0] && phase == 0) {
+                Savestate saved(0x20000);
+                cpu.DoSavestate(&saved);
+                saved.Finish();
+                cpu.R[0] = 0;
+                cpu.CP15Write(0x502, 0x333);
+                Savestate restored(saved.Buffer(), saved.Length(), false);
+                cpu.DoSavestate(&restored);
+                ok &= !saved.Error && !restored.Error && cpu.R[0] == Sentinel &&
+                    cpu.CP15Read(0x502) == 0x33 && !(cpu.PU_Map[data >> 12] & 1) &&
+                    cpu.R[15] == Vectors+0x14 && cpu.R_ABT[2] == modeFlags;
+            }
+            ++checked;
+            failures += !ok;
+            std::printf("data-abort/%s/%s/%u: %s cached=%d r0=%08x base=%08x PC=%08x LR=%08x CPSR=%08x SPSR=%08x cycles=%llu\n",
+                jit ? "jit" : "interpreter", probe.name, phase, ok ? "PASS" : "FAIL", cached,
+                cpu.R[0], cpu.R[1], cpu.R[15], cpu.R[14], cpu.CPSR, cpu.R_ABT[2], nds->ARM9Timestamp);
+        }
+    }
+    std::printf("MPU single transfers: %u/%u passed\n", checked-failures, checked);
     return failures ? 1 : 0;
 }

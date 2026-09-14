@@ -92,6 +92,11 @@ u32 ARMJIT::LocaliseCodeAddress(u32 num, u32 addr) const noexcept
     return 0;
 }
 
+void JITDataAbort(ARMv5* cpu)
+{
+    cpu->DataAbort();
+}
+
 template <typename T, int ConsoleType>
 T SlowRead9(u32 addr, ARMv5* cpu)
 {
@@ -671,6 +676,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     // indexed. Record their physical addresses at the existing write barrier.
     CompileWriteAddrs.Clear();
     CompileMappingChanged = false;
+    CompileException = false;
     CompilingBlock = true;
     do
     {
@@ -786,6 +792,14 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
                 else
                     cpu->AddCycles_C();
             }
+        }
+
+        if (CompileException)
+        {
+            // The interpreter entered an exception. Its faulting trace is not
+            // a successful native memory operation and must not be published.
+            CompilingBlock = false;
+            return;
         }
 
         if (CompileMappingChanged)
@@ -926,8 +940,13 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
 
         bool canCompile = JITCompiler.CanCompile(thumb, instrs[i - 1].Info.Kind);
         bool secondaryFlagReadCond = !canCompile || (instrs[i - 1].BranchFlags & (branch_FollowCondTaken | branch_FollowCondNotTaken));
-        // A mapping-writing store can leave native code after this instruction.
-        if (instrs[i - 1].Info.SpecialKind == ARMInstrInfo::special_WriteMem)
+        // A memory fault saves the flags from before the current instruction.
+        // Stores may also leave native code after remapping memory.
+        const auto kind = instrs[i - 1].Info.Kind;
+        const bool memory = thumb
+            ? kind >= ARMInstrInfo::tk_LDR_PCREL && kind <= ARMInstrInfo::tk_STMIA
+            : kind >= ARMInstrInfo::ak_STR_REG_LSL && kind <= ARMInstrInfo::ak_STM;
+        if ((cpu->Num == 0 && memory) || instrs[i - 1].Info.SpecialKind == ARMInstrInfo::special_WriteMem)
             FloodFillSetFlags(instrs, i - 2, 0xF);
         if (instrs[i - 1].Info.ReadFlags != 0 || secondaryFlagReadCond)
             FloodFillSetFlags(instrs, i - 2, !secondaryFlagReadCond ? instrs[i - 1].Info.ReadFlags : 0xF);

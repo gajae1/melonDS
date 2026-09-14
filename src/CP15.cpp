@@ -813,12 +813,12 @@ u32 ARMv5::CodeRead32(u32 addr, bool branch)
 }
 
 
-void ARMv5::DataRead8(u32 addr, u32* val)
+bool ARMv5::DataRead8(u32 addr, u32* val)
 {
     if (!(PU_Map[addr>>12] & 0x01))
     {
         DataAbort();
-        return;
+        return false;
     }
 
     DataRegion = addr;
@@ -827,25 +827,26 @@ void ARMv5::DataRead8(u32 addr, u32* val)
     {
         DataCycles = 1;
         *val = *(u8*)&ITCM[addr & (ITCMPhysicalSize - 1)];
-        return;
+        return true;
     }
     if ((addr & DTCMMask) == DTCMBase)
     {
         DataCycles = 1;
         *val = *(u8*)&DTCM[addr & (DTCMPhysicalSize - 1)];
-        return;
+        return true;
     }
 
     *val = BusRead8(addr);
     DataCycles = MemTimings[addr >> 12][1];
+    return true;
 }
 
-void ARMv5::DataRead16(u32 addr, u32* val)
+bool ARMv5::DataRead16(u32 addr, u32* val)
 {
     if (!(PU_Map[addr>>12] & 0x01))
     {
         DataAbort();
-        return;
+        return false;
     }
 
     DataRegion = addr;
@@ -856,25 +857,26 @@ void ARMv5::DataRead16(u32 addr, u32* val)
     {
         DataCycles = 1;
         *val = *(u16*)&ITCM[addr & (ITCMPhysicalSize - 1)];
-        return;
+        return true;
     }
     if ((addr & DTCMMask) == DTCMBase)
     {
         DataCycles = 1;
         *val = *(u16*)&DTCM[addr & (DTCMPhysicalSize - 1)];
-        return;
+        return true;
     }
 
     *val = BusRead16(addr);
     DataCycles = MemTimings[addr >> 12][1];
+    return true;
 }
 
-void ARMv5::DataRead32(u32 addr, u32* val)
+bool ARMv5::DataRead32(u32 addr, u32* val)
 {
     if (!(PU_Map[addr>>12] & 0x01))
     {
         DataAbort();
-        return;
+        return false;
     }
 
     DataRegion = addr;
@@ -885,17 +887,18 @@ void ARMv5::DataRead32(u32 addr, u32* val)
     {
         DataCycles = 1;
         *val = *(u32*)&ITCM[addr & (ITCMPhysicalSize - 1)];
-        return;
+        return true;
     }
     if ((addr & DTCMMask) == DTCMBase)
     {
         DataCycles = 1;
         *val = *(u32*)&DTCM[addr & (DTCMPhysicalSize - 1)];
-        return;
+        return true;
     }
 
     *val = BusRead32(addr);
     DataCycles = MemTimings[addr >> 12][2];
+    return true;
 }
 
 void ARMv5::DataRead32S(u32 addr, u32* val)
@@ -919,12 +922,12 @@ void ARMv5::DataRead32S(u32 addr, u32* val)
     DataCycles += MemTimings[addr >> 12][3];
 }
 
-void ARMv5::DataWrite8(u32 addr, u8 val)
+bool ARMv5::DataWrite8(u32 addr, u8 val)
 {
     if (!(PU_Map[addr>>12] & 0x02))
     {
         DataAbort();
-        return;
+        return false;
     }
 
     DataRegion = addr;
@@ -934,25 +937,26 @@ void ARMv5::DataWrite8(u32 addr, u8 val)
         DataCycles = 1;
         *(u8*)&ITCM[addr & (ITCMPhysicalSize - 1)] = val;
         NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_ITCM>(addr);
-        return;
+        return true;
     }
     if ((addr & DTCMMask) == DTCMBase)
     {
         DataCycles = 1;
         *(u8*)&DTCM[addr & (DTCMPhysicalSize - 1)] = val;
-        return;
+        return true;
     }
 
     BusWrite8(addr, val);
     DataCycles = MemTimings[addr >> 12][1];
+    return true;
 }
 
-void ARMv5::DataWrite16(u32 addr, u16 val)
+bool ARMv5::DataWrite16(u32 addr, u16 val)
 {
     if (!(PU_Map[addr>>12] & 0x02))
     {
         DataAbort();
-        return;
+        return false;
     }
 
     DataRegion = addr;
@@ -964,25 +968,26 @@ void ARMv5::DataWrite16(u32 addr, u16 val)
         DataCycles = 1;
         *(u16*)&ITCM[addr & (ITCMPhysicalSize - 1)] = val;
         NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_ITCM>(addr);
-        return;
+        return true;
     }
     if ((addr & DTCMMask) == DTCMBase)
     {
         DataCycles = 1;
         *(u16*)&DTCM[addr & (DTCMPhysicalSize - 1)] = val;
-        return;
+        return true;
     }
 
     BusWrite16(addr, val);
     DataCycles = MemTimings[addr >> 12][1];
+    return true;
 }
 
-void ARMv5::DataWrite32(u32 addr, u32 val)
+bool ARMv5::DataWrite32(u32 addr, u32 val)
 {
     if (!(PU_Map[addr>>12] & 0x02))
     {
         DataAbort();
-        return;
+        return false;
     }
 
     DataRegion = addr;
@@ -994,17 +999,18 @@ void ARMv5::DataWrite32(u32 addr, u32 val)
         DataCycles = 1;
         *(u32*)&ITCM[addr & (ITCMPhysicalSize - 1)] = val;
         NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_ITCM>(addr);
-        return;
+        return true;
     }
     if ((addr & DTCMMask) == DTCMBase)
     {
         DataCycles = 1;
         *(u32*)&DTCM[addr & (DTCMPhysicalSize - 1)] = val;
-        return;
+        return true;
     }
 
     BusWrite32(addr, val);
     DataCycles = MemTimings[addr >> 12][2];
+    return true;
 }
 
 void ARMv5::DataWrite32S(u32 addr, u32 val)

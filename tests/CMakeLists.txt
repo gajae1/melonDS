@@ -226,7 +226,7 @@ if (TARGET core)
         if (NOT ENABLE_JIT AND NOT backend STREQUAL "interpreter")
             continue()
         endif()
-        foreach(group IN ITEMS alu-shift thumb-shift-timing multiply-cycles thumb-stack thumb-push-timing unaligned-memory block-transfer dtcm-remap mpu-execution cache-mpu-disabled device-execution smc-reentry smc-literal-regions)
+        foreach(group IN ITEMS alu-shift thumb-shift-timing multiply-cycles thumb-stack thumb-push-timing unaligned-memory block-transfer dtcm-remap mpu-execution mpu-data-abort cache-mpu-disabled device-execution smc-reentry smc-literal-regions)
             add_test(NAME core-${backend}-${group} COMMAND CoreExecution ${backend} ${group})
             set_tests_properties(core-${backend}-${group} PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
         endforeach()
@@ -427,6 +427,7 @@ if (TARGET core AND ENABLE_JIT)
         "SaveCPSR|ARMJIT_Compiler.cpp|void Compiler::SaveCPSR(bool markClean)"
         "LoadReg|ARMJIT_Compiler.cpp|void Compiler::LoadReg(int reg, ARM64Reg nativeReg)"
         "SaveReg|ARMJIT_Compiler.cpp|void Compiler::SaveReg(int reg, ARM64Reg nativeReg)"
+        "MemPermission|ARMJIT_LoadStore.cpp|void Compiler::Comp_MemPermission(ARM64Reg address, bool store)"
         "TriOp|ARMJIT_ALU.cpp|void Compiler::A_Comp_ALUTriOp()"
         "GetOp2|ARMJIT_ALU.cpp|void Compiler::A_Comp_GetOp2(bool S, Op2& op2)"
         "ShiftReg|ARMJIT_ALU.cpp|void Compiler::Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs)"
@@ -462,6 +463,10 @@ if (TARGET core AND ENABLE_JIT)
             COMMAND "${MELONDS_UNICORN_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/ARM64JitMultiply.py"
                 "$<TARGET_FILE:ARM64JitArithmetic>")
         set_tests_properties(arm64-jit-multiply-execution PROPERTIES TIMEOUT 60)
+        add_test(NAME arm64-jit-mpu-execution
+            COMMAND "${MELONDS_UNICORN_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/ARM64JitMPU.py"
+                "$<TARGET_FILE:ARM64JitArithmetic>")
+        set_tests_properties(arm64-jit-mpu-execution PROPERTIES TIMEOUT 30)
     endif()
 endif()
 

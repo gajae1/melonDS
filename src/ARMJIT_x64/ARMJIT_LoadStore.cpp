@@ -23,6 +23,8 @@
 
 using namespace Gen;
 
+extern "C" void ARM_Ret();
+
 namespace melonDS
 {
 
@@ -68,6 +70,37 @@ u8* Compiler::RewriteMemAccess(u8* pc)
     improvement.
 */
 
+void Compiler::Comp_MemPermission(const OpArg& address, bool store)
+{
+    if (Num != 0) return;
+    // Block transfers have a separate partial-transfer/base-restoration contract.
+    if (Thumb ? CurInstr.Info.Kind >= ARMInstrInfo::tk_PUSH
+                  && CurInstr.Info.Kind <= ARMInstrInfo::tk_STMIA
+              : CurInstr.Info.Kind == ARMInstrInfo::ak_LDM || CurInstr.Info.Kind == ARMInstrInfo::ak_STM)
+        return;
+    MOV(32, R(RSCRATCH2), address);
+    SHR(32, R(RSCRATCH2), Imm8(12));
+    MOV(64, R(RSCRATCH), MDisp(RCPU, offsetof(ARMv5, PU_Map)));
+    TEST(8, MRegSum(RSCRATCH, RSCRATCH2), Imm8(store ? 2 : 1));
+    // Keep normal accesses on the fall-through path and rare exception code
+    // out of the hot instruction stream.
+    J_CC(CC_Z, FarCode);
+    SwitchToFarCode();
+    // New destination mappings can be uninitialized. Only spill values dirty
+    // before this instruction; evicted values are already in the CPU object.
+    RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);
+    SaveCPSR(false);
+    MOV(32, MDisp(RCPU, offsetof(ARM, R[15])), Imm32(R15));
+    MOV(64, R(ABI_PARAM1), R(RCPU));
+    ABI_CallFunction(JITDataAbort);
+    // ARM_Ret writes RCPSR back, so carry the exception mode into the epilogue.
+    MOV(32, R(RCPSR), MDisp(RCPU, offsetof(ARM, CPSR)));
+    if (ConstantCycles)
+        ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(ConstantCycles));
+    ABI_TailCall(ARM_Ret);
+    SwitchToNearCode();
+}
+
 bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
 {
     u32 localAddr = NDS.JIT.LocaliseCodeAddress(Num, addr);
@@ -79,6 +112,7 @@ bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
         return false;
     }
 
+    Comp_MemPermission(Imm32(addr), false);
     Comp_AddCycles_CDI();
 
     u32 val;
@@ -129,15 +163,6 @@ void Compiler::Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flag
             return;
     }
 
-    if (flags & memop_Store)
-    {
-        Comp_AddCycles_CD();
-    }
-    else
-    {
-        Comp_AddCycles_CDI();
-    }
-
     bool addrIsStatic = NDS.JIT.LiteralOptimizationsEnabled()
         && RegCache.IsLiteral(rn) && op2.IsImm && !(flags & (memop_Writeback|memop_Post));
     u32 staticAddress;
@@ -158,6 +183,7 @@ void Compiler::Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flag
     X64Reg finalAddr = RSCRATCH3;
     if (flags & memop_Post)
     {
+        Comp_MemPermission(rnMapped, flags & memop_Store);
         MOV(32, R(RSCRATCH3), rnMapped);
 
         finalAddr = rnMapped.GetSimpleReg();
@@ -194,6 +220,11 @@ void Compiler::Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flag
                 MOV_sum(32, finalAddr, rnMapped, offset);
         }
     }
+
+    if (!(flags & memop_Post))
+        Comp_MemPermission(R(finalAddr), flags & memop_Store);
+    if (flags & memop_Store) Comp_AddCycles_CD();
+    else Comp_AddCycles_CDI();
 
     if ((flags & memop_Writeback) && !(flags & memop_Post))
         MOV(32, rnMapped, R(finalAddr));

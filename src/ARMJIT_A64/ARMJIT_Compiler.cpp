@@ -744,6 +744,7 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
             }
         }
 
+        AbortDirtyRegs = RegCache.DirtyRegs;
         if (comp == NULL)
         {
             SaveCycles();
