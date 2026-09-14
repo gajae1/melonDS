@@ -75,6 +75,7 @@ struct AudioState
     void audioTimeStretchFailed();
     bool audioOpenOutput(const AudioOutput::Settings& settings, std::string& error);
     bool audioSetOutput(const AudioOutput::Settings& requested, std::string& error);
+    void audioUpdateOutputState(int previousRate);
     bool audioSetBufferSize(int frames, std::string& error)
     {
         auto settings = audioDevice.GetSettings(); settings.frames = frames;
@@ -90,6 +91,10 @@ static int failedOpens = 0;
 static bool negotiateRate = false;
 static bool manualOutput = false, manualPaused = true;
 static std::atomic<bool> outputDisconnected{false};
+static bool blockOpen = false;
+static std::binary_semaphore openEntered(0), releaseOpen(0);
+static std::thread::id deviceOwner;
+static int wrongCloseThread = 0;
 static SDL_AudioStatus OutputStatus(SDL_AudioDeviceID id)
 {
     if (outputDisconnected) return SDL_AUDIO_STOPPED;
@@ -105,6 +110,7 @@ static SDL_AudioSpec manualSpec{};
 static SDL_AudioDeviceID OpenOutput(const char* name, int capture, const SDL_AudioSpec* desired,
                                    SDL_AudioSpec* obtained, int changes)
 {
+    if (blockOpen) { openEntered.release(); releaseOpen.acquire(); }
     if (failedOpens > 0)
     {
         --failedOpens;
@@ -115,8 +121,13 @@ static SDL_AudioDeviceID OpenOutput(const char* name, int capture, const SDL_Aud
     if (negotiateRate) wanted.freq = 44100;
     if (manualOutput) manualSpec = wanted;
     const auto id = SDL_OpenAudioDevice(name, capture, &wanted, obtained, changes);
-    if (id) outputDisconnected = false;
+    if (id) { outputDisconnected = false; deviceOwner = std::this_thread::get_id(); }
     return id;
+}
+static void CloseOutput(SDL_AudioDeviceID id)
+{
+    if (std::this_thread::get_id() != deviceOwner) ++wrongCloseThread;
+    SDL_CloseAudioDevice(id);
 }
 static void PauseOutput(SDL_AudioDeviceID id, int paused)
 {
@@ -134,7 +145,9 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 #define SDL_PauseAudioDevice PauseOutput
 #define SDL_GetNumAudioDevices CountOutputs
 #define SDL_GetAudioDeviceStatus OutputStatus
+#define SDL_CloseAudioDevice CloseOutput
 #include "AudioOutput.cpp"
+#undef SDL_CloseAudioDevice
 #undef SDL_OpenAudioDevice
 #undef SDL_PauseAudioDevice
 #undef SDL_GetNumAudioDevices
@@ -146,6 +159,7 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 #undef SDL_CondWaitTimeout
 #include "audioOpenOutput.inc"
 #include "audioSetOutput.inc"
+#include "audioUpdateOutputState.inc"
 #include "audioEnable.inc"
 #include "audioStartPending.inc"
 #include "audioPumpTimeStretch.inc"
@@ -155,6 +169,42 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--async-output") == 0)
+    {
+        if (SDL_AudioInit("dummy") != 0) return 2;
+        bool passed = true;
+        {
+            AudioOutput output;
+            std::string error;
+            const auto silence = [](void*, uint8_t* bytes, int count) { std::memset(bytes, 0, count); };
+            passed &= output.Open({AudioOutput::SDL, {}, 128}, silence, nullptr, error);
+            passed &= deviceOwner != std::this_thread::get_id();
+            blockOpen = true;
+            passed &= output.BeginReopen({AudioOutput::SDL, {}, 256}, silence, nullptr, error);
+            const bool entered = openEntered.try_acquire_for(std::chrono::seconds(2));
+            passed &= entered && output.IsOpening() && !output.IsOpenReady() && !output && !output.IsRunning();
+            passed &= !output.FinishReopen(error) && output.IsOpening();
+            releaseOpen.release();
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!output.IsOpenReady() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+            passed &= output.IsOpenReady() && output.FinishReopen(error);
+            passed &= output.GetSettings().frames == 256 && !output.IsRunning();
+            passed &= output.BeginClose(error);
+            const auto closeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!output.IsOpenReady() && std::chrono::steady_clock::now() < closeDeadline) std::this_thread::yield();
+            passed &= output.IsOpenReady() && !output.FinishReopen(error) && error.empty() && !output;
+            passed &= output.BeginReopen({AudioOutput::SDL, {}, 128}, silence, nullptr, error);
+            passed &= openEntered.try_acquire_for(std::chrono::seconds(2));
+            // Destruction drains an outstanding native open before its callback
+            // data or SDL can be released. The native API itself is not cancelled.
+            std::jthread unblock([] { releaseOpen.release(); });
+            output.Close();
+            passed &= wrongCloseThread == 0 && !output.IsOpening() && !output;
+        }
+        SDL_AudioQuit();
+        std::printf("Audio asynchronous replacement and native owner: %s\n", passed ? "passed" : "FAILED");
+        return passed ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--device-loss") == 0)
     {
         if (SDL_AudioInit("dummy") != 0) return 2;

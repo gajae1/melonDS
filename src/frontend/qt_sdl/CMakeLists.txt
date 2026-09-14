@@ -13,7 +13,7 @@ endif()
 
 add_library(melonds-audio-output STATIC AudioOutput.cpp AudioOutput.h)
 target_include_directories(melonds-audio-output PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" PRIVATE ../..)
-target_link_libraries(melonds-audio-output PRIVATE PkgConfig::SDL2)
+target_link_libraries(melonds-audio-output PRIVATE PkgConfig::SDL2 Threads::Threads)
 if (WIN32)
     add_library(melonds-wasapi STATIC ../../miniaudio/DeviceOnly.c)
     target_link_libraries(melonds-audio-output PRIVATE melonds-wasapi)

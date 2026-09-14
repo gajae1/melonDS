@@ -209,3 +209,5 @@ AD-08 미배포 소유권 후보 — Windows AudioResampling/core 빌드와 기�
 
 1.1.102 — 실제 제품 오브젝트의 Qt 시작 중단/undefined 예외 재개/실패 리셋/DS→DSi 동일 포트 교체/프레임 스텝+state roundtrip/중간 snapshot 거절/handshake/control 8시나리오 통과. Compute 및 Legacy 다중 창 재생성은 제품 GdbStub에 관찰 호출만 넣어 child의 GL 복귀와 원래 실행 위치를 확인했다. 실제 GdbFrame의 native Fiber 및 libco 어댑터는 Windows에서 2스레드·512yield·task/host 예외·취소·FP환경 통과. GDB OFF의 frontend 2TU×JIT ON/OFF 컴파일 통과(별도 완성 바이너리/다른 OS 실행 아님). 영향 경로12검사와 deadline 등5개 protocol 검증 통과; 중첩 frame-step pause의 오디오 정지 누락을 추가 회귀로 재현/수정 후 그 검사만 재실행했다. 전체 suite 반복 없음.
 최종 diff에서 RunFrame 분기 재배치 중 빠진 치트 오류 OSD 소비를 복원했다. 생성한 unsupported-code 오류를 실제 Qt GDB 프레임 완료 경로에 전달해 수정 전 안내0/미소비, 수정 후 안내1/소비 완료를 확인했다(사용자 치트·게임 파일 미사용).
+
+1.1.103 — 생성 SDL 장치의600ms Open 지연을 실제 Qt 복구 타이머에 넣었을 때 UI heartbeat 최대606ms→11ms. 생성 ARM 루프의 복구 중 프레임 진행·stale 설정 교체(UI gap19ms)·open 도중 종료/자원 drain을 확인했다. 기존 Qt 복구·fallback·설정 선호 보존·백오프 및 Playback 1/2의 자체 WASAPI 스트림 stop/reopen도 통과했다. 집중3검사 후 async owner에 close/pending teardown을 추가해 해당1검사만 재실행, 설정 취소/실패4검사 통과. 정상 게임 FPS/물리 오디오 지연 개선 또는 실제 장치 탈착의 증거는 아니다. SDL2.32.10 WASAPI의 Open/Close 동일 스레드 규칙과 bundled miniaudio COM 수명을 유지했다.

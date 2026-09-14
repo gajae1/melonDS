@@ -350,8 +350,14 @@ private:
     std::unique_ptr<QTimer> audioRecoveryTimer;
     std::string audioRecoveryError;
     bool audioRecoveryFallback = false;
+    AudioOutput::Settings audioRecoveryPreferred;
+    bool audioRecoveryTryingFallback = false;
+    int audioRecoveryRetryMs = 500;
+    std::string audioRecoveryPrimaryError;
+    std::string audioRecoverySetupError;
     void audioStartRecovery();
     void audioCheckOutput();
+    void audioUpdateOutputState(int previousRate);
     bool audioStartRequested = false;
     AudioTimeStretch audioTimeStretch;
     bool audioTimeStretchEnabled = false;

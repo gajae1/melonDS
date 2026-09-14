@@ -366,6 +366,7 @@ foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(const A
         "audioPumpTimeStretch|void EmuInstance::audioPumpTimeStretch(int maxQueued)"
         "audioSetSpeed|void EmuInstance::audioSetSpeed(double speed)"
         "audioTimeStretchFailed|void EmuInstance::audioTimeStretchFailed()"
+        "audioUpdateOutputState|void EmuInstance::audioUpdateOutputState(int previousRate)"
         "audioSetOutput|bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::string& error)")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
@@ -386,6 +387,8 @@ endif()
 melonds_configure_audio_kernels(FrontendAudio)
 add_test(NAME audio-callback-buffer COMMAND FrontendAudio)
 add_test(NAME audio-device-loss-reopen COMMAND FrontendAudio --device-loss)
+add_test(NAME audio-device-async-owner COMMAND FrontendAudio --async-output)
+set_tests_properties(audio-device-async-owner PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-device-loss-reopen PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-callback-buffer PROPERTIES TIMEOUT 30)
 

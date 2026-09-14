@@ -19,6 +19,7 @@
 #include <bit>
 #include <cstring>
 #include <exception>
+#include <utility>
 #include "Config.h"
 #include "NDS.h"
 #include "SPU.h"
@@ -100,11 +101,15 @@ bool EmuInstance::audioOpenOutput(const AudioOutput::Settings& settings, std::st
 bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::string& error)
 {
     // The UI has stopped the producer and waits for output callbacks to finish.
-    // Open/close stay on the original UI thread: WASAPI's COM lifetime is
-    // thread-affine, even though the audio callback itself runs elsewhere.
+    // The output owner serializes native Open/Close on its COM thread.
     auto settings = requested;
     settings.frames = std::bit_ceil(static_cast<unsigned>(std::clamp(settings.frames, 32, 1024)));
     error.clear();
+    if (audioDevice.IsOpening())
+    {
+        error = "Audio output recovery is still in progress. Try again shortly.";
+        return false;
+    }
     if (audioDevice && !audioDevice.NeedsRecovery() && settings == audioDevice.GetSettings()) return true;
     const bool hadDevice = static_cast<bool>(audioDevice);
     const bool restorePrevious = hadDevice && !audioDevice.NeedsRecovery();
@@ -123,28 +128,31 @@ bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::st
         if (restorePrevious && !audioOpenOutput(previous, recovery))
             error += std::string("; previous output could not be reopened: ") + recovery;
     }
-    if (audioDevice)
-    {
-        if (nds)
-        {
-            if (audioFreq != previousRate) nds->SPU.SetOutputSampleRate(audioFreq);
-            nds->SPU.ResetOutputHistory();
-        }
-        audioLowPass.Init(audioFreq);
-        const int cutoff = audioLowPassCutoff.load(std::memory_order_relaxed);
-        audioLowPass.SetCutoffNow(cutoff > 0 ? cutoff : audioLowPass.WideOpenCutoff());
-        audioOutputRamp.Init(audioFreq);
-        audioOutputRamp.FadeIn();
-        const bool diagnostics = audioDiagnostics.Enabled;
-        audioDiagnostics = {};
-        audioDiagnostics.Enabled = diagnostics;
-    }
+    if (audioDevice) audioUpdateOutputState(previousRate);
     return applied;
+}
+
+void EmuInstance::audioUpdateOutputState(int previousRate)
+{
+    if (nds)
+    {
+        if (audioFreq != previousRate) nds->SPU.SetOutputSampleRate(audioFreq);
+        nds->SPU.ResetOutputHistory();
+    }
+    audioLowPass.Init(audioFreq);
+    const int cutoff = audioLowPassCutoff.load(std::memory_order_relaxed);
+    audioLowPass.SetCutoffNow(cutoff > 0 ? cutoff : audioLowPass.WideOpenCutoff());
+    audioOutputRamp.Init(audioFreq);
+    audioOutputRamp.FadeIn();
+    const bool diagnostics = audioDiagnostics.Enabled;
+    audioDiagnostics = {};
+    audioDiagnostics.Enabled = diagnostics;
 }
 
 QString EmuInstance::audioOutputDescription() const
 {
-    // UI reads this only between its synchronous output-change requests.
+    // UI reads published state; a worker result is not adopted until ready.
+    if (audioDevice.IsOpening()) return QObject::tr("Reconnecting audio output...");
     if (!audioDevice) return QObject::tr("Audio output unavailable");
     const auto& spec = audioDevice.GetSpec();
     QString description = QObject::tr("%1: %2 frames at %3 Hz (%4 ms period)")
@@ -161,7 +169,7 @@ QString EmuInstance::audioOutputDescription() const
 
 void EmuInstance::audioStartRecovery()
 {
-    // Device creation/destruction must stay on the original UI/COM thread.
+    // Brief producer stops detach/adopt state; native work is asynchronous.
     audioRecoveryTimer = std::make_unique<QTimer>();
     audioRecoveryTimer->setInterval(500);
     QObject::connect(audioRecoveryTimer.get(), &QTimer::timeout, audioRecoveryTimer.get(),
@@ -171,39 +179,98 @@ void EmuInstance::audioStartRecovery()
 
 void EmuInstance::audioCheckOutput()
 {
-    // A live settings preview owns its output until accepted or cancelled.
-    // Healthy fallbacks stay put; do not interrupt playback to probe devices.
-    if (deleting || AudioSettingsDialog::currentDlg || !audioDevice.NeedsRecovery()) return;
-    audioRecoveryTimer->stop();
+    if (deleting) return;
+    const bool opening = audioDevice.IsOpening();
+    // A dialog opened before recovery owns its output. Once recovery starts,
+    // output preview requests are refused until its paused result is adopted.
+    if (!opening && (AudioSettingsDialog::currentDlg || !audioDevice.NeedsRecovery())) return;
+    if (opening && !audioDevice.IsOpenReady()) return;
+
     const AudioOutput::Settings preferred{globalCfg.GetInt("Audio.OutputBackend"),
         globalCfg.GetString("Audio.OutputDevice"), globalCfg.GetInt("Audio.BufferSize")};
     emuThread->emuPause(false);
     std::string error;
-    bool restored = audioSetOutput(preferred, error);
-    if (!restored && (preferred.backend != AudioOutput::SDL || !preferred.device.empty()))
+    bool restored = false;
+    bool pending = false;
+    if (!opening)
     {
-        std::string fallbackError;
-        restored = audioSetOutput({AudioOutput::SDL, {}, preferred.frames}, fallbackError);
-        if (!restored) error += "; default output: " + fallbackError;
+        audioRecoveryPreferred = preferred;
+        audioRecoveryTryingFallback = false;
+        audioRecoveryPrimaryError.clear();
+        audioRecoverySetupError.clear();
+        pending = audioDevice.BeginReopen(preferred, audioCallback, this, error);
+        audioReportDiagnostics();
     }
-    audioRecoveryFallback = restored && (audioDevice.GetSettings().backend != preferred.backend ||
-                                         audioDevice.GetSettings().device != preferred.device);
+    else
+    {
+        const int previousRate = audioFreq;
+        restored = audioDevice.FinishReopen(error);
+        if (!audioRecoverySetupError.empty())
+            error = std::exchange(audioRecoverySetupError, {});
+        if (preferred != audioRecoveryPreferred)
+        {
+            // Another instance may have changed the shared preference. The old
+            // result stays paused and is retired by the same native owner.
+            audioRecoveryPreferred = preferred;
+            audioRecoveryTryingFallback = false;
+            audioRecoveryPrimaryError.clear();
+            restored = false;
+            pending = audioDevice.BeginReopen(preferred, audioCallback, this, error);
+            if (!pending) audioDevice.Close(); // Never start a stale result after allocation failure.
+        }
+        else
+        {
+            if (restored && audioTimeStretchEnabled &&
+                !audioTimeStretch.Configure(audioDevice.GetSpec().rate, error))
+            {
+                audioRecoverySetupError = error;
+                pending = audioDevice.BeginClose(error);
+                // No asynchronous job could be allocated. Preserve ownership
+                // and callback safety even when native cleanup must be synchronous.
+                if (!pending) audioDevice.Close();
+                restored = false;
+            }
+            if (restored)
+            {
+                audioFreq = audioDevice.GetSpec().rate;
+                audioBufSize = audioDevice.GetSpec().frames;
+                audioUpdateOutputState(previousRate);
+            }
+            else if (!pending && !audioRecoveryTryingFallback &&
+                     (preferred.backend != AudioOutput::SDL || !preferred.device.empty()))
+            {
+                audioRecoveryPrimaryError = error;
+                audioRecoveryTryingFallback = true;
+                pending = audioDevice.BeginReopen({AudioOutput::SDL, {}, preferred.frames},
+                    audioCallback, this, error);
+            }
+        }
+    }
     emuThread->emuUnpause(false);
+    if (pending)
+    {
+        audioRecoveryTimer->setInterval(25);
+        return;
+    }
     if (restored)
     {
+        audioRecoveryFallback = audioDevice.GetSettings().backend != preferred.backend ||
+                                audioDevice.GetSettings().device != preferred.device;
         audioRecoveryError.clear();
-        audioRecoveryTimer->setInterval(500);
+        audioRecoveryRetryMs = 500;
         Platform::Log(Platform::LogLevel::Info, "Audio output recovered: %s%s\n",
             audioDevice.GetSpec().backend.c_str(), audioRecoveryFallback ? " (temporary default)" : "");
     }
     else
     {
+        if (!audioRecoveryPrimaryError.empty())
+            error = audioRecoveryPrimaryError + "; default output: " + error;
         if (error != audioRecoveryError)
             Platform::Log(Platform::LogLevel::Error, "Audio output unavailable; will retry: %s\n", error.c_str());
         audioRecoveryError = std::move(error);
-        audioRecoveryTimer->setInterval(std::min(audioRecoveryTimer->interval() * 2, 5000));
+        audioRecoveryRetryMs = std::min(audioRecoveryRetryMs * 2, 5000);
     }
-    audioRecoveryTimer->start();
+    audioRecoveryTimer->setInterval(audioRecoveryRetryMs);
 }
 
 bool EmuInstance::changeAudioBuffer(int frames, QString& error)
@@ -229,6 +296,11 @@ bool EmuInstance::changeAudioOutput(int frames, int backend, const QString& devi
     AudioOutput::Settings settings{backend, device.toStdString(), static_cast<int>(
         std::bit_ceil(static_cast<unsigned>(std::clamp(frames, 32, 1024))))};
     error.clear();
+    if (audioDevice.IsOpening())
+    {
+        error = QObject::tr("Audio output recovery is still in progress. Try again shortly.");
+        return false;
+    }
     if (audioDevice && !audioDevice.NeedsRecovery() && settings == audioDevice.GetSettings())
     {
         audioRecoveryFallback = false;
@@ -241,6 +313,7 @@ bool EmuInstance::changeAudioOutput(int frames, int backend, const QString& devi
     {
         audioRecoveryFallback = false;
         audioRecoveryError.clear();
+        audioRecoveryRetryMs = 500;
         if (audioRecoveryTimer) audioRecoveryTimer->setInterval(500);
     }
     emuThread->emuUnpause(false);

@@ -6,7 +6,8 @@
 #include <vector>
 
 // Output-device lifetime only. The emulator owns PCM generation and processing.
-// Open/Close/Enumerate run on the UI thread (SDL WASAPI COM ownership).
+// Public lifetime operations are serialized by the UI with the producer stopped.
+// Native Open/Close run on one owned thread (SDL/WASAPI COM ownership).
 // Start/Stop run with the producer quiescent, never from the audio callback.
 class AudioOutput
 {
@@ -33,6 +34,13 @@ public:
     AudioOutput(const AudioOutput&) = delete;
     AudioOutput& operator=(const AudioOutput&) = delete;
     bool Open(const Settings&, Callback, void* userdata, std::string& error);
+    // Retire the stopped output and prepare its replacement without blocking UI.
+    // Until FinishReopen succeeds, client delivery stays unavailable/paused.
+    bool BeginReopen(const Settings&, Callback, void* userdata, std::string& error);
+    bool BeginClose(std::string& error);
+    bool IsOpening() const;
+    bool IsOpenReady() const;
+    bool FinishReopen(std::string& error);
     void Close();
     bool Start(std::string& error);
     // Waits until client callbacks finish. Native delivery fades to silence
@@ -47,6 +55,8 @@ public:
     static std::vector<DeviceInfo> Enumerate(int backend, std::string& error);
 private:
     struct Impl;
+    struct Owner;
+    std::unique_ptr<Owner> owner;
     std::unique_ptr<Impl> impl;
     Settings settings;
     Spec spec;

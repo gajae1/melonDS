@@ -6,6 +6,10 @@
 #include <bit>
 #include <algorithm>
 #include <cstring>
+#include <condition_variable>
+#include <future>
+#include <mutex>
+#include <thread>
 #ifdef _WIN32
 #include <windows.h>
 #include "miniaudio/DeviceOnly.h"
@@ -90,8 +94,73 @@ struct AudioOutput::Impl
     }
 };
 
+// One sleeping control thread per output; no work queue touches PCM delivery.
+// It owns COM initialization and destruction, including failed/stale opens.
+struct AudioOutput::Owner
+{
+    struct Result
+    {
+        std::unique_ptr<Impl> device;
+        Settings settings;
+        Spec spec;
+        std::string error;
+    };
+    std::mutex lock;
+    std::condition_variable wake;
+    std::packaged_task<Result()> job;
+    std::future<Result> result;
+    std::unique_ptr<Impl> retiring;
+    bool exiting = false;
+    bool closing = false;
+    std::thread thread{[this] {
+        for (;;)
+        {
+            std::packaged_task<Result()> next;
+            {
+                std::unique_lock guard(lock);
+                wake.wait(guard, [&] { return exiting || closing || job.valid(); });
+                if (exiting) return;
+                next = std::move(job);
+            }
+            retiring.reset();
+            if (next.valid()) next();
+            else
+            {
+                { std::lock_guard guard(lock); closing = false; }
+                wake.notify_all();
+            }
+        }
+    }};
+
+    ~Owner()
+    {
+        { std::lock_guard guard(lock); exiting = true; }
+        wake.notify_one();
+        thread.join(); // Never detach native work beyond SDL/instance teardown.
+    }
+
+    void Submit(std::packaged_task<Result()> next, std::unique_ptr<Impl>& old)
+    {
+        auto future = next.get_future();
+        std::lock_guard guard(lock);
+        result = std::move(future);
+        retiring = std::move(old);
+        job = std::move(next);
+        wake.notify_one();
+    }
+    void Close(std::unique_ptr<Impl>& old)
+    {
+        std::unique_lock guard(lock);
+        retiring = std::move(old);
+        closing = true;
+        wake.notify_one();
+        wake.wait(guard, [&] { return !closing; });
+    }
+    static Result Open(const Settings&, Callback, void* userdata);
+};
+
 AudioOutput::AudioOutput() = default;
-AudioOutput::~AudioOutput() = default;
+AudioOutput::~AudioOutput() { Close(); }
 AudioOutput::operator bool() const { return impl != nullptr; }
 bool AudioOutput::IsRunning() const
 {
@@ -108,18 +177,106 @@ bool AudioOutput::NeedsRecovery() const
     if (impl->sdl) return SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_STOPPED;
     return !impl->running.load(std::memory_order_relaxed);
 }
-void AudioOutput::Close() { impl.reset(); }
 
 bool AudioOutput::Open(const Settings& requested, Callback callback, void* userdata, std::string& error)
 {
     error.clear();
     if (impl) { error = "Audio output must be closed before opening"; return false; }
+    if (!BeginReopen(requested, callback, userdata, error)) return false;
+    owner->result.wait(); // Startup/manual requests retain their synchronous API.
+    return FinishReopen(error);
+}
+
+bool AudioOutput::BeginReopen(const Settings& requested, Callback callback, void* userdata, std::string& error)
+{
+    error.clear();
+    if (IsOpening()) { error = "Audio output recovery is still in progress"; return false; }
+    try
+    {
+        if (!owner) owner = std::make_unique<Owner>();
+        std::packaged_task<Owner::Result()> next([requested, callback, userdata] {
+            return Owner::Open(requested, callback, userdata);
+        });
+        Stop();
+        owner->Submit(std::move(next), impl);
+        return true;
+    }
+    catch (const std::exception& failure)
+    {
+        error = failure.what();
+        return false;
+    }
+}
+
+bool AudioOutput::BeginClose(std::string& error)
+{
+    error.clear();
+    if (IsOpening()) { error = "Audio output recovery is still in progress"; return false; }
+    if (!impl) return true;
+    try
+    {
+        std::packaged_task<Owner::Result()> close([] { return Owner::Result{}; });
+        Stop();
+        owner->Submit(std::move(close), impl);
+        return true;
+    }
+    catch (const std::exception& failure)
+    {
+        error = failure.what();
+        return false;
+    }
+}
+
+bool AudioOutput::IsOpening() const { return owner && owner->result.valid(); }
+bool AudioOutput::IsOpenReady() const
+{
+    return IsOpening() && owner->result.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
+bool AudioOutput::FinishReopen(std::string& error)
+{
+    error.clear();
+    if (!IsOpenReady()) { error = "Audio output recovery is still in progress"; return false; }
+    try
+    {
+        auto opened = owner->result.get();
+        error = std::move(opened.error);
+        if (!opened.device) return false;
+        impl = std::move(opened.device);
+        settings = std::move(opened.settings);
+        spec = std::move(opened.spec);
+        return true;
+    }
+    catch (const std::exception& failure)
+    {
+        error = failure.what();
+        return false;
+    }
+}
+
+void AudioOutput::Close()
+{
+    if (IsOpening())
+    {
+        owner->result.wait();
+        std::string ignored;
+        FinishReopen(ignored);
+    }
+    if (!impl) return;
+    Stop();
+    owner->Close(impl);
+}
+
+AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, Callback callback, void* userdata)
+{
+    Result opened;
+    auto& error = opened.error;
     auto output = std::make_unique<Impl>();
     output->callback = callback;
     output->userdata = userdata;
     auto next = requested;
     next.frames = std::bit_ceil(static_cast<unsigned>(std::clamp(next.frames, 32, 1024)));
-    Spec obtained;
+    auto& obtained = opened.spec;
     if (next.backend == SDL)
     {
         SDL_AudioSpec wanted{}, actual{};
@@ -131,7 +288,7 @@ bool AudioOutput::Open(const Settings& requested, Callback callback, void* userd
         wanted.userdata = output.get();
         output->sdl = SDL_OpenAudioDevice(next.device.empty() ? nullptr : next.device.c_str(), 0,
             &wanted, &actual, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-        if (!output->sdl) { error = SDL_GetError(); return false; }
+        if (!output->sdl) { error = SDL_GetError(); return opened; }
         obtained.rate = actual.freq;
         obtained.frames = actual.samples;
         output->outputRamp.Init(actual.freq);
@@ -143,12 +300,12 @@ bool AudioOutput::Open(const Settings& requested, Callback callback, void* userd
     {
         const ma_backend backend = ma_backend_wasapi;
         auto result = ma_context_init(&backend, 1, nullptr, &output->context);
-        if (result != MA_SUCCESS) { error = ma_result_description(result); return false; }
+        if (result != MA_SUCCESS) { error = ma_result_description(result); return opened; }
         output->contextReady = true;
         ma_device_id id{};
         if (!next.device.empty() && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
             next.device.c_str(), -1, id.wasapi, static_cast<int>(std::size(id.wasapi))))
-        { error = "Invalid WASAPI output device ID"; return false; }
+        { error = "Invalid WASAPI output device ID"; return opened; }
         auto config = ma_device_config_init(ma_device_type_playback);
         config.playback.pDeviceID = next.device.empty() ? nullptr : &id;
         config.playback.format = ma_format_s16;
@@ -164,25 +321,24 @@ bool AudioOutput::Open(const Settings& requested, Callback callback, void* userd
         config.notificationCallback = Impl::Notify;
         config.pUserData = output.get();
         result = ma_device_init(&output->context, &config, &output->device);
-        if (result != MA_SUCCESS) { error = ma_result_description(result); return false; }
+        if (result != MA_SUCCESS) { error = ma_result_description(result); return opened; }
         output->deviceReady = true;
         output->outputRamp.Init(output->device.sampleRate);
         // Validate start before accepting a new preference, including when the
         // emulator is paused. Keep the stream primed with silence until Start
         // opens client delivery; stopping here would empty the native buffer.
         result = ma_device_start(&output->device);
-        if (result != MA_SUCCESS) { error = ma_result_description(result); return false; }
+        if (result != MA_SUCCESS) { error = ma_result_description(result); return opened; }
         obtained.rate = output->device.sampleRate;
         obtained.frames = output->device.playback.internalPeriodSizeInFrames;
         obtained.bufferFrames = output->device.wasapi.actualBufferSizeInFramesPlayback;
         obtained.backend = "WASAPI shared";
     }
 #endif
-    else { error = "Requested audio output backend is unavailable"; return false; }
-    settings = std::move(next);
-    spec = std::move(obtained);
-    impl = std::move(output); // client delivery remains paused
-    return true;
+    else { error = "Requested audio output backend is unavailable"; return opened; }
+    opened.settings = std::move(next);
+    opened.device = std::move(output); // client delivery remains paused
+    return opened;
 }
 
 bool AudioOutput::Start(std::string& error)
