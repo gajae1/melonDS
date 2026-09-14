@@ -119,7 +119,7 @@
 | BV-06 | [C23/C++26 기능별 채택](workstreams/06-build-validation.md#BV-06) | 관찰/확장 | P2 | [1.1.36](Release_Plan.md#v36) | — | GCC16.2/libstdc++ 실제 사용 기능 compile·8개 실행 통과, 현재 조합 제품 변경 없음; GCC14·Clang/libc++·MSVC·다른 OS 후속 |
 | BV-07 | [의존성·local patch·license](workstreams/06-build-validation.md#BV-07) | 부분 실행 검증 | P1 | [1.1.36](Release_Plan.md#v36) | — | 1.1.44~48 고지/overlay/설치/runtime·원본 revision·fuzz alias 복원; 1.1.51 libslirp4.9.4 갱신, fork glib·라이선스·61 corpus packet 보존. 실제 생산자 object/라이브러리의 config-v1 ARP/ICMP·단편 복구·런타임 버전 일치. host UDP·실제 게임 Internet·다른 OS와 고지/대응 소스 완전성은 후속 |
 | BV-08 | [LTO/ThinLTO guard 판정](workstreams/06-build-validation.md#BV-08) | 제한 빌드·실행 대조 | P2 | [1.1.38](Release_Plan.md#v38) | — | 1.1.39 GCC16.2 core/Qt LTO 빌드; 1.1.40 ARM.cpp 제외 진단으로 cold 비용 축소·2장면 출력 일치, 반복 변동으로 기본 OFF 유지; 전체 Qt 실행/장기 workload·compiler별 판정 후속 |
-| BV-09 | [PGO train/holdout](workstreams/06-build-validation.md#BV-09) | 미측정 가설 | P2 | [1.1.38](Release_Plan.md#v38) | — | 미착수 |
+| BV-09 | [PGO train/holdout](workstreams/06-build-validation.md#BV-09) | GCC 수집·봉인·별도 사용 구현 | P2 | [1.1.38](Release_Plan.md#v38) | — | 1.1.108 source/compiler/명령/data 변경 거절, 실제 core 86/93 TU 수집. Black 학습 장면 중앙값11~16% 감소지만 Solatorobo holdout 일부5~8% 악화로 해당 profile 기본 채택 기각·OFF 유지. 다른 compiler/native 플랫폼·대표 workload 확대 후속 |
 | BV-10 | [paired median/tail 측정](workstreams/06-build-validation.md#BV-10) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.38 state 재생·frame CSV·한 장면 paired 대조; GPU/장치 분리·holdout 대기 |
 | BV-11 | [sanitizer·JIT fault 구분](workstreams/06-build-validation.md#BV-11) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
 | BV-12 | [CPU/OS feature·fallback](workstreams/06-build-validation.md#BV-12) | 관찰/확장 | P1 | [1.1.26](Release_Plan.md#v26) | — | 미착수 |

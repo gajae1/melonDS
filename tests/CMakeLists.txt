@@ -37,6 +37,16 @@ add_test(NAME gba-eeprom-chip COMMAND GBACartEEPROM)
 set_tests_properties(gba-eeprom-chip PROPERTIES TIMEOUT 10)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if (CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    find_program(MELONDS_PGO_TEST_NINJA ninja)
+    if (MELONDS_PGO_TEST_NINJA AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tools/pgo.py")
+        add_test(NAME pgo-profile-contract COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/PGO.py" --repo "${CMAKE_CURRENT_SOURCE_DIR}/.."
+            --work "${CMAKE_CURRENT_BINARY_DIR}/pgo-contract" --cmake "${CMAKE_COMMAND}"
+            --cc "${CMAKE_C_COMPILER}" --cxx "${CMAKE_CXX_COMPILER}" --ninja "${MELONDS_PGO_TEST_NINJA}")
+        set_tests_properties(pgo-profile-contract PROPERTIES TIMEOUT 90)
+    endif()
+endif()
 add_test(NAME gba-save-database-generator
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/GBASaveDatabase.py")
 set_tests_properties(gba-save-database-generator PROPERTIES TIMEOUT 15)

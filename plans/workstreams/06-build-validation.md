@@ -12,7 +12,7 @@
 | <a id="BV-06"></a>BV-06 | C23/C++26 모드와 실제 라이브러리 기능 지원은 별개 | 필요한 feature-test와 compile probe·호환 matrix; 의미 있는 `<bit>`/checked arithmetic/span 범위부터 | 기존 회귀 | 최소 GCC/Clang+각 STL 조합의 해당 기능 compile·동작; 임의 reflection/modules 도입 안 함 | 확장/P2 |
 | <a id="BV-07"></a>BV-07 | DependencyAudit의 pin·요구 버전·실제 링크 버전이 다른 시점 | 설치/링크 graph·로컬 patch·원본 revision·라이선스 기록, 한 라이브러리씩 교체 | BV-01/03 | 해당 기능·패키지 실행 확인, vendored 차이 보존, 롤백 가능한 pin | 관찰/P1 |
 | <a id="BV-08"></a>BV-08 | GCC15+ LTO 강제 OFF, blanket 해제 근거 없음 | 같은 소스/컴파일러에서 ICE 재현·최소화, 성공하는 조합에만 LTO/ThinLTO profile | BV-04/07 | compiler crash 없음, 정확성 동일, build시간/메모리/최종 frame time 비교 | 아이디어/P2 |
-| <a id="BV-09"></a>BV-09 | PGO는 현재 명시적 수집/사용 도구가 없음 | 대표 workload 수집·profile 병합·별도 사용 빌드, holdout 게임/합성 workload | BV-01/04 | source/compiler 일치, stale profile 거절, 학습 밖 workload에서 회귀가 허용 예산 이내 | 아이디어/P2 |
+| <a id="BV-09"></a>BV-09 | 1.1.108 GCC 수집/봉인/별도 사용 및 stale-input 거절 구현 | 대표 workload 수집·profile 병합·별도 사용 빌드, holdout 게임/합성 workload | BV-01/04 | source/compiler 일치, stale profile 거절, 학습 밖 workload에서 회귀가 허용 예산 이내 | GCC 경로 검증; Black profile은 Solatorobo 회귀로 기본 채택 기각·OFF 유지. 다른 compiler/native 플랫폼 후속/P2 |
 | <a id="BV-10"></a>BV-10 | kernel benchmark와 전체 frame/장치 지연이 다른 값 | warm/cold·median/p95/p99·CPU/GPU/upload/readback/audio 대기를 나누는 기존 도구 확장 | 해당 경로 계측 | 같은 입력·출력의 paired 결과와 dispersion 보고, 전체 FPS로 과대 환산 안 함 | 확장/P1 |
 | <a id="BV-11"></a>BV-11 | Sanitizers는 JIT fault handling·플랫폼 런타임과 충돌 가능 | parser/메모리·코어·JIT fault 경로를 구분한 ASan/UBSan/TSan 사용표 | BV-04 | 합성 트리거로 오류 검출, intentional fault 때문에 전체 검사를 꺼서 통과 처리하지 않음 | 확장/P2 |
 | <a id="BV-12"></a>BV-12 | 다른 CPU의 지원 ISA·클럭·전력이 다름 | 커널별 검출·강제 fallback·측정 profile, NEON/crypto와 standard SIMD 후보 비교 | ISA 지원 계약·해당 커널 | unsupported 명령 0, 같은 출력, 특정 CPU/작업량에서만 측정된 이득 기록 | 확장/P1 |

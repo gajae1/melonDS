@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cstdlib>
+#include <memory>
 #include "ROMSmokeAudio.h"
 
 // DSi writes go to a private RAM copy. The original NAND is never opened for writing.
@@ -62,7 +63,12 @@ static std::vector<melonDS::u8> Read(const char* name)
 int main(int argc, char** argv)
 {
     using namespace melonDS;
-    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES\n"); return 2; }
+    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM\n"); return 2; }
+    const char* pcmPath = std::getenv("MELONDS_SMOKE_PCM");
+    if (pcmPath && std::getenv("MELONDS_SMOKE_AUDIO_BUFFER")) {
+        std::fprintf(stderr, "PCM export and device playback cannot consume the same queue\n");
+        return 2;
+    }
     const bool dsi = argc >= 6;
     const bool builtinDS = std::getenv("MELONDS_SMOKE_BUILTIN_DS") != nullptr;
     if (dsi && builtinDS) {
@@ -196,6 +202,16 @@ int main(int argc, char** argv)
         const char* frameTimesPath = std::getenv("MELONDS_SMOKE_FRAME_TIMES");
         std::vector<std::chrono::nanoseconds::rep> frameTimes;
         if (frameTimesPath) frameTimes.reserve(frames);
+        std::unique_ptr<FILE, decltype(&std::fclose)> pcm(nullptr, &std::fclose);
+        if (pcmPath) {
+            // GCC's Windows wide-path fstream does not implement noreplace.
+#ifdef _WIN32
+            pcm.reset(_wfopen(PathFromUTF8(pcmPath).c_str(), L"wbx"));
+#else
+            pcm.reset(std::fopen(pcmPath, "wbx"));
+#endif
+            if (!pcm) { std::fprintf(stderr, "Cannot create new PCM output\n"); return 17; }
+        }
         const auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < frames; ++i) {
             if (nextInput < inputs.size() && inputs[nextInput].first == i) {
@@ -220,7 +236,20 @@ int main(int argc, char** argv)
                     std::chrono::steady_clock::now() - frameStart).count());
             }
             if (!nds->IsRunning()) { std::fprintf(stderr,"stopped frame=%d\n",i); return 6; }
+            if (pcmPath) {
+                std::array<s16, 4096> samples;
+                int count;
+                while ((count = nds->SPU.ReadOutput(samples.data(), samples.size()/2)) > 0) {
+                    const size_t size = count * 2 * sizeof(s16);
+                    if (std::fwrite(samples.data(), 1, size, pcm.get()) != size) {
+                        std::fprintf(stderr, "PCM output write failed\n"); return 17;
+                    }
+                }
+            }
             audio.AfterFrame(lines);
+        }
+        if (pcmPath) {
+            if (std::fclose(pcm.release())) { std::fprintf(stderr, "PCM output close failed\n"); return 17; }
         }
         audio.Report();
         if (!software) glFinish();

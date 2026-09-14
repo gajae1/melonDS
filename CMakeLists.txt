@@ -17,7 +17,7 @@ if (USE_VCPKG)
 endif()
 
 project(melonDS
-    VERSION 1.1.107
+    VERSION 1.1.108
     DESCRIPTION "DS emulator, sorta"
     HOMEPAGE_URL "https://melonds.kuribo64.net"
     LANGUAGES C CXX)
@@ -148,6 +148,7 @@ endif()
 
 option(BUILD_QT_SDL "Build Qt/SDL frontend" ON)
 option(MELONDS_BUILD_TESTS "Build focused regression and core integration tests" OFF)
+include(PGO)
 if (MELONDS_BUILD_TESTS)
     enable_testing()
 endif()
@@ -161,3 +162,5 @@ endif()
 if (MELONDS_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
+
+melonds_configure_pgo(core)

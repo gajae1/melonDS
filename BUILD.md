@@ -249,3 +249,36 @@ blocks by setting `-DMELONDS_UNICORN_PYTHON=/path/to/python`. That interpreter m
 have Unicorn installed (2.1.4 was validated). The check compares guest registers,
 flags and emitted cycle accounting with ARM instruction rules and the interpreter;
 it does not replace native ARM64 ABI, executable-memory or hardware timing tests.
+
+### Optional GCC core PGO
+
+PGO defaults to `OFF`. The current workflow requires GCC C/C++, Python 3.11+,
+Git, and a single-config Release build without unity compilation. It profiles
+the emulator core, not JIT-generated machine code or external libraries.
+Use identical toolchain, feature and optimization options for both builds:
+
+```sh
+cmake -S . -B build/pgo-train -G Ninja -DCMAKE_BUILD_TYPE=Release -DMELONDS_PGO=GENERATE -DMELONDS_PGO_DIR=/absolute/path/to/new-profile
+cmake --build build/pgo-train --target melonDS
+# Run the training executable with representative games, then exit it normally.
+python tools/pgo.py seal --build build/pgo-train
+cmake -S . -B build/pgo-use -G Ninja -DCMAKE_BUILD_TYPE=Release -DMELONDS_PGO=USE -DMELONDS_PGO_DIR=/absolute/path/to/new-profile
+cmake --build build/pgo-use --target melonDS
+```
+
+Sealing records the collected `.gcda` hashes and normalized core compile commands.
+Each subsequent build checks source identity, compiler identity, command equality
+and sealed data integrity. Changed inputs require a new training directory;
+sealed profiles cannot be reused for additional training. Only translation units
+with collected profiles receive `-fprofile-use`; others retain the ordinary
+compiler path. Missing/mismatched data for selected units is an error. The seal
+reports the profiled and unprofiled counts; it does not prove workload coverage.
+GCC performs the counter collection and accumulation with atomic updates; see
+its [instrumentation options](https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html).
+
+Compare the use build with a matching `OFF` build on games or scenes excluded
+from training before distributing it. Check output equivalence and frame-time
+tails, not just a training speedup. `ROMSmoke` can save an optional new raw stereo
+PCM file with `MELONDS_SMOKE_PCM`; this is mutually exclusive with device playback.
+Keep profiling files local. A profile/holdout accepted on one machine does not
+establish performance or device compatibility on other platforms.
