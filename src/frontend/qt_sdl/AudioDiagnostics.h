@@ -12,6 +12,7 @@ struct AudioDiagnostics
     bool Enabled = false;
     Uint64 Callbacks = 0, RequestedFrames = 0, SuppliedFrames = 0;
     Uint64 Underruns = 0, EmptyCallbacks = 0, MaxReadTicks = 0, MaxGapTicks = 0;
+    Uint64 MaxProcessingTicks = 0;
     Uint64 PreviousStart = 0, LastReportedCallbacks = 0;
 
     Uint64 Begin() const { return Enabled ? SDL_GetPerformanceCounter() : 0; }
@@ -27,6 +28,14 @@ struct AudioDiagnostics
         SuppliedFrames += supplied;
         if (supplied < requested) ++Underruns;
         if (!supplied) ++EmptyCallbacks;
+    }
+
+    // Includes source read/wait, volume, shortage ramp and low-pass processing.
+    // Excludes the output wrapper, backend conversion and hardware latency.
+    void FinishProcessing(Uint64 started)
+    {
+        if (Enabled)
+            MaxProcessingTicks = std::max(MaxProcessingTicks, SDL_GetPerformanceCounter() - started);
     }
 };
 #endif

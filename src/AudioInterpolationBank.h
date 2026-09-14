@@ -19,6 +19,7 @@ class AudioInterpolationBank
 public:
     static constexpr unsigned Degree = 16;
     static constexpr unsigned DensePeriods = 256;
+    static constexpr unsigned MaxResponseLength = 50000;
     using Moment = std::array<double, Degree>;
 
     // Packed little-endian coefficients; malformed data throws before an owner
@@ -29,13 +30,19 @@ public:
     std::span<const Moment> Weights() const noexcept { return OutputWeights; }
     std::span<const Moment> Coefficients(unsigned period) const;
     u64 SupportClocks(unsigned period) const;
-    // Evaluated for each live sparse tail; expose the lookup to the optimizer
-    // without changing response arithmetic or retaining per-tail copies.
+    // Reference evaluation retains division; streams cache the fixed reciprocal
+    // per decoder event and use StepPosition for each subsequent output.
     double Step(unsigned period, u64 age) const
+    {
+        return StepPosition(period, double(age) * 256 / period);
+    }
+
+private:
+    friend class AudioInterpolationStream;
+    double StepPosition(unsigned period, double t) const
     {
         const auto& record = GetRecord(period);
         if (period <= DensePeriods) throw std::logic_error("Dense interpolation requires moments");
-        const double t = double(age) * 256 / period;
         if (t >= record.Length - 1) return 1;
         const auto i = size_t(t);
         const double a = record.Values[i];
@@ -43,7 +50,6 @@ public:
         return period < Interval ? 1 - value : value;
     }
 
-private:
     struct Record
     {
         unsigned Length = 0;

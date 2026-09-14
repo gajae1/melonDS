@@ -80,7 +80,7 @@ AudioInterpolationBank::AudioInterpolationBank(std::span<const u8> data)
         auto& record = Records[period - 1];
         record.Length = reader.Word();
         const auto rows = reader.Word();
-        if (id != period || record.Length < 2 || record.Length > 50000)
+        if (id != period || record.Length < 2 || record.Length > MaxResponseLength)
             throw std::invalid_argument("Invalid interpolation record");
 
         // The last record is one exact response shared by every P >= Interval.

@@ -524,6 +524,7 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
         // unmuting fades in instead of jumping to a full-amplitude sample.
         inst->audioOutputRamp.Process(reinterpret_cast<s16*>(stream), 0, len);
         inst->audioLowPass.ProcessMuted(len, targetHz, blockSeconds);
+        inst->audioDiagnostics.FinishProcessing(started);
         return;
     }
 
@@ -537,6 +538,7 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
 
     inst->audioOutputRamp.Process(reinterpret_cast<s16*>(stream), num_in, len);
     inst->audioLowPass.Process(reinterpret_cast<s16*>(stream), len, targetHz, blockSeconds);
+    inst->audioDiagnostics.FinishProcessing(started);
 }
 
 void EmuInstance::audioReportDiagnostics()
@@ -549,12 +551,13 @@ void EmuInstance::audioReportDiagnostics()
     Platform::Log(Platform::LogLevel::Info,
         "Audio delivery: rate=%d buffer=%d callbacks=%llu requested=%llu supplied=%llu "
         "missing=%llu underruns=%llu empty=%llu max_read_us=%.1f max_gap_us=%.1f "
-        "core_dropped_total=%llu queue_frames=%d\n",
+        "max_processing_us=%.1f core_dropped_total=%llu queue_frames=%d\n",
         audioFreq, audioBufSize, (unsigned long long)stats.Callbacks,
         (unsigned long long)stats.RequestedFrames, (unsigned long long)stats.SuppliedFrames,
         (unsigned long long)(stats.RequestedFrames - stats.SuppliedFrames),
         (unsigned long long)stats.Underruns, (unsigned long long)stats.EmptyCallbacks,
         stats.MaxReadTicks * tickUs, stats.MaxGapTicks * tickUs,
+        stats.MaxProcessingTicks * tickUs,
         (unsigned long long)(nds ? nds->SPU.GetOutputDroppedFrames() : 0),
         nds ? nds->SPU.GetOutputSize() : 0);
 }

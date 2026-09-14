@@ -15,7 +15,11 @@ class AudioInterpolationStream
 {
     using Bank = AudioInterpolationBank;
     using Moment = Bank::Moment;
-    struct Active { u64 Clock, Support; double Delta; unsigned Period; };
+    // The validated bank support fits 32 bits, leaving room for a cached
+    // reciprocal without enlarging the live-tail record on 64-bit hosts.
+    static_assert(u64(Bank::MaxResponseLength) * 65536 / Bank::DensePeriods <=
+                  std::numeric_limits<u32>::max());
+    struct Active { u64 Clock; double Delta, Scale; u32 Support; unsigned Period; };
     struct Block
     {
         u64 End = 0;
@@ -83,7 +87,7 @@ public:
         {
             if (Direct.size() == DirectCapacity)
                 throw std::length_error("Interpolation direct capacity exceeded");
-            Direct.push_back({clock, Owner->SupportClocks(period), double(delta), period});
+            Direct.push_back({clock, double(delta), 256.0 / period, u32(Owner->SupportClocks(period)), period});
         }
         else
         {
@@ -119,7 +123,7 @@ public:
             const auto tail = Direct[i];
             const u64 age = clock - tail.Clock;
             if (age >= tail.Support) continue;
-            value -= tail.Delta * (1 - Owner->Step(tail.Period, age));
+            value -= tail.Delta * (1 - Owner->StepPosition(tail.Period, double(age) * tail.Scale));
             if (keep != i) Direct[keep] = tail;
             ++keep;
         }

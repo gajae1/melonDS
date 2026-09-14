@@ -47,18 +47,20 @@ struct SmokeAudio
     bool Open()
     {
         const char* buffer = std::getenv("MELONDS_SMOKE_AUDIO_BUFFER");
-        if (!buffer) return true;
         const char* interpolation = std::getenv("MELONDS_SMOKE_AUDIO_INTERPOLATION");
         char* end = nullptr;
-        const long requested = std::strtol(buffer, &end, 10);
-        if (!*buffer || *end || (requested != 128 && requested != 256 && requested != 512 && requested != 1024))
-            return false;
         long type = 0;
         if (interpolation)
         {
             type = std::strtol(interpolation, &end, 10);
-            if (!*interpolation || *end || type < 0 || type > 4) return false;
+            if (!*interpolation || *end || type < 0 || type > int(melonDS::AudioInterpolation::MinimumPhase)) return false;
+            nds->SPU.SetInterpolation(static_cast<melonDS::AudioInterpolation>(type));
+            std::printf("audio_interpolation=%ld\n", type);
         }
+        if (!buffer) return true;
+        const long requested = std::strtol(buffer, &end, 10);
+        if (!*buffer || *end || (requested != 128 && requested != 256 && requested != 512 && requested != 1024))
+            return false;
         if (!audioSyncLock || !audioSyncCond || SDL_InitSubSystem(SDL_INIT_AUDIO)) return false;
         SDL_AudioSpec wanted{}, obtained{};
         wanted.freq = audioFreq;
@@ -118,11 +120,12 @@ struct SmokeAudio
         const auto& d = audioDiagnostics;
         const double tickUs = 1e6 / SDL_GetPerformanceFrequency();
         std::printf("audio_delivery callbacks=%llu requested=%llu supplied=%llu missing=%llu underruns=%llu empty=%llu "
-            "max_read_us=%.1f max_gap_us=%.1f core_dropped=%llu queue=%d\n",
+            "max_read_us=%.1f max_gap_us=%.1f max_processing_us=%.1f core_dropped=%llu queue=%d\n",
             (unsigned long long)d.Callbacks, (unsigned long long)d.RequestedFrames,
             (unsigned long long)d.SuppliedFrames, (unsigned long long)(d.RequestedFrames - d.SuppliedFrames),
             (unsigned long long)d.Underruns, (unsigned long long)d.EmptyCallbacks,
             d.MaxReadTicks * tickUs, d.MaxGapTicks * tickUs,
+            d.MaxProcessingTicks * tickUs,
             (unsigned long long)nds->SPU.GetOutputDroppedFrames(), nds->SPU.GetOutputSize());
     }
 

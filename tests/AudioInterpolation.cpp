@@ -107,9 +107,53 @@ static void PairedFrames(NDS& a, NDS& b, unsigned frames)
     }
 }
 
+namespace melonDS
+{
+extern const unsigned char AudioInterpolation352[], AudioInterpolation512[];
+extern const std::size_t AudioInterpolation352Size, AudioInterpolation512Size;
+}
+
+static void SparseStreamReference()
+{
+    for (const auto data : {std::span<const u8>(AudioInterpolation352, AudioInterpolation352Size),
+                            std::span<const u8>(AudioInterpolation512, AudioInterpolation512Size)})
+    {
+        auto bank = AudioInterpolationBank::Create(data);
+        AudioInterpolationStream stream(bank, 2048, 1);
+        struct Event { u64 Clock; int Delta; unsigned Period; };
+        std::vector<Event> events;
+        const unsigned mix = bank->MixInterval();
+        const std::array<unsigned, 9> periods{257, 351, 352, 353, 511, 512, 513, 4096, 65536};
+        // Large absolute clocks expose accidental narrowing; changing periods
+        // keeps tails from several different responses alive simultaneously.
+        const u64 origin = (u64(1) << 40) / mix * mix;
+        s16 current = 0;
+        for (unsigned n = 0; n < 1800; ++n)
+        {
+            const u64 clock = origin + u64(n) * mix;
+            const s16 next = s16(int((n * 1901) % 60001) - 30000);
+            const unsigned period = periods[n % periods.size()];
+            const u64 inputClock = n ? clock - n % mix : clock;
+            events.push_back({inputClock, int(next) - current, period});
+            stream.Push(inputClock, next, period);
+            current = next;
+            double reference = current;
+            for (const auto& event : events)
+                reference -= event.Delta * (1 - bank->Step(event.Period, clock - event.Clock));
+            Require(std::abs(stream.Read(clock) - reference) < 1e-7,
+                    "Cached sparse phase diverged from reference step response");
+        }
+        const u64 end = origin + 1800 * mix + bank->SupportClocks(65536);
+        Require(stream.Read((end + mix - 1) / mix * mix) == current && !stream.ActiveTails(),
+                "Sparse tails did not retire at full support");
+    }
+    std::puts("sparse phase reference, large clocks, mixed periods and retirement PASS");
+}
+
 int main() try
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    SparseStreamReference();
     for (bool dsi : {false, true})
     {
         auto plain = Make(dsi, AudioInterpolation::None);

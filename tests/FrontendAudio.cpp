@@ -432,6 +432,8 @@ int main(int argc, char** argv)
         check(stats.Callbacks == 7 && stats.RequestedFrames == 7u * buffer &&
               stats.SuppliedFrames == 5u * buffer - 2 && stats.Underruns == 3 && stats.EmptyCallbacks == 2,
               "Audio diagnostics do not count the supplied/short/missing blocks");
+        check(stats.MaxProcessingTicks >= stats.MaxReadTicks,
+              "Audio processing measurement excludes the source read");
     }
 
     // Unmuting a continuously supplied signal must recover from the silence
