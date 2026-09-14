@@ -441,14 +441,14 @@ int ExportMultiplyBlocks()
 }
 #endif
 
-int ExportMPUGuards(bool block = false)
+int ExportMPUGuards(bool block = false, bool userAccess = false)
 {
     NDSArgs args;
     auto nds = std::make_unique<NDS>(std::move(args));
     for (unsigned num : {0u, 1u}) for (bool thumb : {false, true}) for (bool store : {false, true})
-    for (unsigned shape = 0; shape < (block ? 6u : 1u); ++shape)
+    for (unsigned shape = 0; shape < (block ? 6u : userAccess ? 4u : 1u); ++shape)
     {
-        if (thumb && (shape == 2 || shape == 3 || (shape == 4 && !store))) continue;
+        if (thumb && (userAccess || shape == 2 || shape == 3 || (shape == 4 && !store))) continue;
         const unsigned count = shape == 0 ? 1 : shape == 5 ? (thumb ? 8 : 16) : 2;
         const bool pre = shape == 2 || shape == 4, down = shape == 3 || shape == 4;
         std::array<u32, 256> code{};
@@ -457,6 +457,12 @@ int ExportMPUGuards(bool block = false)
         compiler.Num = num;
         compiler.Thumb = thumb;
         compiler.CurInstr.Info.Kind = thumb ? ARMInstrInfo::tk_LDR_IMM : ARMInstrInfo::ak_LDR_IMM;
+        if (userAccess) {
+            compiler.CurInstr.Instr = store ? 0xE4810004 : 0xE4910004;
+            if (shape < 2) compiler.CurInstr.Instr |= 1u << 21; // T immediate/register
+            if (shape == 1) compiler.CurInstr.Instr |= 1u << 25;
+            if (shape == 3) compiler.CurInstr.Instr |= (1u << 24) | (1u << 21); // normal pre-WB
+        }
         if (block) {
             compiler.CurInstr.Info.Kind = thumb
                 ? (down ? ARMInstrInfo::tk_PUSH : store ? ARMInstrInfo::tk_STMIA : ARMInstrInfo::tk_LDMIA)
@@ -494,10 +500,11 @@ int ExportMPUGuards(bool block = false)
             unsigned(offsetof(ARM, R)), unsigned(offsetof(ARM, CPSR)),
             unsigned(offsetof(ARM, Cycles)), unsigned(offsetof(ARMv5, PU_Map)));
         for (size_t i = 0; i < words.size(); ++i) std::printf("%s%u", i ? "," : "", words[i]);
-        std::printf("],\"block\":%u,\"count\":%u,\"pre\":%u,\"down\":%u,\"instr\":%u,\"instrOffset\":%u,\"codeCyclesOffset\":%u,\"fallback\":%llu}\n",
+        std::printf("],\"block\":%u,\"count\":%u,\"pre\":%u,\"down\":%u,\"instr\":%u,\"instrOffset\":%u,\"codeCyclesOffset\":%u,\"fallback\":%llu,\"userAccess\":%u,\"userMapOffset\":%u}\n",
             unsigned(block), count, unsigned(pre), unsigned(down), compiler.CurInstr.Instr,
             unsigned(offsetof(ARM, CurInstr)), unsigned(offsetof(ARM, CodeCycles)),
-            (unsigned long long)(thumb ? InterpretTHUMB[compiler.CurInstr.Info.Kind] : InterpretARM[compiler.CurInstr.Info.Kind]));
+            (unsigned long long)(thumb ? InterpretTHUMB[compiler.CurInstr.Info.Kind] : InterpretARM[compiler.CurInstr.Info.Kind]),
+            unsigned(userAccess && shape < 2), unsigned(offsetof(ARMv5, PU_UserMap)));
     }
     return 0;
 }
@@ -595,6 +602,7 @@ int main(int argc, char** argv)
     const std::string_view filter = argc == 2 ? argv[1] : "all";
 #ifdef ARM64_JIT_BLOCK_TEST
 #ifdef ARM64_JIT_MUL_TEST
+    if (filter == "export-mpu-user") return A64Test::ExportMPUGuards(false, true);
     if (filter == "export-mpu-block") return A64Test::ExportMPUGuards(true);
     if (filter == "export-mpu") return A64Test::ExportMPUGuards();
     if (filter == "export-mul-cycles") return A64Test::ExportMultiplyBlocks();

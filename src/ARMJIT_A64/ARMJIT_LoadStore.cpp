@@ -74,7 +74,11 @@ void Compiler::Comp_MemPermission(ARM64Reg address, bool store)
     // W0 (effective address) and W4 (aliased store value) stay live on success.
     static_assert(offsetof(ARMv5, PU_Map) < 4096 * 8);
     LSR(W1, address, 12);
-    LDR(INDEX_UNSIGNED, X2, RCPU, offsetof(ARMv5, PU_Map));
+    // ARM word/byte transfers with P=0,W=1 use user permissions (T suffix).
+    if (!Thumb && (CurInstr.Instr & 0x0D200000) == 0x04200000)
+        ADDI2R(X2, RCPU, offsetof(ARMv5, PU_UserMap), X2);
+    else
+        LDR(INDEX_UNSIGNED, X2, RCPU, offsetof(ARMv5, PU_Map));
     LDRB(W1, X2, ArithOption(X1));
     const auto allowed = TBNZ(W1, store ? 1 : 0);
     RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);

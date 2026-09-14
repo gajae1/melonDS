@@ -70,13 +70,22 @@ namespace melonDS::ARMInterpreter
     if (cpu->CurInstr & (1<<21)) cpu->R[(cpu->CurInstr>>16) & 0xF] = offset; \
     cpu->AddCycles_CD();
 
-// TODO: user mode (bit21)
+// LDRT/STRT select user access permissions, not the user register bank.
+static bool CheckUserTransfer(ARM* cpu, u32 addr, bool store)
+{
+    if (cpu->Num != 0 || !(cpu->CurInstr & (1<<21))) return true;
+    auto* arm9 = static_cast<ARMv5*>(cpu);
+    if (arm9->PU_UserMap[addr>>12] & (store ? 2 : 1)) return true;
+    arm9->DataAbort();
+    return false;
+}
+
 #define A_STR_POST \
     u32 addr = cpu->R[(cpu->CurInstr>>16) & 0xF]; \
     u32 storeval = cpu->R[(cpu->CurInstr>>12) & 0xF]; \
     if (((cpu->CurInstr>>12) & 0xF) == 0xF) \
         storeval += 4; \
-    if (!cpu->DataWrite32(addr, storeval)) return; \
+    if (!CheckUserTransfer(cpu, addr, true) || !cpu->DataWrite32(addr, storeval)) return; \
     cpu->R[(cpu->CurInstr>>16) & 0xF] += offset; \
     cpu->AddCycles_CD();
 
@@ -86,10 +95,9 @@ namespace melonDS::ARMInterpreter
     if (cpu->CurInstr & (1<<21)) cpu->R[(cpu->CurInstr>>16) & 0xF] = offset; \
     cpu->AddCycles_CD();
 
-// TODO: user mode (bit21)
 #define A_STRB_POST \
     u32 addr = cpu->R[(cpu->CurInstr>>16) & 0xF]; \
-    if (!cpu->DataWrite8(addr, cpu->R[(cpu->CurInstr>>12) & 0xF])) return; \
+    if (!CheckUserTransfer(cpu, addr, true) || !cpu->DataWrite8(addr, cpu->R[(cpu->CurInstr>>12) & 0xF])) return; \
     cpu->R[(cpu->CurInstr>>16) & 0xF] += offset; \
     cpu->AddCycles_CD();
 
@@ -109,10 +117,9 @@ namespace melonDS::ARMInterpreter
         cpu->R[(cpu->CurInstr>>12) & 0xF] = val; \
     }
 
-// TODO: user mode
 #define A_LDR_POST \
     u32 addr = cpu->R[(cpu->CurInstr>>16) & 0xF]; \
-    u32 val; if (!cpu->DataRead32(addr, &val)) return; \
+    u32 val; if (!CheckUserTransfer(cpu, addr, false) || !cpu->DataRead32(addr, &val)) return; \
     val = ROR(val, ((addr&0x3)<<3)); \
     cpu->R[(cpu->CurInstr>>16) & 0xF] += offset; \
     cpu->AddCycles_CDI(); \
@@ -134,10 +141,9 @@ namespace melonDS::ARMInterpreter
     cpu->R[(cpu->CurInstr>>12) & 0xF] = val; \
     if (((cpu->CurInstr>>12) & 0xF) == 15) printf("!! LDRB PC %08X\n", cpu->R[15]); \
 
-// TODO: user mode
 #define A_LDRB_POST \
     u32 addr = cpu->R[(cpu->CurInstr>>16) & 0xF]; \
-    u32 val; if (!cpu->DataRead8(addr, &val)) return; \
+    u32 val; if (!CheckUserTransfer(cpu, addr, false) || !cpu->DataRead8(addr, &val)) return; \
     cpu->R[(cpu->CurInstr>>16) & 0xF] += offset; \
     cpu->AddCycles_CDI(); \
     cpu->R[(cpu->CurInstr>>12) & 0xF] = val; \

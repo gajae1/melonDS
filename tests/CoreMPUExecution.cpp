@@ -335,6 +335,15 @@ int TestMPUDataAbort(NDSArgs&& args, bool jit)
         {"swpb-denied", 0xE1410092, false, true, 8, false, false, false, false, 0, true},
         {"swpb-user-readonly", 0xE1410092, false, true, 8, false, false, true, false, 2, true},
         {"swp-ne-skipped", 0x11010092, false, true, 32, false, false, false, true, 0, true},
+        {"ldrt", 0xE4B10004, false, false, 32, false, true, false, false, 1},
+        {"strt", 0xE4A10004, false, true, 32, false, true, false, false, 1},
+        {"ldrbt", 0xE4F10004, false, false, 8, false, true, false, false, 1},
+        {"strbt-readonly", 0xE4E10004, false, true, 8, false, true, false, false, 2},
+        {"ldrt-register", 0xE6B10004, false, false, 32, false, true, false, false, 1},
+        {"strt-register", 0xE6A10004, false, true, 32, false, true, false, false, 2},
+        {"ldrbt-register", 0xE6F10004, false, false, 8, false, true, false, false, 1},
+        {"strbt-register", 0xE6E10004, false, true, 8, false, true, false, false, 1},
+        {"ldrt-ne-skipped", 0x14B10004, false, false, 32, false, true, false, true, 1},
     };
     unsigned failures = 0, checked = 0;
     for (const auto& probe : probes)
@@ -383,7 +392,7 @@ int TestMPUDataAbort(NDSArgs&& args, bool jit)
             const u32 base = cpu.R[1];
             cpu.R[2] = Sentinel;
             cpu.R[3] = 0xFFFFFFFF;
-            cpu.R[4] = 0; // Thumb register-offset probes
+            cpu.R[4] = !probe.thumb && (probe.op & (1u<<25)) ? 4 : 0;
             cpu.R[6] = 0x9999;
             cpu.R_ABT[2] = SPSRSentinel;
             cpu.StopExecution = 0;

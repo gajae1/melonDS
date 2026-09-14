@@ -17,10 +17,11 @@ from unicorn.arm64_const import (UC_ARM64_REG_X0, UC_ARM64_REG_X4,
 
 mode = sys.argv[2] if len(sys.argv) > 2 else "export-mpu"
 block = mode == "export-mpu-block"
+user_access = mode == "export-mpu-user"
 export = subprocess.run([sys.argv[1], mode], capture_output=True, text=True, timeout=30)
 assert export.returncode == 0, export.stderr
 cases = [json.loads(line) for line in export.stdout.splitlines() if line.startswith("{")]
-assert len(cases) == (38 if block else 8)
+assert len(cases) == (38 if block else 16 if user_access else 8)
 checked = 0
 for case in cases:
     for permission, second in ([(3,3), (0,3), (3,0), (1,1), (2,2)] if block else [(p,p) for p in range(4)]):
@@ -39,6 +40,8 @@ for case in cases:
             cpu, table = 0x10000000, 0x20000000
             pages(cpu, 0x10000)
             pages(table, 0x100000)
+            user_table = cpu + case["userMapOffset"]
+            if user_access: pages(user_table, 0x100000)
             code = struct.pack("<" + "I" * len(case["words"]), *case["words"])
             pages(case["base"], len(code))
             call = case["fallback"] if block else case["abort"]
@@ -46,7 +49,8 @@ for case in cases:
             pages(case["return"], 4)
             uc.mem_write(case["base"], code)
             uc.mem_write(cpu + case["mapOffset"], struct.pack("<Q", table))
-            uc.mem_write(table + (address >> 12), bytes([permission]))
+            uc.mem_write(table + (address >> 12), bytes([3 if user_access else permission]))
+            if user_access: uc.mem_write(user_table + (address >> 12), bytes([permission]))
             last = ((address & ~3) + (case["count"]-1)*4) & 0xFFFFFFFF if block else address
             different = (last >> 12) != (address >> 12)
             if different: uc.mem_write(table + (last >> 12), bytes([second]))
@@ -86,7 +90,8 @@ for case in cases:
             uc.hook_add(UC_HOOK_CODE, helper)
             uc.emu_start(case["base"], case["return"], count=256)
             mask = 2 if case["store"] else 1
-            denied = case["num"] == 0 and (not (permission & mask) or (different and not (second & mask)))
+            access = permission if not user_access or case["userAccess"] else 3
+            denied = case["num"] == 0 and (not (access & mask) or (different and not (second & mask)))
             assert len(calls) == int(denied)
             assert uc.reg_read(UC_ARM64_REG_PC) == case["return"]
             if denied:

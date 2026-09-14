@@ -80,7 +80,11 @@ void Compiler::Comp_MemPermission(const OpArg& address, bool store)
         return;
     MOV(32, R(RSCRATCH2), address);
     SHR(32, R(RSCRATCH2), Imm8(12));
-    MOV(64, R(RSCRATCH), MDisp(RCPU, offsetof(ARMv5, PU_Map)));
+    // ARM word/byte transfers with P=0,W=1 use user permissions (T suffix).
+    if (!Thumb && (CurInstr.Instr & 0x0D200000) == 0x04200000)
+        LEA(64, RSCRATCH, MDisp(RCPU, offsetof(ARMv5, PU_UserMap)));
+    else
+        MOV(64, R(RSCRATCH), MDisp(RCPU, offsetof(ARMv5, PU_Map)));
     TEST(8, MRegSum(RSCRATCH, RSCRATCH2), Imm8(store ? 2 : 1));
     // Keep normal accesses on the fall-through path and rare exception code
     // out of the hot instruction stream.

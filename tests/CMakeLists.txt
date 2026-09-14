@@ -468,6 +468,10 @@ if (TARGET core AND ENABLE_JIT)
             COMMAND "${MELONDS_UNICORN_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/ARM64JitMPU.py"
                 "$<TARGET_FILE:ARM64JitArithmetic>")
         set_tests_properties(arm64-jit-mpu-execution PROPERTIES TIMEOUT 30)
+        add_test(NAME arm64-jit-mpu-user-execution
+            COMMAND "${MELONDS_UNICORN_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/ARM64JitMPU.py"
+                "$<TARGET_FILE:ARM64JitArithmetic>" export-mpu-user)
+        set_tests_properties(arm64-jit-mpu-user-execution PROPERTIES TIMEOUT 30)
         add_test(NAME arm64-jit-mpu-block-execution
             COMMAND "${MELONDS_UNICORN_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/ARM64JitMPU.py"
                 "$<TARGET_FILE:ARM64JitArithmetic>" export-mpu-block)
