@@ -10,7 +10,7 @@
 #include <vector>
 using namespace melonDS;
 
-static std::vector<s16> CapturePCM(bool dsi, AudioBitDepth depth, bool applySetter, bool chunked = false)
+static std::vector<s16> CapturePCM(bool dsi, AudioBitDepth depth, bool applySetter, bool chunked = false, bool delayed = false)
 {
     NDSArgs args;
     args.JIT.reset();
@@ -47,6 +47,7 @@ static std::vector<s16> CapturePCM(bool dsi, AudioBitDepth depth, bool applySett
         for (unsigned frame = 0; frame < 3; ++frame)
         {
             nds->RunFrame();
+            if (delayed && frame < 2) continue;
             if (!chunked)
             {
                 const int count = nds->SPU.ReadOutput(samples.data(), 2048);
@@ -88,6 +89,20 @@ static bool TestInitialBitDepth()
         if (CapturePCM(dsi, AudioBitDepth::_16Bit, true, true) != sixteen)
         {
             std::fprintf(stderr, "Audio chunked read changes %s PCM or destination guards\n", dsi ? "DSi" : "DS");
+            return false;
+        }
+        // Three frames exceed the 48 kHz FIFO. A delayed consumer must get
+        // the newest 2047 stereo frames, in order, across both reset cycles.
+        const auto delayed = CapturePCM(dsi, AudioBitDepth::_16Bit, true, true, true);
+        constexpr size_t retainedSamples = 2047 * 2;
+        const size_t half = sixteen.size() / 2;
+        if (half <= retainedSamples || delayed.size() != retainedSamples * 2 ||
+            !std::equal(delayed.begin(), delayed.begin() + retainedSamples,
+                        sixteen.begin() + half - retainedSamples) ||
+            !std::equal(delayed.begin() + retainedSamples, delayed.end(),
+                        sixteen.end() - retainedSamples))
+        {
+            std::fprintf(stderr, "Audio delayed read changes newest %s PCM after overflow/reset\n", dsi ? "DSi" : "DS");
             return false;
         }
         for (auto depth : {AudioBitDepth::Auto, AudioBitDepth::_10Bit, AudioBitDepth::_16Bit})

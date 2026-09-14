@@ -595,7 +595,7 @@ foreach(case IN ITEMS memory-control binary-tail binary-escape last-address shor
         coalesced response-limit response-chunks response-zero response-escape response-format memory-limit
         disconnect eof ack-eof poll-wait poll-error extra-binary stream-boundaries response-extra loopback q-xfer
         split-resend listener-error crc-control crc-chunks crc-wrap crc-malformed
-        register-xml register-bulk register-malformed)
+        register-xml register-bulk register-malformed idle-wait)
     add_test(NAME gdb-protocol-${case} COMMAND GdbProtocol ${case})
     set_tests_properties(gdb-protocol-${case} PROPERTIES TIMEOUT 15)
 endforeach()

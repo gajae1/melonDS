@@ -386,7 +386,9 @@ StubState GdbStub::Enter(bool stay, TgtStatus stat, u32 arg, bool wait_for_conn)
 	do
 	{
 		bool was_conn = IsConnected();
-		st = Poll(wait_for_conn);
+		// A stopped, connected target has no execution work to do. Sleep on
+		// socket readiness instead of repeatedly polling an idle debugger.
+		st = Poll(wait_for_conn || (stay && was_conn));
 		bool has_conn = IsConnected();
 
 		if (has_conn && !was_conn) stay = true;
@@ -413,7 +415,7 @@ StubState GdbStub::Enter(bool stay, TgtStatus stat, u32 arg, bool wait_for_conn)
 		default: break;
 		}
 	}
-	while (do_next && stay);
+	while (do_next && stay && (IsConnected() || (wait_for_conn && SockFd != InvalidSocket)));
 
 	if (st != StubState::None && st != StubState::NoConn)
 	{

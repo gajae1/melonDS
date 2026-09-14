@@ -47,6 +47,7 @@ static int sendChunk = 100000, receiveChunk = 100000;
 static bool atEOF = false, zeroSend = false, selectError = false;
 static int invalidTimeout = 0;
 static int blockedSends = 0;
+static unsigned idleSocketPolls = 0;
 
 static void WouldBlock()
 {
@@ -83,7 +84,10 @@ static int Send(TestSocket socket, const char* data, int length, int flags)
 static int Select(int count, fd_set* reads, fd_set* writes, fd_set* errors, const timeval* timeout)
 {
     if ((!reads || !FD_ISSET(fakeSocket, reads)) && (!writes || !FD_ISSET(fakeSocket, writes)))
+    {
+        if (reads && timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0) ++idleSocketPolls;
         return ::select(count, reads, writes, errors, const_cast<timeval*>(timeout));
+    }
     if (timeout && (timeout->tv_sec < 0 || timeout->tv_usec < 0 || timeout->tv_usec >= 1000000))
         ++invalidTimeout;
     if (selectError) return -1;
@@ -106,7 +110,11 @@ static int CloseSocket(TestSocket socket)
 #ifndef _WIN32
 static int Poll(pollfd* descriptors, nfds_t count, int timeout)
 {
-    if (count != 1 || descriptors[0].fd != fakeSocket) return ::poll(descriptors, count, timeout);
+    if (count != 1 || descriptors[0].fd != fakeSocket)
+    {
+        if (timeout == 0) ++idleSocketPolls;
+        return ::poll(descriptors, count, timeout);
+    }
     if (selectError) return -1;
     descriptors[0].revents = (descriptors[0].events & POLLOUT) ? POLLOUT :
         (readOffset < incoming.size() || atEOF) ? POLLIN : 0;
@@ -199,7 +207,7 @@ static void Fill(Gdb::GdbStub& stub, const std::vector<u8>& data)
     stub.RecvBufferFilled = data.size();
 }
 
-static bool Loopback(Memory& memory, Gdb::GdbStub& stub)
+static bool Loopback(Memory& memory, Gdb::GdbStub& stub, bool idle = false)
 {
     stub.Disconnect();
     if (!stub.Init(0)) return false;
@@ -209,6 +217,7 @@ static bool Loopback(Memory& memory, Gdb::GdbStub& stub)
     std::atomic<bool> done = false;
     bool clientOK = true;
     unsigned disconnected = 0;
+    unsigned continued = 0, stoppedPolls = 0;
     std::jthread client([&] {
         const auto write = [](TestSocket socket, const std::vector<u8>& bytes) {
             size_t offset = 0;
@@ -254,6 +263,15 @@ static bool Loopback(Memory& memory, Gdb::GdbStub& stub)
                     expect(socket, Frame(reply)) && (!ack || write(socket, {'+'}));
             };
             if (clientOK) clientOK = write(socket, {'+'}) && expect(socket, {'+'});
+            if (idle)
+            {
+                // A debugger stopped at a breakpoint may stay silent for a
+                // long time. Resume it on each of two actual TCP sessions.
+                std::this_thread::sleep_for(std::chrono::milliseconds(80));
+                if (clientOK) clientOK = write(socket, Frame("c")) && expect(socket, {'+'});
+                CloseSocket(socket);
+                continue;
+            }
             if (session == 0)
             {
                 exchange("qSupported:swbreak+", "PacketSize=47B;qXfer:features:read+;swbreak-;hwbreak+;QStartNoAckMode+", true);
@@ -295,10 +313,22 @@ static bool Loopback(Memory& memory, Gdb::GdbStub& stub)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
     while ((!done || stub.IsConnected()) && std::chrono::steady_clock::now() < deadline)
     {
-        if (stub.Poll(false) == Gdb::StubState::Disconnect) ++disconnected;
+        if (idle && stub.IsConnected())
+        {
+            idleSocketPolls = 0;
+            if (stub.Enter(true) == Gdb::StubState::Continue) ++continued;
+            stoppedPolls += idleSocketPolls;
+        }
+        else if (stub.Poll(false) == Gdb::StubState::Disconnect) ++disconnected;
+        if (idle && continued == 2) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     client.join();
+    if (idle)
+    {
+        std::printf("GDB idle sessions: continued=%u nonblocking_polls=%u\n", continued, stoppedPolls);
+        return clientOK && continued == 2 && stoppedPolls < 100;
+    }
     return clientOK && disconnected == 2 && !stub.IsConnected() && !stub.NoAck &&
         stub.RecvBufferFilled == 0 && memory.bytes[0x100] == '$';
 }
@@ -612,6 +642,16 @@ int main(int argc, char** argv)
     else if (mode == "loopback")
     {
         check(Loopback(memory, stub), "Actual TCP session/escape/split/reconnect check failed");
+    }
+    else if (mode == "idle-wait")
+    {
+        check(Loopback(memory, stub, true), "Stopped debugger busy-polled or failed to resume/reconnect");
+        if (!failures)
+        {
+            stub.Close();
+            check(stub.Enter(true, Gdb::TgtStatus::NoEvent, 0, true) == Gdb::StubState::NoConn,
+                  "Closed listener remained in a stopped debugger loop");
+        }
     }
     else if (mode == "q-xfer")
     {

@@ -1167,21 +1167,24 @@ void SPU::BufferAudio()
     blip_read_samples(BlipRight, temp + 1, avail, true);
 
     Platform::Mutex_Lock(AudioLock);
-    for (int i = 0; i < avail * 2; i += 2)
-    {
-        OutputBuffer[OutputBufferWritePos++] = temp[i];
-        OutputBuffer[OutputBufferWritePos++] = temp[i+1];
+    const u32 capacity = 2 * OutputBufferSize;
+    const u32 mask = capacity - 1;
+    const u32 queued = ((OutputBufferWritePos - OutputBufferReadPos) & mask) / 2;
+    const u32 dropped = std::max<int>(0, avail - static_cast<int>(OutputBufferSize - 1 - queued));
+    OutputDroppedFrames += dropped;
+    OutputBufferReadPos = (OutputBufferReadPos + 2 * dropped) & mask;
 
-        OutputBufferWritePos &= ((2*OutputBufferSize)-1);
-
-        if (OutputBufferWritePos == OutputBufferReadPos)
-        {
-            // advance the read position too, to avoid losing the entire FIFO
-            ++OutputDroppedFrames;
-            OutputBufferReadPos += 2;
-            OutputBufferReadPos &= ((2*OutputBufferSize)-1);
-        }
-    }
+    // Keep the same newest-frame overflow policy. Copy each contiguous part
+    // once, then publish the write cursor while still holding the audio lock.
+    const u32 count = 2 * avail;
+    const u32 retained = std::min(count, capacity - 2);
+    const u32 skipped = count - retained;
+    const u32 write = (OutputBufferWritePos + skipped) & mask;
+    const u32 first = std::min(retained, capacity - write);
+    memcpy(OutputBuffer + write, temp + skipped, first * sizeof(s16));
+    if (retained > first)
+        memcpy(OutputBuffer, temp + skipped + first, (retained - first) * sizeof(s16));
+    OutputBufferWritePos = (OutputBufferWritePos + count) & mask;
     Platform::Mutex_Unlock(AudioLock);
 }
 
