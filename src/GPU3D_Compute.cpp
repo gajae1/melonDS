@@ -25,10 +25,12 @@
 
 #include "OpenGLSupport.h"
 
-#include "GPU3D_Compute_shaders.h"
+#include "GPU3D_ComputeShader.h"
 
 namespace melonDS
 {
+using ComputeData::SetupYSpan;
+using ComputeData::SetupYSpanDummy;
 
 ComputeRenderer3D::ComputeRenderer3D(melonDS::GPU3D& gpu3D, GLRenderer& parent)
     : Renderer3D(gpu3D), Parent(parent), Texcache(gpu3D.GPU, TexcacheOpenGLLoader(true))
@@ -37,121 +39,56 @@ ComputeRenderer3D::ComputeRenderer3D(melonDS::GPU3D& gpu3D, GLRenderer& parent)
     HiresCoordinates = false;
 }
 
-bool ComputeRenderer3D::CompileShader(GLuint& shader, const std::string& source, const std::initializer_list<const char*>& defines)
+bool ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
 {
-    std::string shaderName;
-    std::string shaderSource;
-    shaderSource += "#version 430 core\n";
-    for (const char* define : defines)
-    {
-        shaderSource += "#define ";
-        shaderSource += define;
-        shaderSource += '\n';
-        shaderName += define;
-        shaderName += ',';
-    }
-    shaderSource += "#define ScreenWidth ";
-    shaderSource += std::to_string(ScreenWidth);
-    shaderSource += "\n#define ScreenHeight ";
-    shaderSource += std::to_string(ScreenHeight);
-    shaderSource += "\n#define MaxWorkTiles ";
-    shaderSource += std::to_string(MaxWorkTiles);
-    shaderSource += "\n#define TileSize ";
-    shaderSource += std::to_string(TileSize);
-    shaderSource += "\nconst int CoarseTileCountY = ";
-    shaderSource += std::to_string(CoarseTileCountY) + ";";
-    shaderSource += "\n#define CoarseTileArea ";
-    shaderSource += std::to_string(CoarseTileArea);
-    shaderSource += "\n#define ClearCoarseBinMaskLocalSize ";
-    shaderSource += std::to_string(ClearCoarseBinMaskLocalSize);
-
-    shaderSource += ComputeRendererShaders::Common;
-    shaderSource += source;
-
-    if (!OpenGL::CompileComputeProgram(shader, shaderSource.c_str(), shaderName.c_str()))
+    current = ShaderStepIdx;
+    count = ComputeShader::Count;
+    if (ShaderCompileFailed) return false;
+    if (ShaderStepIdx == count) return true;
+    GLuint* programs[] = {
+        &ShaderInterpXSpans[0],
+        &ShaderInterpXSpans[1],
+        &ShaderBinCombined,
+        &ShaderDepthBlend[0],
+        &ShaderDepthBlend[1],
+        &ShaderRasteriseNoTexture[0],
+        &ShaderRasteriseNoTexture[1],
+        &ShaderRasteriseNoTextureToon[0],
+        &ShaderRasteriseNoTextureToon[1],
+        &ShaderRasteriseNoTextureHighlight[0],
+        &ShaderRasteriseNoTextureHighlight[1],
+        &ShaderRasteriseUseTextureDecal[0],
+        &ShaderRasteriseUseTextureDecal[1],
+        &ShaderRasteriseUseTextureModulate[0],
+        &ShaderRasteriseUseTextureModulate[1],
+        &ShaderRasteriseUseTextureToon[0],
+        &ShaderRasteriseUseTextureToon[1],
+        &ShaderRasteriseUseTextureHighlight[0],
+        &ShaderRasteriseUseTextureHighlight[1],
+        &ShaderRasteriseShadowMask[0],
+        &ShaderRasteriseShadowMask[1],
+        &ShaderClearCoarseBinMask,
+        &ShaderCalculateWorkListOffset,
+        &ShaderSortWork,
+        &ShaderFinalPass[0],
+        &ShaderFinalPass[1],
+        &ShaderFinalPass[2],
+        &ShaderFinalPass[3],
+        &ShaderFinalPass[4],
+        &ShaderFinalPass[5],
+        &ShaderFinalPass[6],
+        &ShaderFinalPass[7],
+};
+    static_assert(std::size(programs) == ComputeShader::Count);
+    const ComputeShader::Config config{ScreenWidth, ScreenHeight, MaxWorkTiles, TileSize, CoarseTileCountY, CoarseTileArea, ClearCoarseBinMaskLocalSize};
+    const auto source = ComputeShader::BuildSource(ShaderStepIdx, config, false);
+    const auto name = "Compute variant " + std::to_string(ShaderStepIdx);
+    if (!OpenGL::CompileComputeProgram(*programs[ShaderStepIdx++], source.c_str(), name.c_str()))
     {
         ShaderCompileFailed = true;
         return false;
     }
     return true;
-}
-
-bool ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
-{
-    current = ShaderStepIdx;
-    count = 32;
-    if (ShaderCompileFailed) return false;
-    if (ShaderStepIdx == count) return true;
-    ShaderStepIdx++;
-    switch (current)
-    {
-    case 0:
-        return CompileShader(ShaderInterpXSpans[0], ComputeRendererShaders::InterpSpans, {"InterpSpans", "ZBuffer"});
-    case 1:
-        return CompileShader(ShaderInterpXSpans[1], ComputeRendererShaders::InterpSpans, {"InterpSpans", "WBuffer"});
-    case 2:
-        return CompileShader(ShaderBinCombined, ComputeRendererShaders::BinCombined, {"BinCombined"});
-    case 3:
-        return CompileShader(ShaderDepthBlend[0], ComputeRendererShaders::DepthBlend, {"DepthBlend", "ZBuffer"});
-    case 4:
-        return CompileShader(ShaderDepthBlend[1], ComputeRendererShaders::DepthBlend, {"DepthBlend", "WBuffer"});
-    case 5:
-        return CompileShader(ShaderRasteriseNoTexture[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture"});
-    case 6:
-        return CompileShader(ShaderRasteriseNoTexture[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture"});
-    case 7:
-        return CompileShader(ShaderRasteriseNoTextureToon[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture", "Toon"});
-    case 8:
-        return CompileShader(ShaderRasteriseNoTextureToon[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture", "Toon"});
-    case 9:
-        return CompileShader(ShaderRasteriseNoTextureHighlight[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "NoTexture", "Highlight"});
-    case 10:
-        return CompileShader(ShaderRasteriseNoTextureHighlight[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "NoTexture", "Highlight"});
-    case 11:
-        return CompileShader(ShaderRasteriseUseTextureDecal[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Decal"});
-    case 12:
-        return CompileShader(ShaderRasteriseUseTextureDecal[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Decal"});
-    case 13:
-        return CompileShader(ShaderRasteriseUseTextureModulate[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Modulate"});
-    case 14:
-        return CompileShader(ShaderRasteriseUseTextureModulate[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Modulate"});
-    case 15:
-        return CompileShader(ShaderRasteriseUseTextureToon[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Toon"});
-    case 16:
-        return CompileShader(ShaderRasteriseUseTextureToon[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Toon"});
-    case 17:
-        return CompileShader(ShaderRasteriseUseTextureHighlight[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "UseTexture", "Highlight"});
-    case 18:
-        return CompileShader(ShaderRasteriseUseTextureHighlight[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "UseTexture", "Highlight"});
-    case 19:
-        return CompileShader(ShaderRasteriseShadowMask[0], ComputeRendererShaders::Rasterise, {"Rasterise", "ZBuffer", "ShadowMask"});
-    case 20:
-        return CompileShader(ShaderRasteriseShadowMask[1], ComputeRendererShaders::Rasterise, {"Rasterise", "WBuffer", "ShadowMask"});
-    case 21:
-        return CompileShader(ShaderClearCoarseBinMask, ComputeRendererShaders::ClearCoarseBinMask, {"ClearCoarseBinMask"});
-    case 22:
-        return CompileShader(ShaderCalculateWorkListOffset, ComputeRendererShaders::CalcOffsets, {"CalculateWorkOffsets"});
-    case 23:
-        return CompileShader(ShaderSortWork, ComputeRendererShaders::SortWork, {"SortWork"});
-    case 24:
-        return CompileShader(ShaderFinalPass[0], ComputeRendererShaders::FinalPass, {"FinalPass"});
-    case 25:
-        return CompileShader(ShaderFinalPass[1], ComputeRendererShaders::FinalPass, {"FinalPass", "EdgeMarking"});
-    case 26:
-        return CompileShader(ShaderFinalPass[2], ComputeRendererShaders::FinalPass, {"FinalPass", "Fog"});
-    case 27:
-        return CompileShader(ShaderFinalPass[3], ComputeRendererShaders::FinalPass, {"FinalPass", "EdgeMarking", "Fog"});
-    case 28:
-        return CompileShader(ShaderFinalPass[4], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing"});
-    case 29:
-        return CompileShader(ShaderFinalPass[5], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "EdgeMarking"});
-    case 30:
-        return CompileShader(ShaderFinalPass[6], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "Fog"});
-    case 31:
-        return CompileShader(ShaderFinalPass[7], ComputeRendererShaders::FinalPass, {"FinalPass", "AntiAliasing", "EdgeMarking", "Fog"});
-    default:
-        return false;
-    }
 }
 
 void blah(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam)
@@ -437,206 +374,6 @@ bool ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
 }
 
 
-void ComputeRenderer3D::SetupAttrs(SpanSetupY* span, Polygon* poly, int from, int to)
-{
-    span->Z0 = poly->FinalZ[from];
-    span->W0 = poly->FinalW[from];
-    span->Z1 = poly->FinalZ[to];
-    span->W1 = poly->FinalW[to];
-    span->ColorR0 = poly->Vertices[from]->FinalColor[0];
-    span->ColorG0 = poly->Vertices[from]->FinalColor[1];
-    span->ColorB0 = poly->Vertices[from]->FinalColor[2];
-    span->ColorR1 = poly->Vertices[to]->FinalColor[0];
-    span->ColorG1 = poly->Vertices[to]->FinalColor[1];
-    span->ColorB1 = poly->Vertices[to]->FinalColor[2];
-    span->TexcoordU0 = poly->Vertices[from]->TexCoords[0];
-    span->TexcoordV0 = poly->Vertices[from]->TexCoords[1];
-    span->TexcoordU1 = poly->Vertices[to]->TexCoords[0];
-    span->TexcoordV1 = poly->Vertices[to]->TexCoords[1];
-}
-
-void ComputeRenderer3D::SetupYSpanDummy(RenderPolygon* rp, SpanSetupY* span, Polygon* poly, int vertex, int side, s32 positions[10][2])
-{
-    s32 x0 = positions[vertex][0];
-    if (side)
-    {
-        span->DxInitial = -0x40000;
-        x0--;
-    }
-    else
-    {
-        span->DxInitial = 0;
-    }
-
-    span->X0 = span->X1 = x0;
-    span->XMin = x0;
-    span->XMax = x0;
-    span->Y0 = span->Y1 = positions[vertex][1];
-
-    if (span->XMin < rp->XMin)
-    {
-        rp->XMin = span->XMin;
-        rp->XMinY = span->Y0;
-    }
-    if (span->XMax > rp->XMax)
-    {
-        rp->XMax = span->XMax;
-        rp->XMaxY = span->Y0;
-    }
-
-    span->Increment = 0;
-
-    span->I0 = span->I1 = span->IRecip = 0;
-    span->Linear = true;
-
-    span->XCovIncr = 0;
-
-    span->IsDummy = true;
-
-    SetupAttrs(span, poly, vertex, vertex);
-}
-
-void ComputeRenderer3D::SetupYSpan(RenderPolygon* rp, SpanSetupY* span, Polygon* poly, int from, int to, int side, s32 positions[10][2])
-{
-    span->X0 = positions[from][0];
-    span->X1 = positions[to][0];
-    span->Y0 = positions[from][1];
-    span->Y1 = positions[to][1];
-
-    SetupAttrs(span, poly, from, to);
-
-    s32 minXY, maxXY;
-    bool negative = false;
-    if (span->X1 > span->X0)
-    {
-        span->XMin = span->X0;
-        span->XMax = span->X1-1;
-
-        minXY = span->Y0;
-        maxXY = span->Y1;
-    }
-    else if (span->X1 < span->X0)
-    {
-        span->XMin = span->X1;
-        span->XMax = span->X0-1;
-        negative = true;
-
-        minXY = span->Y1;
-        maxXY = span->Y0;
-    }
-    else
-    {
-        span->XMin = span->X0;
-        if (side) span->XMin--;
-        span->XMax = span->XMin;
-
-        // doesn't matter for completely vertical slope
-        minXY = span->Y0;
-        maxXY = span->Y0;
-    }
-
-    if (span->XMin < rp->XMin)
-    {
-        rp->XMin = span->XMin;
-        rp->XMinY = minXY;
-    }
-    if (span->XMax > rp->XMax)
-    {
-        rp->XMax = span->XMax;
-        rp->XMaxY = maxXY;
-    }
-
-    span->IsDummy = false;
-
-    s32 xlen = span->XMax+1 - span->XMin;
-    s32 ylen = span->Y1 - span->Y0;
-
-    // slope increment has a 18-bit fractional part
-    // note: for some reason, x/y isn't calculated directly,
-    // instead, 1/y is calculated and then multiplied by x
-    // TODO: this is still not perfect (see for example x=169 y=33)
-    if (ylen == 0)
-    {
-        span->Increment = 0;
-    }
-    else if (ylen == xlen)
-    {
-        span->Increment = 0x40000;
-    }
-    else
-    {
-        s32 yrecip = (1<<18) / ylen;
-        span->Increment = (span->X1-span->X0) * yrecip;
-        if (span->Increment < 0) span->Increment = -span->Increment;
-    }
-
-    bool xMajor = (span->Increment > 0x40000);
-
-    if (side)
-    {
-        // right
-
-        if (xMajor)
-            span->DxInitial = negative ? (0x20000 + 0x40000) : (span->Increment - 0x20000);
-        else if (span->Increment != 0)
-            span->DxInitial = negative ? 0x40000 : 0;
-        else
-            span->DxInitial = -0x40000;
-    }
-    else
-    {
-        // left
-
-        if (xMajor)
-            span->DxInitial = negative ? ((span->Increment - 0x20000) + 0x40000) : 0x20000;
-        else if (span->Increment != 0)
-            span->DxInitial = negative ? 0x40000 : 0;
-        else
-            span->DxInitial = 0;
-    }
-
-    if (xMajor)
-    {
-        if (side)
-        {
-            span->I0 = span->X0 - 1;
-            span->I1 = span->X1 - 1;
-        }
-        else
-        {
-            span->I0 = span->X0;
-            span->I1 = span->X1;
-        }
-
-        // used for calculating AA coverage
-        span->XCovIncr = (ylen << 10) / xlen;
-    }
-    else
-    {
-        span->I0 = span->Y0;
-        span->I1 = span->Y1;
-    }
-
-    if (span->I0 != span->I1)
-        span->IRecip = (1<<30) / (span->I1 - span->I0);
-    else
-        span->IRecip = 0;
-
-    span->Linear = (span->W0 == span->W1) && !(span->W0 & 0x7E) && !(span->W1 & 0x7E);
-
-    if ((span->W0 & 0x1) && !(span->W1 & 0x1))
-    {
-        span->W0n = (span->W0 - 1) >> 1;
-        span->W0d = (span->W0 + 1) >> 1;
-        span->W1d = span->W1 >> 1;
-    }
-    else
-    {
-        span->W0n = span->W0 >> 1;
-        span->W0d = span->W0 >> 1;
-        span->W1d = span->W1 >> 1;
-    }
-}
 
 struct Variant
 {

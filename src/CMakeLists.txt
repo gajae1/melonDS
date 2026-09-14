@@ -125,6 +125,8 @@ if (ENABLE_OGLRENDERER)
         GPU2D_OpenGL.cpp
         GPU3D_OpenGL.cpp
         GPU3D_Compute.cpp
+        GPU3D_ComputeShader.cpp
+        GPU3D_ComputeData.cpp
         GPU3D_TexcacheOpenGL.cpp
         GPU3D_TexcacheOpenGL.h
         OpenGLSupport.cpp)

@@ -122,7 +122,7 @@ int CalcYFactorX(XSpanSetup span, int x)
 }
 #endif
 
-layout (std430, binding = 1) buffer XSpanSetupsBuffer
+STORAGE_BINDING(1) buffer XSpanSetupsBuffer
 {
     XSpanSetup XSpanSetups[];
 };
@@ -237,7 +237,7 @@ void EdgeParams_YMajor(bool side, int dx, YSpanSetup span, out int edgelen, out 
 }
 #endif
 
-layout (std430, binding = 2) buffer YSpanSetupsBuffer
+STORAGE_BINDING(2) buffer YSpanSetupsBuffer
 {
     YSpanSetup YSpanSetups[];
 };
@@ -260,7 +260,7 @@ struct Polygon
     float TextureLayer;
 };
 
-layout (std430, binding = 0) readonly buffer PolygonBuffer
+STORAGE_BINDING(0) readonly buffer PolygonBuffer
 {
     Polygon Polygons[];
 };
@@ -268,7 +268,7 @@ layout (std430, binding = 0) readonly buffer PolygonBuffer
 
 const std::string BinningBuffer{R"(
 
-layout (std430, binding = 6) buffer BinResultBuffer
+STORAGE_BINDING(6) buffer BinResultBuffer
 {
     uvec4 VariantWorkCount[MaxVariants];
     uint SortedWorkOffset[MaxVariants];
@@ -297,7 +297,7 @@ const int BinningWorkOffsetsStart = BinningMaskStart+TilesPerLine*TileLines*BinS
             bits 15-31: Y position on screen
 */
 const std::string WorkDescBuffer{R"(
-layout (std430, binding = 7) buffer WorkDescBuffer
+STORAGE_BINDING(7) buffer WorkDescBuffer
 {
     //uvec2 UnsortedWorkDescs[MaxWorkTiles];
     //uvec2 SortedWorkDescs[MaxWorkTiles];
@@ -310,15 +310,15 @@ const uint WorkDescsSortedStart = WorkDescsUnsortedStart+MaxWorkTiles;
 )"};
 
 const std::string Tilebuffers{R"(
-layout (std430, binding = 2) buffer ColorTileBuffer
+STORAGE_BINDING(2) buffer ColorTileBuffer
 {
     uint ColorTiles[];
 };
-layout (std430, binding = 3) buffer DepthTileBuffer
+STORAGE_BINDING(3) buffer DepthTileBuffer
 {
     uint DepthTiles[];
 };
-layout (std430, binding = 4) buffer AttrTileBuffer
+STORAGE_BINDING(4) buffer AttrTileBuffer
 {
     uint AttrTiles[];
 };
@@ -326,7 +326,7 @@ layout (std430, binding = 4) buffer AttrTileBuffer
 )"};
 
 const std::string ResultBuffer{R"(
-layout (std430, binding = 5) buffer ResultBuffer
+STORAGE_BINDING(5) buffer ResultBuffer
 {
     uint ResultValue[];
 };
@@ -338,6 +338,19 @@ const uint ResultStencilStart = ResultAttrStart+ScreenWidth*ScreenHeight*2;
 )"};
 
 const char* Common = R"(
+
+// Each GL binding namespace maps to a separate Vulkan descriptor set.
+#ifdef VULKAN
+#define STORAGE_BINDING(index) layout(std430, set = 0, binding = index)
+#define UNIFORM_BINDING(index) layout(std140, set = 1, binding = index)
+#define TEXTURE_BINDING(index) layout(set = 2, binding = index)
+#define IMAGE_BINDING(index, format) layout(set = 3, binding = index, format)
+#else
+#define STORAGE_BINDING(index) layout(std430, binding = index)
+#define UNIFORM_BINDING(index) layout(std140, binding = index)
+#define TEXTURE_BINDING(index) layout(binding = index)
+#define IMAGE_BINDING(index, format) layout(binding = index, format)
+#endif
 
 const int CoarseTileCountX = 8;
 const int CoarseTileW = (CoarseTileCountX * TileSize);
@@ -352,7 +365,7 @@ const int CoarseBinStride = BinStride/32;
 
 const int MaxVariants = 256;
 
-layout (std140, binding = 0) uniform MetaUniform
+UNIFORM_BINDING(0) uniform MetaUniform
 {
     uint NumPolygons;
     uint NumVariants;
@@ -642,7 +655,7 @@ const std::string InterpSpans =
     YSpanSetupBuffer + R"(
 layout (local_size_x = 32) in;
 
-layout (binding = 0, rgba16ui) uniform readonly uimageBuffer SetupIndices;
+IMAGE_BINDING(0, rgba16ui) uniform readonly uimageBuffer SetupIndices;
 
 void main()
 {
@@ -653,6 +666,7 @@ void main()
     
     XSpanSetup xspan;
     xspan.Flags = 0U;
+    xspan.XRecip = 0; // Unused for nonlinear W spans, but keep storage defined.
 
     int y = int(setup.w);
 
@@ -1056,14 +1070,23 @@ const std::string Rasterise =
 
 layout (local_size_x = TileSize, local_size_y = TileSize) in;
 
-layout (binding = 0) uniform usampler2DArray CurrentTexture;
-layout (binding = 1) uniform sampler2DArray Capture128Texture;
-layout (binding = 2) uniform sampler2DArray Capture256Texture;
+TEXTURE_BINDING(0) uniform usampler2DArray CurrentTexture;
+TEXTURE_BINDING(1) uniform sampler2DArray Capture128Texture;
+TEXTURE_BINDING(2) uniform sampler2DArray Capture256Texture;
 
+#ifdef VULKAN
+layout(push_constant) uniform RasterPush {
+    layout(offset = 0) uint CurVariant;
+    layout(offset = 8) vec2 InvTextureSize;
+    layout(offset = 16) int TexIsCapture;
+    layout(offset = 20) float CaptureYOffset;
+};
+#else
 layout (location = 0) uniform uint CurVariant;
 layout (location = 1) uniform vec2 InvTextureSize;
 layout (location = 2) uniform int TexIsCapture;
 layout (location = 3) uniform float CaptureYOffset;
+#endif
 
 void main()
 {
@@ -1265,9 +1288,15 @@ const std::string DepthBlend =
     ResultBuffer +
     BinningBuffer + R"(
 
-layout (binding = 0) uniform usampler2D ClearBitmapColor;
-layout (binding = 1) uniform usampler2D ClearBitmapDepth;
+TEXTURE_BINDING(0) uniform usampler2D ClearBitmapColor;
+TEXTURE_BINDING(1) uniform usampler2D ClearBitmapDepth;
+#ifdef VULKAN
+layout(push_constant) uniform DepthPush {
+    layout(offset = 0) int FirstBatch;
+};
+#else
 layout (location = 0) uniform int FirstBatch;
+#endif
 
 layout (local_size_x = TileSize, local_size_y = TileSize) in;
 
@@ -1518,7 +1547,7 @@ const std::string FinalPass =
 
 layout (local_size_x = 32) in;
 
-layout (binding = 0, rgba8) writeonly uniform image2D FinalFB;
+IMAGE_BINDING(0, rgba8) writeonly uniform image2D FinalFB;
 
 uint BlendFog(uint color, uint depth)
 {
