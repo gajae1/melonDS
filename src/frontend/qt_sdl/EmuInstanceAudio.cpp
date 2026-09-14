@@ -24,6 +24,7 @@
 #include "SPU.h"
 #include "Platform.h"
 #include "main.h"
+#include "AudioSettingsDialog.h"
 
 #include "mic_blow.h"
 
@@ -104,8 +105,9 @@ bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::st
     auto settings = requested;
     settings.frames = std::bit_ceil(static_cast<unsigned>(std::clamp(settings.frames, 32, 1024)));
     error.clear();
-    if (audioDevice && settings == audioDevice.GetSettings()) return true;
+    if (audioDevice && !audioDevice.NeedsRecovery() && settings == audioDevice.GetSettings()) return true;
     const bool hadDevice = static_cast<bool>(audioDevice);
+    const bool restorePrevious = hadDevice && !audioDevice.NeedsRecovery();
     const auto previous = audioDevice.GetSettings();
     const int previousRate = audioFreq;
     if (audioDevice)
@@ -118,7 +120,7 @@ bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::st
     if (!applied)
     {
         std::string recovery;
-        if (hadDevice && !audioOpenOutput(previous, recovery))
+        if (restorePrevious && !audioOpenOutput(previous, recovery))
             error += std::string("; previous output could not be reopened: ") + recovery;
     }
     if (audioDevice)
@@ -152,7 +154,56 @@ QString EmuInstance::audioOutputDescription() const
         description += QObject::tr("; device capacity %1 frames").arg(spec.bufferFrames);
     if (audioTimeStretchEnabled)
         description += QObject::tr("; pitch preservation adds processing delay");
+    if (audioRecoveryFallback)
+        description += QObject::tr("; temporary fallback (saved output preference retained)");
     return description;
+}
+
+void EmuInstance::audioStartRecovery()
+{
+    // Device creation/destruction must stay on the original UI/COM thread.
+    audioRecoveryTimer = std::make_unique<QTimer>();
+    audioRecoveryTimer->setInterval(500);
+    QObject::connect(audioRecoveryTimer.get(), &QTimer::timeout, audioRecoveryTimer.get(),
+        [this] { audioCheckOutput(); });
+    audioRecoveryTimer->start();
+}
+
+void EmuInstance::audioCheckOutput()
+{
+    // A live settings preview owns its output until accepted or cancelled.
+    // Healthy fallbacks stay put; do not interrupt playback to probe devices.
+    if (deleting || AudioSettingsDialog::currentDlg || !audioDevice.NeedsRecovery()) return;
+    audioRecoveryTimer->stop();
+    const AudioOutput::Settings preferred{globalCfg.GetInt("Audio.OutputBackend"),
+        globalCfg.GetString("Audio.OutputDevice"), globalCfg.GetInt("Audio.BufferSize")};
+    emuThread->emuPause(false);
+    std::string error;
+    bool restored = audioSetOutput(preferred, error);
+    if (!restored && (preferred.backend != AudioOutput::SDL || !preferred.device.empty()))
+    {
+        std::string fallbackError;
+        restored = audioSetOutput({AudioOutput::SDL, {}, preferred.frames}, fallbackError);
+        if (!restored) error += "; default output: " + fallbackError;
+    }
+    audioRecoveryFallback = restored && (audioDevice.GetSettings().backend != preferred.backend ||
+                                         audioDevice.GetSettings().device != preferred.device);
+    emuThread->emuUnpause(false);
+    if (restored)
+    {
+        audioRecoveryError.clear();
+        audioRecoveryTimer->setInterval(500);
+        Platform::Log(Platform::LogLevel::Info, "Audio output recovered: %s%s\n",
+            audioDevice.GetSpec().backend.c_str(), audioRecoveryFallback ? " (temporary default)" : "");
+    }
+    else
+    {
+        if (error != audioRecoveryError)
+            Platform::Log(Platform::LogLevel::Error, "Audio output unavailable; will retry: %s\n", error.c_str());
+        audioRecoveryError = std::move(error);
+        audioRecoveryTimer->setInterval(std::min(audioRecoveryTimer->interval() * 2, 5000));
+    }
+    audioRecoveryTimer->start();
 }
 
 bool EmuInstance::changeAudioBuffer(int frames, QString& error)
@@ -178,10 +229,20 @@ bool EmuInstance::changeAudioOutput(int frames, int backend, const QString& devi
     AudioOutput::Settings settings{backend, device.toStdString(), static_cast<int>(
         std::bit_ceil(static_cast<unsigned>(std::clamp(frames, 32, 1024))))};
     error.clear();
-    if (audioDevice && settings == audioDevice.GetSettings()) return true;
+    if (audioDevice && !audioDevice.NeedsRecovery() && settings == audioDevice.GetSettings())
+    {
+        audioRecoveryFallback = false;
+        return true;
+    }
     emuThread->emuPause(false);
     std::string detail;
     const bool applied = audioSetOutput(settings, detail);
+    if (applied)
+    {
+        audioRecoveryFallback = false;
+        audioRecoveryError.clear();
+        if (audioRecoveryTimer) audioRecoveryTimer->setInterval(500);
+    }
     emuThread->emuUnpause(false);
     error = QString::fromStdString(detail);
     return applied;

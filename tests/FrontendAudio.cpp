@@ -89,6 +89,13 @@ struct AudioState
 static int failedOpens = 0;
 static bool negotiateRate = false;
 static bool manualOutput = false, manualPaused = true;
+static std::atomic<bool> outputDisconnected{false};
+static SDL_AudioStatus OutputStatus(SDL_AudioDeviceID id)
+{
+    if (outputDisconnected) return SDL_AUDIO_STOPPED;
+    return manualOutput ? (manualPaused ? SDL_AUDIO_PAUSED : SDL_AUDIO_PLAYING)
+                        : SDL_GetAudioDeviceStatus(id);
+}
 static int enumerationCount = -2; // -2 uses the real SDL driver.
 static int CountOutputs(int capture)
 {
@@ -107,7 +114,9 @@ static SDL_AudioDeviceID OpenOutput(const char* name, int capture, const SDL_Aud
     auto wanted = *desired;
     if (negotiateRate) wanted.freq = 44100;
     if (manualOutput) manualSpec = wanted;
-    return SDL_OpenAudioDevice(name, capture, &wanted, obtained, changes);
+    const auto id = SDL_OpenAudioDevice(name, capture, &wanted, obtained, changes);
+    if (id) outputDisconnected = false;
+    return id;
 }
 static void PauseOutput(SDL_AudioDeviceID id, int paused)
 {
@@ -124,10 +133,12 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 #define SDL_OpenAudioDevice OpenOutput
 #define SDL_PauseAudioDevice PauseOutput
 #define SDL_GetNumAudioDevices CountOutputs
+#define SDL_GetAudioDeviceStatus OutputStatus
 #include "AudioOutput.cpp"
 #undef SDL_OpenAudioDevice
 #undef SDL_PauseAudioDevice
 #undef SDL_GetNumAudioDevices
+#undef SDL_GetAudioDeviceStatus
 #define EmuInstance AudioState
 #include "audioCallback.inc"
 #define SDL_CondWaitTimeout ObserveSyncWait
@@ -144,6 +155,35 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--device-loss") == 0)
+    {
+        if (SDL_AudioInit("dummy") != 0) return 2;
+        bool passed = true;
+        {
+            Console console;
+            AudioState state{&console};
+            manualOutput = true;
+            std::string error;
+            passed &= state.audioSetBufferSize(128, error);
+            console.SPU.queuedFrames = 512;
+            state.audioEnable();
+            passed &= state.audioDevice.IsRunning();
+            outputDisconnected = true;
+            if (state.audioDevice.IsRunning())
+            {
+                std::puts("disconnected output still reports running");
+                passed = false;
+            }
+            // Selecting the same device must reopen a dead native handle.
+            const auto requested = state.audioDevice.GetSettings();
+            passed &= state.audioSetOutput(requested, error);
+            passed &= !outputDisconnected && state.audioDevice.GetSettings() == requested;
+            passed &= state.audioDevice.Start(error) && state.audioDevice.IsRunning();
+        }
+        manualOutput = false; outputDisconnected = false; SDL_AudioQuit();
+        std::printf("audio device loss / same settings reopen: %s\n", passed ? "PASS" : "FAIL");
+        return passed ? 0 : 1;
+    }
     static_assert(int(AudioLowPass::Backend::Auto) == 0 &&
                   int(AudioLowPass::Backend::Scalar) == 1 &&
                   int(AudioLowPass::Backend::FMA) == 2 &&

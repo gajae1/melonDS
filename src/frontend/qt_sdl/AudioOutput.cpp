@@ -97,7 +97,16 @@ bool AudioOutput::IsRunning() const
 {
     if (impl && (impl->callbackState.load(std::memory_order_acquire) & Impl::Paused))
         return false;
-    return impl && impl->running.load(std::memory_order_relaxed);
+    return impl && impl->running.load(std::memory_order_relaxed) &&
+        (!impl->sdl || SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_PLAYING);
+}
+bool AudioOutput::NeedsRecovery() const
+{
+    if (!impl) return true;
+    // SDL updates enabled on removal, but this wrapper's last Start cannot
+    // observe it. Querying status reads SDL's atomic enabled/paused flags.
+    if (impl->sdl) return SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_STOPPED;
+    return !impl->running.load(std::memory_order_relaxed);
 }
 void AudioOutput::Close() { impl.reset(); }
 
@@ -182,6 +191,12 @@ bool AudioOutput::Start(std::string& error)
     if (!impl) { error = "Audio output unavailable"; return false; }
     if (impl->sdl)
     {
+        if (SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_STOPPED)
+        {
+            impl->running.store(false, std::memory_order_relaxed);
+            error = "Audio output device disconnected";
+            return false;
+        }
         impl->ResumeCallbacks();
         if (!impl->running.load(std::memory_order_relaxed))
         {

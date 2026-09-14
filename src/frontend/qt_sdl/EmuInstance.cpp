@@ -153,6 +153,7 @@ EmuInstance::EmuInstance(int inst) : deleting(false),
     if (!mainWindow) return;
 
     emuThread->start();
+    audioStartRecovery();
 
     // if any extra windows were saved as enabled, open them
     for (int i = 1; i < kMaxWindows; i++)
@@ -167,6 +168,7 @@ EmuInstance::EmuInstance(int inst) : deleting(false),
 EmuInstance::~EmuInstance()
 {
     deleting = true;
+    audioRecoveryTimer.reset(); // cancel UI recovery before windows/worker teardown
     deleteAllWindows();
 
     if (emuThread->isRunning())

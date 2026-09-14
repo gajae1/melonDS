@@ -40,6 +40,8 @@ public:
     void Stop();
     explicit operator bool() const;
     bool IsRunning() const;
+    // Native failure is distinct from intentionally paused client delivery.
+    bool NeedsRecovery() const;
     const Spec& GetSpec() const { return spec; }
     const Settings& GetSettings() const { return settings; }
     static std::vector<DeviceInfo> Enumerate(int backend, std::string& error);

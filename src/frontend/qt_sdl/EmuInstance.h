@@ -347,6 +347,11 @@ private:
     bool cheatsOn;
 
     AudioOutput audioDevice;
+    std::unique_ptr<QTimer> audioRecoveryTimer;
+    std::string audioRecoveryError;
+    bool audioRecoveryFallback = false;
+    void audioStartRecovery();
+    void audioCheckOutput();
     bool audioStartRequested = false;
     AudioTimeStretch audioTimeStretch;
     bool audioTimeStretchEnabled = false;

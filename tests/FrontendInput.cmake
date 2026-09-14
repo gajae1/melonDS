@@ -385,6 +385,8 @@ if (WIN32)
 endif()
 melonds_configure_audio_kernels(FrontendAudio)
 add_test(NAME audio-callback-buffer COMMAND FrontendAudio)
+add_test(NAME audio-device-loss-reopen COMMAND FrontendAudio --device-loss)
+set_tests_properties(audio-device-loss-reopen PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-callback-buffer PROPERTIES TIMEOUT 30)
 
 add_executable(AudioTimeStretch "${CMAKE_SOURCE_DIR}/tests/AudioTimeStretch.cpp")
