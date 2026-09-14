@@ -135,25 +135,96 @@ static void SparseStreamReference()
             const unsigned period = periods[n % periods.size()];
             const u64 inputClock = n ? clock - n % mix : clock;
             events.push_back({inputClock, int(next) - current, period});
-            stream.Push(inputClock, next, period);
+            stream.Push(inputClock, {double(next), double(next) * -0.25}, period);
             current = next;
             double reference = current;
             for (const auto& event : events)
                 reference -= event.Delta * (1 - bank->Step(event.Period, clock - event.Clock));
-            Require(std::abs(stream.Read(clock) - reference) < 1e-7,
+            const auto actual = stream.Read(clock);
+            Require(std::abs(actual[0] - reference) < 1e-7 && std::abs(actual[1] + reference * 0.25) < 1e-7,
                     "Cached sparse phase diverged from reference step response");
         }
         const u64 end = origin + 1800 * mix + bank->SupportClocks(65536);
-        Require(stream.Read((end + mix - 1) / mix * mix) == current && !stream.ActiveTails(),
+        Require(stream.Read((end + mix - 1) / mix * mix) == std::array<double, 2>{double(current), double(current) * -0.25} && !stream.ActiveTails(),
                 "Sparse tails did not retire at full support");
+
+        AudioInterpolationStream stereo(bank, 16, 128), left(bank, 16, 128), right(bank, 16, 128);
+        // Equal sides followed by a pan change within the same dense bucket,
+        // then equal sides in a new bucket: stereo must remain a linear sum of
+        // independently rendered left-only and right-only event streams.
+        for (unsigned tick = 0; tick < 100; ++tick)
+        {
+            if (tick < 3)
+                for (unsigned offset : {1u, 2u, 3u})
+                {
+                    const double l = 1000 * offset, r = offset == 2 ? -700 : l;
+                    const u64 clock = tick * mix + offset;
+                    stereo.Push(clock, {l, r}, 256);
+                    left.Push(clock, {l, 0}, 256);
+                    right.Push(clock, {0, r}, 256);
+                }
+            const u64 clock = (tick + 1) * mix;
+            const auto actual = stereo.Read(clock), a = left.Read(clock), b = right.Read(clock);
+            Require(std::abs(actual[0] - a[0] - b[0]) < 1e-7 && std::abs(actual[1] - a[1] - b[1]) < 1e-7,
+                    "Dense stereo pan transition violated channel superposition");
+        }
     }
     std::puts("sparse phase reference, large clocks, mixed periods and retirement PASS");
+}
+
+static void SilentChannelReuse()
+{
+    NDSArgs args;
+    args.JIT.reset();
+    auto nds = std::make_unique<NDS>(std::move(args));
+    auto channels = [&]<size_t... I>(std::index_sequence<I...>) {
+        return std::array{SPUChannel(I, *nds, AudioInterpolation::None)...};
+    }(std::make_index_sequence<16>{});
+    auto referenceChannels = channels;
+    for (const unsigned interval : {352u, 512u})
+    for (const unsigned period : {1u, 256u, 257u, 4096u})
+    {
+        auto reference = AudioInterpolationRenderer::Prepare();
+        auto reused = AudioInterpolationRenderer::Prepare();
+        bool tailObserved = false;
+        for (unsigned tick = 0; tick < 400; ++tick)
+        {
+            for (auto* input : {&channels[0], &referenceChannels[0]})
+            {
+                input->CurSample = tick < 8 ? 20000 : 0;
+                input->Volume = 32;
+                input->VolumeShift = 0;
+                input->Pan = 83;
+                input->TimerReload = 65536 - period;
+            }
+            // The old note has stopped. Reprogramming its now-silent channel for
+            // the next note must not amplify or repan the old reconstruction tail.
+            if (tick >= 9)
+            {
+                channels[0].Volume = 128;
+                channels[0].VolumeShift = 4;
+                channels[0].Pan = 20;
+                channels[0].TimerReload = 65536 - 716;
+            }
+            reference->Begin(interval, interval, referenceChannels.data(), 0x8000, 128, false);
+            reused->Begin(interval, interval, channels.data(), 0x8000, 128, false);
+            reference->Finish(referenceChannels.data());
+            reused->Finish(channels.data());
+            const auto expected = reference->Output(false, 0x200, false, false, false);
+            const auto actual = reused->Output(false, 0x200, false, false, false);
+            tailObserved |= tick >= 9 && (expected[0] || expected[1]);
+            Require(actual == expected, "Silent channel reuse amplified or repanned the previous note tail");
+        }
+        Require(tailObserved, "Channel reuse did not exercise a surviving reconstruction tail");
+    }
+    std::puts("silent channel reuse preserves previous note gain and pan PASS");
 }
 
 int main() try
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SparseStreamReference();
+    SilentChannelReuse();
     for (bool dsi : {false, true})
     {
         auto plain = Make(dsi, AudioInterpolation::None);

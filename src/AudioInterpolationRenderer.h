@@ -15,16 +15,14 @@ class AudioInterpolationRenderer
     {
         u64 Clock;
         s16 Sample;
-        unsigned Period, Volume, Shift, Pan;
-        bool Eligible;
+        unsigned Period;
     };
     struct Channel
     {
         std::array<Point, 512 + 3> Points;
         unsigned Count = 0;
-        s16 Sample = 0, Published = 0;
-        unsigned Period = 65536;
-        Point Control{};
+        std::array<double, 2> Published{};
+        std::array<double, 2> Gain{};
     };
     std::array<std::shared_ptr<const AudioInterpolationBank>, 2> Banks;
     std::vector<AudioInterpolationStream> Streams;
@@ -85,8 +83,8 @@ public:
         for (auto& stream : Streams) stream.Reset();
         for (auto& channel : Channels)
         {
-            channel.Count = 0; channel.Sample = channel.Published = 0;
-            channel.Period = 65536; channel.Control = {};
+            channel.Count = 0; channel.Published = {};
+            channel.Gain = {};
         }
         BeginClock = EndClock = 0; Collecting = false; Nitro = {}; DSP = {}; I2SControl = 0;
     }
@@ -110,6 +108,13 @@ public:
         for (unsigned c = 0; c < 16; ++c)
         {
             Channels[c].Count = 0;
+            // MMIO gain/pan writes occur between Mix calls, not within a
+            // channel's decoder loop. Prepare weights once for this interval.
+            const auto& input = channels[c];
+            const bool eligible = !((((input.Cnt >> 29) & 3) == 3 && input.Num < 8) ||
+                ((input.Cnt & (1u << 31)) && ((input.Cnt >> 29) & 3) < 3 && input.Length + input.LoopPos < 16));
+            const double gain = eligible ? double(1u << input.VolumeShift) * input.Volume / 1024 : 0;
+            Channels[c].Gain = {gain * (128 - input.Pan), gain * input.Pan};
             Observe(channels[c], BeginClock);
         }
     }
@@ -119,10 +124,7 @@ public:
         auto& channel = Channels[input.Num];
         if (!Collecting || clock < BeginClock || clock > EndClock || channel.Count == channel.Points.size())
             throw std::logic_error("Invalid interpolation observation");
-        channel.Points[channel.Count++] = {clock, input.CurSample, 65536u - input.TimerReload,
-            input.Volume, input.VolumeShift, input.Pan,
-            !((((input.Cnt >> 29) & 3) == 3 && input.Num < 8) ||
-              ((input.Cnt & (1u << 31)) && ((input.Cnt >> 29) & 3) < 3 && input.Length + input.LoopPos < 16))};
+        channel.Points[channel.Count++] = {clock, input.CurSample, 65536u - input.TimerReload};
     }
     void Finish(const SPUChannel* channels)
     {
@@ -137,26 +139,22 @@ public:
             while (i < channel.Count)
             {
                 const u64 clock = channel.Points[i].Clock;
+                Point point;
                 do
                 {
-                    const auto& point = channel.Points[i++];
-                    if (point.Sample != channel.Sample)
-                    { channel.Sample = point.Sample; channel.Period = point.Period; }
-                    channel.Control = point;
+                    point = channel.Points[i++];
                 } while (i < channel.Count && channel.Points[i].Clock == clock);
                 if (clock == EndClock) continue; // Merge with next begin before publication.
-                if (channel.Sample != channel.Published)
+                const std::array<double, 2> input{point.Sample * channel.Gain[0], point.Sample * channel.Gain[1]};
+                if (input != channel.Published)
                 {
-                    Streams[c].Push(clock, channel.Sample, channel.Period);
-                    channel.Published = channel.Sample;
+                    Streams[c].Push(clock, input, point.Period);
+                    channel.Published = input;
                 }
                 if (clock == BeginClock)
                 {
-                    const auto& ctrl = channel.Control;
-                    const double reconstructed = Streams[c].Read(clock);
-                    const double value = ctrl.Eligible
-                        ? reconstructed * double(1u << ctrl.Shift) * ctrl.Volume / 1024 : 0;
-                    left[c] = value * (128 - ctrl.Pan); right[c] = value * ctrl.Pan;
+                    const auto reconstructed = Streams[c].Read(clock);
+                    left[c] = reconstructed[0]; right[c] = reconstructed[1];
                 }
             }
             if ((c == 1 && (Control & (1u << 12))) || (c == 3 && (Control & (1u << 13)))) continue;

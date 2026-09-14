@@ -6,6 +6,12 @@ They affect optional host audio reconstruction, not guest capture or save-state
 layout. Existing interpolation indices 0–4 retain their meanings; index 5 selects
 this mode.
 
+Channel gain and pan are applied to timestamped input events before reconstruction.
+Stereo tails retain those weights when the game stops and reuses a channel, so a
+new note cannot amplify or repan the previous note's residual. Both sides share
+the same kernel lookup; identical dense L/R histories also share accumulation.
+This does not change the frozen frequency response or guest audio capture.
+
 The reference step responses were generated with
 [r8brain-free-src 7.5, commit 9e73d2dd59fd5b95108fdb4f590083e35758b45f](https://github.com/avaneev/r8brain-free-src/commit/9e73d2dd59fd5b95108fdb4f590083e35758b45f).
 The local 57-file upstream snapshot was checked byte-for-byte against that commit's

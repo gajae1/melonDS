@@ -8,23 +8,25 @@
 
 namespace melonDS
 {
-// One host-only channel. The shared immutable bank is prepared before audio
+// One host-only stereo channel. The shared immutable bank is prepared before audio
 // processing. Push receives observed PCM changes; Read publishes the mix grid.
 // No file I/O, filter construction, or allocation occurs in Push/Read/Reset.
 class AudioInterpolationStream
 {
     using Bank = AudioInterpolationBank;
     using Moment = Bank::Moment;
-    // The validated bank support fits 32 bits, leaving room for a cached
-    // reciprocal without enlarging the live-tail record on 64-bit hosts.
+    // The validated bank support fits 32 bits; each stereo tail shares one
+    // cached reciprocal and one kernel lookup.
     static_assert(u64(Bank::MaxResponseLength) * 65536 / Bank::DensePeriods <=
                   std::numeric_limits<u32>::max());
-    struct Active { u64 Clock; double Delta, Scale; u32 Support; unsigned Period; };
+    using Stereo = std::array<double, 2>;
+    struct Active { u64 Clock; Stereo Delta; double Scale; u32 Support; unsigned Period; };
     struct Block
     {
         u64 End = 0;
         unsigned Period = 0;
-        Moment Moments{};
+        bool SameSides = true;
+        std::array<Moment, 2> Moments{};
         std::span<const Moment> Coefficients;
     };
     // Limits are allocated before processing. The renderer derives its limits
@@ -38,7 +40,7 @@ class AudioInterpolationStream
     unsigned PendingCount = 0;
     u64 PendingEnd = 0, LastInput = 0, LastOutput = 0;
     bool HasOutput = false;
-    s16 Current = 0;
+    Stereo Current{};
 
     void Flush()
     {
@@ -66,7 +68,7 @@ public:
         Direct.clear(); Blocks.clear();
         for (unsigned i = 0; i < PendingCount; ++i) Pending[PendingIndices[i]].Period = 0;
         PendingCount = 0; PendingEnd = LastInput = LastOutput = 0;
-        HasOutput = false; Current = 0;
+        HasOutput = false; Current = {};
     }
     size_t ActiveTails() const noexcept { return Direct.size() + Blocks.size() + PendingCount; }
     size_t HistoryBytes() const noexcept
@@ -77,17 +79,17 @@ public:
         Reset();
         Owner = std::move(bank);
     }
-    void Push(u64 clock, s16 value, unsigned period)
+    void Push(u64 clock, Stereo value, unsigned period)
     {
         if (!period || period > 65536 || clock < LastInput || (HasOutput && clock <= LastOutput))
             throw std::invalid_argument("Interpolation input time or period invalid");
-        const int delta = int(value) - Current;
-        if (!delta) { LastInput = clock; return; }
+        const Stereo delta{value[0] - Current[0], value[1] - Current[1]};
+        if (!delta[0] && !delta[1]) { LastInput = clock; return; }
         if (period > Bank::DensePeriods)
         {
             if (Direct.size() == DirectCapacity)
                 throw std::length_error("Interpolation direct capacity exceeded");
-            Direct.push_back({clock, double(delta), 256.0 / period, u32(Owner->SupportClocks(period)), period});
+            Direct.push_back({clock, delta, 256.0 / period, u32(Owner->SupportClocks(period)), period});
         }
         else
         {
@@ -102,28 +104,42 @@ public:
             if (!block.Period)
             {
                 PendingIndices[PendingCount++] = period - 1;
-                block.End = end; block.Period = period; block.Moments.fill(0);
+                block.End = end; block.Period = period; block.SameSides = true;
+                block.Moments[0].fill(0);
                 block.Coefficients = Owner->Coefficients(period);
             }
             const auto& weights = Owner->Weights()[offset];
-            AudioInterpolationMath::Accumulate(block.Moments.data(), delta, weights.data());
+            // Center-panned events have identical L/R moments. Share their
+            // accumulation until a real stereo difference enters this block.
+            if (block.SameSides && delta[0] != delta[1])
+            {
+                block.Moments[1] = block.Moments[0];
+                block.SameSides = false;
+            }
+            AudioInterpolationMath::Accumulate(block.Moments[0].data(), delta[0], weights.data());
+            if (!block.SameSides)
+                AudioInterpolationMath::Accumulate(block.Moments[1].data(), delta[1], weights.data());
         }
         Current = value; LastInput = clock;
     }
-    double Read(u64 clock)
+    Stereo Read(u64 clock)
     {
         const unsigned mix = Owner->MixInterval();
         if (clock % mix || clock < LastInput || (HasOutput && clock < LastOutput))
             throw std::invalid_argument("Interpolation output grid or time invalid");
         Flush();
-        double value = Current;
+        Stereo value = Current;
         size_t keep = 0;
         for (size_t i = 0; i < Direct.size(); ++i)
         {
             const auto tail = Direct[i];
             const u64 age = clock - tail.Clock;
             if (age >= tail.Support) continue;
-            value -= tail.Delta * (1 - Owner->StepPosition(tail.Period, double(age) * tail.Scale));
+            // Both sides share the timestamp and kernel lookup. Gain and pan
+            // belong to the input event, so later notes cannot rescale old tails.
+            const double residual = 1 - Owner->StepPosition(tail.Period, double(age) * tail.Scale);
+            for (unsigned side = 0; side < 2; ++side)
+                value[side] -= tail.Delta[side] * residual;
             if (keep != i) Direct[keep] = tail;
             ++keep;
         }
@@ -134,7 +150,10 @@ public:
             const u64 row = (clock - block.End) / mix;
             const auto coefficients = block.Coefficients;
             if (row >= coefficients.size()) continue;
-            value -= AudioInterpolationMath::Dot(block.Moments.data(), coefficients[row].data());
+            const double left = AudioInterpolationMath::Dot(block.Moments[0].data(), coefficients[row].data());
+            value[0] -= left;
+            value[1] -= block.SameSides ? left
+                : AudioInterpolationMath::Dot(block.Moments[1].data(), coefficients[row].data());
             if (keep != i) Blocks[keep] = block;
             ++keep;
         }
