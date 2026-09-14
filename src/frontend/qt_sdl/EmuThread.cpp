@@ -1406,6 +1406,10 @@ void EmuThread::updateRenderer()
     lastVideoRenderer = videoRenderer;
 
     auto& cfg = emuInstance->getGlobalConfig();
+    // A shared OpenGL configuration may request more than Vulkan's embedded
+    // scales. Normalize only Vulkan; leave Software/OpenGL preferences alone.
+    if (videoRenderer == renderer3D_Vulkan)
+        cfg.SetInt("3D.GL.ScaleFactor", qBound(1, cfg.GetInt("3D.GL.ScaleFactor"), 3));
     melonDS::RendererSettings settings = {
         .ScaleFactor = cfg.GetInt("3D.GL.ScaleFactor"),
         .Threaded = cfg.GetBool("3D.Soft.Threaded"),
@@ -1421,7 +1425,7 @@ void EmuThread::updateRenderer()
         nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
         nds->GetRenderer().SetRenderSettings(settings);
         lastVideoRenderer = videoRenderer;
-        emuInstance->osdAddMessage(0xFFA0A0, "OpenGL resolution or allocation failed; using software rendering");
+        emuInstance->osdAddMessage(0xFFA0A0, "3D resolution or allocation failed; using software rendering");
     }
     publishVideoSettings(failed);
 }

@@ -6,12 +6,6 @@
 
 namespace melonDS::Vulkan {
 namespace {
-constexpr uint32_t Pixels=256*192, Tiles=32*24, Work=Tiles*16, MaxSpans=64*2048;
-constexpr VkDeviceSize BinSize=sizeof(ComputeData::BinResultHeader)+Tiles*(2+64+64)*4;
-constexpr std::array<VkDeviceSize,11> Sizes={
-    2048*sizeof(ComputeData::RenderPolygon), MaxSpans*sizeof(ComputeData::SpanSetupX),
-    12288*sizeof(ComputeData::SpanSetupY), Work*64*4,Work*64*4,Work*64*4,
-    Pixels*7*4,BinSize,Work*2*8,sizeof(ComputeData::MetaUniform),MaxSpans*sizeof(ComputeData::SetupIndices)};
 void ImageBarrier(const volk::VolkDeviceTable& f,VkCommandBuffer command,VkImage image,
     VkImageLayout before,VkImageLayout after,VkPipelineStageFlags source,VkPipelineStageFlags dest,
     VkAccessFlags read,VkAccessFlags write,uint32_t layers=1,uint32_t firstLayer=0)
@@ -23,8 +17,16 @@ void ImageBarrier(const volk::VolkDeviceTable& f,VkCommandBuffer command,VkImage
 }
 }
 
-ComputePipeline::ComputePipeline(std::shared_ptr<Device> device,const Shaders& shaders)
-    :owner(std::move(device)),f(owner->Functions()),device(owner->Handle())
+ComputePipeline::ComputePipeline(std::shared_ptr<Device> device,const Shaders& shaders,int scale)
+    :owner(std::move(device)),f(owner->Functions()),device(owner->Handle()),
+    config(ComputeShader::VulkanConfig(scale)),Pixels(config.ScreenWidth*config.ScreenHeight),
+    Tiles(Pixels/(config.TileSize*config.TileSize)),Work(config.MaxWorkTiles),MaxSpans(64*2048*scale),
+    BatchWork(std::min({uint64_t(Work),uint64_t(owner->Properties().limits.maxComputeWorkGroupCount[2]),
+        uint64_t(owner->Properties().limits.maxComputeWorkGroupCount[0])*32})),
+    Sizes{2048*sizeof(ComputeData::RenderPolygon),MaxSpans*sizeof(ComputeData::SpanSetupX),
+        12288*sizeof(ComputeData::SpanSetupY),Work*64*4,Work*64*4,Work*64*4,
+        Pixels*7*4,sizeof(ComputeData::BinResultHeader)+Tiles*(2+64+64)*4,
+        Work*2*8,sizeof(ComputeData::MetaUniform),MaxSpans*sizeof(ComputeData::SetupIndices)}
 {
     try{Init(shaders);}catch(...){Cleanup();throw;}
 }
@@ -47,15 +49,19 @@ void ComputePipeline::Cleanup()
 void ComputePipeline::Init(const Shaders& shaders)
 {
     const auto& limits=owner->Properties().limits;
-    if(limits.maxStorageBufferRange<Sizes[1]||limits.maxComputeWorkGroupCount[2]<Work||
-        limits.maxComputeWorkGroupCount[0]<MaxSpans/32)throw std::runtime_error("Compute batch exceeds device limits");
+    if(limits.maxStorageBufferRange<*std::max_element(Sizes.begin(),Sizes.begin()+9)||
+        limits.maxTexelBufferElements<MaxSpans||limits.maxUniformBufferRange<Sizes[9]||
+        limits.maxImageDimension2D<uint32_t(config.ScreenWidth)||limits.maxImageDimension2D<uint32_t(config.ScreenHeight)||
+        limits.maxComputeWorkGroupCount[0]<MaxSpans/32||
+        limits.maxComputeWorkGroupCount[1]<uint32_t(config.ScreenHeight)||BatchWork<Tiles)
+        throw std::runtime_error("Compute scale exceeds device limits");
     for(unsigned i=0;i<buffers.size();++i) {
         const auto usage=(i==9?VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT:i==10?VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT:VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)|
             VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|(i==7?VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT:0);
         buffers[i]=owner->CreateBuffer(Sizes[i],usage,false);
     }
     readback=owner->CreateBuffer(Pixels*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,true);
-    output=owner->CreateImage(256,192,1,VK_FORMAT_R8G8B8A8_UNORM,VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    output=owner->CreateImage(config.ScreenWidth,config.ScreenHeight,1,VK_FORMAT_R8G8B8A8_UNORM,VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     clearColor=owner->CreateImage(256,256,1,VK_FORMAT_R32_UINT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     clearDepth=owner->CreateImage(256,256,1,VK_FORMAT_R32_UINT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     VkSamplerCreateInfo sampling{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};sampling.magFilter=sampling.minFilter=VK_FILTER_NEAREST;
@@ -249,14 +255,15 @@ void ComputePipeline::Validate(const Batch& batch) const
     uint32_t work=0;
     for (const auto& polygon : batch.polygons) {
         if (polygon.Variant >= batch.variants.size() || polygon.FirstXSpan >= batch.indices.size() ||
-            polygon.YTop < 0 || polygon.YBot > 192 || polygon.YBot <= polygon.YTop ||
+            polygon.YTop < 0 || polygon.YBot > config.ScreenHeight || polygon.YBot <= polygon.YTop ||
             polygon.FirstXSpan + polygon.YBot - polygon.YTop > batch.indices.size())
             throw std::invalid_argument("Invalid polygon spans");
-        work += 32 * ((polygon.YBot + 7) / 8 - polygon.YTop / 8);
+        work += (config.ScreenWidth / config.TileSize) *
+            ((polygon.YBot + config.TileSize - 1) / config.TileSize - polygon.YTop / config.TileSize);
         if (((polygon.Attr & 0x3F000030u) == 0x30) != (batch.variants[polygon.Variant].shader >= 19))
             throw std::invalid_argument("Inconsistent compute shadow mask variant");
     }
-    if(work>Work)throw std::invalid_argument("Compute batch work capacity exceeded");
+    if(work>BatchWork)throw std::invalid_argument("Compute batch work capacity exceeded");
     for(const auto& index:batch.indices)if(index.PolyIdx>=batch.polygons.size()||index.SpanIdxL>=batch.edges.size()||index.SpanIdxR>=batch.edges.size())throw std::invalid_argument("Invalid edge index");
 }
 
@@ -284,7 +291,8 @@ void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,boo
         f.vkCmdDispatch(command, (batch.indices.size()+31)/32, 1, 1);
         Barrier(command);
         Bind(command, 2, setupSet, indicesSet);
-        f.vkCmdDispatch(command, (batch.polygons.size()+31)/32, 4, 6);
+        f.vkCmdDispatch(command, (batch.polygons.size()+31)/32,
+            config.ScreenWidth/(8*config.TileSize), config.ScreenHeight/(config.CoarseTileCountY*config.TileSize));
         Barrier(command);
         Bind(command, 22, setupSet, indicesSet);
         f.vkCmdDispatch(command, (batch.variants.size()+31)/32, 1, 1);
@@ -312,7 +320,8 @@ void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,boo
     }
     Barrier(command);Bind(command,batch.wbuffer?4:3,rasterSet,indicesSet);
     const uint32_t firstBatch=first;
-    f.vkCmdPushConstants(command,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,4,&firstBatch);f.vkCmdDispatch(command,32,24,1);Barrier(command);
+    f.vkCmdPushConstants(command,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,4,&firstBatch);
+    f.vkCmdDispatch(command,config.ScreenWidth/config.TileSize,config.ScreenHeight/config.TileSize,1);Barrier(command);
 }
 
 std::vector<uint32_t> ComputePipeline::Render(const Batch& batch)
@@ -360,9 +369,9 @@ std::vector<uint32_t> ComputePipeline::Render(std::span<const Batch> batches)
     }
     const auto dispCnt=batches.back().meta.DispCnt;
     const unsigned effect=((dispCnt>>5)&1)|((dispCnt>>6)&2)|((dispCnt>>2)&4);
-    Bind(command,24+effect,rasterSet,outputSet);f.vkCmdDispatch(command,8,192,1);
+    Bind(command,24+effect,rasterSet,outputSet);f.vkCmdDispatch(command,config.ScreenWidth/32,config.ScreenHeight,1);
     ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={256,192,1};f.vkCmdCopyImageToBuffer(command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback->Handle(),1,&copy);
+    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={uint32_t(config.ScreenWidth),uint32_t(config.ScreenHeight),1};f.vkCmdCopyImageToBuffer(command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback->Handle(),1,&copy);
     ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_READ_BIT,VK_ACCESS_SHADER_WRITE_BIT);
     VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};download.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
     f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);

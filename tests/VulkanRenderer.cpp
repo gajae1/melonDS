@@ -18,7 +18,7 @@ void Require(bool ok, const char* message)
     if (!ok) throw std::runtime_error(message);
 }
 
-std::unique_ptr<NDS> Console(bool vulkan)
+std::unique_ptr<NDS> Console(bool vulkan, int scale = 1)
 {
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
@@ -28,8 +28,8 @@ std::unique_ptr<NDS> Console(bool vulkan)
         nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds));
         Require(dynamic_cast<VulkanRenderer*>(&nds->GetRenderer()), "Vulkan initialization fell back");
     }
-    RendererSettings settings{1, false, false, false};
-    Require(nds->GetRenderer().SetRenderSettings(settings), "native settings rejected");
+    RendererSettings settings{scale, false, false, false};
+    Require(nds->GetRenderer().SetRenderSettings(settings), "render scale rejected");
     nds->ARM9Write16(0x04000304, 0x020F);
     nds->ARM9Write32(0x04000350, (31u << 16) | 0x3E0);
     nds->ARM9Write32(0x04000354, 0x7FFF);
@@ -41,14 +41,17 @@ std::unique_ptr<NDS> Console(bool vulkan)
     return nds;
 }
 
-melonDS::Polygon& Scene(NDS& nds, unsigned format = 0, bool wbuffer = false)
+melonDS::Polygon& Scene(NDS& nds, unsigned format = 0, bool wbuffer = false, bool legacyFacing = true)
 {
     auto& gpu = nds.GPU.GPU3D;
     auto& polygon = gpu.PolygonRAM[0];
     polygon = {};
     polygon.NumVertices = 4;
     polygon.Attr = (31u << 16) | (3 << 6);
-    polygon.FacingView = true;
+    // Preserve the original 1x regression fixture, including its reversed
+    // edge orientation. New scaled fixtures use the orientation matching the
+    // vertex order, so a constant rectangle has scale-invariant native coverage.
+    polygon.FacingView = legacyFacing;
     polygon.VTop = 0; polygon.VBottom = 2;
     polygon.YTop = 24; polygon.YBottom = 168;
     polygon.TexParam = format << 26;
@@ -120,17 +123,29 @@ std::vector<u32> Screen(NDS& nds, bool render3D = true)
     return {pixels, pixels + 256 * 192};
 }
 
-void TexturesAndState()
+void TexturesAndState(int scale)
 {
-    auto vk = Console(true);
+    auto vk = Console(true, scale);
     auto soft = Console(false);
     unsigned comparisons = 0;
     for (bool wbuffer : {false, true})
     for (unsigned format = 0; format <= 7; ++format)
     {
-        Scene(*vk, format, wbuffer); Scene(*soft, format, wbuffer);
+        Scene(*vk, format, wbuffer, scale == 1); Scene(*soft, format, wbuffer, scale == 1);
         Texture(*vk, format, 0x801F); Texture(*soft, format, 0x801F);
         const auto expected = Screen(*soft), actual = Screen(*vk);
+        if (actual != expected)
+        {
+            unsigned differences = 0;
+            for (unsigned i = 0; i < actual.size(); ++i)
+            {
+                if (actual[i] == expected[i]) continue;
+                if (differences++ < 4)
+                    std::fprintf(stderr, "scale=%d format=%u w=%d xy=%u,%u Vulkan=%08x Software=%08x\n",
+                        scale, format, wbuffer, i % 256, i / 256, actual[i], expected[i]);
+            }
+            std::fprintf(stderr, "%u native pixel differences\n", differences);
+        }
         Require(actual == expected, "native Vulkan/Software screen pixels differ");
         if (actual[80 * 256 + 80] != 0xFFFF0000)
             std::fprintf(stderr, "native format=%u w=%d center=%08x dispcnt=%08x\n",
@@ -166,18 +181,20 @@ void TexturesAndState()
     vk->SetRenderer(std::make_unique<SoftRenderer>(*vk));
     Require(Screen(*vk) == saved, "Vulkan to Software switch changed native output");
     vk->SetRenderer(std::make_unique<VulkanRenderer>(*vk));
-    Require(dynamic_cast<VulkanRenderer*>(&vk->GetRenderer()) && Screen(*vk) == saved,
+    RendererSettings settings{scale, false, false, false};
+    Require(dynamic_cast<VulkanRenderer*>(&vk->GetRenderer()) &&
+        vk->GetRenderer().SetRenderSettings(settings) && Screen(*vk) == saved,
         "Software to Vulkan switch did not rebuild output");
-    std::printf("Vulkan native: %u full-screen comparisons, texture/palette invalidation, scroll, state and renderer switching PASS\n", comparisons);
+    std::printf("Vulkan %dx: %u native full-screen comparisons, texture/palette invalidation, scroll, state and renderer switching PASS\n", scale, comparisons);
 }
 
-void Capture()
+void Capture(int scale)
 {
-    auto nds = Console(true);
+    auto nds = Console(true, scale);
     nds->ARM9Write8(0x04000241, 0x80);
     nds->ARM9Write8(0x04000243, 0x80);
     nds->Start(); nds->RunFrame();
-    Scene(*nds);
+    Scene(*nds, 0, false, scale == 1);
     nds->GetRenderer().Start3DRendering();
     nds->ARM9Write32(0x04000064, 0x81310000); // 3D -> B, 256x192.
     nds->RunFrame();
@@ -196,7 +213,7 @@ void Capture()
     // Reuse that captured bitmap as a texture and capture the new 3D output.
     nds->ARM9.JumpTo(0x02000000);
     nds->ARM9Write8(0x04000241, 0x83);
-    auto& polygon = Scene(*nds, 7);
+    auto& polygon = Scene(*nds, 7, false, scale == 1);
     polygon.TexParam |= (5 << 20) | (5 << 23);
     for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
         vertex->TexCoords[0] = vertex->TexCoords[1] = 80 * 16;
@@ -209,12 +226,12 @@ void Capture()
     std::puts("Vulkan 3D -> capture -> guest LDRH -> texture -> capture PASS");
 }
 
-void Batches()
+void Batches(int scale)
 {
-    auto vk = Console(true), soft = Console(false);
+    auto vk = Console(true, scale), soft = Console(false);
     for (auto* nds : {vk.get(), soft.get()})
     {
-        Scene(*nds);
+        Scene(*nds, 0, false, scale == 1);
         auto& gpu = nds->GPU.GPU3D;
         const auto original = gpu.PolygonRAM[0];
         for (u32 i = 0; i < 257; ++i)
@@ -240,7 +257,52 @@ void Batches()
     const auto actual = Screen(*vk);
     Require(actual == Screen(*soft) && actual[80 * 256 + 80] == 0xFF0000FF,
         "native batch planner dropped/reordered polygons");
-    std::puts("Vulkan native batch planner: 257 overlapping polygons, final polygon preserved PASS");
+    std::printf("Vulkan %dx batch planner: 257 overlapping polygons, final polygon preserved PASS\n", scale);
+}
+
+void ScaleChanges()
+{
+    auto nds = Console(true);
+    auto& polygon = Scene(*nds, 7, false, false);
+    Texture(*nds, 7, 0x801F);
+    // A half-native-pixel translation disappears at 1x, but must affect actual
+    // coverage at 2x/3x. Merely resizing a native image cannot pass this check.
+    for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
+        vertex->HiresPosition[0] += 8;
+    Screen(*nds); // Settle the two-scanline display-enable latch before comparing retained frames.
+    const auto native = Screen(*nds, false);
+    Require(Screen(*nds, false) == native, "compositor fixture is unstable before changing settings");
+    auto previous = native;
+    for (int scale : {2, 3, 1, 3, 2, 1})
+    {
+        RendererSettings settings{scale, false, false, false};
+        Require(nds->GetRenderer().SetRenderSettings(settings), "live scale change rejected");
+        Require(Screen(*nds, false) == previous, "scale change discarded the current frame");
+        nds->GPU.GPU3D.RenderFrameIdentical = true;
+        Require(Screen(*nds) == native, "integer-coordinate rectangle resolve changed native coverage");
+        settings.HiresCoordinates = true;
+        Require(nds->GetRenderer().SetRenderSettings(settings), "hires setting change rejected");
+        Require(Screen(*nds, false) == native, "hires change discarded the current frame");
+        const auto actual = Screen(*nds);
+        Require((actual == native) == (scale == 1), "scale/hires change did not update subpixel coverage");
+        previous = actual;
+    }
+    for (int scale : {0, 4})
+    {
+        RendererSettings settings{scale, false, false, false};
+        Require(!nds->GetRenderer().SetRenderSettings(settings), "unsupported Vulkan scale was accepted");
+        Require(!nds->GetRenderer().HasRenderFailure() && Screen(*nds, false) == previous,
+            "invalid settings damaged the current renderer/frame");
+    }
+    // Native and high-resolution coordinates can differ by whole pixels due
+    // to the DS divider's precision loss. 1x must retain the original DS path.
+    for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
+        vertex->HiresPosition[0] += 16;
+    RendererSettings nativeHires{1, false, true, false};
+    Require(nds->GetRenderer().SetRenderSettings(nativeHires), "native hires setting rejected");
+    nds->GPU.GPU3D.RenderFrameIdentical = false;
+    Require(Screen(*nds) == native, "1x hires setting bypassed native DS coordinate rounding");
+    std::puts("Vulkan live 1x/2x/3x transitions: subpixel coverage, cached texture, frame lifetime, native rounding and invalid scale rejection PASS");
 }
 }
 
@@ -260,7 +322,10 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
-        TexturesAndState(); Batches(); Capture();
+        const int scale = argc == 2 && std::strcmp(argv[1], "2") == 0 ? 2 :
+            argc == 2 && std::strcmp(argv[1], "3") == 0 ? 3 : 1;
+        TexturesAndState(scale); Batches(scale); Capture(scale);
+        if (scale == 1) ScaleChanges();
         return 0;
     }
     catch (const std::exception& error)

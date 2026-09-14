@@ -13,6 +13,7 @@ class VulkanRenderer final : public SoftRenderer
 public:
     explicit VulkanRenderer(NDS& nds);
     static bool IsAvailable(std::string& error);
+    bool SetRenderSettings(RendererSettings& settings) override;
     bool HasRenderFailure() const override;
 };
 }

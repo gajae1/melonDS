@@ -4,5 +4,5 @@
 
 namespace melonDS::Vulkan
 {
-const ComputePipeline::Shaders& EmbeddedShaders();
+const ComputePipeline::Shaders& EmbeddedShaders(int scale = 1);
 }

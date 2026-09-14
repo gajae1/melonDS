@@ -16,26 +16,30 @@ target_include_directories(ComputeShaderExport PRIVATE "${CMAKE_CURRENT_SOURCE_D
 set(vulkan_shader_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 set(vulkan_glsl_files)
 set(vulkan_spirv_files)
-foreach(variant RANGE 0 31)
-    list(APPEND vulkan_glsl_files "${vulkan_shader_dir}/${variant}.comp")
+foreach(scale RANGE 1 3)
+    foreach(variant RANGE 0 31)
+        list(APPEND vulkan_glsl_files "${vulkan_shader_dir}/${scale}/${variant}.comp")
+    endforeach()
 endforeach()
 add_custom_command(OUTPUT "${vulkan_shader_dir}/export.stamp"
     BYPRODUCTS ${vulkan_glsl_files}
     COMMAND ComputeShaderExport "${vulkan_shader_dir}"
     COMMAND "${CMAKE_COMMAND}" -E touch "${vulkan_shader_dir}/export.stamp"
     DEPENDS ComputeShaderExport VERBATIM)
-foreach(variant RANGE 0 31)
-    set(spirv "${vulkan_shader_dir}/${variant}.spv")
-    set(validate_command)
-    if (MELONDS_SPIRV_VAL)
-        set(validate_command COMMAND "${MELONDS_SPIRV_VAL}" --target-env vulkan1.1 "${spirv}")
-    endif()
-    add_custom_command(OUTPUT "${spirv}"
-        COMMAND "${MELONDS_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
-            "${vulkan_shader_dir}/${variant}.comp" -o "${spirv}"
-        ${validate_command}
-        DEPENDS "${vulkan_shader_dir}/export.stamp" "${vulkan_shader_dir}/${variant}.comp" VERBATIM)
-    list(APPEND vulkan_spirv_files "${spirv}")
+foreach(scale RANGE 1 3)
+    foreach(variant RANGE 0 31)
+        set(spirv "${vulkan_shader_dir}/${scale}/${variant}.spv")
+        set(validate_command)
+        if (MELONDS_SPIRV_VAL)
+            set(validate_command COMMAND "${MELONDS_SPIRV_VAL}" --target-env vulkan1.1 "${spirv}")
+        endif()
+        add_custom_command(OUTPUT "${spirv}"
+            COMMAND "${MELONDS_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
+                "${vulkan_shader_dir}/${scale}/${variant}.comp" -o "${spirv}"
+            ${validate_command}
+            DEPENDS "${vulkan_shader_dir}/export.stamp" "${vulkan_shader_dir}/${scale}/${variant}.comp" VERBATIM)
+        list(APPEND vulkan_spirv_files "${spirv}")
+    endforeach()
 endforeach()
 set(embedded_shaders "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedShaders.cpp")
 add_custom_command(OUTPUT "${embedded_shaders}"

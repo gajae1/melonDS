@@ -8,13 +8,17 @@ int main(int argc, char** argv)
 {
     if (argc != 2) return 1;
     const std::filesystem::path directory(argv[1]);
-    std::filesystem::create_directories(directory);
-    const melonDS::ComputeShader::Config config{256, 192, 12288, 8, 4, 32, 64};
-    for (unsigned i = 0; i < melonDS::ComputeShader::Count; ++i)
+    for (int scale = 1; scale <= 3; ++scale)
     {
-        std::ofstream file(directory / (std::to_string(i) + ".comp"));
-        file << melonDS::ComputeShader::BuildSource(i, config, true);
-        if (!file) return 2;
+        const auto scaledDirectory = directory / std::to_string(scale);
+        std::filesystem::create_directories(scaledDirectory);
+        const auto config = melonDS::ComputeShader::VulkanConfig(scale);
+        for (unsigned i = 0; i < melonDS::ComputeShader::Count; ++i)
+        {
+            std::ofstream file(scaledDirectory / (std::to_string(i) + ".comp"));
+            file << melonDS::ComputeShader::BuildSource(i, config, true);
+            if (!file) return 2;
+        }
     }
     return 0;
 }

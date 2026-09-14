@@ -54,9 +54,13 @@ void VideoSettingsDialog::setEnabled()
 #endif
     ui->cbSoftwareThreaded->setEnabled(softwareRenderer);
     ui->cbPixelConversion->setEnabled(ramOutput);
-    ui->cbxGLResolution->setEnabled(RendererUsesOpenGL(renderer));
+    const bool vulkanRenderer = renderer == renderer3D_Vulkan;
+    ui->cbxGLResolution->setEnabled(RendererUsesOpenGL(renderer) || vulkanRenderer);
+    auto resolutionModel = static_cast<QStandardItemModel*>(ui->cbxGLResolution->model());
+    for (int i = 0; i < ui->cbxGLResolution->count(); ++i)
+        resolutionModel->item(i)->setEnabled(!vulkanRenderer || i < 3);
     ui->cbBetterPolygons->setEnabled(renderer == renderer3D_OpenGL);
-    ui->cbxComputeHiResCoords->setEnabled(renderer == renderer3D_OpenGLCompute);
+    ui->cbxComputeHiResCoords->setEnabled(renderer == renderer3D_OpenGLCompute || vulkanRenderer);
     setVsyncControlEnable(UsesGL());
 }
 
@@ -160,12 +164,16 @@ void VideoSettingsDialog::refreshRendererStatus()
     ui->rb3DVulkan->setEnabled(status.vulkanSupport != 0);
     ui->rb3DVulkan->setToolTip(status.vulkanSupport == 0
         ? tr("No usable Vulkan 1.1 compute device was found.")
-        : tr("Renders 3D on the GPU at native 256x192 resolution. Internal upscaling is not available."));
+        : tr("Renders 3D at 1x, 2x or 3x internal resolution using shared compute geometry. Screens and guest capture are resolved to native 256x192."));
 #else
     ui->rb3DVulkan->setToolTip(tr("Vulkan 3D is not included in this build."));
 #endif
     ui->rb3DCompute->setToolTip(status.computeSupport == 0
         ? tr("Compute rendering requires OpenGL 4.3 and compute functions on this context.") : QString());
+    {
+        const QSignalBlocker blocker(ui->cbxGLResolution);
+        ui->cbxGLResolution->setCurrentIndex(cfg.GetInt("3D.GL.ScaleFactor") - 1);
+    }
     setEnabled();
 
     const auto name = [this](int renderer) {
@@ -174,7 +182,7 @@ void VideoSettingsDialog::refreshRendererStatus()
             case renderer3D_Software: return tr("Software");
             case renderer3D_OpenGL: return tr("OpenGL");
             case renderer3D_OpenGLCompute: return tr("OpenGL Compute");
-            case renderer3D_Vulkan: return tr("Vulkan 3D (256x192)");
+            case renderer3D_Vulkan: return tr("Vulkan 3D");
             default: return tr("Not started");
         }
     };
@@ -239,6 +247,13 @@ void VideoSettingsDialog::onChange3DRenderer(int renderer)
 
     auto& cfg = emuInstance->getGlobalConfig();
     cfg.SetInt("3D.Renderer", renderer);
+    if (renderer == renderer3D_Vulkan)
+    {
+        const int scale = qBound(1, cfg.GetInt("3D.GL.ScaleFactor"), 3);
+        cfg.SetInt("3D.GL.ScaleFactor", scale);
+        const QSignalBlocker blocker(ui->cbxGLResolution);
+        ui->cbxGLResolution->setCurrentIndex(scale - 1);
+    }
 
     setEnabled();
 
@@ -296,9 +311,10 @@ void VideoSettingsDialog::on_cbSoftwareThreaded_stateChanged(int state)
 void VideoSettingsDialog::on_cbxGLResolution_currentIndexChanged(int idx)
 {
     // prevent a spurious change
-    if (ui->cbxGLResolution->count() < 16) return;
+    if (ui->cbxGLResolution->count() < 16 || idx < 0) return;
 
     auto& cfg = emuInstance->getGlobalConfig();
+    if (cfg.GetInt("3D.Renderer") == renderer3D_Vulkan && idx >= 3) return;
     cfg.SetInt("3D.GL.ScaleFactor", idx+1);
 
     setVsyncControlEnable(UsesGL());

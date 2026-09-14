@@ -20,7 +20,7 @@
 using namespace melonDS;
 using namespace melonDS::ComputeData;
 constexpr unsigned Polygons = 6, Lines = 32, Spans = Polygons * Lines;
-constexpr ComputeShader::Config Config{256,192,12288,8,4,32,64};
+
 static_assert(!std::is_copy_constructible_v<Vulkan::Device::Buffer>);
 static_assert(!std::is_copy_constructible_v<Vulkan::Device::Image>);
 
@@ -54,9 +54,10 @@ static void Check(VkResult result)
 struct Inputs {
     std::array<RenderPolygon,Polygons> polygons{};
     std::array<SpanSetupY,Polygons*2> edges{};
-    std::array<SetupIndices,Spans> indices{};
+    std::vector<SetupIndices> indices;
     MetaUniform meta{};
-    Inputs() {
+    const unsigned scale;
+    explicit Inputs(unsigned scale=1) : indices(Spans*scale),scale(scale) {
         meta.NumPolygons=Polygons; meta.NumVariants=1; meta.DispCnt=(1<<3)|(1<<4);
         for (unsigned p=0;p<Polygons;++p) {
             Vertex vertices[4]{}; Polygon polygon{};
@@ -71,29 +72,31 @@ struct Inputs {
                 vertices[v].TexCoords[0]=int(v)*123-int(p)*71;
                 vertices[v].TexCoords[1]=int(p)*57-int(v)*91;
             }
-            auto& out=polygons[p]; out.FirstXSpan=p*Lines;
-            out.YTop=0;out.YBot=Lines;out.XMin=256;out.XMax=-1;
+            for (unsigned v=0;v<4;++v)
+                for (auto& coordinate:positions[v]) coordinate*=scale;
+            auto& out=polygons[p]; out.FirstXSpan=p*Lines*scale;
+            out.YTop=0;out.YBot=Lines*scale;out.XMin=256*scale;out.XMax=-1;
             out.Attr=((p%2?15u:31u)<<16)|(3<<6);out.Variant=0;
             SetupYSpan(&out,&edges[p*2],&polygon,0,3,0,positions);
             SetupYSpan(&out,&edges[p*2+1],&polygon,1,2,1,positions);
-            for (unsigned y=0;y<Lines;++y) indices[p*Lines+y]={u16(p),u16(p*2),u16(p*2+1),u16(y)};
+            for (unsigned y=0;y<Lines*scale;++y) indices[p*Lines*scale+y]={u16(p),u16(p*2),u16(p*2+1),u16(y)};
         }
     }
 };
 
 static std::vector<SpanSetupX> GLSpans(const Inputs& input, unsigned variant)
 {
-    const auto source=ComputeShader::BuildSource(variant,Config,false);
+    const auto source=ComputeShader::BuildSource(variant,ComputeShader::VulkanConfig(input.scale),false);
     const char* text=source.c_str();
     GLuint shader=glCreateShader(GL_COMPUTE_SHADER);glShaderSource(shader,1,&text,nullptr);glCompileShader(shader);
     GLint ok=0;glGetShaderiv(shader,GL_COMPILE_STATUS,&ok);
     if (!ok) { char log[4096];glGetShaderInfoLog(shader,sizeof(log),nullptr,log);throw std::runtime_error(log); }
     GLuint program=glCreateProgram();glAttachShader(program,shader);glLinkProgram(program);glDeleteShader(shader);
     glGetProgramiv(program,GL_LINK_STATUS,&ok);if(!ok)throw std::runtime_error("GL link failed");
-    std::vector<SpanSetupX> output(Spans+1);std::memset(output.data(),0xCD,output.size()*sizeof(SpanSetupX));
+    std::vector<SpanSetupX> output(input.indices.size()+1);std::memset(output.data(),0xCD,output.size()*sizeof(SpanSetupX));
     GLuint buffers[5],texture;glGenBuffers(5,buffers);glGenTextures(1,&texture);
     const void* data[]={input.polygons.data(),output.data(),input.edges.data(),&input.meta,input.indices.data()};
-    const size_t sizes[]={sizeof(input.polygons),output.size()*sizeof(SpanSetupX),sizeof(input.edges),sizeof(input.meta),sizeof(input.indices)};
+    const size_t sizes[]={sizeof(input.polygons),output.size()*sizeof(SpanSetupX),sizeof(input.edges),sizeof(input.meta),input.indices.size()*sizeof(SetupIndices)};
     for(unsigned i=0;i<5;++i) {
         const GLenum target=i<3?GL_SHADER_STORAGE_BUFFER:i==3?GL_UNIFORM_BUFFER:GL_TEXTURE_BUFFER;
         glBindBuffer(target,buffers[i]);glBufferData(target,sizes[i],data[i],GL_DYNAMIC_DRAW);
@@ -101,7 +104,7 @@ static std::vector<SpanSetupX> GLSpans(const Inputs& input, unsigned variant)
     }
     glBindTexture(GL_TEXTURE_BUFFER,texture);glTexBuffer(GL_TEXTURE_BUFFER,GL_RGBA16UI,buffers[4]);
     glBindImageTexture(0,texture,0,GL_FALSE,0,GL_READ_ONLY,GL_RGBA16UI);
-    glUseProgram(program);glDispatchCompute(Spans/32,1,1);
+    glUseProgram(program);glDispatchCompute(input.indices.size()/32,1,1);
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER,buffers[1]);glGetBufferSubData(GL_SHADER_STORAGE_BUFFER,0,sizes[1],output.data());
     glDeleteTextures(1,&texture);glDeleteBuffers(5,buffers);glDeleteProgram(program);
@@ -150,8 +153,8 @@ struct VulkanSpans {
     }
 
     std::vector<SpanSetupX> Run(const Inputs& input,std::span<const uint32_t> words) {
-        std::vector<SpanSetupX> output(Spans+1);std::memset(output.data(),0xCD,output.size()*sizeof(SpanSetupX));
-        const size_t sizes[]={sizeof(input.polygons),output.size()*sizeof(SpanSetupX),sizeof(input.edges),sizeof(input.meta),sizeof(input.indices)};
+        std::vector<SpanSetupX> output(input.indices.size()+1);std::memset(output.data(),0xCD,output.size()*sizeof(SpanSetupX));
+        const size_t sizes[]={sizeof(input.polygons),output.size()*sizeof(SpanSetupX),sizeof(input.edges),sizeof(input.meta),input.indices.size()*sizeof(SetupIndices)};
         const void* data[]={input.polygons.data(),output.data(),input.edges.data(),&input.meta,input.indices.data()};
         for(unsigned i=0;i<5;++i)Allocate(i,sizes[i],data[i]);
         VkBufferViewCreateInfo view{VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO};view.buffer=buffers[4]->Handle();view.format=VK_FORMAT_R16G16B16A16_UINT;view.range=VK_WHOLE_SIZE;
@@ -174,7 +177,7 @@ struct VulkanSpans {
         const auto pipelineResult=d->vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&pipelineInfo,nullptr,&pipeline);d->vkDestroyShaderModule(device,module,nullptr);Check(pipelineResult);
         const auto command=owner->Begin();
         d->vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);d->vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,4,descriptorSets,0,nullptr);
-        d->vkCmdDispatch(command,Spans/32,1,1);VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+        d->vkCmdDispatch(command,input.indices.size()/32,1,1);VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
         d->vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&barrier,0,nullptr,0,nullptr);
         owner->SubmitAndWait();
         std::memcpy(output.data(),buffers[1]->Data(),sizes[1]);d->vkDestroyPipeline(device,pipeline,nullptr);
@@ -189,9 +192,10 @@ struct TextureInput {
     std::vector<uint32_t> pixels;
 };
 
-static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch,
+static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch,unsigned scale,
     std::span<const TextureInput> sources={},std::span<const uint32_t> clearColors={},std::span<const uint32_t> clearDepths={})
 {
+    const auto config=ComputeShader::VulkanConfig(scale);
     struct Resources {
         GLuint buffers[11]{},textures[4]{},programs[32]{};
         std::vector<GLuint> materials;
@@ -205,7 +209,7 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
     auto use=[&](unsigned variant) {
         auto& program=resources.programs[variant];
         if(!program) {
-            const auto source=ComputeShader::BuildSource(variant,Config,false);
+            const auto source=ComputeShader::BuildSource(variant,config,false);
             const char* text=source.c_str();
             const auto shader=glCreateShader(GL_COMPUTE_SHADER);
             glShaderSource(shader,1,&text,nullptr);glCompileShader(shader);
@@ -220,10 +224,10 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
         }
         glUseProgram(program);
     };
-    constexpr size_t tiles=32*24,work=tiles*16,pixels=256*192;
-    const size_t sizes[]={2048*sizeof(RenderPolygon),131072*sizeof(SpanSetupX),12288*sizeof(SpanSetupY),
+    const size_t tiles=32*24*scale*scale,work=tiles*16,pixels=256*192*scale*scale;
+    const size_t sizes[]={2048*sizeof(RenderPolygon),131072*scale*sizeof(SpanSetupX),12288*sizeof(SpanSetupY),
         work*64*4,work*64*4,work*64*4,pixels*7*4,
-        sizeof(BinResultHeader)+tiles*(2+64+64)*4,work*2*8,sizeof(MetaUniform),131072*sizeof(SetupIndices)};
+        sizeof(BinResultHeader)+tiles*(2+64+64)*4,work*2*8,sizeof(MetaUniform),131072*scale*sizeof(SetupIndices)};
     glGenBuffers(11,resources.buffers);glGenTextures(4,resources.textures);
     resources.materials.resize(batch.variants.size()*2);glGenTextures(resources.materials.size(),resources.materials.data());
     const GLint modes[]={GL_CLAMP_TO_EDGE,GL_REPEAT,GL_MIRRORED_REPEAT};
@@ -271,10 +275,10 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
     glTexBuffer(GL_TEXTURE_BUFFER,GL_RGBA16UI,resources.buffers[10]);
     glBindImageTexture(0,resources.textures[0],0,GL_FALSE,0,GL_READ_ONLY,GL_RGBA16UI);
     auto barrier=[] {glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT|GL_COMMAND_BARRIER_BIT);};
-    use(21);glDispatchCompute(12,1,1);
+    use(21);glDispatchCompute(12*scale*scale,1,1);
     if(!batch.polygons.empty()) {
         use(batch.wbuffer?1:0);glDispatchCompute(indices.size()/32,1,1);barrier();
-        use(2);glDispatchCompute((batch.polygons.size()+31)/32,4,6);barrier();
+        use(2);glDispatchCompute((batch.polygons.size()+31)/32,4*scale,6*scale);barrier();
         use(22);glDispatchCompute((batch.variants.size()+31)/32,1,1);barrier();
         glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER,resources.buffers[7]);
         use(23);glDispatchComputeIndirect(offsetof(BinResultHeader,SortWorkWorkCount));barrier();
@@ -306,26 +310,26 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
     }
-    use(batch.wbuffer?4:3);glUniform1i(0,1);glDispatchCompute(32,24,1);barrier();
+    use(batch.wbuffer?4:3);glUniform1i(0,1);glDispatchCompute(32*scale,24*scale,1);barrier();
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,resources.textures[1]);
-    glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,256,192);
+    glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,256*scale,192*scale);
     glBindImageTexture(0,resources.textures[1],0,GL_FALSE,0,GL_WRITE_ONLY,GL_RGBA8);
     unsigned final=24;
     if(batch.meta.DispCnt&(1<<5))final+=1;
     if(batch.meta.DispCnt&(1<<7))final+=2;
     if(batch.meta.DispCnt&(1<<4))final+=4;
-    use(final);glDispatchCompute(8,192,1);glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    use(final);glDispatchCompute(8*scale,192*scale,1);glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
     std::vector<uint32_t> result(pixels);glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,result.data());
     if(glGetError()!=GL_NO_ERROR)throw std::runtime_error("GL reference graph error");
     return result;
 }
 
-static void Frames()
+static void Frames(unsigned scale)
 {
-    const auto& shaders=Vulkan::EmbeddedShaders();
+    const auto& shaders=Vulkan::EmbeddedShaders(scale);
     std::string error;auto device=Vulkan::Device::Create(error);
     if(!device)throw std::runtime_error(error);
-    Vulkan::ComputePipeline pipeline(device,shaders);
+    Vulkan::ComputePipeline pipeline(device,shaders,scale);
     std::vector<TextureInput> sources;
     for(unsigned kind=0;kind<3;++kind) {
         const unsigned width=kind==0?8:kind==1?128:256,height=16,layers=2;
@@ -348,7 +352,7 @@ static void Frames()
     pipeline.UploadClearBitmap(clearColors,clearDepths);
     for(unsigned mode=0;mode<2;++mode) {
         for(unsigned scene=0;scene<8;++scene) {
-            Inputs input;input.meta.ClearDepth=0xFFFFFF;input.meta.ClearColor=0x1F020406;
+            Inputs input(scale);input.meta.ClearDepth=0xFFFFFF;input.meta.ClearColor=0x1F020406;
             for(unsigned i=0;i<34;++i) {
                 input.meta.ToonTable[i*4]=((i*11)%64)|(((i*7)%64)<<8)|(((i*3)%64)<<16);
                 input.meta.ToonTable[i*4+1]=i*3;input.meta.ToonTable[i*4+2]=0x3F0020;
@@ -389,28 +393,30 @@ static void Frames()
             batch.meta.NumVariants=variants.size();
             if(scene==2) {
                 --input.polygons.back().YBot;
-                batch.indices=batch.indices.first(Spans-1);
+                batch.indices=batch.indices.first(input.indices.size()-1);
             }
             if(scene==3) {
                 batch.polygons={};batch.edges={};batch.indices={};batch.variants={};
                 batch.meta.NumPolygons=0;batch.meta.NumVariants=0;
             }
             const auto pixels=pipeline.Render(batch);
-            const auto expected=GLFrame(batch,sources,clearColors,clearDepths);
+            const auto expected=GLFrame(batch,scale,sources,clearColors,clearDepths);
+            if(pixels.size()!=size_t(256*192*scale*scale))throw std::runtime_error("Unexpected compute output dimensions");
             if(pixels!=expected) {
                 for(unsigned i=0;i<pixels.size();++i)if(pixels[i]!=expected[i]) {
-                    std::fprintf(stderr,"Frame mismatch mode=%u scene=%u xy=%u,%u Vk=%08x GL=%08x\n",mode,scene,i%256,i/256,pixels[i],expected[i]);break;
+                    std::fprintf(stderr,"Frame mismatch scale=%u mode=%u scene=%u xy=%u,%u Vk=%08x GL=%08x\n",scale,mode,scene,i%(256*scale),i/(256*scale),pixels[i],expected[i]);break;
                 }
                 throw std::runtime_error("Vulkan/GL final pixels differ");
             }
             unsigned changed=0;for(auto pixel:pixels)changed+=pixel!=pixels.back();
             if(scene!=3&&changed<100)throw std::runtime_error("Compute graph produced no polygon coverage");
             if(scene==3&&changed)throw std::runtime_error("Empty compute frame retained old polygons");
-            std::printf("Vulkan/GL %s full graph scene=%u: all 49152 pixels equal, %u non-background PASS\n",mode?"W":"Z",scene,changed);
+            std::printf("Vulkan/GL %ux %s full graph scene=%u: all %zu pixels equal, %u non-background PASS\n",scale,mode?"W":"Z",scene,pixels.size(),changed);
             if(scene==1||scene>=4) {
                 // End the first batch after the shadow mask, so the following
                 // shadow polygon needs the retained depth/stencil state.
-                constexpr unsigned split=4,spanSplit=split*Lines;
+                constexpr unsigned split=4;
+                const unsigned spanSplit=split*Lines*scale;
                 auto tailPolygons=input.polygons;
                 for(unsigned p=split;p<Polygons;++p)tailPolygons[p].FirstXSpan-=spanSplit;
                 std::vector<SetupIndices> tailIndices(batch.indices.begin()+spanSplit,batch.indices.end());
@@ -420,7 +426,7 @@ static void Frames()
                 parts[1].polygons=std::span<const RenderPolygon>(tailPolygons).subspan(split);
                 parts[1].indices=tailIndices;parts[1].meta.NumPolygons=Polygons-split;
                 if(pipeline.Render(parts)!=expected)throw std::runtime_error("Split Vulkan frame differs from combined GL frame");
-                std::printf("Vulkan %s scene=%u two-batch depth/stencil/texture composition equal PASS\n",mode?"W":"Z",scene);
+                std::printf("Vulkan %ux %s scene=%u two-batch depth/stencil/texture composition equal PASS\n",scale,mode?"W":"Z",scene);
             }
         }
     }
@@ -434,22 +440,24 @@ int main(int argc,char** argv)
     QOffscreenSurface surface;surface.setFormat(context.format());surface.create();if(!context.makeCurrent(&surface))return 77;
     if(!gladLoadGLLoader([](const char* name)->void*{return reinterpret_cast<void*>(QOpenGLContext::currentContext()->getProcAddress(name));}))return 77;
     try {
-        const Inputs input;
-        std::array<std::unique_ptr<VulkanSpans>,2> devices;
-        for(auto& vk:devices){vk=std::make_unique<VulkanSpans>();if(!vk->Init())return 77;}
-        for(unsigned variant=0;variant<2;++variant) {
-            const auto expected=GLSpans(input,variant);
-            const auto actual=devices[variant]->Run(input,Vulkan::EmbeddedShaders()[variant]);
-            if(std::memcmp(expected.data(),actual.data(),actual.size()*sizeof(SpanSetupX))) {
-                for(unsigned i=0;i<actual.size();++i)if(std::memcmp(&expected[i],&actual[i],sizeof(SpanSetupX))){std::fprintf(stderr,"Span mismatch variant=%u index=%u\n",variant,i);break;}
-                return 2;
+        for(unsigned scale=1;scale<=3;++scale) {
+            const Inputs input(scale);
+            std::array<std::unique_ptr<VulkanSpans>,2> devices;
+            for(auto& vk:devices){vk=std::make_unique<VulkanSpans>();if(!vk->Init())return 77;}
+            for(unsigned variant=0;variant<2;++variant) {
+                const auto expected=GLSpans(input,variant);
+                const auto actual=devices[variant]->Run(input,Vulkan::EmbeddedShaders(scale)[variant]);
+                if(std::memcmp(expected.data(),actual.data(),actual.size()*sizeof(SpanSetupX))) {
+                    for(unsigned i=0;i<actual.size();++i)if(std::memcmp(&expected[i],&actual[i],sizeof(SpanSetupX))){std::fprintf(stderr,"Span mismatch scale=%u variant=%u index=%u\n",scale,variant,i);break;}
+                    return 2;
+                }
+                const unsigned char* guard=reinterpret_cast<const unsigned char*>(&actual.back());
+                for(unsigned i=0;i<sizeof(SpanSetupX);++i)if(guard[i]!=0xCD)return 3;
+                devices[variant].reset(); // The other initialized device must remain usable.
+                std::printf("Vulkan/GL %ux %s: %zu spans, all 24 words and output guard equal PASS\n",scale,variant?"W":"Z",input.indices.size());
             }
-            const unsigned char* guard=reinterpret_cast<const unsigned char*>(&actual.back());
-            for(unsigned i=0;i<sizeof(SpanSetupX);++i)if(guard[i]!=0xCD)return 3;
-            devices[variant].reset(); // The other initialized device must remain usable.
-            std::printf("Vulkan/GL %s: %u spans, all 24 words and output guard equal PASS\n",variant?"W":"Z",Spans);
+            Frames(scale);
         }
-        Frames();
         SubmissionFailure();
     }catch(const std::exception& error){std::fprintf(stderr,"%s\n",error.what());return 4;}
     return 0;

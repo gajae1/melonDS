@@ -20,22 +20,24 @@ struct PreparedBatch
     std::vector<Pipeline::Variant> Variants;
 };
 
-// Match the native pipeline's full-width work bound. Keeping whole polygons in
-// order preserves depth, translucent IDs and shadow stencil across submissions.
-u32 BatchSize(std::span<Polygon* const> polygons)
+// Match the pipeline's scaled full-width work bound and indirect-dispatch limit.
+// Whole polygons in order preserve depth, translucent IDs and shadow stencil.
+u32 BatchSize(std::span<Polygon* const> polygons, int scale, bool hires, u32 capacity)
 {
     u32 work = 0, count = 0;
     for (const auto* polygon : polygons)
     {
-        int top = 192, bottom = 0;
+        int top = 192 * scale, bottom = 0;
         for (u32 v = 0; v < polygon->NumVertices; ++v)
         {
-            top = std::min(top, polygon->Vertices[v]->FinalPosition[1]);
-            bottom = std::max(bottom, polygon->Vertices[v]->FinalPosition[1]);
+            const auto& vertex = *polygon->Vertices[v];
+            const int y = hires ? (vertex.HiresPosition[1] * scale) >> 4 : vertex.FinalPosition[1] * scale;
+            top = std::min(top, y);
+            bottom = std::max(bottom, y);
         }
         bottom = std::max(top + 1, bottom);
-        const u32 tiles = 32 * ((bottom + 7) / 8 - top / 8);
-        if (count == ComputeData::MaxVariants || work + tiles > 12288) break;
+        const u32 tiles = 32 * scale * ((bottom + 7) / 8 - top / 8);
+        if (count == ComputeData::MaxVariants || work + tiles > capacity) break;
         work += tiles;
         ++count;
     }
@@ -75,17 +77,49 @@ bool VulkanRenderer3D::Init()
     try
     {
         std::string error;
-        auto device = Vulkan::Device::Create(error);
-        if (!device) throw std::runtime_error(error);
-        Pipeline = std::make_unique<Vulkan::ComputePipeline>(device, Vulkan::EmbeddedShaders());
+        Device = Vulkan::Device::Create(error);
+        if (!Device) throw std::runtime_error(error);
+        Pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders());
         Texcache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*Pipeline});
-        Platform::Log(Platform::LogLevel::Info, "Vulkan 3D: %s (256x192 compute)\n", device->Properties().deviceName);
+        Platform::Log(Platform::LogLevel::Info, "Vulkan 3D: %s (256x192 compute)\n", Device->Properties().deviceName);
         return true;
     }
     catch (const std::exception& error)
     {
         Platform::Log(Platform::LogLevel::Error, "Vulkan 3D initialization failed: %s\n", error.what());
         Failed = true;
+        return false;
+    }
+}
+
+bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
+{
+    if (scale < 1 || scale > 3 || Failed || !Pipeline) return false;
+    // Native coordinates include the DS divider's precision loss. Keep 1x
+    // byte-identical even when the shared high-resolution option is enabled.
+    hires = hires && scale > 1;
+    if (scale == ScaleFactor && hires == HiresCoordinates) return true;
+    try
+    {
+        if (scale != ScaleFactor)
+        {
+            auto pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders(scale), scale);
+            auto cache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*pipeline});
+            // Commit the pair only after successful initialization. Local destruction
+            // releases the old cache before the pipeline its TextureLoader references.
+            Texcache.swap(cache);
+            Pipeline.swap(pipeline);
+            ScaleFactor = scale;
+            ClearBitmapDirty = 3;
+        }
+        HiresCoordinates = hires;
+        FrameDirty = true;
+        // Keep native scanlines from the current frame until the next RenderFrame.
+        return true;
+    }
+    catch (const std::exception& error)
+    {
+        Platform::Log(Platform::LogLevel::Error, "Vulkan 3D scale change failed: %s\n", error.what());
         return false;
     }
 }
@@ -146,18 +180,18 @@ void VulkanRenderer3D::DrawFrame()
     u32 first = 0;
     do
     {
-        const u32 count = BatchSize(polygons.subspan(first));
+        const u32 count = BatchSize(polygons.subspan(first), ScaleFactor, HiresCoordinates, Pipeline->WorkCapacity());
         auto& batch = prepared.emplace_back();
         batch.Polygons.resize(count);
         batch.Edges.resize(count * 12);
-        batch.Indices.resize(count * 192);
+        batch.Indices.resize(count * 192 * ScaleFactor);
         int numEdges = 0, numIndices = 0;
         for (u32 i = 0; i < count; ++i)
         {
             Polygon* source = polygons[first + i];
             auto& polygon = batch.Polygons[i];
             ComputeData::PreparePolygon(source, i, polygon, batch.Edges, numEdges,
-                batch.Indices, numIndices, 1, false);
+                batch.Indices, numIndices, ScaleFactor, HiresCoordinates);
             u32 layer;
             auto variant = MakeVariant(*source, GPU3D.RenderDispCnt, wbuffer, *Texcache, layer);
             const auto found = std::find_if(batch.Variants.begin(), batch.Variants.end(), [&](const auto& previous) {
@@ -178,9 +212,17 @@ void VulkanRenderer3D::DrawFrame()
         batches.push_back({batch.Polygons, batch.Edges, batch.Indices, batch.Variants,
             ComputeData::PrepareMeta(GPU3D, batch.Polygons.size(), batch.Variants.size()), wbuffer});
     const auto pixels = Pipeline->Render(batches);
-    // RGBA8 UNORM preserves all native RGB6/A5 values through this conversion.
-    for (size_t i = 0; i < pixels.size(); ++i)
-        ColorBuffer[i] = ((pixels[i] >> 2) & 0x003F3F3F) | ((pixels[i] >> 3) & 0x1F000000);
+    // Sample native pixel origins without filtering RGB6/A5 or inventing
+    // capture alpha. At 1x this is exactly the previous byte conversion.
+    // Scaled edge coverage follows the shared compute rasterizer, not a
+    // stretched native image. The clear VRAM bitmap remains 256x256.
+    const u32 width = 256 * ScaleFactor;
+    for (u32 y = 0; y < 192; ++y)
+    for (u32 x = 0; x < 256; ++x)
+    {
+        const u32 pixel = pixels[(y * ScaleFactor) * width + x * ScaleFactor];
+        ColorBuffer[y * 256 + x] = ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
+    }
     FrameDirty = false;
 }
 

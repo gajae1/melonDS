@@ -39,7 +39,7 @@
    <item row="1" column="1">
     <widget class="QGroupBox" name="groupBox_3">
      <property name="title">
-      <string>OpenGL renderer</string>
+      <string>Hardware renderer</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_4">
       <item row="0" column="0">
@@ -62,7 +62,7 @@
       <item row="1" column="0">
        <widget class="QComboBox" name="cbxGLResolution">
         <property name="whatsThis">
-         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;The resolution at which the 3D graphics will be rendered. Higher resolutions improve graphics quality when the main window is enlarged, but may also cause glitches.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;The internal resolution of 3D rendering. Higher resolutions may cause glitches. OpenGL can present the enlarged 3D output directly. Vulkan supports 1x/2x/3x internally and resolves the screens and guest capture to native 256x192.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
         </property>
        </widget>
       </item>

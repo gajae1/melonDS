@@ -16,6 +16,12 @@ bool VulkanRenderer::IsAvailable(std::string& error)
     return bool(Vulkan::Device::Create(error));
 }
 
+bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
+{
+    return static_cast<VulkanRenderer3D&>(*Rend3D).SetRenderSettings(settings.ScaleFactor, settings.HiresCoordinates)
+        && SoftRenderer::SetRenderSettings(settings);
+}
+
 bool VulkanRenderer::HasRenderFailure() const
 {
     return static_cast<const VulkanRenderer3D&>(*Rend3D).HasFailed();

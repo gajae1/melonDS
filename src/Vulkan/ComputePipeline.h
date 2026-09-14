@@ -2,12 +2,13 @@
 #pragma once
 #include "Device.h"
 #include "GPU3D_ComputeData.h"
+#include "GPU3D_ComputeShader.h"
 #include <array>
 #include <span>
 #include <vector>
 
 namespace melonDS::Vulkan {
-// Native-resolution compute graph. Prepared polygons and decoded texture arrays
+// Scalable compute graph. Prepared polygons and decoded texture arrays
 // use the same integer formats as the GL compute renderer.
 class ComputePipeline {
 public:
@@ -32,7 +33,7 @@ public:
         ComputeData::MetaUniform meta;
         bool wbuffer=false;
     };
-    explicit ComputePipeline(std::shared_ptr<Device> device,const Shaders& shaders);
+    explicit ComputePipeline(std::shared_ptr<Device> device,const Shaders& shaders,int scale=1);
     ~ComputePipeline();
     ComputePipeline(const ComputePipeline&)=delete;
     ComputePipeline& operator=(const ComputePipeline&)=delete;
@@ -43,6 +44,7 @@ public:
     std::shared_ptr<const Texture> CreateTexture(uint32_t width, uint32_t height, uint32_t layers);
     void UploadTextureLayer(const Texture& texture, uint32_t layer, std::span<const uint32_t> pixels);
     void UploadClearBitmap(std::span<const uint32_t> colors, std::span<const uint32_t> depths);
+    uint32_t WorkCapacity() const { return BatchWork; }
 private:
     void Init(const Shaders& shaders);
     void Cleanup();
@@ -57,6 +59,9 @@ private:
     std::shared_ptr<Device> owner;
     const volk::VolkDeviceTable& f;
     VkDevice device;
+    const ComputeShader::Config config;
+    const uint32_t Pixels,Tiles,Work,MaxSpans,BatchWork;
+    const std::array<VkDeviceSize,11> Sizes;
     VkDescriptorPool pool{};
     VkDescriptorPool texturePool{};
     VkPipelineLayout layout{};

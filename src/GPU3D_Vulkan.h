@@ -14,6 +14,7 @@ public:
     explicit VulkanRenderer3D(melonDS::GPU3D& gpu);
     ~VulkanRenderer3D() override;
     bool Init() override;
+    bool SetRenderSettings(int scale, bool hires);
     void Reset() override;
     void RenderFrame() override;
     void RestartFrame() override;
@@ -22,12 +23,15 @@ public:
 
 private:
     void DrawFrame();
+    std::shared_ptr<Vulkan::Device> Device;
     std::unique_ptr<Vulkan::ComputePipeline> Pipeline;
     std::unique_ptr<Vulkan::TextureCache> Texcache;
     std::array<u32, 256 * 192> ColorBuffer{};
     std::array<u32, 256> ScrolledLine{};
     std::array<u32, 256 * 256> ClearColor{}, ClearDepth{};
     u8 ClearBitmapDirty = 3;
+    int ScaleFactor = 1;
+    bool HiresCoordinates = false;
     bool FrameDirty = true;
     bool Failed = false;
 };
