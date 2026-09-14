@@ -1427,7 +1427,7 @@ void EmuInstance::syncRTC()
 }
 
 
-bool EmuInstance::updateConsole(bool directBoot) noexcept
+bool EmuInstance::updateConsole(bool directBoot, bool firmwareBoot) noexcept
 {
     // Prepare resources before moving either the active or queued cartridges.
     const int requestedType = globalCfg.GetInt("Emu.ConsoleType");
@@ -1443,6 +1443,17 @@ bool EmuInstance::updateConsole(bool directBoot) noexcept
     auto firmware = loadFirmware(requestedType);
     if (!firmware)
         return false;
+
+    // Apply NDS::NeedsDirectBoot to the prospective resources, before changing
+    // BIOS, execution settings, or cartridge ownership on the running console.
+    if (firmwareBoot && requestedType != 1 &&
+        (!firmware->IsBootable() ||
+         CRC32(arm9bios->data(), arm9bios->size()) != ARM9BIOSCRC32 ||
+         CRC32(arm7bios->data(), arm7bios->size()) != ARM7BIOSCRC32))
+    {
+        Log(LogLevel::Error, "Firmware boot requires bootable DS firmware and native DS BIOS images\n");
+        return false;
+    }
 
 #ifdef JIT_ENABLED
     Config::Table jitopt = globalCfg.GetTable("JIT");
@@ -1494,6 +1505,12 @@ bool EmuInstance::updateConsole(bool directBoot) noexcept
             return false;
 
         auto nand = loadNAND(*arm7ibios);
+        // DSi::NeedsDirectBoot depends on NAND availability, not DS BIOS CRCs.
+        if (firmwareBoot && !(nand && *nand))
+        {
+            Log(LogLevel::Error, "Firmware boot requires a valid DSi NAND image\n");
+            return false;
+        }
         // Reject bad direct-boot metadata before committing new resources or
         // moving cartridges, so an ordinary read failure retains the session.
         const auto* bootCart = changeCart ? nextCart.get() : (nds ? nds->GetNDSCart() : nullptr);
@@ -1673,17 +1690,10 @@ bool EmuInstance::bootToMenu(QString& errorstr)
 {
     if (!flushSaveData(errorstr)) return false;
     // Keep whatever cart is in the console, if any.
-    if (!updateConsole())
+    if (!updateConsole(false, true))
     {
         // Try to update the console, but keep the existing cart. If that fails...
         errorstr = "Failed to boot the firmware.";
-        return false;
-    }
-
-    // BIOS and firmware files are loaded, patched, and installed in UpdateConsole
-    if (nds->NeedsDirectBoot())
-    {
-        errorstr = "This firmware is not bootable.";
         return false;
     }
 

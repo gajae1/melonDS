@@ -596,7 +596,7 @@ foreach(method IN ITEMS BuildPath RetryCapture FlushSave FlushAll AssetPath Save
     elseif (method STREQUAL "Reset")
         set(signature "bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIdentity::Selection& gbaAssets)")
     else()
-        set(signature "bool EmuInstance::updateConsole(bool directBoot) noexcept")
+        set(signature "bool EmuInstance::updateConsole(bool directBoot, bool firmwareBoot) noexcept")
     endif()
     set(output "${CMAKE_CURRENT_BINARY_DIR}/cart${method}.inc")
     add_custom_command(OUTPUT "${output}"

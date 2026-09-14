@@ -38,7 +38,7 @@ struct BootLoader : CartLoader
         header->DSiRegionMask = RegionFree;
         return true;
     }
-    bool updateConsole(bool directBoot = false) noexcept;
+    bool updateConsole(bool directBoot = false, bool firmwareBoot = false) noexcept;
     bool bootToMenu(QString& errorstr);
     bool reset(const AssetIdentity::Selection& dsAssets = {}, const AssetIdentity::Selection& gbaAssets = {});
     bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, std::optional<melonDS::u32> dsSaveType = std::nullopt);
@@ -80,6 +80,40 @@ int main(int argc, char** argv)
     }
     QCoreApplication app(argc, argv);
     const string mode = argv[1];
+    if (mode == "firmware-retain")
+    {
+        for (int console : {0, 1})
+        {
+            BootLoader loader;
+            loader.globalCfg.mode = console;
+            auto bios = loader.nds->GetARM9BIOS();
+            bios[0] ^= 1;
+            loader.nds->SetARM9BIOS(bios);
+            auto* previousCore = loader.nds;
+            auto* previousCart = loader.nds->GetNDSCart();
+            auto* previousGBACart = loader.nds->GetGBACart();
+            u32 length;
+            auto data = ROM(false, length);
+            loader.nextCart = NDSCart::ParseROM(std::move(data), length, &loader);
+            auto* queuedCart = loader.nextCart.get();
+            loader.changeCart = true;
+            QString error;
+            // Generated DS firmware/FreeBIOS and absent DSi NAND cannot boot a
+            // menu. Failure must leave the running core and queued cart intact.
+            const bool accepted = loader.bootToMenu(error);
+            const bool pass = !accepted && !error.isEmpty() &&
+                loader.nds == previousCore && loader.nds->GetARM9BIOS() == bios &&
+                loader.nds->GetNDSCart() == previousCart &&
+                loader.nds->GetGBACart() == previousGBACart &&
+                loader.nextCart.get() == queuedCart && loader.changeCart &&
+                loader.consoleType == 0 && loader.nds->IsRunning() &&
+                loader.nds->ARM9Read32(0x02001000) == 0xDEADBEEF;
+            std::printf("frontend firmware rejection console=%d retains session: %s\n",
+                console, pass ? "PASS" : "FAIL");
+            if (!pass) return 1;
+        }
+        return 0;
+    }
     if (mode == "firmware")
     {
         QTemporaryDir directory(QDir::currentPath() + "/dsi-boot-menu-XXXXXX");

@@ -199,7 +199,7 @@ struct CartLoader
     QString getSavErrorString(string& filepath, bool gba);
     bool loadROM(QStringList filepath, bool reset, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, std::optional<melonDS::u32> dsSaveType = std::nullopt);
     bool loadGBAROM(QStringList filepath, QString& errorstr, const AssetIdentity::Selection& assets = {}, const std::shared_ptr<ROMPreparation::Data>& prepared = {}, u32 initialSaveLength = 0);
-    bool updateConsole(bool directBoot = false) noexcept;
+    bool updateConsole(bool directBoot = false, bool firmwareBoot = false) noexcept;
     bool reset(const AssetIdentity::Selection& dsAssets = {}, const AssetIdentity::Selection& gbaAssets = {});
 };
 
