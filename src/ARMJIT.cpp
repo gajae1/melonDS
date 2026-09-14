@@ -551,10 +551,10 @@ static u32 PrefetchedInstructions(const ARM* cpu) noexcept
     return 2 + (cpu->Num == 0 && (cpu->CPSR & 0x20) && !(cpu->R[15] & 2));
 }
 
-void ARMJIT::NotifyDataAbort() noexcept
+void ARMJIT::NotifyException() noexcept
 {
     CompileException = CompilingBlock;
-    // DataAbort has already refilled the exception-vector pipeline. The
+    // The exception has already refilled its vector pipeline. The
     // existing fallback exit check must stop the native block before it can
     // overwrite the exception PC or execute the following guest instruction.
     if (ExecutingNative && ExecutingCPU)
@@ -681,6 +681,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     bool hasLink = false;
 
     bool hasMemoryInstr = false;
+    bool mayChangeExecutionPermission = false;
 
     // Writes made by the tracing interpreter happen before this block is
     // indexed. Record their physical addresses at the existing write barrier.
@@ -868,6 +869,22 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
             JIT_DEBUGPRINT("merged BL\n");
         }
 
+        // A CP15 permission/region/control write can revoke this very page.
+        // Keep sequential prefetched instructions, but end at the next taken
+        // branch so dispatch checks its destination before native execution.
+        if (cpu->Num == 0 && !thumb && instrs[i].Info.Kind == ARMInstrInfo::ak_MCR)
+        {
+            const u32 op = instrs[i].Instr;
+            const u32 cn = (op >> 16) & 0xF;
+            mayChangeExecutionPermission |= cn == 1 || cn == 5 || cn == 6;
+        }
+
+        // MSR CPSR_c can switch the current permission map to User mode.
+        if (cpu->Num == 0 && !thumb
+            && (instrs[i].Info.Kind == ARMInstrInfo::ak_MSR_IMM || instrs[i].Info.Kind == ARMInstrInfo::ak_MSR_REG)
+            && (instrs[i].Instr & (1u << 16)) && !(instrs[i].Instr & (1u << 22)))
+            mayChangeExecutionPermission = true;
+
         // A state-changing branch can leave the numeric pipelined R15 unchanged.
         // Never follow it while still decoding instructions in the old state.
         if (instrs[i].Info.Branches() && BranchOptimizations && thumb == bool(cpu->CPSR & 0x20)
@@ -910,7 +927,8 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
                 // ARM9 checks execution permission at block entry. Do not
                 // inline a target whose MPU page can have different rights.
                 else if (hasBranched && !isBackJump && i + 1 < MaxBlockSize
-                    && (cpu->Num != 0 || (target >> 12) == (blockAddr >> 12)))
+                    && (cpu->Num != 0 || (!mayChangeExecutionPermission
+                        && (target >> 12) == (blockAddr >> 12))))
                 {
                     if (link)
                     {

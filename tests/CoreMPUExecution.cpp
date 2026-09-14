@@ -21,6 +21,8 @@ constexpr u32 Driver = 0x02000000;
 constexpr u32 DynamicDriver = Driver + 0x100;
 constexpr u32 Idle = Driver + 0x200;
 constexpr u32 Target = 0x02004000;
+constexpr u32 SameDriver = Target+0x800;
+constexpr u32 SameTarget = Target+0x100;
 constexpr u32 Data = 0x02008000;
 constexpr u32 Vectors = 0xFFFF0000;
 constexpr u32 Permit = 0x00000333; // Regions 0/1/2: vectors/driver/target.
@@ -39,6 +41,8 @@ struct MPUCase
     u32 Permissions;
     bool Abort;
     bool Warm;
+    u32 Destination = Target;
+    u32 UpdateId = 0x503;
 };
 
 constexpr MPUCase Cases[] = {
@@ -48,6 +52,19 @@ constexpr MPUCase Cases[] = {
     // This cold dynamic branch uses the existing JumpTo permission check.
     {"denied-dynamic-control", DynamicDriver, DenyTarget, true, false},
     {"restored-warm-static", Driver, Permit, false, true},
+    {"same-page-denied-cold", SameDriver+0x20, DenyTarget, true, false, SameTarget},
+    {"same-page-train", SameDriver, Permit, false, false, SameTarget},
+    {"same-page-denied-warm", SameDriver, DenyTarget, true, true, SameTarget},
+    {"same-page-recover", SameDriver, Permit, false, true, SameTarget},
+    {"enable-mpu-train", SameDriver+0x40, Permit, false, false, SameTarget, 0x100},
+    {"enable-mpu-denied-warm", SameDriver+0x40, DenyTarget, true, true, SameTarget, 0x100},
+    {"enable-mpu-recover", SameDriver+0x40, Permit, false, true, SameTarget, 0x100},
+    {"region-train", SameDriver+0x60, Permit, false, false, SameTarget, 0x620},
+    {"region-denied-warm", SameDriver+0x60, Permit, true, true, SameTarget, 0x620},
+    {"region-recover", SameDriver+0x60, Permit, false, true, SameTarget, 0x620},
+    {"user-mode-train", SameDriver+0x80, 0x133, false, false, SameTarget, 0},
+    {"user-mode-denied-warm", SameDriver+0x80, 0x133, true, true, SameTarget, 0},
+    {"user-mode-recover", SameDriver+0x80, 0x133, false, true, SameTarget, 0},
 };
 }
 
@@ -79,6 +96,18 @@ int TestMPUExecution(NDSArgs&& args, bool jit)
     nds->ARM9Write32(Target + 4, 0xE5887000); // STR r7,[r8], no writeback
     nds->ARM9Write32(Target + 8, 0xEAFFFFFE); // B .
 
+    for (const auto& test : Cases) {
+        if (test.Destination != SameTarget) continue;
+        const u32 id = test.UpdateId;
+        const u32 opcode = id ? 0xEE000F10 | ((id & 0xF00)<<8) | ((id & 0xF0)>>4) | ((id & 0xF)<<5)
+                              : 0xE121F000; // MSR CPSR_c,r0
+        nds->ARM9Write32(test.Entry, opcode);
+        nds->ARM9Write32(test.Entry+4, 0xEA000000 | (((SameTarget-test.Entry-12)>>2)&0xFFFFFF));
+    }
+    nds->ARM9Write32(SameTarget, 0xE3A06066);
+    nds->ARM9Write32(SameTarget+4, 0xE5887000);
+    nds->ARM9Write32(SameTarget+8, 0xEAFFFFFE);
+
     // Four disjoint 4 KiB regions, caches/TCM disabled, high vectors enabled.
     // No region overlaps or cache invalidation are needed for this contract.
     cpu.CP15Write(0x600, Vectors | 0x17);
@@ -106,32 +135,45 @@ int TestMPUExecution(NDSArgs&& args, bool jit)
         cpu.UpdateMode(oldCPSR, cpu.CPSR);
         cpu.StopExecution = 0;
         cpu.Cycles = 0;
-        cpu.R[0] = test.Permissions;
-        cpu.R[4] = Target;
+        cpu.R[0] = test.UpdateId == 0x100 ? 0x2001 : test.UpdateId == 0x620
+            ? (test.Abort ? 0 : Target | 0x17) : test.UpdateId == 0
+            ? (test.Abort ? 0x50 : 0x5F) : test.Permissions;
+        cpu.R[4] = test.Destination;
         cpu.R[6] = Sentinel;
         cpu.R[7] = Stored;
         cpu.R[8] = Data;
         cpu.R[14] = LinkSentinel;
         cpu.R_ABT[2] = SPSRSentinel;
         nds->ARM9Write32(Data, Sentinel);
+        if (test.Destination == SameTarget) {
+            cpu.CP15Write(0x503, test.UpdateId == 0x503 ? Permit : test.Permissions);
+            cpu.CP15Write(0x620, Target | 0x17);
+            cpu.CP15Write(0x100, test.UpdateId == 0x100 ? 0x2000 : 0x2001);
+        }
         cpu.JumpTo(test.Entry);
         nds->RunFrame();
 
         // The B . at the exception vector keeps the next-instruction address
         // observable: this core's between-instruction R15 is address+4 in ARM.
-        const u32 expectedPC = test.Abort ? Vectors + 0x0C : Target + 8;
-        const u32 expectedLR = test.Abort ? Target + 4 : LinkSentinel;
+        const u32 expectedPC = test.Abort ? Vectors + 0x0C : test.Destination + 8;
+        const u32 expectedLR = test.Abort ? test.Destination + 4 : LinkSentinel;
         const u32 expectedCPSR = test.Abort ? AbortCPSR : InitialCPSR;
-        const u32 expectedSPSR = test.Abort ? InitialCPSR : SPSRSentinel;
+        const u32 priorCPSR = test.UpdateId == 0 && test.Abort ? (InitialCPSR & ~0x1Fu) | 0x10 : InitialCPSR;
+        const u32 expectedSPSR = test.Abort ? priorCPSR : SPSRSentinel;
         const u32 expectedRegister = test.Abort ? Sentinel : 0x66;
         const u32 expectedMemory = test.Abort ? Sentinel : Stored;
         const u32 memory = nds->ARM9Read32(Data);
-        const bool ok = warm && nds->IsRunning() &&
+        bool faultTraceDiscarded = true;
+#ifdef JIT_ENABLED
+        if (jit && test.Abort && !test.Warm)
+            faultTraceDiscarded = !nds->JIT.JitBlocks9.contains(test.Entry);
+#endif
+        const bool ok = warm && faultTraceDiscarded && nds->IsRunning() &&
             cpu.CP15Read(0x503) == test.Permissions &&
             cpu.R[15] == expectedPC + 4 && cpu.R[14] == expectedLR &&
             cpu.CPSR == expectedCPSR && cpu.R_ABT[2] == expectedSPSR &&
             cpu.R[6] == expectedRegister && memory == expectedMemory &&
-            cpu.R[4] == Target && cpu.R[7] == Stored && cpu.R[8] == Data;
+            cpu.R[4] == test.Destination && cpu.R[7] == Stored && cpu.R[8] == Data;
 
         std::printf("mpu/%s/%s: %s\n", jit ? "jit" : "interpreter",
                     test.Name, ok ? "PASS" : "FAIL");
@@ -148,7 +190,7 @@ int TestMPUExecution(NDSArgs&& args, bool jit)
         }
     }
 
-    std::printf("MPU execution: %u/5 cases passed\n", 5 - failures);
+    std::printf("MPU execution: %u/%zu cases passed\n", unsigned(std::size(Cases)) - failures, std::size(Cases));
     return failures ? 1 : 0;
 }
 

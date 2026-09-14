@@ -56,7 +56,7 @@ public:
     void CompileBlock(ARM* cpu) noexcept;
     void ResetBlockCache() noexcept;
     void PrepareCodeRemap() noexcept;
-    void NotifyDataAbort() noexcept;
+    void NotifyException() noexcept;
     ARM* ExecutingCPU = nullptr;
     bool ExecutingNative = false;
 

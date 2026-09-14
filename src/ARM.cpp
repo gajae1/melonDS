@@ -587,6 +587,9 @@ void ARMv5::PrefetchAbort()
     R_ABT[2] = oldcpsr;
     R[14] = R[15] + (oldcpsr & 0x20 ? 2 : 0);
     JumpTo(ExceptionBase + 0x0C);
+#ifdef JIT_ENABLED
+    NDS.JIT.NotifyException();
+#endif
 }
 
 void ARMv5::DataAbort()
@@ -602,7 +605,7 @@ void ARMv5::DataAbort()
     R[14] = R[15] + (oldcpsr & 0x20 ? 4 : 0);
     JumpTo(ExceptionBase + 0x10);
 #ifdef JIT_ENABLED
-    NDS.JIT.NotifyDataAbort();
+    NDS.JIT.NotifyException();
 #endif
 }
 
