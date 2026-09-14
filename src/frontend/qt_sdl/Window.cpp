@@ -60,6 +60,7 @@
 #include "WifiSettingsDialog.h"
 #include "InterfaceSettingsDialog.h"
 #include "ROMInfoDialog.h"
+#include "ROMLibraryDialog.h"
 #include "RAMInfoDialog.h"
 #include "TitleManagerDialog.h"
 #include "PowerManagement/PowerManagementDialog.h"
@@ -141,6 +142,10 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             actOpenROM->setShortcut(QKeySequence(QKeySequence::StandardKey::Open));
             actOpenROMWithSave = menu->addAction(tr("Open ROM with save type..."));
             connect(actOpenROMWithSave, &QAction::triggered, this, &MainWindow::onOpenFile);
+
+            auto* libraryAction = menu->addAction(tr("ROM library..."));
+            libraryAction->setObjectName("actROMLibrary");
+            connect(libraryAction, &QAction::triggered, this, &MainWindow::onOpenROMLibrary);
 
             /*actOpenROMArchive = menu->addAction("Open ROM inside archive...");
             connect(actOpenROMArchive, &QAction::triggered, this, &MainWindow::onOpenFileArchive);
@@ -1416,6 +1421,26 @@ void MainWindow::onOpenFile()
     if (!verifySetup()) return;
     const auto file = pickROM(false);
     if (!file.isEmpty()) startROMPreparation(file, action, true);
+}
+
+void MainWindow::onOpenROMLibrary()
+{
+    if (closeInProgress || romClosePending) return;
+    if (!romLibrary)
+    {
+        romLibrary = new ROMLibraryDialog(globalCfg.GetQString("ROMLibraryFolder"), this);
+        connect(romLibrary, &ROMLibraryDialog::folderChanged, this, [this](const QString& folder) {
+            globalCfg.SetQString("ROMLibraryFolder", folder);
+        });
+        connect(romLibrary, &ROMLibraryDialog::openROM, this, [this](const QString& path) {
+            if (closeInProgress || romClosePending) return;
+            cancelROMPreparations();
+            if (verifySetup()) startROMPreparation({path}, ROMAction::BootDS, true);
+        });
+    }
+    romLibrary->show();
+    romLibrary->raise();
+    romLibrary->activateWindow();
 }
 
 void MainWindow::onClearRecentFiles()

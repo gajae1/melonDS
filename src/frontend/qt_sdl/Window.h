@@ -44,6 +44,7 @@ class EmuInstance;
 class EmuThread;
 class QProgressDialog;
 class QInputDialog;
+class ROMLibraryDialog;
 
 const int kMaxRecentROMs = 10;
 
@@ -107,6 +108,7 @@ signals:
 
 private slots:
     void onOpenFile();
+    void onOpenROMLibrary();
     void onClickRecentFile();
     void onClearRecentFiles();
     void onBootFirmware();
@@ -215,6 +217,7 @@ private:
     ROMPreparation::Controller romPreparation{this};
     QPointer<QProgressDialog> romProgress;
     QPointer<QInputDialog> romMemberDialog;
+    QPointer<ROMLibraryDialog> romLibrary;
     QPointer<MainWindow> romCloseWaiter;
     ROMAction romAction = ROMAction::BootDS;
     bool romRememberFolder = false, romRememberRecent = false;

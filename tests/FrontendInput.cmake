@@ -1,6 +1,11 @@
 # Compile the real mapping widget and configuration code; use the existing
 # extraction helper to exercise input handlers without starting emulation threads.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(ROMLibrary "${CMAKE_SOURCE_DIR}/tests/ROMLibrary.cpp" ROMLibraryDialog.cpp ROMLibraryDialog.h)
+target_include_directories(ROMLibrary PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(ROMLibrary PRIVATE ${QT_LINK_LIBS})
+add_test(NAME rom-library-live-folder COMMAND ROMLibrary)
+set_tests_properties(rom-library-live-folder PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 set(input_methods)
 foreach(method IN ITEMS onKeyPress onKeyRelease keyReleaseAll)
     if (method STREQUAL "keyReleaseAll")

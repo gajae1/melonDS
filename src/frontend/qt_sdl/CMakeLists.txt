@@ -52,6 +52,8 @@ set(SOURCES_QT_SDL
     WifiSettingsDialog.cpp
     InterfaceSettingsDialog.cpp
     ROMInfoDialog.cpp
+    ROMLibraryDialog.cpp
+    ROMLibraryDialog.h
     RAMInfoDialog.cpp
     TitleManagerDialog.cpp
     OSD_shaders.h
