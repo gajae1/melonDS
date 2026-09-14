@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 #include "LocalMP.h"
 
@@ -34,12 +35,11 @@ LocalMP::LocalMP() noexcept :
     MPQueueLock(Mutex_Create())
 {
     memset(MPPacketQueue, 0, kPacketQueueSize);
-    memset(MPReplyQueue, 0, kReplyQueueSize);
     memset(&MPStatus, 0, sizeof(MPStatus));
     memset(PacketReadOffset, 0, sizeof(PacketReadOffset));
     memset(ReplyReadOffset, 0, sizeof(ReplyReadOffset));
-    MPStatus.MPHostinst = 16; // no command host yet
     for (int& host : LastHostID) host = -1;
+    for (int& host : ReplyHostID) host = -1;
 
     // prepare semaphores
     // semaphores 0-15: regular frames; semaphore I is posted when instance I needs to process a new frame
@@ -71,11 +71,9 @@ void LocalMP::Begin(int inst)
     ResetFIFO(inst, 0);
     ResetFIFO(inst, 1);
     LastHostID[inst] = -1;
-    if (MPStatus.MPHostinst == inst)
-    {
-        MPStatus.MPHostinst = 16;
-        MPStatus.MPReplyBitmask = 0;
-    }
+    ReplyHostID[inst] = -1;
+    MPStatus.ActiveHosts &= ~(1 << inst);
+    HostChannel[inst] = 0;
     MPStatus.ConnectedBitmask |= (1 << inst);
     Mutex_Unlock(MPQueueLock);
 }
@@ -88,18 +86,16 @@ void LocalMP::End(int inst)
     ResetFIFO(inst, 0);
     ResetFIFO(inst, 1);
     LastHostID[inst] = -1;
-    if (MPStatus.MPHostinst == inst)
-    {
-        MPStatus.MPHostinst = 16;
-        MPStatus.MPReplyBitmask = 0;
-    }
+    ReplyHostID[inst] = -1;
+    MPStatus.ActiveHosts &= ~(1 << inst);
+    HostChannel[inst] = 0;
     Mutex_Unlock(MPQueueLock);
 }
 
 void LocalMP::ResetFIFO(int inst, int fifo) noexcept
 {
     if (fifo == 0) PacketReadOffset[inst] = MPStatus.PacketWriteOffset;
-    else           ReplyReadOffset[inst] = MPStatus.ReplyWriteOffset;
+    else           ReplyReadOffset[inst] = MPStatus.ReplyWriteOffset[inst];
 
     // A receiver can already be waiting outside MPQueueLock. Do not use a
     // blocking reset (available/acquire can race with that receiver). All
@@ -110,7 +106,7 @@ void LocalMP::ResetFIFO(int inst, int fifo) noexcept
 void LocalMP::MakeRoom(int inst, int fifo, u32 len) noexcept
 {
     const u32 size = fifo == 0 ? kPacketQueueSize : kReplyQueueSize;
-    const u32 write = fifo == 0 ? MPStatus.PacketWriteOffset : MPStatus.ReplyWriteOffset;
+    const u32 write = fifo == 0 ? MPStatus.PacketWriteOffset : MPStatus.ReplyWriteOffset[inst];
     const u32 read = fifo == 0 ? PacketReadOffset[inst] : ReplyReadOffset[inst];
     const u32 used = (write + size - read) % size;
 
@@ -135,7 +131,7 @@ void LocalMP::FIFORead(int inst, int fifo, void* buf, int len) noexcept
     else
     {
         offset = ReplyReadOffset[inst];
-        data = MPReplyQueue;
+        data = MPReplyQueue[inst].get();
         datalen = kReplyQueueSize;
     }
 
@@ -172,8 +168,8 @@ void LocalMP::FIFOWrite(int inst, int fifo, void* buf, int len) noexcept
     }
     else
     {
-        offset = MPStatus.ReplyWriteOffset;
-        data = MPReplyQueue;
+        offset = MPStatus.ReplyWriteOffset[inst];
+        data = MPReplyQueue[inst].get();
         datalen = kReplyQueueSize;
     }
 
@@ -191,7 +187,49 @@ void LocalMP::FIFOWrite(int inst, int fifo, void* buf, int len) noexcept
     }
 
     if (fifo == 0) MPStatus.PacketWriteOffset = offset;
-    else           MPStatus.ReplyWriteOffset = offset;
+    else           MPStatus.ReplyWriteOffset[inst] = offset;
+}
+
+namespace
+{
+bool HasWifiHeader(const u8* packet, int len) noexcept
+{
+    // Twelve-byte TX header followed by the 24-byte 802.11 MAC header.
+    return len >= 36 && packet && packet[9] >= 1 && packet[9] <= 14 &&
+           (packet[10] | (packet[11] << 8)) == len - 12;
+}
+}
+
+int LocalMP::FindReplyHost(int inst, const u8* packet, int len) const noexcept
+{
+    const u16 hosts = MPStatus.ActiveHosts & MPStatus.ConnectedBitmask & ~(1 << inst);
+    if (HasWifiHeader(packet, len))
+    {
+        int match = -1;
+        for (int host = 0; host < 16; ++host)
+        {
+            if (!(hosts & (1 << host)) || HostChannel[host] != packet[9] ||
+                memcmp(HostAddress[host], packet + 16, 6) != 0) continue;
+            // Duplicate addresses on the same channel cannot identify a group.
+            if (match != -1) return -1;
+            match = host;
+        }
+        return match;
+    }
+
+    // Blank replies are sent immediately for the CMD just received. Retain
+    // the opaque-frame API used by transport callers without a Wi-Fi header.
+    const int observed = LastHostID[inst];
+    if (observed != -1)
+        return (hosts & (1 << observed)) ? observed : -1;
+    int match = -1;
+    for (int host = 0; host < 16; ++host)
+    {
+        if (!(hosts & (1 << host))) continue;
+        if (match != -1) return -1;
+        match = host;
+    }
+    return match;
 }
 
 int LocalMP::SendPacketGeneric(int inst, u32 type, u8* packet, int len, u64 timestamp) noexcept
@@ -219,18 +257,28 @@ int LocalMP::SendPacketGeneric(int inst, u32 type, u8* packet, int len, u64 time
 
     const u32 recordlen = sizeof(MPPacketHeader) + len;
     const bool reply = (type & 0xFFFF) == 2;
+    int destination = inst;
     if (reply)
     {
-        // LocalMP still has one command host, not independent wireless groups.
-        if (MPStatus.MPHostinst == 16 || !(mask & (1 << MPStatus.MPHostinst)))
+        destination = FindReplyHost(inst, packet, len);
+        if (destination == -1)
         {
             Mutex_Unlock(MPQueueLock);
             return 0;
         }
-        MakeRoom(MPStatus.MPHostinst, 1, recordlen);
+        MakeRoom(destination, 1, recordlen);
     }
     else
     {
+        if (kind == 1 && !MPReplyQueue[inst])
+        {
+            MPReplyQueue[inst].reset(new (std::nothrow) u8[kReplyQueueSize]);
+            if (!MPReplyQueue[inst])
+            {
+                Mutex_Unlock(MPQueueLock);
+                return 0;
+            }
+        }
         for (int i = 0; i < 16; i++)
         {
             if (mask & (1 << i))
@@ -247,28 +295,27 @@ int LocalMP::SendPacketGeneric(int inst, u32 type, u8* packet, int len, u64 time
 
     type &= 0xFFFF;
     int nfifo = (type == 2) ? 1 : 0;
-    FIFOWrite(inst, nfifo, &pktheader, sizeof(pktheader));
+    FIFOWrite(destination, nfifo, &pktheader, sizeof(pktheader));
     if (len)
-        FIFOWrite(inst, nfifo, packet, len);
+        FIFOWrite(destination, nfifo, packet, len);
 
     if (type == 1)
     {
-        // NOTE: this is not guarded against, say, multiple multiplay games happening on the same machine
-        // we would need to pass the packet's SenderID through the wifi module for that
-        MPStatus.MPHostinst = inst;
-        MPStatus.MPReplyBitmask = 0;
+        MPStatus.ActiveHosts |= (1 << inst);
+        HostChannel[inst] = HasWifiHeader(packet, len) ? packet[9] : 0;
+        if (HostChannel[inst]) memcpy(HostAddress[inst], packet + 22, 6);
         ResetFIFO(inst, 1);
     }
     else if (type == 2)
     {
-        MPStatus.MPReplyBitmask |= (1 << inst);
+        ReplyHostID[inst] = destination;
     }
 
     // Publish the complete record and its permit in the same critical section
     // as overflow recovery, Begin/End and command-host selection.
     if (type == 2)
     {
-        Semaphore_Post(SemPool[16 +  MPStatus.MPHostinst]);
+        Semaphore_Post(SemPool[16 + destination]);
     }
     else
     {
@@ -375,7 +422,9 @@ int LocalMP::RecvHostPacket(int inst, u8* packet, u64* timestamp, u32 capacity)
 {
     if (static_cast<u32>(inst) >= 16) return 0;
     Mutex_Lock(MPQueueLock);
-    const int host = LastHostID[inst];
+    // A foreign CMD can be delivered before Wifi rejects its BSSID. It must
+    // not replace the host to which this client has actually sent replies.
+    const int host = ReplyHostID[inst] != -1 ? ReplyHostID[inst] : LastHostID[inst];
     const bool hostleft = host != -1 && !(MPStatus.ConnectedBitmask & (1 << host));
     Mutex_Unlock(MPQueueLock);
     if (hostleft) return -1;
@@ -394,8 +443,17 @@ u16 LocalMP::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
     {
         Mutex_Lock(MPQueueLock);
         curinstmask = MPStatus.ConnectedBitmask;
-        const bool receiving = MPStatus.MPHostinst == inst &&
+        const bool receiving = (MPStatus.ActiveHosts & (1 << inst)) &&
                                (curinstmask & (1 << inst));
+        for (int client = 0; client < 16; ++client)
+        {
+            // Sending a reply establishes membership even if this instance
+            // previously sent CMDs without powering Wi-Fi off in between.
+            const bool otherGroup = ReplyHostID[client] != -1
+                ? ReplyHostID[client] != inst : (MPStatus.ActiveHosts & (1 << client)) != 0;
+            if (client != inst && otherGroup)
+                curinstmask &= ~(1 << client);
+        }
         Mutex_Unlock(MPQueueLock);
         // If the command session ended or all clients left, return early.
         if (!receiving || ((myinstmask & curinstmask) == curinstmask))
@@ -409,15 +467,15 @@ u16 LocalMP::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
 
         Mutex_Lock(MPQueueLock);
 
-        if (MPStatus.MPHostinst != inst ||
-            ReplyReadOffset[inst] == MPStatus.ReplyWriteOffset)
+        if (!(MPStatus.ActiveHosts & (1 << inst)) ||
+            ReplyReadOffset[inst] == MPStatus.ReplyWriteOffset[inst])
         {
             ResetFIFO(inst, 1);
             Mutex_Unlock(MPQueueLock);
             return ret;
         }
 
-        const u32 available = (MPStatus.ReplyWriteOffset + kReplyQueueSize
+        const u32 available = (MPStatus.ReplyWriteOffset[inst] + kReplyQueueSize
                                - ReplyReadOffset[inst]) % kReplyQueueSize;
         MPPacketHeader pktheader = {};
         if (available >= sizeof(pktheader))

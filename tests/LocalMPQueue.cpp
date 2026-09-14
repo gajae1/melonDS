@@ -306,6 +306,120 @@ bool ReplyStaleWindow()
                  "age-33 reply survived the stale window");
 }
 
+std::vector<u8> WirelessFrame(unsigned id, const std::array<u8, 6>& source,
+                              const std::array<u8, 6>& destination, size_t size = 64)
+{
+    auto frame = Frame(id, size);
+    frame[8] = 0x14;
+    frame[9] = 1;
+    frame[10] = static_cast<u8>(size - 12);
+    frame[11] = static_cast<u8>((size - 12) >> 8);
+    std::copy(destination.begin(), destination.end(), frame.begin() + 16);
+    std::copy(source.begin(), source.end(), frame.begin() + 22);
+    return frame;
+}
+
+bool GroupIdentity()
+{
+    LocalMP net;
+    net.SetRecvTimeout(1);
+    for (int inst : {0, 1, 2}) net.Begin(inst);
+    const std::array<u8, 6> address{2, 0, 0, 0, 0, 1};
+    auto cmd = WirelessFrame(1, address, address);
+    auto reply = WirelessFrame(2, address, address);
+    net.SendCmd(0, cmd.data(), cmd.size(), 1000);
+    cmd[9] = 6;
+    net.SendCmd(2, cmd.data(), cmd.size(), 1000);
+    // Same MAC on separate channels remains distinguishable without a prior
+    // receive. An unknown channel or two hosts with the same identity cannot
+    // silently redirect a reply to whichever host most recently sent a CMD.
+    if (!Check(net.SendReply(1, reply.data(), reply.size(), 1001, 1) == int(reply.size()),
+               "same address on another channel hid the destination")) return false;
+    Output out;
+    out.fill(Sentinel);
+    if (!Check(net.RecvReplies(0, out.data() + 32, 1000, 2) == 2 && Copied(out, reply),
+               "channel identity did not reach its host")) return false;
+    reply[9] = 11;
+    if (!Check(net.SendReply(1, reply.data(), reply.size(), 1002, 1) == 0,
+               "reply on an unknown channel was redirected")) return false;
+    cmd[9] = reply[9] = 1;
+    net.SendCmd(2, cmd.data(), cmd.size(), 2000);
+    if (!Check(net.SendReply(1, reply.data(), reply.size(), 2001, 1) == 0,
+               "ambiguous duplicate host identity was silently selected")) return false;
+    net.End(2);
+    net.SendReply(1, reply.data(), reply.size(), 2002, 1);
+    out.fill(Sentinel);
+    return Check(net.RecvReplies(0, out.data() + 32, 2000, 2) == 2 && Copied(out, reply),
+                 "unambiguous host did not recover after duplicate departed");
+}
+
+bool HostBecomesClient()
+{
+    LocalMP net;
+    net.SetRecvTimeout(1);
+    net.Begin(0);
+    net.Begin(1);
+    auto frame = Frame(1, 40);
+    net.SendCmd(0, frame.data(), frame.size(), 1000);
+    net.SendCmd(1, frame.data(), frame.size(), 2000);
+    if (!Receive(net, 0, frame, 2000, true)) return false;
+    // Role changes need not power Wi-Fi off (the only core Begin/End path).
+    net.SendReply(0, frame.data(), frame.size(), 2001, 1);
+    Output out;
+    out.fill(Sentinel);
+    return Check(net.RecvReplies(1, out.data() + 32, 2000, 2) == 2 && Copied(out, frame),
+                 "a former command host's reply was stranded after changing role");
+}
+
+bool IndependentGroups()
+{
+    LocalMP net;
+    net.SetRecvTimeout(1);
+    for (int inst : {0, 1, 2, 3}) net.Begin(inst);
+    const std::array<u8, 6> hostA{2, 0, 0, 0, 0, 1}, hostB{2, 0, 0, 0, 0, 2};
+    const std::array<u8, 6> clientA{2, 0, 0, 0, 1, 1}, clientB{2, 0, 0, 0, 1, 2};
+    const std::array<u8, 6> broadcast{3, 9, 0xBF, 0, 0, 0};
+    auto cmdA = WirelessFrame(1, hostA, broadcast);
+    auto cmdB = WirelessFrame(2, hostB, broadcast);
+    auto replyA = WirelessFrame(3, clientA, hostA, 1024);
+    auto replyB = WirelessFrame(4, clientB, hostB);
+    net.SendCmd(0, cmdA.data(), cmdA.size(), 1000);
+    net.SendCmd(2, cmdB.data(), cmdB.size(), 1000);
+    // Radio delivery sees both CMDs; Wifi filters their BSSID afterwards.
+    for (int client : {1, 3})
+        if (!Receive(net, client, cmdA, 1000, true) ||
+            !Receive(net, client, cmdB, 1000, true)) return false;
+    net.SendReply(1, replyA.data(), replyA.size(), 1001, 1);
+    net.SendReply(3, replyB.data(), replyB.size(), 1001, 1);
+    Output out;
+    out.fill(Sentinel);
+    if (!Check(net.RecvReplies(0, out.data() + 32, 1000, 2) == 2 && Copied(out, replyA),
+               "host A lost its reply after host B sent a command")) return false;
+    // Group A can wrap/reset its replies without evicting group B's unread data.
+    for (unsigned i = 0; i < 100; ++i)
+        net.SendReply(1, replyA.data(), replyA.size(), 1002 + i, 1);
+    net.SendCmd(0, cmdA.data(), cmdA.size(), 2000);
+    out.fill(Sentinel);
+    if (!Check(net.RecvReplies(2, out.data() + 32, 1000, 2) == 2 && Copied(out, replyB),
+               "host A reply overflow/reset discarded group B reply")) return false;
+    if (!Receive(net, 3, cmdA, 2000, true)) return false;
+    net.End(0);
+    u64 stamp = 0;
+    if (!Check(net.RecvHostPacket(3, out.data() + 32, &stamp) == 0,
+               "foreign host departure disconnected the established group")) return false;
+    net.SendCmd(2, cmdB.data(), cmdB.size(), 3000);
+    if (!Receive(net, 3, cmdB, 3000, true)) return false;
+    net.SendReply(3, nullptr, 0, 3001, 0);
+    net.SendReply(3, replyB.data(), replyB.size(), 3002, 1);
+    out.fill(Sentinel);
+    // A blank is a completion notification, not a populated AID slot.
+    const u16 first = net.RecvReplies(2, out.data() + 32, 3000, 2);
+    if (!first) net.RecvReplies(2, out.data() + 32, 3000, 2);
+    return Check(Copied(out, replyB), "surviving group did not continue after peer group ended") &&
+        Check(net.SendReply(1, replyA.data(), replyA.size(), 3003, 1) == 0,
+              "reply for departed host was redirected to the other group");
+}
+
 bool InvalidInput()
 {
     LocalMP net;
@@ -355,6 +469,9 @@ int main(int argc, char** argv)
     else if (name == "packet-bounds") ok = ReceiveBounds(false);
     else if (name == "reply-bounds") ok = ReceiveBounds(true);
     else if (name == "reply-stale-window") ok = ReplyStaleWindow();
+    else if (name == "independent-groups") ok = IndependentGroups();
+    else if (name == "group-identity") ok = GroupIdentity();
+    else if (name == "host-becomes-client") ok = HostBecomesClient();
     else if (name == "invalid-input") ok = InvalidInput();
     else return 2;
     std::printf("%s: %s\n", argv[1], ok ? "PASS" : "FAIL");

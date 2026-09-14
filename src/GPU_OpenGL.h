@@ -24,6 +24,7 @@
 #include "GPU2D_OpenGL.h"
 #include "GPU3D_OpenGL.h"
 #include "GPU3D_Compute.h"
+#include "RenderCost.h"
 
 namespace melonDS
 {
@@ -43,6 +44,7 @@ public:
 
     void DrawScanline(u32 line) override;
     void DrawSprites(u32 line) override;
+    void Start3DRendering() override;
 
     void VBlank() override;
     void VBlankEnd() override;
@@ -152,6 +154,8 @@ private:
     void FlushCapture(int line);
     void SyncCaptureLines(u32 bank, u32 start, u32 size, int ystart, int yend);
     void DownscaleCapture(int width, int height, int layer);
+
+    RenderCostMeter Cost;
 };
 
 }

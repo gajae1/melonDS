@@ -19,6 +19,8 @@
 #ifndef LOCALMP_H
 #define LOCALMP_H
 
+#include <memory>
+
 #include "types.h"
 #include "Platform.h"
 #include "MPInterface.h"
@@ -29,9 +31,8 @@ struct MPStatusData
 {
     u16 ConnectedBitmask; // bitmask of which instances are ready to send/receive packets
     u32 PacketWriteOffset;
-    u32 ReplyWriteOffset;
-    u16 MPHostinst; // instance ID from which the last CMD frame was sent
-    u16 MPReplyBitmask;   // bitmask of which clients replied in time
+    u32 ReplyWriteOffset[16];
+    u16 ActiveHosts; // instances with an active command/reply session
 };
 
 constexpr u32 kPacketQueueSize = 0x10000;
@@ -70,15 +71,21 @@ private:
     void FIFOWrite(int inst, int fifo, void* buf, int len) noexcept;
     int SendPacketGeneric(int inst, u32 type, u8* packet, int len, u64 timestamp) noexcept;
     int RecvPacketGeneric(int inst, u8* packet, bool block, u64* timestamp, u32 capacity) noexcept;
+    int FindReplyHost(int inst, const u8* packet, int len) const noexcept;
 
     Platform::Mutex* MPQueueLock;
     MPStatusData MPStatus {};
     u8 MPPacketQueue[kPacketQueueSize] {};
-    u8 MPReplyQueue[kReplyQueueSize] {};
+    // Allocate once when an instance first becomes a command host. Each host
+    // owns its replies, even while another group sends CMDs or wraps its ring.
+    std::unique_ptr<u8[]> MPReplyQueue[16];
     u32 PacketReadOffset[16] {};
     u32 ReplyReadOffset[16] {};
 
     int LastHostID[16];
+    int ReplyHostID[16];
+    u8 HostAddress[16][6] {};
+    u8 HostChannel[16] {}; // zero for opaque frames without a Wi-Fi TX header
     Platform::Semaphore* SemPool[32] {};
 };
 }

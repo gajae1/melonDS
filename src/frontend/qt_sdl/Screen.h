@@ -32,6 +32,7 @@
 #include <QTimer>
 
 #include "glad/glad.h"
+#include "RenderCost.h"
 #include "ScreenLayout.h"
 #include "graphics/gl/context.h"
 
@@ -186,6 +187,8 @@ private:
 
     QImage screen[2];
     QTransform screenTrans[kMaxScreenTransforms];
+
+    melonDS::RenderCostNativeMeter RenderCost;
 };
 
 
@@ -248,6 +251,8 @@ private:
     std::map<unsigned int, GLuint> osdTextures;
 
     GLuint logoTexture = 0;
+
+    melonDS::RenderCostPresentMeter RenderCost;
 
     void osdRenderItem(OSDItem* item) override;
     void osdDeleteItem(OSDItem* item) override;

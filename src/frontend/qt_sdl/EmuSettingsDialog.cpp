@@ -225,6 +225,17 @@ void EmuSettingsDialog::done(int r)
 
     if (r == QDialog::Accepted)
     {
+#ifdef GDBSTUB_ENABLED
+        if (ui->cbGdbEnabled->isChecked()
+            && ui->intGdbPortA7->value() == ui->intGdbPortA9->value())
+        {
+            QMessageBox::warning(this, "Invalid GDB ports",
+                "The ARM7 and ARM9 GDB ports must be different.");
+            ui->intGdbPortA9->setFocus();
+            return;
+        }
+#endif
+
         bool modified = false;
 
 #define CHECK_ORIGVAL(type, val) \

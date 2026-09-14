@@ -755,6 +755,8 @@ void ScreenPanel::calcSplashLayout()
 
 ScreenPanelNative::ScreenPanelNative(QWidget* parent) : ScreenPanel(parent)
 {
+    RenderCost.Enabled = RenderCostEnabled();
+
     hasBuffers = false;
 
     screen[0] = QImage(256, 192, QImage::Format_RGB32);
@@ -766,6 +768,12 @@ ScreenPanelNative::ScreenPanelNative(QWidget* parent) : ScreenPanel(parent)
 
 ScreenPanelNative::~ScreenPanelNative()
 {
+    if (RenderCost.Enabled && RenderCost.Frames)
+    {
+        char line[512];
+        RenderCost.Report(line, sizeof(line), mainWindow->getWindowID());
+        Platform::Log(Platform::LogLevel::Info, "%s\n", line);
+    }
 }
 
 void ScreenPanelNative::setupScreenLayout()
@@ -824,8 +832,10 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
         bufferLock.lock();
         if (hasBuffers)
         {
+            std::uint64_t copy = RenderCost.Enabled ? RenderCostNowNs() : 0;
             memcpy(screen[0].scanLine(0), topBuffer, 256 * 192 * 4);
             memcpy(screen[1].scanLine(0), bottomBuffer, 256 * 192 * 4);
+            RenderCost.RecordCopy(copy);
         }
         bufferLock.unlock();
 
@@ -874,6 +884,13 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
 
         osdMutex.unlock();
     }
+
+    if (RenderCost.TakeReport())
+    {
+        char line[512];
+        RenderCost.Report(line, sizeof(line), mainWindow->getWindowID());
+        Platform::Log(Platform::LogLevel::Info, "%s\n", line);
+    }
 }
 
 
@@ -889,10 +906,18 @@ ScreenPanelGL::ScreenPanelGL(QWidget* parent) : ScreenPanel(parent)
     setMinimumSize(screenGetMinSize());
 
     glInited = false;
+    RenderCost.SetEnabled(RenderCostEnabled());
 }
 
 ScreenPanelGL::~ScreenPanelGL()
-{}
+{
+    if (RenderCost.Enabled && RenderCost.Frames)
+    {
+        char line[512];
+        RenderCost.Report(line, sizeof(line), mainWindow->getWindowID());
+        Platform::Log(Platform::LogLevel::Info, "%s\n", line);
+    }
+}
 
 bool ScreenPanelGL::createContext()
 {
@@ -1052,6 +1077,8 @@ bool ScreenPanelGL::deinitOpenGL()
     if (!glOwned) return true;
     if (!glContext || !glContext->MakeCurrent()) return false;
 
+    RenderCost.Gpu.Shutdown();
+
     glDeleteTextures(1, &screenTexture);
 
     glDeleteVertexArrays(1, &screenVertexArray);
@@ -1138,6 +1165,10 @@ bool ScreenPanelGL::drawScreen()
 
     if (!glContext->MakeCurrent()) return false;
 
+    RenderCost.FrameBegin();
+    const int span = RenderCost.Gpu.Begin(RenderCost.GpuPresent);
+    std::uint64_t issue = RenderCost.Start();
+
     // WGL/EGL apply the interval to the current window. Settings can be
     // broadcast while another panel is current, so apply them when drawing.
     if (pendingSwapInterval)
@@ -1189,10 +1220,12 @@ bool ScreenPanelGL::drawScreen()
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D_ARRAY, screenTexture);
 
+            std::uint64_t upl = RenderCost.UploadStart();
             glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 256, 192, 1, GL_BGRA,
                             GL_UNSIGNED_BYTE, topbuf);
             glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, 256, 192, 1, GL_BGRA,
                             GL_UNSIGNED_BYTE, bottombuf);
+            RenderCost.UploadEnd(upl, 2 * 256 * 192 * 4);
         }
         else
         {
@@ -1306,7 +1339,22 @@ bool ScreenPanelGL::drawScreen()
         osdMutex.unlock();
     }
 
-    return glContext->SwapBuffers();
+    RenderCost.Add(RenderCost.AccIssue, issue);
+    RenderCost.Gpu.End(span);
+
+    std::uint64_t wait = RenderCost.Start();
+    bool ret = glContext->SwapBuffers();
+    RenderCost.Add(RenderCost.AccWait, wait);
+
+    RenderCost.FrameEnd();
+    if (RenderCost.TakeReport())
+    {
+        char line[512];
+        RenderCost.Report(line, sizeof(line), mainWindow->getWindowID());
+        Platform::Log(Platform::LogLevel::Info, "%s\n", line);
+    }
+
+    return ret;
 }
 
 qreal ScreenPanelGL::devicePixelRatioFromScreen() const

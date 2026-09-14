@@ -50,6 +50,8 @@ GLRenderer::GLRenderer(melonDS::NDS& nds, bool compute)
         Rend3D = std::make_unique<GLRenderer3D>(GPU.GPU3D, *this);
 
     ScaleFactor = 0;
+
+    Cost.SetEnabled(RenderCostEnabled());
 }
 
 #define glTexParams(target, wrap) \
@@ -244,6 +246,14 @@ bool GLRenderer::Init()
 
 GLRenderer::~GLRenderer()
 {
+    if (Cost.Enabled && Cost.Frames)
+    {
+        char line[512];
+        Cost.Report(line, sizeof(line));
+        Log(LogLevel::Info, "%s\n", line);
+    }
+    Cost.Gpu.Shutdown();
+
     glDeleteProgram(FPShader);
     glDeleteProgram(CaptureShader);
     glDeleteProgram(CapDownShader);
@@ -431,6 +441,8 @@ bool GLRenderer::SetScaleFactor(int scale)
 
 void GLRenderer::DrawScanline(u32 line)
 {
+    if (line == 0) Cost.FrameBegin();
+
     u32 dispcnt_a_diff = DispCntA ^ GPU.GPU2D_A.DispCnt;
     u32 dispcnt_b_diff = DispCntB ^ GPU.GPU2D_B.DispCnt;
     u32 capturecnt_diff = CaptureCnt ^ GPU.CaptureCnt;
@@ -468,8 +480,10 @@ void GLRenderer::DrawScanline(u32 line)
     }
 
     NeedPartialRender = need_render;
+    std::uint64_t scan2d = Cost.Start();
     Rend2D_A->DrawScanline(line);
     Rend2D_B->DrawScanline(line);
+    Cost.Add(Cost.AccScan2D, scan2d);
 
     if (need_render && (line > 0))
     {
@@ -567,13 +581,27 @@ void GLRenderer::DrawScanline(u32 line)
 
 void GLRenderer::DrawSprites(u32 line)
 {
+    std::uint64_t sprites = Cost.Start();
     Rend2D_A->DrawSprites(line);
     Rend2D_B->DrawSprites(line);
+    Cost.Add(Cost.AccSprites, sprites);
+}
+
+void GLRenderer::Start3DRendering()
+{
+    const std::uint64_t cpu = Cost.Start();
+    const int span = Cost.Gpu.Begin(Cost.Gpu3D);
+    Rend3D->RenderFrame();
+    Cost.Gpu.End(span);
+    Cost.Add(Cost.Acc3D, cpu);
 }
 
 
 void GLRenderer::RenderScreen(int ystart, int yend)
 {
+    std::uint64_t fp = Cost.Start();
+    const int span = Cost.Gpu.Begin(Cost.GpuFinalPass);
+
     int backbuf = BackBuffer;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, FPOutputFB[backbuf]);
@@ -622,13 +650,17 @@ void GLRenderer::RenderScreen(int ystart, int yend)
             glBindTexture(GL_TEXTURE_2D_ARRAY, AuxInputTex);
             if ((AuxUsageMask & (1<<0)) && (vramcap == -1))
             {
+                std::uint64_t upl = Cost.UploadStart();
                 glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 256, 256, 1, GL_RGBA,
                                 GL_UNSIGNED_SHORT_1_5_5_5_REV, AuxInputBuffer[0]);
+                Cost.UploadEnd(upl, 256 * 256 * 2);
             }
             if (AuxUsageMask & (1<<1))
             {
+                std::uint64_t upl = Cost.UploadStart();
                 glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, 256, 192, 1, GL_RGBA,
                                 GL_UNSIGNED_SHORT_1_5_5_5_REV, AuxInputBuffer[1]);
+                Cost.UploadEnd(upl, 256 * 192 * 2);
             }
         }
 
@@ -662,6 +694,9 @@ void GLRenderer::RenderScreen(int ystart, int yend)
     }
 
     glDisable(GL_SCISSOR_TEST);
+
+    Cost.Gpu.End(span);
+    Cost.Add(Cost.AccFinalPass, fp);
 }
 
 void GLRenderer::VBlank()
@@ -673,6 +708,14 @@ void GLRenderer::VBlank()
 
     if (GPU.CaptureEnable)
         DoCapture(LastCapLine, 192);
+
+    Cost.FrameEnd();
+    if (Cost.TakeReport())
+    {
+        char line[512];
+        Cost.Report(line, sizeof(line));
+        Log(LogLevel::Info, "%s\n", line);
+    }
 
     LastLine = 0;
     LastCapLine = 0;
@@ -723,6 +766,9 @@ void GLRenderer::DoCapture(int ystart, int yend)
         return;
     if (yend > dstheight)
         yend = dstheight;
+
+    std::uint64_t cap = Cost.Start();
+    const int span = Cost.Gpu.Begin(Cost.GpuCapture);
 
     glUseProgram(CaptureShader);
 
@@ -884,6 +930,10 @@ void GLRenderer::DoCapture(int ystart, int yend)
     glBindVertexArray(CaptureVtxArray);
     glDrawArrays(GL_TRIANGLES, 0, numvtx);
 
+    Cost.Gpu.End(span);
+    Cost.Add(Cost.AccCapture, cap);
+    if (cap) Cost.CaptureRan = true;
+
     if (CaptureWriteThrough)
         SyncCaptureLines(dstblock, (capcnt >> 18) & 3, capsize, ystart, yend);
 }
@@ -896,8 +946,10 @@ void GLRenderer::FlushCapture(int line)
     {
         auto* rend2D = static_cast<GLRenderer2D*>(renderer);
         if (rend2D->LastLine >= line) continue;
+        std::uint64_t scan2d = Cost.Start();
         rend2D->DoRenderSprites(line);
         rend2D->RenderScreen(rend2D->LastLine, line);
+        Cost.Add(Cost.AccScan2D, scan2d);
         rend2D->LastLine = line;
     }
     if (LastLine < line)
@@ -928,8 +980,10 @@ void GLRenderer::SyncCaptureLines(u32 bank, u32 start, u32 size, int ystart, int
         const int count = size == 0 ? yend - ystart : std::min(yend - ystart, 256 - row);
         const u32 offset = size == 0 ? start * 0x8000 + row * 256 : row * 512;
         const u32 length = count * width * 2;
+        std::uint64_t rb = Cost.ReadbackStart();
         glReadPixels(0, row, width, count, GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV,
                      GPU.VRAM[bank] + offset);
+        Cost.ReadbackEnd(rb, length);
         for (u32 j = offset / VRAMDirtyGranularity;
              j < (offset + length + VRAMDirtyGranularity - 1) / VRAMDirtyGranularity; ++j)
             GPU.VRAMDirty[bank][j] = true;
@@ -997,8 +1051,10 @@ void GLRenderer::SyncVRAMCapture(u32 bank, u32 start, u32 len, bool complete)
 
         glBindFramebuffer(GL_READ_FRAMEBUFFER, CaptureSyncFB);
 
+        std::uint64_t rb = Cost.ReadbackStart();
         glReadPixels(0, 0, 128, 128,
                      GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV, &vram[start * 64 * 512]);
+        Cost.ReadbackEnd(rb, 128 * 128 * 2);
 
         for (u32 j = start * 64; j < (start+1) * 64; j++)
             GPU.VRAMDirty[bank][j] = true;
@@ -1016,8 +1072,10 @@ void GLRenderer::SyncVRAMCapture(u32 bank, u32 start, u32 len, bool complete)
             if (end > 4)
                 end = 4;
 
+            std::uint64_t rb = Cost.ReadbackStart();
             glReadPixels(0, pos * 64, 256, (end - pos) * 64,
                          GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV, &vram[pos * 64 * 512]);
+            Cost.ReadbackEnd(rb, (std::uint64_t)(end - pos) * 32768);
 
             for (u32 j = pos * 64; j < end * 64; j++)
                 GPU.VRAMDirty[bank][j] = true;
