@@ -211,3 +211,6 @@ AD-08 미배포 소유권 후보 — Windows AudioResampling/core 빌드와 기�
 최종 diff에서 RunFrame 분기 재배치 중 빠진 치트 오류 OSD 소비를 복원했다. 생성한 unsupported-code 오류를 실제 Qt GDB 프레임 완료 경로에 전달해 수정 전 안내0/미소비, 수정 후 안내1/소비 완료를 확인했다(사용자 치트·게임 파일 미사용).
 
 1.1.103 — 생성 SDL 장치의600ms Open 지연을 실제 Qt 복구 타이머에 넣었을 때 UI heartbeat 최대606ms→11ms. 생성 ARM 루프의 복구 중 프레임 진행·stale 설정 교체(UI gap19ms)·open 도중 종료/자원 drain을 확인했다. 기존 Qt 복구·fallback·설정 선호 보존·백오프 및 Playback 1/2의 자체 WASAPI 스트림 stop/reopen도 통과했다. 집중3검사 후 async owner에 close/pending teardown을 추가해 해당1검사만 재실행, 설정 취소/실패4검사 통과. 정상 게임 FPS/물리 오디오 지연 개선 또는 실제 장치 탈착의 증거는 아니다. SDL2.32.10 WASAPI의 Open/Close 동일 스레드 규칙과 bundled miniaudio COM 수명을 유지했다.
+
+
+1.1.104 — 느린 백그라운드 세이브의 파일 I/O가 StateLock을 통해 매 프레임 오디오 생산까지 막는 경로를 제거했다. 저장 바이트를 잠금 안에서 확보하고 파일 writer를 별도로 직렬화하며, 완료 시 해당 경로·버전만 확인한다. 실제 Qt/DSi 블랙에서 저장에80ms 지연을 주입한 전후 비교(각12초, 지연 전후100ms 관찰)에서 공급 부족은 WASAPI 실제480프레임2561→0, SDL 실제128프레임2369→0이었다. 요청 버퍼128/R3 OFF/Playback1/2를 유지했고 두 실행의 저장 바이트 hash가 일치했다. 저장 경로 변경·동시 새 publication·메모리 부족·쓰기 거부/재시도를 포함한16검사 통과, 전체 suite는 반복하지 않았다. 계측 뒤 출력을 무음화한 통제 재현이며 자연 발생한 모든 틱의 원인 귀속·청취/물리 지연·다른 OS·FS-06의 Windows 교체 거부 원인 해결은 아니다.

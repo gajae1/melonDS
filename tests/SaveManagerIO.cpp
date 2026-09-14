@@ -209,7 +209,7 @@ int main(int argc, char** argv)
         pause.Release();
         setter->wait();
         if (!started) return 2;
-        check(!changedWhileFlushing, "SetPath changed shared state while the worker held the flush lock");
+        check(changedWhileFlushing, "File commit blocked save relocation on the producer thread");
 
         // SetPath relocates this same game's data. It does not load another
         // game's existing file, and the normal CheckFlush publication is retained.
@@ -219,6 +219,36 @@ int main(int argc, char** argv)
         check(Read(oldPath) == next, "In-flight flush lost the current game's original save");
         check(Read(newPath) == next, "Relocation did not write the current game's data");
         check(!manager.NeedsFlush(), "Completed relocation remained pending");
+    }
+    else if (!std::strcmp(argv[1], "producer-during-flush"))
+    {
+        const QString path = directory.filePath("producer-progress.bin");
+        const QByteArray latest(8193, '\x5C');
+        FlushGate gate;
+        SaveManager manager(path.toStdString());
+        FlushGateScope pause(gate);
+        Queue(manager, next);
+        if (!gate.reached.tryAcquire(1, 5000)) return 2;
+
+        QSemaphore finished;
+        bool captureNeeded = true;
+        QByteArray snapshot(latest.size(), '\0');
+        auto producer = std::unique_ptr<QThread>(QThread::create([&] {
+            captureNeeded = manager.NeedsCapture();
+            Queue(manager, latest);
+            manager.FlushSecondaryBuffer(reinterpret_cast<u8*>(snapshot.data()), snapshot.size());
+            finished.release();
+        }));
+        producer->start();
+        const bool progressed = finished.tryAcquire(1, 1000);
+        pause.Release();
+        producer->wait();
+        check(progressed, "File commit stalled per-frame save capture/publication");
+        check(!captureNeeded && snapshot == latest, "Concurrent publication lost its latest memory snapshot");
+        // Join the old writer before checking its acknowledgment of the newer version.
+        manager.FlushSecondaryBuffer();
+        check(Read(path) == latest && !manager.NeedsFlush(),
+              "Old completion acknowledged or damaged a newer save publication");
     }
     else if (!std::strcmp(argv[1], "relocation-pending"))
     {
@@ -310,6 +340,15 @@ int main(int argc, char** argv)
               "Explicit flush acknowledged a failed publication");
         check(manager.Flush() && Read(path) == grown && !manager.NeedsFlush(),
               "Publication retry lost the latest data or remained pending");
+        Queue(manager, previous);
+        failArraySize = previous.size();
+        check(!manager.Flush() && arrayFailures == before + 3 && manager.NeedsFlush() && Read(path) == grown,
+              "Failed disk snapshot allocation lost or acknowledged pending bytes");
+        failArraySize = previous.size();
+        check(!manager.SaveCopy(copy.toStdString()) && arrayFailures == before + 4 && Read(copy) == grown,
+              "Failed recovery snapshot allocation changed the recovery file");
+        check(manager.Flush() && Read(path) == previous && !manager.NeedsFlush(),
+              "Disk snapshot retry did not preserve the latest bytes");
     }
     else if (!std::strcmp(argv[1], "buffer-resize"))
     {

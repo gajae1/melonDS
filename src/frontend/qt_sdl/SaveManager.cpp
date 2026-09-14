@@ -195,38 +195,45 @@ void SaveManager::CheckFlushLocked()
 
 bool SaveManager::Flush()
 {
-    QMutexLocker lock(&StateLock);
-    if (CaptureFailed) return false;
-    try
-    {
-        CheckFlushLocked();
-        return FlushSecondaryBufferLocked(nullptr, 0);
-    }
-    catch (const std::bad_alloc&)
-    {
-        Log(LogLevel::Error, "SaveManager: Not enough memory to flush save\n");
-        return false;
-    }
+    return FlushFile(true, false);
 }
 
 bool SaveManager::SaveCopy(const std::string& path)
 {
-    QMutexLocker lock(&StateLock);
-    if (CaptureFailed || path.empty() || !Buffer || Length == 0) return false;
-    if (!Path.empty())
+    QMutexLocker writer(&FileLock);
+    try
     {
+        std::unique_ptr<u8[]> bytes;
+        u32 length;
+        std::string originalPath;
+        {
+            QMutexLocker lock(&StateLock);
+            if (CaptureFailed || path.empty() || !Buffer || Length == 0) return false;
+            originalPath = Path;
+            length = Length;
+            bytes = std::make_unique<u8[]>(length);
+            memcpy(bytes.get(), Buffer.get(), length);
+        }
+        if (!originalPath.empty())
+        {
 #ifdef _WIN32
-        constexpr auto caseSensitivity = Qt::CaseInsensitive;
+            constexpr auto caseSensitivity = Qt::CaseInsensitive;
 #else
-        constexpr auto caseSensitivity = Qt::CaseSensitive;
+            constexpr auto caseSensitivity = Qt::CaseSensitive;
 #endif
-        if (ResolvedSavePath(path).compare(ResolvedSavePath(Path), caseSensitivity) == 0)
-            return false;
-    }
+            if (ResolvedSavePath(path).compare(ResolvedSavePath(originalPath), caseSensitivity) == 0)
+                return false;
+        }
 
-    // Buffer is newer than SecondaryBuffer when CheckFlush has not run yet.
-    // A recovery copy must not publish or acknowledge the original-file request.
-    return WriteSaveFile(path, Buffer.get(), Length);
+        // Buffer is newer than SecondaryBuffer when CheckFlush has not run yet.
+        // A recovery copy must not publish or acknowledge the original-file request.
+        return WriteSaveFile(path, bytes.get(), length);
+    }
+    catch (const std::bad_alloc&)
+    {
+        Log(LogLevel::Error, "SaveManager: Not enough memory to copy save\n");
+        return false;
+    }
 }
 
 void SaveManager::run()
@@ -237,47 +244,68 @@ void SaveManager::run()
 
         if (!Running) return;
 
-        QMutexLocker lock(&StateLock);
-        // We debounce for two seconds after last flush request to ensure that writing has finished.
-        if (TimeAtLastFlushRequest == 0 || difftime(time(nullptr), TimeAtLastFlushRequest) < 2)
-        {
-            continue;
-        }
-
-        FlushSecondaryBufferLocked(nullptr, 0);
+        FlushFile(false, true);
     }
 }
 
 void SaveManager::FlushSecondaryBuffer(u8* dst, u32 dstLength)
 {
+    if (!dst)
+    {
+        FlushFile(false, false);
+        return;
+    }
     QMutexLocker lock(&StateLock);
-    FlushSecondaryBufferLocked(dst, dstLength);
+    if (SecondaryBuffer && dstLength >= SecondaryBufferLength)
+        memcpy(dst, SecondaryBuffer.get(), SecondaryBufferLength);
 }
 
-bool SaveManager::FlushSecondaryBufferLocked(u8* dst, u32 dstLength)
+bool SaveManager::FlushFile(bool publish, bool debounce)
 {
-    if (!dst && CaptureFailed) return false;
-    if (!SecondaryBuffer) return true;
-
-    // When flushing to a file, there's no point in re-writing the exact same data.
-    if (!dst && FlushVersion == PreviousFlushVersion) return true;
-    // When flushing to memory, we don't know if dst already has any data so we only check that we CAN flush.
-    if (dst && dstLength < SecondaryBufferLength) return false;
-
-    if (dst)
+    QMutexLocker writer(&FileLock);
+    try
     {
-        memcpy(dst, SecondaryBuffer.get(), SecondaryBufferLength);
-        return true; // Copying bytes to memory does not commit the original file.
+        std::unique_ptr<u8[]> bytes;
+        std::string path;
+        u32 length, version;
+        {
+            QMutexLocker lock(&StateLock);
+            if (CaptureFailed) return false;
+            if (publish) CheckFlushLocked();
+            // Recheck after acquiring the writer lock: a queued writer may have
+            // committed, or the producer may have published a newer save.
+            if (debounce && (TimeAtLastFlushRequest == 0 ||
+                difftime(time(nullptr), TimeAtLastFlushRequest) < 2)) return true;
+            if (!SecondaryBuffer || FlushVersion == PreviousFlushVersion) return true;
+            path = Path;
+            version = FlushVersion;
+            length = SecondaryBufferLength;
+            bytes = std::make_unique<u8[]>(length);
+            memcpy(bytes.get(), SecondaryBuffer.get(), length);
+        }
+
+        const bool committed = WriteSaveFile(path, bytes.get(), length);
+        QMutexLocker lock(&StateLock);
+        // This write owns only its snapshot. A relocation or newer publication
+        // during disk I/O must retain its pending version and debounce deadline.
+        if (Path == path && FlushVersion == version)
+        {
+            if (committed)
+            {
+                PreviousFlushVersion = version;
+                if (!FlushRequested && !CaptureFailed) TimeAtLastFlushRequest = 0;
+            }
+            else TimeAtLastFlushRequest = time(nullptr);
+        }
+        return committed && !CaptureFailed && !FlushRequested && FlushVersion == PreviousFlushVersion;
     }
-    if (!WriteSaveFile(Path, SecondaryBuffer.get(), SecondaryBufferLength))
+    catch (const std::bad_alloc&)
     {
-        // Keep this version pending and reuse the debounce interval before retrying.
+        Log(LogLevel::Error, "SaveManager: Not enough memory to flush save\n");
+        QMutexLocker lock(&StateLock);
         TimeAtLastFlushRequest = time(nullptr);
         return false;
     }
-    PreviousFlushVersion = FlushVersion;
-    TimeAtLastFlushRequest = 0;
-    return true;
 }
 
 bool SaveManager::NeedsFlush()

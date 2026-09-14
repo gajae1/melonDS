@@ -59,10 +59,13 @@ public:
     void FlushSecondaryBuffer(melonDS::u8* dst = nullptr, melonDS::u32 dstLength = 0);
 
 private:
-    // Require StateLock; shared by the worker and explicit flushes.
+    // Requires StateLock.
     void CheckFlushLocked();
-    bool FlushSecondaryBufferLocked(melonDS::u8* dst, melonDS::u32 dstLength);
+    bool FlushFile(bool publish, bool debounce);
 
+    // Serializes disk writers, acquired before StateLock. The producer never
+    // takes FileLock, and disk I/O never retains StateLock.
+    QMutex FileLock;
     // Protects the path, both buffers, and flush/version/debounce state.
     QMutex StateLock;
     std::string Path;
