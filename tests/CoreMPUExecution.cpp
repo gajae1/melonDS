@@ -632,3 +632,109 @@ int TestMPUMultipleAbort(NDSArgs&& args, bool jit)
     std::printf("MPU multiple transfers: %u/%u passed\n",checked-failures,checked);
     return failures ? 1 : 0;
 }
+
+// ARM946E-S DDI0201D 4.3: the highest numbered matching region supplies
+// all attributes, even after only a lower region's attributes are updated.
+int TestMPUOverlap(NDSArgs&& args, bool jit)
+{
+    if (args.JIT) args.JIT->MaxBlockSize = 4;
+    args.ARM9BIOS = std::make_unique<ARM9BIOSImage>();
+    for (size_t i = 0; i < args.ARM9BIOS->size(); i += 4) {
+        (*args.ARM9BIOS)[i] = 0xFE;
+        (*args.ARM9BIOS)[i+1] = 0xFF;
+        (*args.ARM9BIOS)[i+2] = 0xFF;
+        (*args.ARM9BIOS)[i+3] = 0xEA;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    NDS::Current = nds.get();
+    auto& cpu = nds->ARM9;
+    unsigned checked = 0, failures = 0;
+    for (u32 region : {2u, 7u}) for (u32 id : {0x200u, 0x201u, 0x300u, 0x500u, 0x501u, 0x502u, 0x503u})
+    {
+        nds->Reset();
+        nds->CurCPU = 0;
+        // MCR p15,0,r0,<id>; STR r2,[r1]; MOV r6,#1; B .
+        const u32 mcr = 0xEE000F10 | ((id & 0xF00) << 8) | ((id & 0xF0) >> 4) | ((id & 0xF) << 5);
+        nds->ARM9Write32(Driver, mcr);
+        nds->ARM9Write32(Driver+4, 0xE5812000);
+        nds->ARM9Write32(Driver+8, 0xE3A06001);
+        nds->ARM9Write32(Driver+12, 0xEAFFFFFE);
+        cpu.CP15Write(0x600, Vectors | 0x17);
+        cpu.CP15Write(0x610, Driver | 0x1F); // 64 KiB lower region
+        cpu.CP15Write(0x600 | (region<<4), Target | 0x17); // 4 KiB overlay
+        // Train a native block, revoke only the overlay, then recover.
+        for (unsigned phase = 0; phase < 3; ++phase)
+        {
+            const bool deny = phase == 1;
+            const u32 highData = (deny ? 0u : 3u) << (4*region);
+            const u32 highCode = 3u << (4*region);
+            cpu.CP15Write(0x100, 0x2000); // setup while MPU/cache disabled
+            cpu.CP15Write(0x502, highData | (id == 0x500 || id == 0x502 ? 0x13 : 0x33));
+            cpu.CP15Write(0x503, highCode | (id == 0x501 || id == 0x503 ? 0x13 : 0x33));
+            cpu.CP15Write(0x200, id == 0x300 ? 2 : 0);
+            cpu.CP15Write(0x201, 0);
+            cpu.CP15Write(0x300, 0);
+            cpu.CP15Write(0x100, 0x3005); // MPU, I/D cache enabled
+            const u8 highUser = cpu.PU_UserMap[Target>>12];
+            const u8 highPriv = cpu.PU_PrivMap[Target>>12];
+            const u32 outside = Target+0x1000; // same lower region, outside overlay
+            const u8 oldOutside = cpu.PU_UserMap[outside>>12];
+            const u32 old = cpu.CPSR;
+            cpu.CPSR = InitialCPSR;
+            cpu.UpdateMode(old, cpu.CPSR);
+            cpu.R[0] = id < 0x500 ? 2 : id < 0x502
+                ? 0xF | ((id == 0x500 && deny ? 0u : 3u) << (2*region))
+                : 0x33 | (id == 0x502 ? highData : highCode);
+            cpu.R[1] = Target;
+            cpu.R[2] = Stored;
+            cpu.R[6] = Sentinel;
+            cpu.R[14] = LinkSentinel;
+            cpu.R_ABT[2] = SPSRSentinel;
+            cpu.StopExecution = 0;
+            nds->ARM9Write32(Target, Sentinel);
+            cpu.JumpTo(Driver);
+            cpu.Cycles = 0;
+            nds->ARM9Timestamp = 0;
+            bool cached = false;
+#ifdef JIT_ENABLED
+            cached = jit && nds->JIT.JitBlocks9.contains(Driver);
+#endif
+            for (unsigned step = 0; step < 8; ++step) {
+                nds->ARM9Target = nds->ARM9Timestamp+1;
+#ifdef JIT_ENABLED
+                if (jit) cpu.Execute<CPUExecuteMode::JIT>();
+                else
+#endif
+                    cpu.Execute<CPUExecuteMode::Interpreter>();
+                if ((cpu.CPSR & 0x1F) == 0x17 || cpu.R[6] == 1) break;
+            }
+            bool ok = cpu.PU_UserMap[Target>>12] == highUser &&
+                cpu.PU_PrivMap[Target>>12] == highPriv &&
+                cpu.PU_UserMap[outside>>12] != oldOutside &&
+                nds->ARM9Read32(Target) == (deny ? Sentinel : Stored) &&
+                cpu.R[1] == Target && cpu.R[2] == Stored && (!jit || phase == 0 || cached);
+            if (deny) ok &= cpu.R[6] == Sentinel && cpu.R[15] == Vectors+0x14 &&
+                cpu.R[14] == Driver+12 && cpu.CPSR == AbortCPSR && cpu.R_ABT[2] == InitialCPSR;
+            else ok &= cpu.R[6] == 1 && cpu.CPSR == InitialCPSR;
+            if (region == 7 && id == 0x502 && deny) {
+                Savestate saved(0x20000);
+                cpu.DoSavestate(&saved);
+                saved.Finish();
+                cpu.CP15Write(0x670, 0); // Removing the overlay exposes lower RW.
+                ok &= (cpu.PU_UserMap[Target>>12] & 3) == 3;
+                Savestate restored(saved.Buffer(), saved.Length(), false);
+                cpu.DoSavestate(&restored);
+                ok &= !saved.Error && !restored.Error &&
+                    cpu.PU_UserMap[Target>>12] == highUser && cpu.PU_PrivMap[Target>>12] == highPriv;
+            }
+            ++checked;
+            failures += !ok;
+            std::printf("mpu-overlap/%s/r%u/id%03x/phase%u: %s cached=%d map=%02x/%02x expected=%02x/%02x memory=%08x PC=%08x\n",
+                jit ? "jit" : "interpreter", region, id, phase, ok ? "PASS" : "FAIL", cached,
+                cpu.PU_UserMap[Target>>12], cpu.PU_PrivMap[Target>>12], highUser, highPriv,
+                nds->ARM9Read32(Target), cpu.R[15]);
+        }
+    }
+    std::printf("MPU overlap: %u/%u passed\n", checked-failures, checked);
+    return failures ? 1 : 0;
+}

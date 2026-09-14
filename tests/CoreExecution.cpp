@@ -20,6 +20,7 @@ int TestBlockTransferExecution(NDSArgs&& args, bool jit);
 int TestDTCMExecution(NDSArgs&& args, bool jit);
 int TestSMCExecution(NDSArgs&& args, bool jit);
 int TestSMCLiteralRegions(NDSArgs&& args, bool jit);
+int TestMPUOverlap(NDSArgs&& args, bool jit);
 int TestMPUExecution(NDSArgs&& args, bool jit);
 int TestMPUDataAbort(NDSArgs&& args, bool jit);
 int TestMPUMultipleAbort(NDSArgs&& args, bool jit);
@@ -726,6 +727,8 @@ int main(int argc, char** argv) {
         return TestMPUDataAbort(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-multiple-abort") == 0)
         return TestMPUMultipleAbort(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "mpu-overlap") == 0)
+        return TestMPUOverlap(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-execution") == 0)
         return TestMPUExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "device-execution") == 0)

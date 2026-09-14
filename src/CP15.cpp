@@ -251,13 +251,32 @@ void ARMv5::UpdatePURegion(u32 n)
         PU_CodeRW
     );
 
-    for (u32 i = start; i < end; i++)
+    // Higher numbered regions own all attributes in an overlap (TRM 4.3).
+    // Skip their intervals so an incremental lower-region update cannot
+    // replace either permissions or cache/timing attributes of the overlay.
+    for (u32 i = start; i < end;)
     {
-        PU_UserMap[i] = usermask;
-        PU_PrivMap[i] = privmask;
+        u32 coveredEnd = i, next = end;
+        for (u32 higher = n + 1; higher < 8; ++higher)
+        {
+            const u32 region = PU_Region[higher];
+            if (!(region & 1)) continue;
+            const u32 bits = std::max(int((region >> 1) & 0x1F) - 11, 0);
+            const u32 first = ((region >> 12) >> bits) << bits;
+            const u32 last = first + (1u << bits);
+            if (first <= i && i < last) coveredEnd = std::max(coveredEnd, last);
+            else if (first > i) next = std::min(next, first);
+        }
+        if (coveredEnd > i)
+        {
+            i = std::min(coveredEnd, end);
+            continue;
+        }
+        memset(PU_UserMap + i, usermask, next - i);
+        memset(PU_PrivMap + i, privmask, next - i);
+        UpdateRegionTimings(i, next);
+        i = next;
     }
-
-    UpdateRegionTimings(start, end);
 }
 
 void ARMv5::UpdatePURegions(bool update_all)
