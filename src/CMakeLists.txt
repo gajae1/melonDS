@@ -107,6 +107,7 @@ endforeach()
 target_compile_features(core PUBLIC cxx_std_26)
 
 melonds_configure_pixel_kernels(core)
+melonds_configure_interpolation_kernels(core)
 
 if (ENABLE_GDBSTUB)
     message(NOTICE "Enabling GDB stub")

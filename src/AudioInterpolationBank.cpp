@@ -115,12 +115,6 @@ AudioInterpolationBank::AudioInterpolationBank(std::span<const u8> data)
     if (!reader.Empty()) throw std::invalid_argument("Trailing interpolation bank data");
 }
 
-const AudioInterpolationBank::Record& AudioInterpolationBank::GetRecord(unsigned period) const
-{
-    if (period == 0 || period > 65536) throw std::out_of_range("Invalid sound period");
-    return Records[std::min(period, Interval) - 1];
-}
-
 std::span<const AudioInterpolationBank::Moment> AudioInterpolationBank::Coefficients(unsigned period) const
 {
     return GetRecord(period).Moments;
@@ -130,17 +124,5 @@ u64 AudioInterpolationBank::SupportClocks(unsigned period) const
 {
     const auto& record = GetRecord(period);
     return u64(std::ceil(double(record.Length) * period / std::min(period, 256u)));
-}
-
-double AudioInterpolationBank::Step(unsigned period, u64 age) const
-{
-    const auto& record = GetRecord(period);
-    if (period <= DensePeriods) throw std::logic_error("Dense interpolation requires moments");
-    const double t = double(age) * 256 / period;
-    if (t >= record.Length - 1) return 1;
-    const auto i = size_t(t);
-    const double a = record.Values[i];
-    const double value = a + (record.Values[i + 1] - a) * (t - i);
-    return period < Interval ? 1 - value : value;
 }
 }

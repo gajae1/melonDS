@@ -2,11 +2,15 @@
 #ifndef MELONDS_AUDIOINTERPOLATIONMATH_H
 #define MELONDS_AUDIOINTERPOLATIONMATH_H
 
-#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+// Core exports consistent gates to every consumer of these inline kernels.
+// Standalone coefficient tools retain automatic dispatch when not configured.
+#if (!defined(MELONDS_INTERPOLATION_FMA) || MELONDS_INTERPOLATION_FMA) && \
+    (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
 #include <immintrin.h>
 #define MELONDS_INTERPOLATION_AVX2 1
 #endif
-#if defined(__aarch64__) && !defined(__ARM_BIG_ENDIAN)
+#if (!defined(MELONDS_INTERPOLATION_USE_NEON) || MELONDS_INTERPOLATION_USE_NEON) && \
+    defined(__aarch64__) && !defined(__ARM_BIG_ENDIAN)
 #include <arm_neon.h>
 #define MELONDS_INTERPOLATION_NEON 1
 #endif

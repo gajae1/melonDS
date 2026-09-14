@@ -4,6 +4,26 @@ option(ENABLE_SIMD "Build optional SIMD pixel/audio kernels with runtime dispatc
 option(ENABLE_AVX2 "Build the AVX2 pixel and companion FMA audio kernels" ON)
 option(ENABLE_AVX512 "Build AVX-512F/BW pixel kernels (benchmark before enabling)" OFF)
 
+# Inline core kernels must have identical definitions in their consumers.
+function(melonds_configure_interpolation_kernels target)
+    set(avx2 OFF)
+    if (ENABLE_SIMD AND ENABLE_AVX2)
+        check_cxx_source_compiles("
+            #include <immintrin.h>
+            __attribute__((target(\"avx2,fma\")))
+            void kernel(double* p) {
+                __m256d x = _mm256_loadu_pd(p);
+                _mm256_storeu_pd(p, _mm256_fmadd_pd(x, x, x));
+            }
+            int main() { return __builtin_cpu_supports(\"avx2\") && __builtin_cpu_supports(\"fma\"); }
+        " MELONDS_HAS_INTERPOLATION_AVX2_FMA)
+        set(avx2 ${MELONDS_HAS_INTERPOLATION_AVX2_FMA})
+    endif()
+    target_compile_definitions(${target} PUBLIC
+        MELONDS_INTERPOLATION_FMA=$<BOOL:${avx2}>
+        MELONDS_INTERPOLATION_USE_NEON=$<BOOL:${ENABLE_SIMD}>)
+endfunction()
+
 function(melonds_configure_pixel_kernels target)
     set(avx2 OFF)
     set(avx512 OFF)
