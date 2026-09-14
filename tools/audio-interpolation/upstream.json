@@ -1,0 +1,235 @@
+{
+  "url": "https://codeload.github.com/avaneev/r8brain-free-src/zip/9e73d2dd59fd5b95108fdb4f590083e35758b45f",
+  "commit": "9e73d2dd59fd5b95108fdb4f590083e35758b45f",
+  "archive_sha256": "f3b239bc2137e08165879b06512e01cbd5a29de528344a460380ee50428a3522",
+  "files": [
+    {
+      "file": "CDSPBlockConvolver.h",
+      "sha256": "634f36b35a03ac3655c2e0b423d92559db681c6a396a8ff31f6423e577599c38"
+    },
+    {
+      "file": "CDSPFIRFilter.h",
+      "sha256": "afa7195a01fa63c55db5f22c0d2b9e813f9c8613ed6c83da82bd25fec0acd3b9"
+    },
+    {
+      "file": "CDSPFracInterpolator.h",
+      "sha256": "e1ca87b42c1cc949c7bab4781c92c215794e57d4a31661c5446c0bb6f91f51eb"
+    },
+    {
+      "file": "CDSPHBDownsampler.h",
+      "sha256": "fb2fc1afb2e4e57fb755428e609000201c3fb405d30309300b3d82b7227a3c8d"
+    },
+    {
+      "file": "CDSPHBDownsampler.inc",
+      "sha256": "c9983c315b5ad45c448f941e4c6d39c498a935e12234e3388c22cd1db501798d"
+    },
+    {
+      "file": "CDSPHBUpsampler.h",
+      "sha256": "ecf4de5e40cd91f380d08d2069f65f24b333d65202c31c0b1a4d55e96c47b18b"
+    },
+    {
+      "file": "CDSPHBUpsampler.inc",
+      "sha256": "c0bf41fe273a58ee9826cbd6a278a3a5717d332efdcbf437c6713fa176513dcd"
+    },
+    {
+      "file": "CDSPProcessor.h",
+      "sha256": "f7d7b57001bd34d79179a03477225669405f2889e8a20e53da732def724e9eea"
+    },
+    {
+      "file": "CDSPRealFFT.h",
+      "sha256": "23d0e1a5cf04289574570c49efabd3384b61ebe3be5d34a26aa10614a08eba72"
+    },
+    {
+      "file": "CDSPResampler.h",
+      "sha256": "4298ae7bd965f56cbfa554f33ecc8615c6453bbccf92b001d0e74858a3ba0064"
+    },
+    {
+      "file": "CDSPSincFilterGen.h",
+      "sha256": "c5ee2159220cfeead04154aa56323fa0bd912aca10a6f71c42451510bbaa2a74"
+    },
+    {
+      "file": "DLL/Win32/r8bsrc.dll",
+      "sha256": "efa0dbf6b5efd39d49a4e8b6f0a926fef5c61f7e9278be41d47c07acdb6c37ca"
+    },
+    {
+      "file": "DLL/Win32/r8bsrc.lib",
+      "sha256": "1eb020168f4ffa853cafe9a4d3fe616513bc86ebaf293f20429ec60be08901c5"
+    },
+    {
+      "file": "DLL/Win64/r8bsrc.dll",
+      "sha256": "82b38fa33c2bcbc3b400fe3404e9591d4711f9bd9baa2a50e03e05c1982402b6"
+    },
+    {
+      "file": "DLL/Win64/r8bsrc.lib",
+      "sha256": "28a67d344b39d80816331e81d7acb4c5824897601568130c014f003567fc72d8"
+    },
+    {
+      "file": "DLL/r8bsrc.cpp",
+      "sha256": "22bfc90dd6e84dbfbbd88f046b5870325cb31d8adf49488e71a92994cb5da964"
+    },
+    {
+      "file": "DLL/r8bsrc.h",
+      "sha256": "535611c49e53acf7f483ed3b97cbb2fc9101b98f78b5d7a9fb834bd8e1e66c61"
+    },
+    {
+      "file": "DLL/r8bsrc.pas",
+      "sha256": "ad3e5d3b0e27f0a67d724107b12145e290c2871cd01c3ea43f1512a2dbcdb46c"
+    },
+    {
+      "file": "LICENSE",
+      "sha256": "5b2fca0def6e5c93d42f2cb226f4731cfbb6eb30bf12226ad6a9ff299d333c2a"
+    },
+    {
+      "file": "README.md",
+      "sha256": "6a8084d9075001b9bb4dddbc436f4684580a3a60766dccdebf93ff04de8c3f7a"
+    },
+    {
+      "file": "bench/DrumsDst96.wav",
+      "sha256": "5ad0d21dd8fe7ca75cc0c7483bb37db10163681a696b9685f9f1d49352192e79"
+    },
+    {
+      "file": "bench/DrumsSrc.wav",
+      "sha256": "7397480013659146c41a13d9066156326ea661e67b16e0c3864bf91851e1c649"
+    },
+    {
+      "file": "bench/README.md",
+      "sha256": "f48debd3d3055daed492eb863f1614b456d82f350330a6b7e5ae55bcde7244b4"
+    },
+    {
+      "file": "bench/Win64/r8bfreesrc.exe",
+      "sha256": "eb7c6603890889fa6c35d286735b85f975c4c99445991dc057820a263fc8014f"
+    },
+    {
+      "file": "bench/Win64/rmscompare.exe",
+      "sha256": "3a3e6298b389e55d8502b80c0e192c595b197135b3e6e5c40d4d26b694f715cf"
+    },
+    {
+      "file": "bench/masstest.cpp",
+      "sha256": "c415f70a5587008bb582236097521d0daae98d490e9906bd7685e5b1c486375c"
+    },
+    {
+      "file": "bench/r8bfreesrc.cpp",
+      "sha256": "d607c76de547e92fde80ef206b4287a752981e163dd6f8552ee7ee7142552eef"
+    },
+    {
+      "file": "bench/r8brain_UB_compliance_coverage_report.md",
+      "sha256": "3900fa700a486021b6b6af5d6d6371814dcf4e658ac23d17c2730328060aa0b1"
+    },
+    {
+      "file": "bench/r8brain_test_harness.cpp",
+      "sha256": "e487894fd2f4d339df256d3604932629f04624bfc323b66a156c474be82ba8d5"
+    },
+    {
+      "file": "bench/rmscompare.cpp",
+      "sha256": "f9d9b582989e2fc21a7c7ab7e5eaebdb0098dfeec7adb44fa316cb2fe34e1b3e"
+    },
+    {
+      "file": "bench/sacd.cpp",
+      "sha256": "843470bc08c91f727b1d86347c6ec9172d90425183035257a10d0a18d4ab275b"
+    },
+    {
+      "file": "bench/snrtest.cpp",
+      "sha256": "cd6b609a86724fa3cd79d5c909cd9e63e79da9a0e1cface1bfedee6950fe0ee3"
+    },
+    {
+      "file": "bench/zerotest.cpp",
+      "sha256": "b3c6c7d12ffbde13d57ebb1c0e0fdd9409f30f59b7a4e81817431ad4018b6a52"
+    },
+    {
+      "file": "example.cpp",
+      "sha256": "2f881dd74713ca2eb6776c1475a91af37a2841ef7e21fd59da4546fb398e1c16"
+    },
+    {
+      "file": "fft/fft4g.h",
+      "sha256": "272d8dc846718e0c4adf3c8a46090e0328c9a2c7b458fcf24e221ed873dec578"
+    },
+    {
+      "file": "fft/pffft.c",
+      "sha256": "b73c2621400fd47ea853cf7194c9a94989a9e568117aca6acdb1885470af8039"
+    },
+    {
+      "file": "fft/pffft.h",
+      "sha256": "8f5743f8d57e20616045e398a38e5368d8ae2f14f1d6fb45d24d6d03315744f0"
+    },
+    {
+      "file": "fft/pffft_double.c",
+      "sha256": "9b2dc10bc9888c35bbb741d92303e4f164a8621263619793011491841e20f9c5"
+    },
+    {
+      "file": "fft/pffft_double.h",
+      "sha256": "5758fc86b31812a48d2f556b8ff510adeefc40489b878d25338b580196187d93"
+    },
+    {
+      "file": "fft/pffft_priv_impl.h",
+      "sha256": "4d9b88bbc9be97f699d3f04bfb42a2571c8cde61e2950b94da4c58326df510bc"
+    },
+    {
+      "file": "fft/simd/pf_avx_double.h",
+      "sha256": "f96d6e84ca3510a6b47463c1846267ed502ff3e366bdc9debf65483bb6852293"
+    },
+    {
+      "file": "fft/simd/pf_double.h",
+      "sha256": "eebbd05043124cd5d833ea164893450a186d76f581f229f90c8076c8d2256d1b"
+    },
+    {
+      "file": "fft/simd/pf_neon_double.h",
+      "sha256": "8e0ff798da4d80927fae8a7f1975c30af75fc928831cd8b2ab69d720ea192492"
+    },
+    {
+      "file": "fft/simd/pf_neon_double_from_avx.h",
+      "sha256": "25806b2376a795b3e316251953e9a616b508a024e2ed0cd1b623e61dc81b5cbd"
+    },
+    {
+      "file": "fft/simd/pf_scalar_double.h",
+      "sha256": "5a1634ad57daccb191223e2d4b1f05c065f0ca68a3e554562e1e42c7ae75c7a9"
+    },
+    {
+      "file": "fft/simd/pf_sse2_double.h",
+      "sha256": "7ab5816b46b95e68da28d8c00564aaa101e67c7110815fcfa6d7770a721ddccf"
+    },
+    {
+      "file": "other/calcCorrTable.cpp",
+      "sha256": "4ed3538292577f3920af0e4b6b615d97401785085319c564859db66aca355f89"
+    },
+    {
+      "file": "other/calcErrorTable.cpp",
+      "sha256": "c31b344d0c922b069688bce7d4672f5ab640b385fc88d2d884964d955dd3d106"
+    },
+    {
+      "file": "other/flttest.cpp",
+      "sha256": "6437bdbb7a4fa47f29c661ee27db6c3c70e69db6085371290774a7cc19a0b0c4"
+    },
+    {
+      "file": "other/genhbc.cpp",
+      "sha256": "0a027824eff7d77c2e4769ba752e93b3827e082c4b2f1761d73a27ddb26983d6"
+    },
+    {
+      "file": "other/hbopt.cpp",
+      "sha256": "ed80e699abfb6b4c96a049e6f1ae7091906360f91986d9ad70694d9cc0dbd34a"
+    },
+    {
+      "file": "other/icon.png",
+      "sha256": "b706ee32d239214790325db50ef37fdee9f8359711bbb1668d16b5b03a2e7edb"
+    },
+    {
+      "file": "other/r8bdoxy.txt",
+      "sha256": "08a2755ed331abcd11f69c44da7786e41e979e9ff24e48cb0d7efbfb3551ec6c"
+    },
+    {
+      "file": "other/winopt.cpp",
+      "sha256": "e2503b473201d14846ef6646117f2458019d4fd480a1c60b969074c9ef5a8f26"
+    },
+    {
+      "file": "r8bbase.h",
+      "sha256": "6f0710db1925c533e5e80734309e1ab734130ba76b742426ba3e6530e0e41c17"
+    },
+    {
+      "file": "r8bconf.h",
+      "sha256": "229f3c43c734b14dd40b23b4ec56a3b707563427fb8bf470f1ed074210817318"
+    },
+    {
+      "file": "r8butil.h",
+      "sha256": "de7b790cd0ae8fa466f1526888b945b643a7b2bdbaf594fb7c077b7a9683b5ee"
+    }
+  ]
+}

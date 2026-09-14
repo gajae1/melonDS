@@ -116,22 +116,7 @@ ROMLibraryDialog::ROMLibraryDialog(const QString& folder, QWidget* parent)
         }
     });
 
-    fsModel = new QFileSystemModel(this);
-    fsModel->setReadOnly(true);
-    fsModel->setOption(QFileSystemModel::DontUseCustomDirectoryIcons, true);
-
-    // Observe before the proxy/view changes selection on removal. Qt otherwise
-    // selects an adjacent ROM, which could turn a pending Open into another game.
-    connect(fsModel, &QAbstractItemModel::rowsAboutToBeRemoved, this,
-        [this](const QModelIndex& parent, int first, int last) {
-            auto selected = proxy->mapToSource(tree->currentIndex());
-            while (selected.isValid() && selected.parent() != parent)
-                selected = selected.parent();
-            selectedFileRemoved |= selected.isValid() && selected.row() >= first && selected.row() <= last;
-        });
-
     proxy = new ROMLibraryProxy(this);
-    proxy->setSourceModel(fsModel);
 
     tree = new QTreeView(this);
     tree->setObjectName("romLibraryTree");
@@ -143,10 +128,6 @@ ROMLibraryDialog::ROMLibraryDialog(const QString& folder, QWidget* parent)
     tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     tree->setUniformRowHeights(true);
     tree->setContextMenuPolicy(Qt::NoContextMenu);
-    tree->hideColumn(2); // Type; keep filename, size and modified visible
-    tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
 
     auto* heading = new QLabel(tr("ROM library"), this);
 
@@ -200,10 +181,40 @@ ROMLibraryDialog::ROMLibraryDialog(const QString& folder, QWidget* parent)
     connect(chooseButton, &QPushButton::clicked, this, &ROMLibraryDialog::chooseFolder);
     connect(closeButton, &QPushButton::clicked, this, &QDialog::close);
     connect(filterEdit, &QLineEdit::textChanged, this, &ROMLibraryDialog::applyNameFilter);
-    connect(fsModel, &QFileSystemModel::directoryLoaded, this, &ROMLibraryDialog::onDirectoryLoaded);
     connect(tree->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ROMLibraryDialog::updateOpenButton);
     connect(tree, &QTreeView::activated, this, &ROMLibraryDialog::openActivated);
     connect(openButton, &QPushButton::clicked, this, &ROMLibraryDialog::openSelected);
+    connect(proxy, &QAbstractItemModel::rowsInserted, this, &ROMLibraryDialog::refreshStatus);
+
+    resetFileSystemModel();
+    resize(640, 480);
+    setFolder(folder);
+}
+
+void ROMLibraryDialog::resetFileSystemModel()
+{
+    proxy->setSourceModel(nullptr);
+    delete fsModel;
+    selectedFileRemoved = false;
+    fsModel = new QFileSystemModel(this);
+    fsModel->setReadOnly(true);
+    fsModel->setOption(QFileSystemModel::DontUseCustomDirectoryIcons, true);
+
+    // Observe before the proxy/view changes selection on removal. Qt otherwise
+    // selects an adjacent ROM, which could turn a pending Open into another game.
+    connect(fsModel, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+        [this](const QModelIndex& parent, int first, int last) {
+            auto selected = proxy->mapToSource(tree->currentIndex());
+            while (selected.isValid() && selected.parent() != parent)
+                selected = selected.parent();
+            selectedFileRemoved |= selected.isValid() && selected.row() >= first && selected.row() <= last;
+        });
+    proxy->setSourceModel(fsModel);
+    tree->hideColumn(2); // Type; keep filename, size and modified visible
+    tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    connect(fsModel, &QFileSystemModel::directoryLoaded, this, &ROMLibraryDialog::onDirectoryLoaded);
     connect(fsModel, &QAbstractItemModel::rowsRemoved, this, [this] {
         if (rootValid && !tree->rootIndex().isValid())
         {
@@ -217,10 +228,6 @@ ROMLibraryDialog::ROMLibraryDialog(const QString& folder, QWidget* parent)
         }
         refreshStatus();
     });
-    connect(proxy, &QAbstractItemModel::rowsInserted, this, &ROMLibraryDialog::refreshStatus);
-
-    resize(640, 480);
-    setFolder(folder);
 }
 
 void ROMLibraryDialog::setFolder(const QString& folder)
@@ -232,6 +239,7 @@ void ROMLibraryDialog::setFolder(const QString& folder)
     const QString previousRoot = rootPath;
     if (!target.isEmpty() && rootValid && target == rootPath)
         return;
+    const bool discardCache = !rootValid && !fsModel->rootPath().isEmpty();
 
     // Reset every trace of the previous root together: an empty or invalid
     // root must never fall back to a computer/root view of the model, and
@@ -260,6 +268,9 @@ void ROMLibraryDialog::setFolder(const QString& folder)
         return;
     }
 
+    // setRootPath(samePath) reuses cached children even after root deletion.
+    // A fresh model discards that cache without visiting any other directory.
+    if (discardCache) resetFileSystemModel();
     rootWatcher->addPath(target);
     const QModelIndex sourceRoot = fsModel->setRootPath(target);
 

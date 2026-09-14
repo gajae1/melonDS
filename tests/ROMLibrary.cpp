@@ -28,10 +28,10 @@ static bool Until(const std::function<bool()>& predicate)
     return false;
 }
 
-static bool Write(const QString& path)
+static bool Write(const QString& path, const QByteArray& bytes = "fixture")
 {
     QFile file(path);
-    return file.open(QIODevice::WriteOnly) && file.write("fixture") == 7;
+    return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
 }
 
 static QModelIndex Find(QTreeView* tree, const QString& name)
@@ -134,8 +134,42 @@ int main(int argc, char** argv)
     if (!QFile::remove(QDir(second).filePath("Other.srl")) || !root.rmdir("second")) return 2;
     check(Until([&] { return tree->model()->rowCount(tree->rootIndex()) == 0 && !open->isEnabled(); }),
           "Deleted root exposed another folder or retained an openable selection");
-    dialog.setFolder(first);
     auto* status = dialog.findChild<QLabel*>("romLibraryStatus");
+    check(Until([&] { return status && status->text() == "Folder is not available."; }),
+          "Deleted root was not invalidated before recreation");
+
+    // Re-select the identical path, without visiting a different root first.
+    // Qt may still cache the deleted directory and skip loading it again.
+    const QString recreatedROM = QDir(second).filePath("Recreated.nds");
+    const QByteArray recreatedBytes("new ROM bytes after root recreation");
+    if (!root.mkdir("second") || !Write(recreatedROM, recreatedBytes)) return 2;
+    dialog.setFolder(second);
+    check(!open->isEnabled() && !tree->currentIndex().isValid() && !Find(tree, "Other.srl").isValid(),
+          "Recreated root exposed the old selection or cached ROM");
+    check(tree->isColumnHidden(2) && !tree->isColumnHidden(0) &&
+          !tree->isColumnHidden(1) && !tree->isColumnHidden(3),
+          "Recreated root lost the library column layout");
+    check(Until([&] {
+        return tree->rootIndex().isValid() && Find(tree, "Recreated.nds").isValid() &&
+               tree->model()->rowCount(tree->rootIndex()) == 1 && status &&
+               status->text() == "1 item shown";
+    }), "Re-selecting the recreated root did not load its new ROM");
+    tree->setCurrentIndex(Find(tree, "Recreated.nds"));
+    check(open->isEnabled(), "Recreated root ROM cannot be opened");
+    open->click();
+    check(opens == 5 && opened == recreatedROM && !dialog.isVisible(),
+          "Recreated root did not open the new absolute file path exactly once");
+    QFile reopened(opened);
+    check(reopened.open(QIODevice::ReadOnly) && reopened.readAll() == recreatedBytes,
+          "Recreated root opened stale bytes");
+    reopened.close();
+    dialog.show();
+
+    if (!QFile::remove(recreatedROM) || !root.rmdir("second")) return 2;
+    check(Until([&] { return tree->model()->rowCount(tree->rootIndex()) == 0 && !open->isEnabled(); }),
+          "Recreated root deletion retained files or an openable selection");
+
+    dialog.setFolder(first);
     check(Until([&] { return Find(tree, "Added.nds").isValid() && status && !status->text().contains("Loading"); }),
           "Returning to an already loaded folder remained stuck loading");
     dialog.setFolder(root.filePath("missing"));
@@ -143,7 +177,7 @@ int main(int argc, char** argv)
           "Missing folder silently fell back to cached files");
     dialog.close();
     QApplication::processEvents();
-    check(opens == 4, "Closing the library launched a file");
+    check(opens == 5, "Closing the library launched a file");
     std::printf("ROM library: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

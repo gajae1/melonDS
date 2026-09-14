@@ -30,9 +30,28 @@ can change coefficient bits.
 | bank-352.coeff | 3,805,348 | 300961fde06ef30a8182b345fd9a422ccb33842f16886ad8692d38fa47353227 |
 | bank-512.coeff | 6,202,532 | 1c2914cbdf11a347a591f3518b6129678e0e00dfa4e2f3f4bc213e1983deabef |
 
-These hashes identify reviewed artifacts, not proof of a reproducible generation
-pipeline. The original staged experiments and binary inputs are retained locally;
-an independent end-to-end generator is still to be consolidated into the source
-tree. One intermediate fit metadata writer revision has not been recovered.
+To independently regenerate candidates, install NumPy (the verified run used
+2.4.2), provide GCC or Clang with C++20 support, then run from the repository root:
+
+```sh
+python tools/audio-interpolation/generate.py --output /path/to/new-output-directory
+```
+
+Use `--compiler /path/to/g++` to select the compiler. By default the tool downloads
+the pinned r8brain archive and verifies its SHA-256 and all 57 source files.
+`--r8brain-dir /path/to/exact/source-tree` allows offline generation. No historical
+fit output or frozen bank is read during reference generation or fitting. The
+output directory must be new; the tool never installs candidates in the core.
+
+After generation, the actual product loader compares all dense moment rows and
+integer-clock sparse/shared steps with the frozen banks, rejecting deltas above
+1e-12. `report.json` records tool/source hashes, environment, bank hashes and
+measured differences. Windows GCC 16.2 / NumPy 2.4.2 regenerated both banks
+byte-for-byte (all compared deltas zero). This is not a cross-platform bit identity
+promise, a new fit-error bound or whole-stream/physical audio acceptance.
+
+The original staged experiments and binary inputs are retained locally. This
+independent pipeline does not recover the missing historical metadata writer
+revision.
 Do not silently regenerate or replace these banks without numerical comparison
 against the reference and decoder-event acceptance checks.

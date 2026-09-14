@@ -217,3 +217,5 @@ AD-08 미배포 소유권 후보 — Windows AudioResampling/core 빌드와 기�
 
 
 1.1.105 — File → ROM library에서 명시 선택 폴더를 기억하고 DS/Zstd/지원 archive 파일을 필터링·정렬한다. QFileSystemModel의 비동기 목록/변경 감지를 재사용하며 ROM 바이트/멤버 캐시는 만들지 않는다. 실제 위젯 검사에서 선택 파일 삭제 시 Qt가 옆 ROM을 자동 선택하는 문제를 재현하고 선택 해제로 수정. 추가/삭제·Unicode/대문자·폴더 재선택/누락·Enter/더블클릭1회·취소 검사를 통과했다. 마지막 실제 루트 삭제 검사에서 캐시 항목/열기 활성 상태가 남아 실패했고, 선택 루트 소실 감지와 무효 루트의 열기 차단으로 수정했다. 실제 Qt 전체 앱의 생성 DS 루프에서 목록 표시 후 변경한 RAM marker를 읽었고, 두 멤버 ZIP에서 선택한 멤버 실행/최근 목록 identity·폴더 설정 저장·창 재사용/종료를 확인했다. 초기 실험 ROM의 secure-area 배치 오류는 입력 생성기에서만 수정했다. offscreen Windows/Qt6 검사이며 실제 느린 매체의 OS 호출 중단·다른 OS/Qt5·재귀 탐색과 메타데이터 카탈로그는 검증/구현 범위 밖이다. 기존 오디오/코어 전체 suite는 반복하지 않았다.
+
+1.1.106 — 동일 ROM 폴더 삭제·재생성/즉시 재선택의 오래된 목록을 실제 파일·위젯으로 재현하고 QFileSystemModel 교체로 수정. 새 파일명·경로·바이트와 기존 동작을 포함한 rom-library-live-folder 1/1 통과. 별도 offline 생성기는 고정 r8brain archive/57파일을 검증하고 두 계수를 새로 fit한 후 제품 loader로 비교: Windows GCC16.2/NumPy2.4.2에서 기존352/512 bank와 각각 SHA256 일치, moment/step 차이0. 원본 source 변조·기존 출력 경로 거부 확인. 기존 출력 거부 fixture의 영문 OS 오류 가정은 Windows183/기존 bank 해시 보존 검사로 정정했다. 제품 계수·오디오 runtime은 변경하지 않았으며 역사 metadata writer 복원·다른 BLAS bit identity·물리 음질/지연 수락은 별개다. 전체 suite 반복 없음.

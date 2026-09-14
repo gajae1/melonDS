@@ -46,6 +46,7 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
 
 private:
+    void resetFileSystemModel();
     QFileInfo fileInfoFor(const QModelIndex& proxyIndex) const;
     void updateFolderLabel();
     void refreshStatus();
