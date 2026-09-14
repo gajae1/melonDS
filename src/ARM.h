@@ -71,6 +71,15 @@ public:
 
     void SetGdbArgs(std::optional<GDBArgs> gdb);
 
+    bool IsGdbListening() const
+    {
+#ifdef GDBSTUB_ENABLED
+        return GdbStub.IsListening();
+#else
+        return false;
+#endif
+    }
+
     virtual void Reset();
 
     virtual void DoSavestate(Savestate* file);

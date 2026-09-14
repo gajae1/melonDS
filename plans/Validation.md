@@ -204,3 +204,5 @@ AD-08 미배포 소유권 후보 — Windows AudioResampling/core 빌드와 기�
 1.1.99 — 실제 SPU::BufferAudio/blip 생성 stereo 6조건×60000호출, 교차 A/B3회에서 PCM hash/프레임/폐기 개수 일치와 함수 중앙값15.3~18.9% 감소를 확인했다(호출당 수십~백여 ns이며 게임 전체/물리 지연 이득 아님). 실제 DS/DSi 3프레임 소비 지연·overflow·reset의 최신2047프레임 PCM도 불변. 실제 TCP 중단/재접속2세션의 idle nonblocking poll은225757→0이며 재개·닫힌 listener 종료를 확인했다. 관련12검사 통과; 전체 suite 반복 없음. 실제 Qt/DSi 블랙 Playback1/2 요청128·R3 OFF의 짧은 SDL128/WASAPI480 재생에서 공급 부족/코어 폐기0 및 원본 hash 보존. offscreen/음량0 조건이며 청취·물리 지연·다른 OS·UI 중단 CPU 취소와 bind 오류 전달은 미검증/후속이다.
 
 1.1.100 — 새 firmware-retain 회귀가 수정 전 실패하고 수정 후 DS/DSi 거절 시 코어·BIOS·삽입/대기 카트·RAM·실행 상태 보존을 확인했다. 실제 Qt frontend의 소유 ARM 루프에서도 실패 뒤 BIOS/JIT 변경(state_retained=0,jit=1)이 보존(1,0)으로 바뀌었다. 관련 DS/DSi 부팅·리셋·카트 12검사 통과, 전체 suite 반복 없음. 생성 NAND의 정상 메뉴 준비 검증은 실제 펌웨어/게임 부팅 또는 다른 OS 검증을 대체하지 않는다.
+
+1.1.101 — 실제 Qt에서 점유된 TCP 포트로 GDB ARM9 초기화 실패를 재현했고, 수정 전 reported=0에서 수정 후 reported=1로 바뀌었다. ARM7 listener와 실행 상태는 유지했고 포트 해제/재시도 후 두 listener 정상·경고 없음 확인. GDB 실제 loopback/닫힌 listener 관련 2검사 통과. OSD 큐를 확인한 소유 fixture이며 다른 OS/실기/전체 GDB 제어 지원 완료 증거는 아니다.

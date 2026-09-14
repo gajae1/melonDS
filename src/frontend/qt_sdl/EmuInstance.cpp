@@ -1622,6 +1622,20 @@ bool EmuInstance::updateConsole(bool directBoot, bool firmwareBoot) noexcept
     else
         nds->SetGBACart(std::move(nextgbacart));
 
+#ifdef GDBSTUB_ENABLED
+    // Report the actual listener result after setup, not a speculative port
+    // availability check. A failed debugger must not prevent normal emulation.
+    if (gdbargs && !nds->IsJITEnabled())
+    {
+        if (!nds->ARM9.IsGdbListening())
+            osdAddMessage(0xFFA0A0, "GDB ARM9 could not listen on TCP port %u. Check the debugger log.",
+                          unsigned(gdbargs->PortARM9));
+        if (!nds->ARM7.IsGdbListening())
+            osdAddMessage(0xFFA0A0, "GDB ARM7 could not listen on TCP port %u. Check the debugger log.",
+                          unsigned(gdbargs->PortARM7));
+    }
+#endif
+
     return true;
 }
 

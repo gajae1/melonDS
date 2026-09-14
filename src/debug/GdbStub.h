@@ -162,6 +162,7 @@ public:
 
 	int RespStr(const char* str);
 	bool IsConnected() const { return ConnFd != InvalidSocket; }
+	bool IsListening() const { return SockFd != InvalidSocket; }
 
 private:
 	void Disconnect();
