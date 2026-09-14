@@ -551,6 +551,16 @@ static u32 PrefetchedInstructions(const ARM* cpu) noexcept
     return 2 + (cpu->Num == 0 && (cpu->CPSR & 0x20) && !(cpu->R[15] & 2));
 }
 
+void ARMJIT::NotifyDataAbort() noexcept
+{
+    CompileException = CompilingBlock;
+    // DataAbort has already refilled the exception-vector pipeline. The
+    // existing fallback exit check must stop the native block before it can
+    // overwrite the exception PC or execute the following guest instruction.
+    if (ExecutingNative && ExecutingCPU)
+        ExecutingCPU->JITPipelineDrain = PrefetchedInstructions(ExecutingCPU);
+}
+
 void ARMJIT::RemoveBlock(JitBlock* block) noexcept
 {
     for (u32 j = 0; j < block->NumAddresses; ++j)

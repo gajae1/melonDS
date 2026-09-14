@@ -591,9 +591,6 @@ void ARMv5::PrefetchAbort()
 
 void ARMv5::DataAbort()
 {
-#ifdef JIT_ENABLED
-    NDS.JIT.NotifyDataAbort();
-#endif
     Log(LogLevel::Warn, "ARM9: data abort (%08X)\n", R[15]);
 
     u32 oldcpsr = CPSR;
@@ -604,6 +601,9 @@ void ARMv5::DataAbort()
     R_ABT[2] = oldcpsr;
     R[14] = R[15] + (oldcpsr & 0x20 ? 4 : 0);
     JumpTo(ExceptionBase + 0x10);
+#ifdef JIT_ENABLED
+    NDS.JIT.NotifyDataAbort();
+#endif
 }
 
 void ARM::CheckGdbIncoming()

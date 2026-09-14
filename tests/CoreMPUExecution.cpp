@@ -283,6 +283,8 @@ int TestCacheMPUDisabled(NDSArgs&& args, bool jit)
 
 // ARM946E-S TRM 2.2.1: a denied single transfer restores the base and
 // preserves the destination. Exercise real tracing and reused native blocks.
+// ARM DDI0100I A4-213/215: SWP must preserve Rd on either access fault and
+// suppress the store after a read fault, even if Abort mode could write there.
 int TestMPUDataAbort(NDSArgs&& args, bool jit)
 {
     if (args.JIT) {
@@ -297,12 +299,15 @@ int TestMPUDataAbort(NDSArgs&& args, bool jit)
         (*args.ARM9BIOS)[i+2] = 0xFF;
         (*args.ARM9BIOS)[i+3] = 0xEA;
     }
+    // SUBS pc,lr,#8: retry the faulting instruction after permissions recover.
+    const u8 abortReturn[] = {0x08, 0xF0, 0x5E, 0xE2};
+    std::copy(std::begin(abortReturn), std::end(abortReturn), args.ARM9BIOS->begin()+0x10);
     auto nds = std::make_unique<NDS>(std::move(args));
     NDS::Current = nds.get();
     auto& cpu = nds->ARM9;
     constexpr u32 code = Driver+0xC00, data = Driver+0x1000;
     constexpr u32 flags = 0x6800005F; // ADDS r3,#1: FFFFFFFF+1 => Z,C; preserve Q,F
-    struct Probe { const char* name; u32 op; bool thumb, store; u32 bits; bool pre, wb; bool user = false, skip = false; u32 deniedAP = 0; };
+    struct Probe { const char* name; u32 op; bool thumb, store; u32 bits; bool pre, wb; bool user = false, skip = false; u32 deniedAP = 0; bool swap = false; };
     const Probe probes[] = {
         {"ldr-post", 0xE4910004, false, false, 32, false, true},
         {"ldr-user", 0xE4910004, false, false, 32, false, true, true, false, 1},
@@ -324,6 +329,12 @@ int TestMPUDataAbort(NDSArgs&& args, bool jit)
         {"thumb-ldrsh", 0x5F08, true, false, 17, false, false},
         {"thumb-strh", 0x8008, true, true, 16, false, false},
         {"thumb-literal", 0x48FE, true, false, 32, false, false},
+        {"swp-denied", 0xE1010092, false, true, 32, false, false, false, false, 0, true},
+        {"swp-readonly", 0xE1010092, false, true, 32, false, false, false, false, 5, true},
+        {"swp-user-noaccess", 0xE1010092, false, true, 32, false, false, true, false, 1, true},
+        {"swpb-denied", 0xE1410092, false, true, 8, false, false, false, false, 0, true},
+        {"swpb-user-readonly", 0xE1410092, false, true, 8, false, false, true, false, 2, true},
+        {"swp-ne-skipped", 0x11010092, false, true, 32, false, false, false, true, 0, true},
     };
     unsigned failures = 0, checked = 0;
     for (const auto& probe : probes)
@@ -395,8 +406,8 @@ int TestMPUDataAbort(NDSArgs&& args, bool jit)
             if (probe.bits == 9) loaded = u32(s32(s8(Stored)));
             if (probe.bits == 17) loaded = u32(s32(s16(Stored)));
             const u32 mask = probe.bits == 8 ? 0xFF : probe.bits == 16 ? 0xFFFF : ~0u;
-            const u32 expectedMemory = !deny && probe.store ? (Stored & ~mask) | (Sentinel & mask) : Stored;
-            const u32 expectedValue = deny || probe.store || probe.skip ? Sentinel : loaded;
+            const u32 expectedMemory = !deny && probe.store && !probe.skip ? (Stored & ~mask) | (Sentinel & mask) : Stored;
+            const u32 expectedValue = deny || (probe.store && !probe.swap) || probe.skip ? Sentinel : loaded;
             const u32 expectedBase = !deny && probe.wb && !probe.skip ? base + 4 : base;
             bool ok = cpu.R[0] == expectedValue && cpu.R[1] == expectedBase &&
                 cpu.R[3] == 0 && nds->ARM9Read32(data) == expectedMemory &&
@@ -424,8 +435,28 @@ int TestMPUDataAbort(NDSArgs&& args, bool jit)
             std::printf("data-abort/%s/%s/%u: %s cached=%d r0=%08x base=%08x PC=%08x LR=%08x CPSR=%08x SPSR=%08x cycles=%llu\n",
                 jit ? "jit" : "interpreter", probe.name, phase, ok ? "PASS" : "FAIL", cached,
                 cpu.R[0], cpu.R[1], cpu.R[15], cpu.R[14], cpu.CPSR, cpu.R_ABT[2], nds->ARM9Timestamp);
+            if (ok && probe.swap && !probe.skip && phase == 2)
+            {
+                cpu.CP15Write(0x502, 0x333);
+                for (unsigned step = 0; step < 4 && cpu.R[6] != 1; ++step)
+                {
+                    nds->ARM9Target = nds->ARM9Timestamp + 1;
+#ifdef JIT_ENABLED
+                    if (jit) cpu.Execute<CPUExecuteMode::JIT>();
+                    else
+#endif
+                        cpu.Execute<CPUExecuteMode::Interpreter>();
+                }
+                const bool retried = cpu.R[0] == loaded && cpu.R[1] == base &&
+                    nds->ARM9Read32(data) == ((Stored & ~mask) | (Sentinel & mask)) &&
+                    cpu.R[6] == 1 && (cpu.CPSR & 0x1F) == (probe.user ? 0x10u : 0x1Fu);
+                ++checked;
+                failures += !retried;
+                std::printf("data-abort/%s/%s/exception-return-retry: %s\n",
+                    jit ? "jit" : "interpreter", probe.name, retried ? "PASS" : "FAIL");
+            }
         }
     }
-    std::printf("MPU single transfers: %u/%u passed\n", checked-failures, checked);
+    std::printf("MPU single/swap transfers: %u/%u passed\n", checked-failures, checked);
     return failures ? 1 : 0;
 }

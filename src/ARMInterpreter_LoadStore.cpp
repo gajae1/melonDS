@@ -377,11 +377,12 @@ void A_SWP(ARM* cpu)
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
 
     u32 val;
-    cpu->DataRead32(base, &val);
-    cpu->R[(cpu->CurInstr >> 12) & 0xF] = ROR(val, 8*(base&0x3));
+    if (!cpu->DataRead32(base, &val)) return;
 
     u32 numD = cpu->DataCycles;
-    cpu->DataWrite32(base, rm);
+    if (!cpu->DataWrite32(base, rm)) return;
+    // Either access can abort. Commit Rd only after both have succeeded.
+    cpu->R[(cpu->CurInstr >> 12) & 0xF] = ROR(val, 8*(base&0x3));
     cpu->DataCycles += numD;
 
     cpu->AddCycles_CDI();
@@ -392,10 +393,12 @@ void A_SWPB(ARM* cpu)
     u32 base = cpu->R[(cpu->CurInstr >> 16) & 0xF];
     u32 rm = cpu->R[cpu->CurInstr & 0xF] & 0xFF;
 
-    cpu->DataRead8(base, &cpu->R[(cpu->CurInstr >> 12) & 0xF]);
+    u32 val;
+    if (!cpu->DataRead8(base, &val)) return;
 
     u32 numD = cpu->DataCycles;
-    cpu->DataWrite8(base, rm);
+    if (!cpu->DataWrite8(base, rm)) return;
+    cpu->R[(cpu->CurInstr >> 12) & 0xF] = val;
     cpu->DataCycles += numD;
 
     cpu->AddCycles_CDI();
