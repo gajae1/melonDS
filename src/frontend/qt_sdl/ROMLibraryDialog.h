@@ -8,6 +8,7 @@
 
 class QFileInfo;
 class QFileSystemModel;
+class QFileSystemWatcher;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -50,6 +51,7 @@ private:
     void refreshStatus();
 
     QFileSystemModel* fsModel = nullptr;
+    QFileSystemWatcher* rootWatcher = nullptr;
     QSortFilterProxyModel* proxy = nullptr;
     QTreeView* tree = nullptr;
     QLineEdit* filterEdit = nullptr;

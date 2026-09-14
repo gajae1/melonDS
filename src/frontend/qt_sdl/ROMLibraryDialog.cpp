@@ -7,6 +7,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
+#include <QFileSystemWatcher>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
@@ -99,6 +100,22 @@ ROMLibraryDialog::ROMLibraryDialog(const QString& folder, QWidget* parent)
     setWindowTitle(tr("ROM library"));
     setModal(false);
 
+    rootWatcher = new QFileSystemWatcher(this);
+    connect(rootWatcher, &QFileSystemWatcher::directoryChanged, this, [this](const QString& path) {
+        // QFileSystemModel can retain the last children when its root vanishes.
+        // The watcher removes deleted roots from its paths. Checking that list
+        // avoids an extra filesystem query on the UI thread for every change.
+        if (path == rootPath && !rootWatcher->directories().contains(path))
+        {
+            rootValid = false;
+            LibraryProxy(proxy)->setRootValid(false);
+            tree->setRootIndex(QModelIndex());
+            tree->selectionModel()->clear();
+            openButton->setEnabled(false);
+            refreshStatus();
+        }
+    });
+
     fsModel = new QFileSystemModel(this);
     fsModel->setReadOnly(true);
     fsModel->setOption(QFileSystemModel::DontUseCustomDirectoryIcons, true);
@@ -188,6 +205,11 @@ ROMLibraryDialog::ROMLibraryDialog(const QString& folder, QWidget* parent)
     connect(tree, &QTreeView::activated, this, &ROMLibraryDialog::openActivated);
     connect(openButton, &QPushButton::clicked, this, &ROMLibraryDialog::openSelected);
     connect(fsModel, &QAbstractItemModel::rowsRemoved, this, [this] {
+        if (rootValid && !tree->rootIndex().isValid())
+        {
+            rootValid = false;
+            LibraryProxy(proxy)->setRootValid(false);
+        }
         if (selectedFileRemoved)
         {
             selectedFileRemoved = false;
@@ -215,6 +237,8 @@ void ROMLibraryDialog::setFolder(const QString& folder)
     // root must never fall back to a computer/root view of the model, and
     // stale cached rows must never become current.
     rootPath = target;
+    const auto watched = rootWatcher->directories();
+    if (!watched.isEmpty()) rootWatcher->removePaths(watched);
     rootValid = false;
     rootLoaded = false;
     tree->setRootIndex(QModelIndex());
@@ -236,13 +260,22 @@ void ROMLibraryDialog::setFolder(const QString& folder)
         return;
     }
 
+    rootWatcher->addPath(target);
     const QModelIndex sourceRoot = fsModel->setRootPath(target);
 
     rootValid = true;
     LibraryProxy(proxy)->setRootValid(true);
 
     const QModelIndex proxyRoot = proxy->mapFromSource(sourceRoot);
-    if (!sourceRoot.isValid() || !proxyRoot.isValid())
+    // setRootPath may return its previous root when the new path disappears
+    // between our preflight and Qt's own lookup. Never display that fallback.
+#ifdef _WIN32
+    constexpr auto pathCase = Qt::CaseInsensitive;
+#else
+    constexpr auto pathCase = Qt::CaseSensitive;
+#endif
+    if (!sourceRoot.isValid() || !proxyRoot.isValid() ||
+        QDir::cleanPath(fsModel->rootPath()).compare(target, pathCase) != 0)
     {
         rootValid = false;
         LibraryProxy(proxy)->setRootValid(false);
@@ -285,7 +318,7 @@ void ROMLibraryDialog::onDirectoryLoaded(const QString& path)
 void ROMLibraryDialog::updateOpenButton()
 {
     const auto selection = tree->selectionModel()->selectedIndexes();
-    openButton->setEnabled(!selection.isEmpty() && fileInfoFor(selection.first()).isFile());
+    openButton->setEnabled(rootValid && !selection.isEmpty() && fileInfoFor(selection.first()).isFile());
 }
 
 void ROMLibraryDialog::openSelected()
@@ -309,7 +342,7 @@ void ROMLibraryDialog::openActivated(const QModelIndex& proxyIndex)
 
 QFileInfo ROMLibraryDialog::fileInfoFor(const QModelIndex& proxyIndex) const
 {
-    if (!proxyIndex.isValid())
+    if (!rootValid || !proxyIndex.isValid())
         return {};
     return fsModel->fileInfo(proxy->mapToSource(proxyIndex));
 }

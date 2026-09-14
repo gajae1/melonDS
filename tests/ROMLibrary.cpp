@@ -131,6 +131,9 @@ int main(int argc, char** argv)
     open->click();
     check(opens == 4 && opened == QDir(second).filePath("Other.srl"), "Folder change opened stale file identity");
     dialog.show();
+    if (!QFile::remove(QDir(second).filePath("Other.srl")) || !root.rmdir("second")) return 2;
+    check(Until([&] { return tree->model()->rowCount(tree->rootIndex()) == 0 && !open->isEnabled(); }),
+          "Deleted root exposed another folder or retained an openable selection");
     dialog.setFolder(first);
     auto* status = dialog.findChild<QLabel*>("romLibraryStatus");
     check(Until([&] { return Find(tree, "Added.nds").isValid() && status && !status->text().contains("Loading"); }),
