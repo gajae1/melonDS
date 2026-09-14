@@ -26,8 +26,21 @@ class AudioInterpolationStream
         u64 End = 0;
         unsigned Period = 0;
         bool SameSides = true;
-        std::array<Moment, 2> Moments{};
+        // The right history is valid only after SameSides becomes false.
+        // Do not clear/copy its unused 128 bytes for center-panned blocks.
+        std::array<Moment, 2> Moments;
         std::span<const Moment> Coefficients;
+
+        Block() noexcept { Moments[0].fill(0); }
+        Block(const Block& other) noexcept { *this = other; }
+        Block& operator=(const Block& other) noexcept
+        {
+            End = other.End; Period = other.Period; SameSides = other.SameSides;
+            Coefficients = other.Coefficients;
+            Moments[0] = other.Moments[0];
+            if (!SameSides) Moments[1] = other.Moments[1];
+            return *this;
+        }
     };
     // Limits are allocated before processing. The renderer derives its limits
     // from the bank support and the SPU event contract.

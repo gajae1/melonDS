@@ -259,3 +259,8 @@ GR-15 전체 완료는 아니다. 내부 고해상도·GPU 2D/capture·GPU image
 1.1.119 — Minimum-phase에서 음표 재사용 시 이전 잔향에 새 음량/shift/pan을 적용하던 문제를 수정했다. 실제 Black의 정지된 채널(CurSample=0)에서 잔향만 수천 PCM 단위로 증폭되는 구간을 추적했다. gain/pan을 timestamped 입력에 반영하고 좌우 tail의 응답 조회를 공유한다. 같은 dense L/R는 누적을 공유하며 gain은 mix마다 준비한다. 계수·차단 주파수·guest capture·상태 형식은 유지한다.
 수정 전 silent channel reuse 반례 실패, 수정 후 DS/DSi 두 mix rate의 sparse/dense 전환·stereo 선형성·기존 capture/rollback 통과. Black 같은 상태360프레임의7개 전환 구간에서 파형의 최대 2차 차분 감소(대표6051→1405; 청감 점수 아님), 화면 동일. 세 쌍의 초기 비용 비교는 frame 중앙값 약2~3% 증가, 최종 가중치 준비/공유 후보는 같은 PCM을 유지했고 추가 한 쌍은 약1% 증가였다. 16채널 가변 timer 합성 부하는 약43~52% 비용 증가가 남아 dense 경로 최적화를 후속으로 남긴다. 속도 개선 릴리즈로 주장하지 않는다.
 실제 비무음 Qt/Playback1/2에서 WASAPI 요청128→실제480과 SDL128/두 logical CPU affinity를 각16초 녹음했다. 공급 부족·폐기·process-loopback 불연속0, steady PCM은 출력 직전과 loopback이 동일했다. writable 복제 NAND를 사용했으며 사용자 원본을 실행 인자로 넘기지 않았다. 물리 DAC·저사양 실기·장기 청취 및 모든 보간 모드의 틱 제거 수락은 별도다. 고음 디테일 조정은 이번 수정에 포함하지 않는다. 전체 suite 반복 없음.
+
+
+1.1.120 — Minimum-phase dense block 복사를 명시적으로 처리해 동일한 L/R가 공유하는 block의 사용하지 않는 오른쪽 이력128byte를 복사하지 않는다. 초기 왼쪽 이력과 metadata는 유효하게 유지하고 실제 stereo로 바뀔 때 오른쪽 이력을 준비한다. 1.1.119의 gain/pan-before-reconstruction과 파형/계수는 유지한다.
+DS/DSi·1/16채널·고정/가변 timer8부하의3쌍에서 PCM+guest SPU state 동일. 중앙 pan·16채널 가변 timer의 frame 중앙값은1.1.119 대비24~27% 감소했으며 이는 합성 코어 부하의 범위다. 팬이 바뀌는 별도8부하에서도 byte 동일. 한 쌍에서 느렸던 DS16채널 고정 timer 조건만160frame×3쌍으로 재검증해 중앙값 변화 -1.8~+0.3%, 지속 저하 미관측. 다른 block 배치 후보는 이득이 일관되지 않아 채택하지 않았다.
+최종 제품의 sparse 응답·dense stereo 전환·silent note reuse·DS/DSi capture/rollback 검사가 통과했다. Black 동일 상태360frame의1.1.119 대비 PCM·화면 동일, 사용한 ROM/state/BIOS/NAND 복제본 hash 보존. 게임 한 쌍으로 일반적인 게임 속도 향상이나 물리 지연을 주장하지 않는다. 출력 backend는 바꾸지 않았고 이전 비무음 장치 전달 결과를 재사용한다. 채널 수·timer·pan별 추가 최적화, 고음 디테일 및 장기 청취 수락은 남는다. 전체 suite 반복 없음.
