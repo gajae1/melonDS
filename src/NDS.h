@@ -506,8 +506,10 @@ public: // TODO: Encapsulate the rest of these members
 #endif
 
 #ifdef GDBSTUB_ENABLED
+    [[nodiscard]] bool IsGdbInterpreter() const noexcept { return EnableGDBStub && !IsJITEnabled(); }
     void SetGdbArgs(std::optional<GDBArgs> args) noexcept;
 #else
+    [[nodiscard]] bool IsGdbInterpreter() const noexcept { return false; }
     void SetGdbArgs(std::optional<GDBArgs> args) noexcept {}
 #endif
 

@@ -57,6 +57,9 @@
 #include "Savestate.h"
 
 #include "EmuInstance.h"
+#ifdef GDBSTUB_ENABLED
+#include "GdbFrame.h"
+#endif
 #include <QMessageBox>
 #include <QPushButton>
 #include <QInputDialog>
@@ -115,7 +118,27 @@ void EmuThread::detachWindow(MainWindow* window)
 
 void EmuThread::run()
 {
+#ifdef GDBSTUB_ENABLED
+    std::unique_ptr<GdbFrame> debugger;
+#endif
     Config::Table& globalCfg = emuInstance->getGlobalConfig();
+    const auto applyPendingVideo = [&] {
+        if (!videoSettingsDirty) return;
+        QMutexLocker renderLocker(&emuInstance->renderLock);
+        if (useOpenGL)
+        {
+            emuInstance->setVSyncGL(true);
+            videoRenderer = globalCfg.GetInt("3D.Renderer");
+        }
+#ifdef OGLRENDERER_ENABLED
+        else
+#endif
+        {
+            videoRenderer = 0;
+        }
+        updateRenderer();
+        videoSettingsDirty = false;
+    };
     u32 mainScreenPos[3];
 
     //emuInstance->updateConsole();
@@ -186,7 +209,7 @@ void EmuThread::run()
 
         if (emuStatus == emuStatus_Running || emuStatus == emuStatus_FrameStep)
         {
-            if (emuStatus == emuStatus_FrameStep) emuStatus = emuStatus_Paused;
+            if (emuStatus == emuStatus_FrameStep && !emuInstance->nds->IsGdbInterpreter()) emuStatus = emuStatus_Paused;
 
             if (emuInstance->hotkeyPressed(HK_SolarSensorDecrease))
             {
@@ -242,27 +265,7 @@ void EmuThread::run()
                 dsi->I2C.GetBPTWL()->ProcessVolumeSwitchInput(currentTime);
             }
 
-            // update render settings if needed
-            if (videoSettingsDirty)
-            {
-                emuInstance->renderLock.lock();
-                if (useOpenGL)
-                {
-                    emuInstance->setVSyncGL(true);
-                    videoRenderer = globalCfg.GetInt("3D.Renderer");
-                }
-#ifdef OGLRENDERER_ENABLED
-                else
-#endif
-                {
-                    videoRenderer = 0;
-                }
-
-                updateRenderer();
-
-                videoSettingsDirty = false;
-                emuInstance->renderLock.unlock();
-            }
+            applyPendingVideo();
 
             // process input and hotkeys
             emuInstance->nds->SetKeyMask(emuInstance->inputMask);
@@ -349,7 +352,51 @@ void EmuThread::run()
             else
             {
                 emuInstance->nds->AREngine.SetStopToken(cheatStopToken());
-                nlines = emuInstance->nds->RunFrame();
+
+#ifdef GDBSTUB_ENABLED
+                if (emuInstance->nds->IsGdbInterpreter())
+                {
+                    if (!debugger)
+                    {
+                        try { debugger = std::make_unique<GdbFrame>(); }
+                        catch (const std::exception& failure)
+                        {
+                            emuInstance->nds->SetGdbArgs(std::nullopt);
+                            emuInstance->osdAddMessage(0xFFA0A0, "GDB disabled: %s", failure.what());
+                            continue;
+                        }
+                    }
+                    const auto frame = debugger->Run(
+                        [&] { return emuInstance->nds->RunFrame(); },
+                        [&] {
+                            handleMessages();
+                            if (emuStatus == emuStatus_Paused)
+                            {
+                                QMutexLocker lock(&msgMutex);
+                                if (msgQueue.empty()) msgAvailable.wait(&msgMutex, 40);
+                                return false;
+                            }
+                            if (!prepareGL()) { SDL_Delay(20); return false; }
+                            applyPendingVideo();
+                            if (emuInstance->nds->GetRenderer().NeedsShaderCompile())
+                            {
+                                compileShaders();
+                                return false;
+                            }
+                            return true;
+                        });
+                    if (!frame) continue;
+                    nlines = *frame;
+                    if (emuStatus == emuStatus_FrameStep) emuStatus = emuStatus_Paused;
+                }
+                else
+#endif
+                {
+#ifdef GDBSTUB_ENABLED
+                    debugger.reset();
+#endif
+                    nlines = emuInstance->nds->RunFrame();
+                }
                 for (const auto& error : emuInstance->nds->AREngine.TakeErrors())
                 {
                     const char* reason = error.Reason == melonDS::AREngine::Result::Interrupted ? "interrupted; earlier changes remain" :
@@ -572,6 +619,18 @@ void EmuThread::handleMessages()
     while (!msgQueue.empty())
     {
         Message msg = msgQueue.dequeue();
+#ifdef GDBSTUB_ENABLED
+        if (GdbFrame::IsSuspended() &&
+            (msg.type == msg_SaveState || msg.type == msg_LoadState || msg.type == msg_UndoStateLoad))
+        {
+            msgResult = 0;
+            msgError = "Savestates require a completed frame. Resume execution in the debugger first.";
+            emuInstance->osdAddMessage(0xFFA0A0, "Savestates require a completed frame. Resume execution in the debugger first.");
+            msgSemaphore.release();
+            continue;
+        }
+#endif
+
         // These control messages can resolve a failed context without touching
         // the core. All other consumers must have the root context first.
         const bool control = msg.type == msg_Exit || msg.type == msg_EmuPause ||
@@ -584,6 +643,14 @@ void EmuThread::handleMessages()
             msgSemaphore.release();
             continue;
         }
+
+#ifdef GDBSTUB_ENABLED
+        // Ending the session unwinds here. Console resets/replacements unwind
+        // at updateConsole's commit point; failed preparation and hotplug keep
+        // the suspended CPU stack (no cartridge mapping is cached by GDB CPU).
+        if (msg.type == msg_Exit || msg.type == msg_EmuStop)
+            GdbFrame::CancelActive();
+#endif
         switch (msg.type)
         {
         case msg_Exit:
@@ -605,6 +672,12 @@ void EmuThread::handleMessages()
             break;
 
         case msg_EmuPause:
+            // Even a nested host pause must suspend an outstanding frame step.
+            if (emuStatus == emuStatus_FrameStep)
+            {
+                emuStatus = emuStatus_Paused;
+                emuInstance->audioDisable();
+            }
             emuPauseStack++;
             if (emuPauseStack > emuPauseStackPauseThreshold) break;
 

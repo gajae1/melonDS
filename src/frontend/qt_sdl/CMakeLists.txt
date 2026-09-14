@@ -118,6 +118,16 @@ fix_interface_includes(PkgConfig::SDL2 PkgConfig::LibArchive)
 add_compile_definitions(ARCHIVE_SUPPORT_ENABLED)
 
 add_executable(melonDS ${SOURCES_QT_SDL})
+
+if (ENABLE_GDBSTUB)
+    target_sources(melonDS PRIVATE GdbFrame.h)
+    if (NOT WIN32)
+        add_library(melonds-gdb-context STATIC ../../libco/libco.c)
+        target_compile_definitions(melonds-gdb-context PRIVATE LIBCO_MP)
+        target_link_libraries(melonDS PRIVATE melonds-gdb-context)
+        install(FILES ../../libco/LICENSE DESTINATION share/licenses/melonDS/libco)
+    endif()
+endif()
 melonds_configure_audio_kernels(melonDS)
 melonds_add_package_identity(melonDS)
 

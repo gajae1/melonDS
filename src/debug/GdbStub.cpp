@@ -53,6 +53,8 @@ static int SocketSetBlocking(Gdb::SocketHandle fd, bool block)
 
 namespace Gdb
 {
+thread_local void (*HostIdle)() = nullptr;
+thread_local void (*HostCancel)() = nullptr;
 
 GdbStub::GdbStub(StubCallbacks* cb)
 	: Cb(cb), Port(0)
@@ -385,6 +387,7 @@ StubState GdbStub::Enter(bool stay, TgtStatus stat, u32 arg, bool wait_for_conn)
 	bool do_next = true;
 	do
 	{
+		if (HostIdle) HostIdle();
 		bool was_conn = IsConnected();
 		// A stopped, connected target has no execution work to do. Sleep on
 		// socket readiness instead of repeatedly polling an idle debugger.

@@ -206,3 +206,6 @@ AD-08 미배포 소유권 후보 — Windows AudioResampling/core 빌드와 기�
 1.1.100 — 새 firmware-retain 회귀가 수정 전 실패하고 수정 후 DS/DSi 거절 시 코어·BIOS·삽입/대기 카트·RAM·실행 상태 보존을 확인했다. 실제 Qt frontend의 소유 ARM 루프에서도 실패 뒤 BIOS/JIT 변경(state_retained=0,jit=1)이 보존(1,0)으로 바뀌었다. 관련 DS/DSi 부팅·리셋·카트 12검사 통과, 전체 suite 반복 없음. 생성 NAND의 정상 메뉴 준비 검증은 실제 펌웨어/게임 부팅 또는 다른 OS 검증을 대체하지 않는다.
 
 1.1.101 — 실제 Qt에서 점유된 TCP 포트로 GDB ARM9 초기화 실패를 재현했고, 수정 전 reported=0에서 수정 후 reported=1로 바뀌었다. ARM7 listener와 실행 상태는 유지했고 포트 해제/재시도 후 두 listener 정상·경고 없음 확인. GDB 실제 loopback/닫힌 listener 관련 2검사 통과. OSD 큐를 확인한 소유 fixture이며 다른 OS/실기/전체 GDB 제어 지원 완료 증거는 아니다.
+
+1.1.102 — 실제 제품 오브젝트의 Qt 시작 중단/undefined 예외 재개/실패 리셋/DS→DSi 동일 포트 교체/프레임 스텝+state roundtrip/중간 snapshot 거절/handshake/control 8시나리오 통과. Compute 및 Legacy 다중 창 재생성은 제품 GdbStub에 관찰 호출만 넣어 child의 GL 복귀와 원래 실행 위치를 확인했다. 실제 GdbFrame의 native Fiber 및 libco 어댑터는 Windows에서 2스레드·512yield·task/host 예외·취소·FP환경 통과. GDB OFF의 frontend 2TU×JIT ON/OFF 컴파일 통과(별도 완성 바이너리/다른 OS 실행 아님). 영향 경로12검사와 deadline 등5개 protocol 검증 통과; 중첩 frame-step pause의 오디오 정지 누락을 추가 회귀로 재현/수정 후 그 검사만 재실행했다. 전체 suite 반복 없음.
+최종 diff에서 RunFrame 분기 재배치 중 빠진 치트 오류 OSD 소비를 복원했다. 생성한 unsupported-code 오류를 실제 Qt GDB 프레임 완료 경로에 전달해 수정 전 안내0/미소비, 수정 후 안내1/소비 완료를 확인했다(사용자 치트·게임 파일 미사용).

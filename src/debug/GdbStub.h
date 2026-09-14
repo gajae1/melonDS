@@ -16,6 +16,11 @@
 namespace Gdb
 {
 
+// Optional host integration, installed only by the owning execution thread.
+// Cancellation must unwind a suspended guest before replacing its resources.
+extern thread_local void (*HostIdle)();
+extern thread_local void (*HostCancel)();
+
 using namespace melonDS;
 enum class TgtStatus
 {

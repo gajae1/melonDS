@@ -1565,6 +1565,10 @@ bool EmuInstance::updateConsole(bool directBoot, bool firmwareBoot) noexcept
         return false;
     }
 
+#ifdef GDBSTUB_ENABLED
+    // All fallible preparation has succeeded; unwind before changing the core.
+    if (Gdb::HostCancel) Gdb::HostCancel();
+#endif
     QMutexLocker lock(&renderLock);
     auto nextndscart = changeCart ? std::move(nextCart) : (nds ? nds->EjectCart() : nullptr);
     auto nextgbacart = changeGBACart ? std::move(nextGBACart) : (nds ? nds->EjectGBACart() : nullptr);

@@ -27,3 +27,5 @@
 | <a id="FS-21"></a>FS-21 | 카메라 선택/미리보기/취소 복원은 이미 있다. 생성 시 장치 목록과 공용 camManager를 사용하는 동안 hotplug·권한 거부·다른 인스턴스 설정의 상호작용은 미검증이다. | [CameraSettingsDialog.cpp](../../src/frontend/qt_sdl/CameraSettingsDialog.cpp): 생성자/on_CameraSettingsDialog_accepted/on_CameraSettingsDialog_rejected; [Window.cpp](../../src/frontend/qt_sdl/Window.cpp): onOpenCameraSettings | 관찰 | 미리보기 소유권·장치 불가/재열거·취소 복원을 실제 실패 단위로 보완. 마이크 장치 전환은 오디오 담당과 gate만 공유. | 실제 2개 카메라·권한 거부·탈착·두 인스턴스·취소; 마이크는 오디오 담당의 실장치 전환 결과를 받는다. | 장치 설정 복구 / OS 권한·공유 자원 / P2 |
 
 장기 후속: 모바일 전용 설정·입력 UI는 데스크톱 Qt UI를 그대로 축소하지 않고, DraStic 및 melonDS Android 포크의 터치 중심 구성을 참고해 별도로 설계한다. 현재 데스크톱 설정 배치는 유지하며 모바일 구현은 아직 착수하지 않는다. 착수 시 당시 버전의 메뉴·가상 패드·세로/가로 화면·설정 접근성을 비교하고 네이티브 오디오/입력 수명과 연결한다.
+
+FS-18 갱신(1.1.102): Windows Qt의 중단 인터프리터 UI/리셋/종료 스택 통합과 listener 실패 안내는 구현됐다. 일반/JIT 실행은 기존 직접 RunFrame 경로를 유지한다. 명령 중간의 호스트 호출 스택은 savestate로 직렬화하지 않으며 저장/로드/undo를 거절한다. 완료된 프레임은 기존 형식으로 저장한다. libco 기반 비-Windows 코드 포함은 해당 OS 실행 수락을 뜻하지 않는다.

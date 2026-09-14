@@ -130,17 +130,30 @@ int GdbStub::WaitForSocket(SocketHandle socket, bool write, int timeoutMs)
 	int remaining = timeoutMs;
 	while (true)
 	{
+		const bool cooperative = HostIdle && timeoutMs != 0;
+		if (cooperative)
+		{
+			HostIdle();
+			if (timeoutMs > 0)
+			{
+				const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - started).count();
+				if (elapsed >= timeoutMs) return 0;
+				remaining = timeoutMs - int(elapsed);
+			}
+		}
+		const int slice = cooperative ? (remaining < 0 ? 10 : std::min(remaining, 10)) : remaining;
 #ifdef _WIN32
 		fd_set ready, errors;
 		FD_ZERO(&ready); FD_ZERO(&errors);
 		FD_SET(socket, &ready); FD_SET(socket, &errors);
-		timeval timeout{remaining / 1000, (remaining % 1000) * 1000};
+		timeval timeout{slice / 1000, (slice % 1000) * 1000};
 		const int result = select(0, write ? nullptr : &ready, write ? &ready : nullptr,
-			&errors, timeoutMs < 0 ? nullptr : &timeout);
+			&errors, slice < 0 ? nullptr : &timeout);
 		if (result > 0) return FD_ISSET(socket, &errors) ? -1 : 1;
 #else
 		pollfd descriptor{socket, short(write ? POLLOUT : POLLIN), 0};
-		const int result = poll(&descriptor, 1, remaining);
+		const int result = poll(&descriptor, 1, slice);
 		if (result > 0)
 		{
 			if (descriptor.revents & (POLLERR | POLLNVAL)) return -1;
@@ -148,7 +161,8 @@ int GdbStub::WaitForSocket(SocketHandle socket, bool write, int timeoutMs)
 			return 1; // A readable HUP is consumed as EOF by recv().
 		}
 #endif
-		if (result >= 0 || !SocketInterrupted()) return result;
+		if (result < 0 && !SocketInterrupted()) return result;
+		if (result == 0 && !cooperative) return 0;
 		if (timeoutMs >= 0)
 		{
 			const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(

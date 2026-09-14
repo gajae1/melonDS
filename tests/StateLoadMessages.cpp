@@ -26,6 +26,9 @@
 #include "Platform.h"
 #include "SPU.h"
 #include "AssetIdentity.h"
+#ifdef GDBSTUB_ENABLED
+#include "GdbFrame.h"
+#endif
 // Dependencies are already included: expose only the dispatcher's state.
 #define private public
 #include "EmuThread.h"
@@ -224,6 +227,39 @@ int main(int argc, char** argv)
         thread.handleMessages();
         check(thread.msgSemaphore.tryAcquire(), "Message failed to acknowledge completion");
     };
+#ifdef GDBSTUB_ENABLED
+    if (argc == 2 && std::string(argv[1]) == "gdb-suspended")
+    {
+        GdbFrame frame;
+        const auto result = frame.Run([] {
+            unsigned local = 41;
+            Gdb::HostIdle();
+            return local + 1;
+        }, [&] {
+            thread.emuStatus = EmuThread::emuStatus_FrameStep;
+            thread.emuPauseStack = EmuThread::emuPauseStackPauseThreshold;
+            instance.audio = true;
+            dispatch(EmuThread::msg_EmuPause);
+            check(thread.emuStatus == EmuThread::emuStatus_Paused && !instance.audio,
+                  "Nested host pause left the pending frame-step audio running");
+            for (auto type : {EmuThread::msg_SaveState, EmuThread::msg_LoadState,
+                              EmuThread::msg_UndoStateLoad})
+            {
+                dispatch(type);
+                check(thread.msgResult == 0 && thread.msgError.contains("completed frame"),
+                      "Suspended execution accepted a snapshot or omitted the explanation");
+            }
+            return true;
+        });
+        check(result == 42 && instance.loads == 0 && instance.undos == 0,
+              "Snapshot refusal changed the suspended execution or touched core state");
+        dispatch(EmuThread::msg_LoadState);
+        check(instance.loads == 1 && thread.msgResult != 0,
+              "A completed debugger frame still blocked normal snapshot loading");
+        std::printf("GDB suspended snapshot boundary: %u failures\n", failures);
+        return failures ? 1 : 0;
+    }
+#endif
     if (argc == 2 && std::string(argv[1]) == "audio-settings")
     {
         for (bool paused : {false, true})
