@@ -35,6 +35,7 @@
 #include "RenderCost.h"
 #include "ScreenLayout.h"
 #include "graphics/gl/context.h"
+#include "graphics/vulkan/Presenter.h"
 
 
 class MainWindow;
@@ -173,13 +174,18 @@ public:
     virtual ~ScreenPanelNative();
 
     bool drawScreen() override;
+    bool initVulkan();
+    bool usesVulkan() const { return bool(vulkan); }
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    QPaintEngine* paintEngine() const override;
 
 private:
     void setupScreenLayout() override;
 
+    std::unique_ptr<Vulkan::Presenter> vulkan;
+    QImage vulkanFrame;
     QMutex bufferLock;
     bool hasBuffers;
     void* topBuffer;

@@ -776,6 +776,24 @@ ScreenPanelNative::~ScreenPanelNative()
     }
 }
 
+bool ScreenPanelNative::initVulkan()
+{
+    std::string error;
+    vulkan = Vulkan::Presenter::Create(reinterpret_cast<void*>(winId()), error);
+    if (!vulkan) {
+        Platform::Log(Platform::LogLevel::Warn, "Vulkan output unavailable: %s\n", error.c_str());
+        return false;
+    }
+    setAttribute(Qt::WA_PaintOnScreen);
+    setAttribute(Qt::WA_OpaquePaintEvent);
+    return true;
+}
+
+QPaintEngine* ScreenPanelNative::paintEngine() const
+{
+    return vulkan ? nullptr : ScreenPanel::paintEngine();
+}
+
 void ScreenPanelNative::setupScreenLayout()
 {
     ScreenPanel::setupScreenLayout();
@@ -818,10 +836,23 @@ bool ScreenPanelNative::drawScreen()
 
 void ScreenPanelNative::paintEvent(QPaintEvent* event)
 {
-    QPainter painter(this);
+    // Vulkan's first stage presents the existing Software composition. CPU
+    // images are copied under the same render lock; the presenter owns every
+    // staging buffer until its submission fence completes.
+    QImage& composed = vulkanFrame;
+    QPainter painter;
+    if (vulkan) {
+        const qreal scale = devicePixelRatioF();
+        const QSize pixels = (QSizeF(size()) * scale).toSize();
+        if (composed.size() != pixels) composed = QImage(pixels, QImage::Format_RGB32);
+        if (composed.isNull()) return;
+        composed.setDevicePixelRatio(scale);
+        painter.begin(&composed);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, filter);
+    } else painter.begin(this);
 
-    // fill background
-    painter.fillRect(event->rect(), QColor::fromRgb(0, 0, 0));
+    // Vulkan submits a whole window image, including on partial expose.
+    painter.fillRect(vulkan ? rect() : event->rect(), QColor::fromRgb(0, 0, 0));
 
     auto emuThread = emuInstance->getEmuThread();
     
@@ -883,6 +914,21 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
         }
 
         osdMutex.unlock();
+    }
+
+    painter.end();
+    if (vulkan) {
+        std::string error;
+        const auto result = vulkan->Present(composed.constBits(), composed.width(),
+                                             composed.height(), composed.bytesPerLine(), error);
+        if (result == Vulkan::Presenter::Result::Failed) {
+            Platform::Log(Platform::LogLevel::Warn, "Vulkan output lost: %s\n", error.c_str());
+            vulkan.reset();
+            setAttribute(Qt::WA_PaintOnScreen, false);
+            setAttribute(Qt::WA_OpaquePaintEvent, false);
+            osdAddMessage(0xFF8080, "Vulkan output failed; using native display");
+            update();
+        }
     }
 
     if (RenderCost.TakeReport())

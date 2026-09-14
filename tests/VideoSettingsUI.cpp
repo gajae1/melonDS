@@ -126,6 +126,39 @@ int main(int argc, char** argv)
                 "native fallback changed the pre-dialog Cancel baseline");
         QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
+        cfg.SetInt("3D.Renderer", 0);
+        cfg.SetBool("Screen.UseGL", false);
+        cfg.SetBool("Screen.UseVulkan", false);
+        worker.status = {0, -1, false, false, false};
+        dialog = open();
+        auto* vulkan = dialog->findChild<QCheckBox*>("cbVulkanDisplay");
+        int surfaceRebuilds = 0;
+        QObject::connect(dialog, &VideoSettingsDialog::updateVideoSettings, &window,
+            [&](bool rebuild) { surfaceRebuilds += rebuild; });
+#ifdef Q_OS_WIN
+        Require(vulkan->isEnabled(), "Software renderer did not offer experimental Vulkan display");
+        vulkan->click();
+        Require(cfg.GetBool("Screen.UseVulkan") && !dialog->UsesGL() && surfaceRebuilds == 1,
+                "Native to Vulkan did not request a surface rebuild");
+        Require(!dialog->findChild<QCheckBox*>("cbGLDisplay")->isEnabled(), "competing GL display left enabled");
+        dialog->reject();
+        Require(!cfg.GetBool("Screen.UseVulkan") && !cfg.GetBool("Screen.UseGL") && surfaceRebuilds == 2,
+                "Vulkan Cancel did not restore native surface and preference");
+        QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        dialog = open();
+        dialog->findChild<QCheckBox*>("cbVulkanDisplay")->click();
+        dialog->accept();
+        QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        Require(Config::Load() && Config::GetGlobalTable().GetBool("Screen.UseVulkan"),
+                "Accepted Vulkan preference did not survive reload");
+        // Config::Load replaces the backing TOML table; refresh borrowed handles.
+        window.instance.cfg = Config::GetGlobalTable();
+#else
+        Require(!vulkan->isEnabled(), "unsupported WSI offered Vulkan output");
+        dialog->reject();
+        QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+#endif
+
         dialog = open();
         window.closed = true; publish(); dialog->reject();
         QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);

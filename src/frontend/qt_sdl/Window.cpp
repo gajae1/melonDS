@@ -892,7 +892,9 @@ void MainWindow::createScreenPanel()
     panel = nullptr;
     if (oldpanel) delete oldpanel;
 
-    hasOGL = globalCfg.GetBool("Screen.UseGL") ||
+    const bool wantsVulkan = globalCfg.GetBool("Screen.UseVulkan") &&
+                             globalCfg.GetInt("3D.Renderer") == renderer3D_Software;
+    hasOGL = (!wantsVulkan && globalCfg.GetBool("Screen.UseGL")) ||
             (globalCfg.GetInt("3D.Renderer") != renderer3D_Software);
 
     if (hasOGL)
@@ -921,12 +923,14 @@ void MainWindow::createScreenPanel()
         ScreenPanelNative* panelNative = new ScreenPanelNative(this);
         panel = panelNative;
         panel->show();
+        if (wantsVulkan && !panelNative->initVulkan())
+            panelNative->osdAddMessage(0xFF8080, "Vulkan unavailable; using native display");
     }
     setCentralWidget(panel);
     panel->setPreservedFrame(emuInstance->preservedFrame, emuInstance->preservedFrameNumber);
 
     if (hasMenu)
-        actScreenFiltering->setEnabled(hasOGL);
+        actScreenFiltering->setEnabled(hasOGL || (!hasOGL && static_cast<ScreenPanelNative*>(panel)->usesVulkan()));
     panel->osdSetEnabled(showOSD);
 
     connect(emuThread, SIGNAL(windowUpdate()), panel, SLOT(repaint()));

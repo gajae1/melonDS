@@ -64,6 +64,7 @@ private slots:
 
     void onChange3DRenderer(int renderer);
     void on_cbGLDisplay_stateChanged(int state);
+    void on_cbVulkanDisplay_stateChanged(int state);
     void on_cbVSync_stateChanged(int state);
     void on_sbVSyncInterval_valueChanged(int val);
 
@@ -84,6 +85,7 @@ private:
 
     int oldRenderer;
     int oldGLDisplay;
+    bool oldVulkanDisplay;
     int oldVSync;
     int oldVSyncInterval;
     int oldSoftThreaded;

@@ -34,7 +34,7 @@
 inline bool VideoSettingsDialog::UsesGL()
 {
     auto& cfg = emuInstance->getGlobalConfig();
-    return cfg.GetBool("Screen.UseGL") || (cfg.GetInt("3D.Renderer") != renderer3D_Software);
+    return (!cfg.GetBool("Screen.UseVulkan") && cfg.GetBool("Screen.UseGL")) || (cfg.GetInt("3D.Renderer") != renderer3D_Software);
 }
 
 VideoSettingsDialog* VideoSettingsDialog::currentDlg = nullptr;
@@ -45,7 +45,12 @@ void VideoSettingsDialog::setEnabled()
     int renderer = cfg.GetInt("3D.Renderer");
 
     bool softwareRenderer = renderer == renderer3D_Software;
-    ui->cbGLDisplay->setEnabled(softwareRenderer);
+    ui->cbGLDisplay->setEnabled(softwareRenderer && !cfg.GetBool("Screen.UseVulkan"));
+#ifdef Q_OS_WIN
+    ui->cbVulkanDisplay->setEnabled(softwareRenderer);
+#else
+    ui->cbVulkanDisplay->setEnabled(false);
+#endif
     ui->cbSoftwareThreaded->setEnabled(softwareRenderer);
     ui->cbPixelConversion->setEnabled(softwareRenderer);
     ui->cbxGLResolution->setEnabled(!softwareRenderer);
@@ -64,6 +69,7 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     auto& cfg = emuInstance->getGlobalConfig();
     oldRenderer = cfg.GetInt("3D.Renderer");
     oldGLDisplay = cfg.GetBool("Screen.UseGL");
+    oldVulkanDisplay = cfg.GetBool("Screen.UseVulkan");
     oldVSync = cfg.GetBool("Screen.VSync");
     oldVSyncInterval = cfg.GetInt("Screen.VSyncInterval");
     oldSoftThreaded = cfg.GetBool("3D.Soft.Threaded");
@@ -92,6 +98,10 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
 #endif
 
     ui->cbGLDisplay->setChecked(oldGLDisplay != 0);
+    {
+        const QSignalBlocker blocker(ui->cbVulkanDisplay);
+        ui->cbVulkanDisplay->setChecked(oldVulkanDisplay);
+    }
 
     ui->cbVSync->setChecked(oldVSync != 0);
     ui->sbVSyncInterval->setValue(oldVSyncInterval);
@@ -185,6 +195,8 @@ void VideoSettingsDialog::on_VideoSettingsDialog_rejected()
     bool old_gl = UsesGL();
 
     auto& cfg = emuInstance->getGlobalConfig();
+    const bool vulkanChanged = cfg.GetBool("Screen.UseVulkan") != oldVulkanDisplay;
+    cfg.SetBool("Screen.UseVulkan", oldVulkanDisplay);
     cfg.SetInt("3D.Renderer", oldRenderer);
     cfg.SetBool("Screen.UseGL", oldGLDisplay);
     cfg.SetBool("Screen.VSync", oldVSync);
@@ -195,7 +207,7 @@ void VideoSettingsDialog::on_VideoSettingsDialog_rejected()
     cfg.SetBool("3D.GL.BetterPolygons", oldGLBetterPolygons);
     cfg.SetBool("3D.GL.HiresCoordinates", oldHiresCoordinates);
 
-    emit updateVideoSettings(old_gl != UsesGL());
+    emit updateVideoSettings(vulkanChanged || old_gl != UsesGL());
 
     closeDlg();
 }
@@ -228,6 +240,16 @@ void VideoSettingsDialog::on_cbGLDisplay_stateChanged(int state)
     setVsyncControlEnable(UsesGL());
 
     emit updateVideoSettings(old_gl != UsesGL());
+}
+
+void VideoSettingsDialog::on_cbVulkanDisplay_stateChanged(int state)
+{
+    auto& cfg = emuInstance->getGlobalConfig();
+    cfg.SetBool("Screen.UseVulkan", state != 0);
+    setEnabled();
+    // Native and Vulkan both use Software rasterization but own different
+    // window resources, so a surface rebuild is required even without GL.
+    emit updateVideoSettings(true);
 }
 
 void VideoSettingsDialog::on_cbVSync_stateChanged(int state)

@@ -135,6 +135,12 @@
         </property>
        </widget>
       </item>
+      <item row="8" column="0" colspan="2">
+       <widget class="QCheckBox" name="cbVulkanDisplay">
+        <property name="text"><string>Vulkan display (experimental)</string></property>
+        <property name="toolTip"><string>Windows only. Displays Software-rendered screens using Vulkan. GPU 3D rendering is not included. Uses synchronized presentation; falls back to native display if unavailable.</string></property>
+       </widget>
+      </item>
       <item row="5" column="0" colspan="2">
        <widget class="QCheckBox" name="cbGLDisplay">
         <property name="whatsThis">

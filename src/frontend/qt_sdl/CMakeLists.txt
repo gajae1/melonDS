@@ -76,6 +76,7 @@ set(SOURCES_QT_SDL
 
     ../glad/glad.c
     ../graphics/gl/context.cpp
+    ../graphics/vulkan/Presenter.cpp
 
     ${CMAKE_SOURCE_DIR}/res/melon.qrc
 
