@@ -431,6 +431,42 @@ void Compiler::Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flag
     }
 }
 
+void Compiler::Comp_MemBlockPermission(int rn, int count, bool store, bool preinc, bool decrement)
+{
+    if (Num != 0) return;
+    const s32 offset = decrement ? -4*count + (preinc ? 0 : 4) : (preinc ? 4 : 0);
+    MOV_sum(32, RSCRATCH3, MapReg(rn), Imm32(offset));
+    AND(32, R(RSCRATCH3), Imm8(~3));
+    MOV(64, R(RSCRATCH), MDisp(RCPU, offsetof(ARMv5, PU_Map)));
+    // At most 64 contiguous bytes: only the first and last MPU pages can differ.
+    MOV(32, R(RSCRATCH2), R(RSCRATCH3));
+    SHR(32, R(RSCRATCH2), Imm8(12));
+    TEST(8, MRegSum(RSCRATCH, RSCRATCH2), Imm8(store ? 2 : 1));
+    J_CC(CC_Z, FarCode);
+    if (count > 1)
+    {
+        ADD(32, R(RSCRATCH3), Imm8(4*(count-1)));
+        SHR(32, R(RSCRATCH3), Imm8(12));
+        TEST(8, MRegSum(RSCRATCH, RSCRATCH3), Imm8(store ? 2 : 1));
+        J_CC(CC_Z, FarCode);
+    }
+    SwitchToFarCode();
+    // Replay only the denied instruction, from its original registers. The
+    // interpreter performs partial accesses and restores the correct bank/base.
+    RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);
+    SaveCPSR(false);
+    MOV(32, MDisp(RCPU, offsetof(ARM, R[15])), Imm32(R15));
+    MOV(32, MDisp(RCPU, offsetof(ARM, CurInstr)), Imm32(CurInstr.Instr));
+    MOV(32, MDisp(RCPU, offsetof(ARM, CodeCycles)), Imm32(CurInstr.CodeCycles));
+    MOV(64, R(ABI_PARAM1), R(RCPU));
+    ABI_CallFunction(Thumb ? InterpretTHUMB[CurInstr.Info.Kind] : InterpretARM[CurInstr.Info.Kind]);
+    MOV(32, R(RCPSR), MDisp(RCPU, offsetof(ARM, CPSR)));
+    if (ConstantCycles)
+        ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(ConstantCycles));
+    ABI_TailCall(ARM_Ret);
+    SwitchToNearCode();
+}
+
 s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc, bool decrement, bool usermode, bool skipLoadingRn)
 {
     int regsCount = regs.Count();
@@ -438,6 +474,7 @@ s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc
     if (regsCount == 0)
         return 0; // actually not the right behaviour TODO: fix me
 
+    Comp_MemBlockPermission(rn, regsCount, store, preinc, decrement);
     int firstReg = *regs.begin();
     if (regsCount == 1 && !usermode && RegCache.LoadedRegs & (1 << firstReg) && !(firstReg == rn && skipLoadingRn))
     {

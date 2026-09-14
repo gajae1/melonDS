@@ -241,41 +241,41 @@ A_IMPLEMENT_WB_LDRSTR(LDRB)
 #define A_LDRD \
     if (cpu->Num != 0) return; \
     offset += cpu->R[(cpu->CurInstr>>16) & 0xF]; \
-    if (cpu->CurInstr & (1<<21)) cpu->R[(cpu->CurInstr>>16) & 0xF] = offset; \
     u32 r = (cpu->CurInstr>>12) & 0xF; \
     if (r&1) { r--; printf("!! MISALIGNED LDRD %d\n", r+1); } \
-    cpu->DataRead32 (offset  , &cpu->R[r  ]); \
-    cpu->DataRead32S(offset+4, &cpu->R[r+1]); \
+    u32 lo, hi; \
+    if (!cpu->DataRead32(offset, &lo) || !cpu->DataRead32S(offset+4, &hi)) return; \
+    if (cpu->CurInstr & (1<<21)) cpu->R[(cpu->CurInstr>>16) & 0xF] = offset; \
+    cpu->R[r] = lo; cpu->R[r+1] = hi; \
     cpu->AddCycles_CDI();
 
 #define A_LDRD_POST \
     if (cpu->Num != 0) return; \
     u32 addr = cpu->R[(cpu->CurInstr>>16) & 0xF]; \
-    cpu->R[(cpu->CurInstr>>16) & 0xF] += offset; \
     u32 r = (cpu->CurInstr>>12) & 0xF; \
     if (r&1) { r--; printf("!! MISALIGNED LDRD_POST %d\n", r+1); } \
-    cpu->DataRead32 (addr  , &cpu->R[r  ]); \
-    cpu->DataRead32S(addr+4, &cpu->R[r+1]); \
+    u32 lo, hi; \
+    if (!cpu->DataRead32(addr, &lo) || !cpu->DataRead32S(addr+4, &hi)) return; \
+    cpu->R[(cpu->CurInstr>>16) & 0xF] += offset; \
+    cpu->R[r] = lo; cpu->R[r+1] = hi; \
     cpu->AddCycles_CDI();
 
 #define A_STRD \
     if (cpu->Num != 0) return; \
     offset += cpu->R[(cpu->CurInstr>>16) & 0xF]; \
-    if (cpu->CurInstr & (1<<21)) cpu->R[(cpu->CurInstr>>16) & 0xF] = offset; \
     u32 r = (cpu->CurInstr>>12) & 0xF; \
     if (r&1) { r--; printf("!! MISALIGNED STRD %d\n", r+1); } \
-    cpu->DataWrite32 (offset  , cpu->R[r  ]); \
-    cpu->DataWrite32S(offset+4, cpu->R[r+1]); \
+    if (!cpu->DataWrite32(offset, cpu->R[r]) || !cpu->DataWrite32S(offset+4, cpu->R[r+1])) return; \
+    if (cpu->CurInstr & (1<<21)) cpu->R[(cpu->CurInstr>>16) & 0xF] = offset; \
     cpu->AddCycles_CD();
 
 #define A_STRD_POST \
     if (cpu->Num != 0) return; \
     u32 addr = cpu->R[(cpu->CurInstr>>16) & 0xF]; \
-    cpu->R[(cpu->CurInstr>>16) & 0xF] += offset; \
     u32 r = (cpu->CurInstr>>12) & 0xF; \
     if (r&1) { r--; printf("!! MISALIGNED STRD_POST %d\n", r+1); } \
-    cpu->DataWrite32 (addr  , cpu->R[r  ]); \
-    cpu->DataWrite32S(addr+4, cpu->R[r+1]); \
+    if (!cpu->DataWrite32(addr, cpu->R[r]) || !cpu->DataWrite32S(addr+4, cpu->R[r+1])) return; \
+    cpu->R[(cpu->CurInstr>>16) & 0xF] += offset; \
     cpu->AddCycles_CD();
 
 #define A_LDRH \
@@ -440,6 +440,36 @@ static void A_EmptyBlockTransfer(ARM* cpu, bool load)
         cpu->AddCycles_CD();
 }
 
+// User-register transfers retain privileged access permissions. Address the
+// user bank directly so an abort never enters with a phony bank selected.
+static u32& UserTransferReg(ARM* cpu, unsigned reg)
+{
+    const u32 mode = cpu->CPSR & 0x1F;
+    if (mode == 0x11 && reg >= 8 && reg < 15) return cpu->R_FIQ[reg-8];
+    if (reg == 13 || reg == 14)
+    {
+        switch (mode)
+        {
+        case 0x12: return cpu->R_IRQ[reg-13];
+        case 0x13: return cpu->R_SVC[reg-13];
+        case 0x17: return cpu->R_ABT[reg-13];
+        case 0x1B: return cpu->R_UND[reg-13];
+        }
+    }
+    return cpu->R[reg];
+}
+
+static void RestoreTransferBase(ARM* cpu, unsigned reg, u32 base, u32 oldcpsr)
+{
+    // Access helpers have already entered Abort mode. Restore the original
+    // bank, including a base loaded earlier in the list, without changing CPSR.
+    // Exception LR takes precedence when the fault originated in Abort mode.
+    if (reg == 15 || (reg == 14 && (oldcpsr & 0x1F) == 0x17)) return;
+    cpu->UpdateMode(cpu->CPSR, oldcpsr, true);
+    cpu->R[reg] = base;
+    cpu->UpdateMode(oldcpsr, cpu->CPSR, true);
+}
+
 void A_LDM(ARM* cpu)
 {
     if (!(cpu->CurInstr & 0xFFFF))
@@ -450,6 +480,7 @@ void A_LDM(ARM* cpu)
 
     u32 baseid = (cpu->CurInstr >> 16) & 0xF;
     u32 base = cpu->R[baseid];
+    const u32 oldbase = base, oldcpsr = cpu->CPSR;
     u32 wbbase;
     u32 preinc = (cpu->CurInstr & (1<<24));
     bool first = true;
@@ -467,16 +498,19 @@ void A_LDM(ARM* cpu)
         preinc = !preinc;
     }
 
-    if ((cpu->CurInstr & (1<<22)) && !(cpu->CurInstr & (1<<15)))
-        cpu->UpdateMode(cpu->CPSR, (cpu->CPSR&~0x1F)|0x10, true);
+    const bool user = (cpu->CurInstr & (1<<22)) && !(cpu->CurInstr & (1<<15));
 
     for (int i = 0; i < 15; i++)
     {
         if (cpu->CurInstr & (1<<i))
         {
             if (preinc) base += 4;
-            if (first) cpu->DataRead32 (base, &cpu->R[i]);
-            else       cpu->DataRead32S(base, &cpu->R[i]);
+            u32* dest = user ? &UserTransferReg(cpu, i) : &cpu->R[i];
+            if (!(first ? cpu->DataRead32(base, dest) : cpu->DataRead32S(base, dest)))
+            {
+                RestoreTransferBase(cpu, baseid, oldbase, oldcpsr);
+                return;
+            }
             first = false;
             if (!preinc) base += 4;
         }
@@ -486,8 +520,11 @@ void A_LDM(ARM* cpu)
     if (cpu->CurInstr & (1<<15))
     {
         if (preinc) base += 4;
-        if (first) cpu->DataRead32 (base, &pc);
-        else       cpu->DataRead32S(base, &pc);
+        if (!(first ? cpu->DataRead32(base, &pc) : cpu->DataRead32S(base, &pc)))
+        {
+            RestoreTransferBase(cpu, baseid, oldbase, oldcpsr);
+            return;
+        }
         if (!preinc) base += 4;
 
         if (cpu->Num == 1)
@@ -513,9 +550,6 @@ void A_LDM(ARM* cpu)
             cpu->R[baseid] = wbbase;
     }
 
-    if ((cpu->CurInstr & (1<<22)) && !(cpu->CurInstr & (1<<15)))
-        cpu->UpdateMode((cpu->CPSR&~0x1F)|0x10, cpu->CPSR, true);
-
     if (cpu->CurInstr & (1<<15))
         cpu->JumpTo(pc, cpu->CurInstr & (1<<22));
 
@@ -540,9 +574,6 @@ void A_STM(ARM* cpu)
     {
         base -= 4 * std::popcount(cpu->CurInstr & 0xFFFFu);
 
-        if (cpu->CurInstr & (1<<21))
-            cpu->R[baseid] = base;
-
         preinc = !preinc;
     }
 
@@ -554,8 +585,6 @@ void A_STM(ARM* cpu)
             isbanked = (baseid >= 8 && baseid < 15);
         else if (mode != 0x10 && mode != 0x1F)
             isbanked = (baseid >= 13 && baseid < 15);
-
-        cpu->UpdateMode(cpu->CPSR, (cpu->CPSR&~0x1F)|0x10, true);
     }
 
     for (u32 i = 0; i < 16; i++)
@@ -564,31 +593,31 @@ void A_STM(ARM* cpu)
         {
             if (preinc) base += 4;
 
+            u32 value;
             if (i == baseid && !isbanked)
             {
                 if ((cpu->Num == 0) || (!(cpu->CurInstr & ((1<<i)-1))))
-                    first ? (void)cpu->DataWrite32(base, oldbase) : cpu->DataWrite32S(base, oldbase);
+                    value = oldbase;
                 else
-                    first ? (void)cpu->DataWrite32(base, base) : cpu->DataWrite32S(base, base); // checkme
+                    value = base; // checkme
             }
             else
             {
                 // ARM7 stores PC one pipeline stage later than its visible A+8.
-                const u32 value = cpu->R[i] + (i == 15 && cpu->Num == 1 ? 4 : 0);
-                first ? (void)cpu->DataWrite32(base, value) : cpu->DataWrite32S(base, value);
+                value = ((cpu->CurInstr & (1<<22)) ? UserTransferReg(cpu, i) : cpu->R[i])
+                    + (i == 15 && cpu->Num == 1 ? 4 : 0);
             }
 
+            if (!(first ? cpu->DataWrite32(base, value) : cpu->DataWrite32S(base, value))) return;
             first = false;
 
             if (!preinc) base += 4;
         }
     }
 
-    if (cpu->CurInstr & (1<<22))
-        cpu->UpdateMode((cpu->CPSR&~0x1F)|0x10, cpu->CPSR, true);
-
-    if ((cpu->CurInstr & (1<<23)) && (cpu->CurInstr & (1<<21)))
-        cpu->R[baseid] = base;
+    if (cpu->CurInstr & (1<<21))
+        cpu->R[baseid] = (cpu->CurInstr & (1<<23)) ? base
+            : oldbase - 4 * std::popcount(cpu->CurInstr & 0xFFFFu);
 
     cpu->AddCycles_CD();
 }
@@ -764,14 +793,12 @@ void T_PUSH(ARM* cpu)
 
     u32 base = cpu->R[13];
     base -= (nregs<<2);
-    cpu->R[13] = base;
 
     for (int i = 0; i < 8; i++)
     {
         if (cpu->CurInstr & (1<<i))
         {
-            if (first) cpu->DataWrite32 (base, cpu->R[i]);
-            else       cpu->DataWrite32S(base, cpu->R[i]);
+            if (!(first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]))) return;
             first = false;
             base += 4;
         }
@@ -779,10 +806,10 @@ void T_PUSH(ARM* cpu)
 
     if (cpu->CurInstr & (1<<8))
     {
-        if (first) cpu->DataWrite32 (base, cpu->R[14]);
-        else       cpu->DataWrite32S(base, cpu->R[14]);
+        if (!(first ? cpu->DataWrite32(base, cpu->R[14]) : cpu->DataWrite32S(base, cpu->R[14]))) return;
     }
 
+    cpu->R[13] -= nregs << 2;
     cpu->AddCycles_CD();
 }
 
@@ -795,8 +822,7 @@ void T_POP(ARM* cpu)
     {
         if (cpu->CurInstr & (1<<i))
         {
-            if (first) cpu->DataRead32 (base, &cpu->R[i]);
-            else       cpu->DataRead32S(base, &cpu->R[i]);
+            if (!(first ? cpu->DataRead32(base, &cpu->R[i]) : cpu->DataRead32S(base, &cpu->R[i]))) return;
             first = false;
             base += 4;
         }
@@ -805,8 +831,7 @@ void T_POP(ARM* cpu)
     if (cpu->CurInstr & (1<<8))
     {
         u32 pc;
-        if (first) cpu->DataRead32 (base, &pc);
-        else       cpu->DataRead32S(base, &pc);
+        if (!(first ? cpu->DataRead32(base, &pc) : cpu->DataRead32S(base, &pc))) return;
         if (cpu->Num==1) pc |= 0x1;
         cpu->JumpTo(pc);
         base += 4;
@@ -837,8 +862,7 @@ void T_STMIA(ARM* cpu)
     {
         if (cpu->CurInstr & (1<<i))
         {
-            if (first) cpu->DataWrite32 (base, cpu->R[i]);
-            else       cpu->DataWrite32S(base, cpu->R[i]);
+            if (!(first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]))) return;
             first = false;
             base += 4;
         }
@@ -866,14 +890,18 @@ void T_LDMIA(ARM* cpu)
             cpu->AddCycles_C();
         return;
     }
+    const u32 oldbase = base, oldcpsr = cpu->CPSR;
     bool first = true;
 
     for (int i = 0; i < 8; i++)
     {
         if (cpu->CurInstr & (1<<i))
         {
-            if (first) cpu->DataRead32 (base, &cpu->R[i]);
-            else       cpu->DataRead32S(base, &cpu->R[i]);
+            if (!(first ? cpu->DataRead32(base, &cpu->R[i]) : cpu->DataRead32S(base, &cpu->R[i])))
+            {
+                RestoreTransferBase(cpu, (cpu->CurInstr >> 8) & 0x7, oldbase, oldcpsr);
+                return;
+            }
             first = false;
             base += 4;
         }

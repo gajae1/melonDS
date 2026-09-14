@@ -22,6 +22,7 @@ int TestSMCExecution(NDSArgs&& args, bool jit);
 int TestSMCLiteralRegions(NDSArgs&& args, bool jit);
 int TestMPUExecution(NDSArgs&& args, bool jit);
 int TestMPUDataAbort(NDSArgs&& args, bool jit);
+int TestMPUMultipleAbort(NDSArgs&& args, bool jit);
 int TestCacheMPUDisabled(NDSArgs&& args, bool jit);
 int TestDeviceExecution(NDSArgs&& args, bool jit);
 int TestDSiNDMAExecution(NDSArgs&& args);
@@ -723,6 +724,8 @@ int main(int argc, char** argv) {
         return TestCacheMPUDisabled(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-data-abort") == 0)
         return TestMPUDataAbort(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "mpu-multiple-abort") == 0)
+        return TestMPUMultipleAbort(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-execution") == 0)
         return TestMPUExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "device-execution") == 0)

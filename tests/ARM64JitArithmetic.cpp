@@ -53,6 +53,7 @@ public:
     bool Thumb = false, Exit = false, IrregularCycles = false;
     u16 AbortDirtyRegs = 0;
     void Comp_MemPermission(ARM64Reg address, bool store);
+    void Comp_MemBlockPermission(int rn, int count, bool store, bool preinc, bool decrement);
     u32 Num = 0, R15 = 0, CodeRegion = 0, ConstantCycles = 0;
     u32 JitMemMainSize = 1024 * 1024, JitMemSecondarySize = 1024 * 1024;
     ptrdiff_t OtherCodeRegion = JitMemMainSize;
@@ -120,6 +121,7 @@ std::array<Compiler::CompileFunc, ARMInstrInfo::tk_Count> T_Comp{};
 #include "ARM64JitLoadReg.inc"
 #include "ARM64JitSaveReg.inc"
 #include "ARM64JitMemPermission.inc"
+#include "ARM64JitMemBlockPermission.inc"
 #include "ARM64JitTriOp.inc"
 #include "ARM64JitGetOp2.inc"
 #include "ARM64JitShiftReg.inc"
@@ -439,18 +441,32 @@ int ExportMultiplyBlocks()
 }
 #endif
 
-int ExportMPUGuards()
+int ExportMPUGuards(bool block = false)
 {
     NDSArgs args;
     auto nds = std::make_unique<NDS>(std::move(args));
     for (unsigned num : {0u, 1u}) for (bool thumb : {false, true}) for (bool store : {false, true})
+    for (unsigned shape = 0; shape < (block ? 6u : 1u); ++shape)
     {
+        if (thumb && (shape == 2 || shape == 3 || (shape == 4 && !store))) continue;
+        const unsigned count = shape == 0 ? 1 : shape == 5 ? (thumb ? 8 : 16) : 2;
+        const bool pre = shape == 2 || shape == 4, down = shape == 3 || shape == 4;
         std::array<u32, 256> code{};
         Compiler compiler(*nds);
         compiler.SetCodeBase(reinterpret_cast<u8*>(code.data()), reinterpret_cast<u8*>(code.data()));
         compiler.Num = num;
         compiler.Thumb = thumb;
         compiler.CurInstr.Info.Kind = thumb ? ARMInstrInfo::tk_LDR_IMM : ARMInstrInfo::ak_LDR_IMM;
+        if (block) {
+            compiler.CurInstr.Info.Kind = thumb
+                ? (down ? ARMInstrInfo::tk_PUSH : store ? ARMInstrInfo::tk_STMIA : ARMInstrInfo::tk_LDMIA)
+                : (store ? ARMInstrInfo::ak_STM : ARMInstrInfo::ak_LDM);
+            compiler.CurInstr.Instr = thumb
+                ? (down ? 0xB403 : (store ? 0xC200 : 0xCA00) | ((1u << count)-1))
+                : 0xE8020000 | (pre ? 1u<<24 : 0) | (down ? 0 : 1u<<23)
+                    | (store ? 0 : 1u<<20) | ((1u << count)-1);
+            compiler.CurInstr.CodeCycles = 19;
+        }
         compiler.R15 = 0x02000C00 + (thumb ? 4 : 8);
         compiler.ConstantCycles = 13;
         compiler.CPSRDirty = true;
@@ -459,7 +475,14 @@ int ExportMPUGuards()
         compiler.RegCache.Mapping[1] = W20;
         compiler.RegCache.LoadedRegs = compiler.RegCache.DirtyRegs = 3;
         compiler.AbortDirtyRegs = 1; // r1 was allocated for the unexecuted load.
-        compiler.Comp_MemPermission(W0, store);
+        if (block) {
+            const unsigned rn = thumb && down ? 13 : 2;
+            compiler.RegCache.Mapping[rn] = W21;
+            compiler.RegCache.LoadedRegs = compiler.RegCache.DirtyRegs = 3 | (1u << rn);
+            compiler.AbortDirtyRegs = 1 | (1u << rn);
+            compiler.Comp_MemBlockPermission(rn, count, store, pre, down);
+            compiler.MOVI2R(W0, 1);
+        } else compiler.Comp_MemPermission(W0, store);
         compiler.STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, R[4]));
         compiler.STR(INDEX_UNSIGNED, W4, RCPU, offsetof(ARM, R[5]));
         compiler.QuickTailCall(X0, ARM_Ret);
@@ -471,7 +494,10 @@ int ExportMPUGuards()
             unsigned(offsetof(ARM, R)), unsigned(offsetof(ARM, CPSR)),
             unsigned(offsetof(ARM, Cycles)), unsigned(offsetof(ARMv5, PU_Map)));
         for (size_t i = 0; i < words.size(); ++i) std::printf("%s%u", i ? "," : "", words[i]);
-        std::puts("]}");
+        std::printf("],\"block\":%u,\"count\":%u,\"pre\":%u,\"down\":%u,\"instr\":%u,\"instrOffset\":%u,\"codeCyclesOffset\":%u,\"fallback\":%llu}\n",
+            unsigned(block), count, unsigned(pre), unsigned(down), compiler.CurInstr.Instr,
+            unsigned(offsetof(ARM, CurInstr)), unsigned(offsetof(ARM, CodeCycles)),
+            (unsigned long long)(thumb ? InterpretTHUMB[compiler.CurInstr.Info.Kind] : InterpretARM[compiler.CurInstr.Info.Kind]));
     }
     return 0;
 }
@@ -569,6 +595,7 @@ int main(int argc, char** argv)
     const std::string_view filter = argc == 2 ? argv[1] : "all";
 #ifdef ARM64_JIT_BLOCK_TEST
 #ifdef ARM64_JIT_MUL_TEST
+    if (filter == "export-mpu-block") return A64Test::ExportMPUGuards(true);
     if (filter == "export-mpu") return A64Test::ExportMPUGuards();
     if (filter == "export-mul-cycles") return A64Test::ExportMultiplyBlocks();
 #endif

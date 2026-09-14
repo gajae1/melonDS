@@ -460,3 +460,166 @@ int TestMPUDataAbort(NDSArgs&& args, bool jit)
     std::printf("MPU single/swap transfers: %u/%u passed\n", checked-failures, checked);
     return failures ? 1 : 0;
 }
+
+// DDI0100I A2-21..23: fault PC/LR/CPSR and original base are defined;
+// other multiple-load destinations and writable store locations are not.
+int TestMPUMultipleAbort(NDSArgs&& args, bool jit)
+{
+    if (args.JIT) {
+        args.JIT->MaxBlockSize = 4;
+        args.JIT->BranchOptimizations = false;
+        args.JIT->LiteralOptimizations = false;
+    }
+    args.ARM9BIOS = std::make_unique<ARM9BIOSImage>();
+    for (size_t i = 0; i < args.ARM9BIOS->size(); i += 4) {
+        (*args.ARM9BIOS)[i] = 0xFE;
+        (*args.ARM9BIOS)[i+1] = 0xFF;
+        (*args.ARM9BIOS)[i+2] = 0xFF;
+        (*args.ARM9BIOS)[i+3] = 0xEA;
+    }
+    auto nds = std::make_unique<NDS>(std::move(args));
+    NDS::Current = nds.get();
+    auto& cpu = nds->ARM9;
+    constexpr u32 code = Driver+0x800, boundary = Driver+0x2000, success = code+0x40;
+    struct Probe { const char* name; u32 op; unsigned rn, list; bool load, thumb, pre, down, wb; u32 mode = 0x1F; bool user = false, pair = false, skip = false; };
+    const Probe probes[] = {
+        {"ldmia",0xE8B10005,1,0x0005,true,false,false,false,true},
+        {"ldmib",0xE9B10005,1,0x0005,true,false,true,false,true},
+        {"ldmda",0xE8310005,1,0x0005,true,false,false,true,true},
+        {"ldmdb",0xE9310005,1,0x0005,true,false,true,true,true},
+        {"stmia",0xE8A10005,1,0x0005,false,false,false,false,true},
+        {"stmib",0xE9A10005,1,0x0005,false,false,true,false,true},
+        {"stmda",0xE8210005,1,0x0005,false,false,false,true,true},
+        {"stmdb",0xE9210005,1,0x0005,false,false,true,true,true},
+        {"ldm-base-listed",0xE8900005,0,0x0005,true,false,false,false,false},
+        {"ldm-pc",0xE8B18001,1,0x8001,true,false,false,false,true},
+        {"stm-pc",0xE8A18001,1,0x8001,false,false,false,false,true},
+        {"ldm-pressure-sp",0xE8BD1FFF,13,0x1FFF,true,false,false,false,true,0x13},
+        {"stm-pressure-sp",0xE92D1FFF,13,0x1FFF,false,false,true,true,true,0x13},
+        {"ldm-user-fiq",0xE8D16100,1,0x6100,true,false,false,false,false,0x11,true},
+        {"stm-user-fiq-sp",0xE8ED6100,13,0x6100,false,false,false,false,true,0x11,true},
+        {"ldm-single",0xE8B10001,1,0x0001,true,false,false,false,true},
+        {"stm-single",0xE8A10001,1,0x0001,false,false,false,false,true},
+        {"ldm-ne-skipped",0x18B10005,1,0x0005,true,false,false,false,true,0x1F,false,false,true},
+        {"thumb-ldmia",0xC905,1,0x0005,true,true,false,false,true},
+        {"thumb-stmia",0xC105,1,0x0005,false,true,false,false,true},
+        {"thumb-ldmia-base",0xC805,0,0x0005,true,true,false,false,false},
+        {"thumb-push-lr",0xB501,13,0x4001,false,true,true,true,true,0x13},
+        {"thumb-pop-pc",0xBD01,13,0x8001,true,true,false,false,true,0x13},
+        {"thumb-push-single",0xB401,13,0x0001,false,true,true,true,true,0x13},
+        {"thumb-pop-single",0xBC01,13,0x0001,true,true,false,false,true,0x13},
+        {"ldrd-pre",0xE1E200D8,2,0x0003,true,false,true,false,true,0x1F,false,true},
+        {"strd-pre",0xE1E200F8,2,0x0003,false,false,true,false,true,0x1F,false,true},
+        {"ldrd-post",0xE0C200D8,2,0x0003,true,false,false,false,true,0x1F,false,true},
+        {"strd-post",0xE0C200F8,2,0x0003,false,false,false,false,true,0x1F,false,true},
+    };
+    unsigned checked = 0, failures = 0;
+    for (const auto& p : probes) for (unsigned deniedPage = 0; deniedPage < (p.pair || std::popcount(p.list)==1 ? 1u : 2u); ++deniedPage)
+    {
+        nds->Reset(); nds->CurCPU = 0;
+        const unsigned width = p.thumb ? 2 : 4, count = std::popcount(p.list);
+        const u32 first = boundary - 4*(p.pair ? count : count-1);
+        const u32 base = p.pair ? first-(p.pre ? 8 : 0) :
+            first + (p.down ? 4*count-(p.pre ? 0 : 4) : (p.pre ? -4u : 0u));
+        if (p.thumb) {
+            nds->ARM9Write16(code,0x462C); // MOV r4,r5: dirty mapped register
+            nds->ARM9Write16(code+2,0x3701); // ADDS r7,#1
+            nds->ARM9Write16(code+4,p.op);
+            nds->ARM9Write16(code+6,0x2601); // MOVS r6,#1: forbidden on abort
+            nds->ARM9Write16(code+8,0xE7FE);
+            nds->ARM9Write16(success,0x2601);
+            nds->ARM9Write16(success+2,0xE7FE);
+        } else {
+            nds->ARM9Write32(code,0xE1A04005);
+            nds->ARM9Write32(code+4,0xE2977001);
+            nds->ARM9Write32(code+8,p.op);
+            nds->ARM9Write32(code+12,0xE3B06001);
+            nds->ARM9Write32(code+16,0xEAFFFFFE);
+            nds->ARM9Write32(success,0xE3B06001);
+            nds->ARM9Write32(success+4,0xEAFFFFFE);
+        }
+        cpu.CP15Write(0x600,Vectors|0x17);
+        cpu.CP15Write(0x610,Driver|0x17);
+        cpu.CP15Write(0x620,(boundary-0x1000)|0x17);
+        cpu.CP15Write(0x630,boundary|0x17);
+        cpu.CP15Write(0x503,0x3333);
+        cpu.CP15Write(0x502,0x3333);
+        cpu.CP15Write(0x100,0x2001);
+        for (unsigned phase = 0; phase < 4; ++phase)
+        {
+            const bool deny = !(phase&1), abort = deny && !p.skip;
+            bool cached = false;
+#ifdef JIT_ENABLED
+            cached = jit && nds->JIT.JitBlocks9.contains(code | unsigned(p.thumb));
+#endif
+            const u32 old = cpu.CPSR;
+            cpu.CPSR = (InitialCPSR & ~0x1Fu) | p.mode | (p.thumb ? 0x20 : 0);
+            cpu.UpdateMode(old,cpu.CPSR);
+            for (unsigned r = 0; r < 15; ++r) cpu.R[r] = 0x12340000 + r;
+            cpu.R[7] = 0xFFFFFFFF;
+            cpu.R[p.rn] = base;
+            const u32 initialBase = cpu.R[p.rn];
+            cpu.R_ABT[2] = SPSRSentinel;
+            // User bank holds distinct values while FIQ registers remain active.
+            if (p.user) for (unsigned r = 0; r < 7; ++r) cpu.R_FIQ[r] = 0x56780008+r;
+            u32 source[16], loaded[16] = {};
+            std::copy(std::begin(cpu.R),std::end(cpu.R),source);
+            source[4] = source[5]; source[7] = 0;
+            source[15] = code + 2*width + (p.thumb ? 4 : 8);
+            if (p.user) for (unsigned r=8;r<15;++r) source[r]=cpu.R_FIQ[r-8];
+            unsigned index=0;
+            for (unsigned r=0;r<16;++r) if(p.list & (1u<<r)) {
+                loaded[r] = r==15 ? success | unsigned(p.thumb) : 0x24680000+r;
+                nds->ARM9Write32(first+4*index++,loaded[r]);
+            }
+            // Single-register probes reside on the second page.
+            const unsigned page = count==1 ? 3 : 2+deniedPage;
+            cpu.CP15Write(0x502,deny ? 0x3333 & ~(0xFu << (4*page)) : 0x3333);
+            cpu.StopExecution=0; cpu.JumpTo(code|unsigned(p.thumb)); cpu.Cycles=0;
+            nds->ARM9Timestamp=0;
+            for(unsigned step=0;step<5;++step) {
+                nds->ARM9Target=nds->ARM9Timestamp+1;
+#ifdef JIT_ENABLED
+                if(jit) cpu.Execute<CPUExecuteMode::JIT>(); else
+#endif
+                    cpu.Execute<CPUExecuteMode::Interpreter>();
+                if((cpu.CPSR&0x1F)==0x17 || cpu.R[6]==1) break;
+            }
+            const u32 expectedFlags = (0x68000040u | p.mode | (p.thumb ? 0x20 : 0));
+            bool ok = (!jit || phase<2 || cached) && (!jit || phase!=1 || p.skip || !cached);
+            if(abort) ok &= cpu.CPSR==((expectedFlags&~0xBFu)|0x97) &&
+                cpu.R_ABT[2]==expectedFlags && cpu.R[14]==code+2*width+8 &&
+                cpu.R[15]==Vectors+0x14 && cpu.R[6]!=1;
+            else ok &= cpu.R[6]==1 && (cpu.CPSR&0x3F)==(p.mode|(p.thumb?0x20u:0));
+            // Inspect the original bank without altering the exception state.
+            cpu.UpdateMode(cpu.CPSR,p.mode,true);
+            const u32 actualBase=cpu.R[p.rn];
+            // A user-bank transfer must not damage the active FIQ bank.
+            if (p.user) for (unsigned r=8;r<15;++r)
+                if (r!=p.rn) ok &= cpu.R[r]==0x12340000+r;
+            u32 expectedBase=initialBase;
+            if(!abort && !p.skip) {
+                if(p.wb) expectedBase = p.pair ? initialBase+8 : initialBase+(p.down ? -4*count : 4*count);
+                else if(p.load && (p.list&(1u<<p.rn))) expectedBase=loaded[p.rn];
+            }
+            ok &= actualBase==expectedBase;
+            if(!abort && !p.skip && p.load) for(unsigned r=0;r<15;++r) {
+                if(!(p.list&(1u<<r)) || r==p.rn || r==6) continue;
+                const u32 value=p.user && r>=8 ? cpu.R_FIQ[r-8] : cpu.R[r];
+                ok &= value==loaded[r];
+            }
+            cpu.UpdateMode(p.mode,cpu.CPSR,true);
+            index=0;
+            for(unsigned r=0;r<16;++r) if(p.list&(1u<<r)) {
+                const u32 addr=first+4*index++, value=nds->ARM9Read32(addr);
+                if(!p.load && !abort && !p.skip) ok &= value==source[r];
+                else if(p.load || p.skip || (addr>>12)==((page==3 ? boundary : boundary-0x1000)>>12)) ok &= value==loaded[r];
+            }
+            ++checked; failures+=!ok;
+            std::printf("multiple-abort/%s/%s/page%u/phase%u: %s cached=%d base=%08x/%08x PC=%08x CPSR=%08x SPSR=%08x\n",
+                jit?"jit":"interpreter",p.name,deniedPage,phase,ok?"PASS":"FAIL",cached,actualBase,expectedBase,cpu.R[15],cpu.CPSR,cpu.R_ABT[2]);
+        }
+    }
+    std::printf("MPU multiple transfers: %u/%u passed\n",checked-failures,checked);
+    return failures ? 1 : 0;
+}

@@ -1246,12 +1246,13 @@ bool ARMv4::DataRead32(u32 addr, u32* val)
     return true;
 }
 
-void ARMv4::DataRead32S(u32 addr, u32* val)
+bool ARMv4::DataRead32S(u32 addr, u32* val)
 {
     addr &= ~3;
 
     *val = BusRead32(addr);
     DataCycles += NDS.ARM7MemTimings[addr >> 15][3];
+    return true;
 }
 
 bool ARMv4::DataWrite8(u32 addr, u8 val)
@@ -1282,12 +1283,13 @@ bool ARMv4::DataWrite32(u32 addr, u32 val)
     return true;
 }
 
-void ARMv4::DataWrite32S(u32 addr, u32 val)
+bool ARMv4::DataWrite32S(u32 addr, u32 val)
 {
     addr &= ~3;
 
     BusWrite32(addr, val);
     DataCycles += NDS.ARM7MemTimings[addr >> 15][3];
+    return true;
 }
 
 

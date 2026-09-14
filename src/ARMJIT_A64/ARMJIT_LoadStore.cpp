@@ -503,6 +503,42 @@ void Compiler::T_Comp_MemSPRel()
     Comp_MemAccess(CurInstr.T_Reg(8), 13, Op2(offset), 32, load ? 0 : memop_Store);
 }
 
+void Compiler::Comp_MemBlockPermission(int rn, int count, bool store, bool preinc, bool decrement)
+{
+    if (Num != 0) return;
+    const s32 offset = decrement ? -4*count + (preinc ? 0 : 4) : (preinc ? 4 : 0);
+    ADDI2R(W0, MapReg(rn), offset);
+    ANDI2R(W0, W0, ~3u);
+    LSR(W1, W0, 12);
+    LDR(INDEX_UNSIGNED, X2, RCPU, offsetof(ARMv5, PU_Map));
+    LDRB(W1, X2, ArithOption(X1));
+    // A register list spans at most two 4 KiB permission pages, including wrap.
+    if (count > 1)
+    {
+        ADD(W0, W0, 4*(count-1));
+        LSR(W0, W0, 12);
+        LDRB(W0, X2, ArithOption(X0));
+        AND(W1, W1, W0);
+    }
+    const auto allowed = TBNZ(W1, store ? 1 : 0);
+    RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);
+    SaveCPSR(false);
+    MOVI2R(W0, R15);
+    STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, R[15]));
+    MOVI2R(W0, CurInstr.Instr);
+    STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, CurInstr));
+    MOVI2R(W0, CurInstr.CodeCycles);
+    STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, CodeCycles));
+    if (ConstantCycles) ADD(RCycles, RCycles, ConstantCycles);
+    SaveCycles();
+    MOV(X0, RCPU);
+    QuickCallFunction(X1, Thumb ? InterpretTHUMB[CurInstr.Info.Kind] : InterpretARM[CurInstr.Info.Kind]);
+    LoadCycles();
+    LDR(INDEX_UNSIGNED, RCPSR, RCPU, offsetof(ARM, CPSR));
+    QuickTailCall(X0, ARM_Ret);
+    SetJumpTarget(allowed);
+}
+
 s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc, bool decrement, bool usermode, bool skipLoadingRn)
 {
     IrregularCycles = true;
@@ -512,6 +548,7 @@ s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc
     if (regsCount == 0)
         return 0; // actually not the right behaviour TODO: fix me
 
+    Comp_MemBlockPermission(rn, regsCount, store, preinc, decrement);
     int firstReg = *regs.begin();
     if (regsCount == 1 && !usermode && RegCache.LoadedRegs & (1 << firstReg) && !(firstReg == rn && skipLoadingRn))
     {

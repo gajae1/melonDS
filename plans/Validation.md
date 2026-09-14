@@ -228,3 +228,6 @@ AD-08 미배포 소유권 후보 — Windows AudioResampling/core 빌드와 기�
 
 
 1.1.110 — SWP/SWPB의 읽기 실패 후 쓰기·중복 abort, 쓰기 실패 후 Rd 변경, warmed JIT fallback 이후 명령 실행을 수정했다. ARM DDI0100I A4-213/215의 접근 실패 규칙을 적용하며 예외 벡터로 채운 pipeline을 기존 drain/exit 경로로 처리한다. 수정 전 interpreter/fastmem에서 추가20조건 중8실패 재현. 최종 기존 MPU 검사 확장109조건×3경로(예외 복귀·재시도15건 포함), 관련18/18 통과. Black/Solatorobo 각1200 DS boot frames의1.1.109 대조에서 화면·PCM 동일 및 개인 ROM/save hash 보존. 단일쌍 출력 대조이며 성능 개선·실기 abort timing·native ARM64 수락은 주장하지 않는다. 다중/이중 전송과 강제 user 접근은 후속이다. 전체 suite 반복 없음.
+
+
+1.1.111 — LDM/STM·PUSH/POP·Thumb 다중 및 LDRD/STRD의 순차 MPU 검사 누락, fault 후 전송/PC 변경과 base 손상을 수정했다. user-bank 전송은 CPSR/활성 bank를 임시 교환하지 않고 해당 register를 선택한다. Native ARM9은 첫/끝 페이지를 검사하고 금지된 경우에만 원래 register 상태에서 해당 명령을 interpreter로 실행·종료한다. 일반 JIT/fastmem은 유지한다. [ARM DDI0100I A2-21..23](https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/1023/ARM-Architecture.pdf)의 보장 범위로 검증하며 다중 load의 나머지 목적 register·허용된 store 위치의 부분 결과를 실기 정답으로 고정하지 않았다. 수정 전200phase 중 interpreter88/fastmem112실패; 수정 후29종200phase×3경로 모두 통과. stack·banked FIQ·PC load·권한 복구/재사용과 기존 회귀24/24, 실제 A64 생성 guard의 시작/끝 권한·32bit wrap·call/spill/cycle 검사를 포함한4/4(새570조건) 통과. helper 경계는 모델이며 native ARM64/실기 cycle 수락은 아니다. Black/Solatorobo 각1200 DS boot frames×교차3쌍에서 화면·PCM 동일 및 ROM/save 보존. 중앙값 변화 -1.71~+1.72%로 오가며 성능 개선으로 주장하지 않는다. 전체 suite 반복 없음.

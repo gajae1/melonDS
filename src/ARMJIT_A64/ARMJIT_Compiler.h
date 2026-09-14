@@ -218,6 +218,7 @@ public:
     };
     u16 AbortDirtyRegs = 0;
     void Comp_MemPermission(Arm64Gen::ARM64Reg address, bool store);
+    void Comp_MemBlockPermission(int rn, int count, bool store, bool preinc, bool decrement);
     void Comp_MemAccess(int rd, int rn, Op2 offset, int size, int flags);
 
     // 0 = switch mode, 1 = stay arm, 2 = stay thumb
