@@ -893,9 +893,9 @@ void MainWindow::createScreenPanel()
     if (oldpanel) delete oldpanel;
 
     const bool wantsVulkan = globalCfg.GetBool("Screen.UseVulkan") &&
-                             globalCfg.GetInt("3D.Renderer") == renderer3D_Software;
+                             !RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer"));
     hasOGL = (!wantsVulkan && globalCfg.GetBool("Screen.UseGL")) ||
-            (globalCfg.GetInt("3D.Renderer") != renderer3D_Software);
+            RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer"));
 
     if (hasOGL)
     {
@@ -909,7 +909,8 @@ void MainWindow::createScreenPanel()
             hasOGL = false;
 
             globalCfg.SetBool("Screen.UseGL", false);
-            globalCfg.SetInt("3D.Renderer", renderer3D_Software);
+            if (RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer")))
+                globalCfg.SetInt("3D.Renderer", renderer3D_Software);
 
             delete panelGL;
             panelGL = nullptr;
@@ -2459,7 +2460,8 @@ bool MainWindow::applyVideoSettings(bool glchange, bool forceSoftware)
                 if (forceSoftware)
                 {
                     globalCfg.SetBool("Screen.UseGL", false);
-                    globalCfg.SetInt("3D.Renderer", renderer3D_Software);
+                    if (RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer")))
+                        globalCfg.SetInt("3D.Renderer", renderer3D_Software);
                 }
                 for (auto* window : windows) window->createScreenPanel();
                 replaced = true;

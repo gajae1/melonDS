@@ -164,6 +164,7 @@ public:
         bool pending = false;
         bool compiling = false;
         bool failed = false;
+        int vulkanSupport = -1; // Probed on the emulation thread, independent of GL.
     };
     VideoSettingsStatus videoSettingsStatus();
 

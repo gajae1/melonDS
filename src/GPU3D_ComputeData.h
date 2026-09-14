@@ -3,9 +3,10 @@
 // CPU/shader storage layouts shared by compute backends.
 #pragma once
 #include <cstddef>
+#include <span>
 #include "types.h"
 
-namespace melonDS { struct Polygon; }
+namespace melonDS { struct Polygon; class GPU3D; }
 
 namespace melonDS::ComputeData {
 inline constexpr int MaxVariants = 256;
@@ -110,4 +111,10 @@ static_assert(offsetof(BinResultHeader, SortWorkWorkCount) == 5120);
 // Shared CPU edge setup preserves the DS's fixed-point interpolation rules.
 void SetupYSpan(RenderPolygon* polygon, SpanSetupY* span, Polygon* source, int from, int to, int side, s32 positions[10][2]);
 void SetupYSpanDummy(RenderPolygon* polygon, SpanSetupY* span, Polygon* source, int vertex, int side, s32 positions[10][2]);
+// Destination capacities are reserved by the caller's batch planner.
+void PreparePolygon(Polygon* source, u32 index, RenderPolygon& polygon,
+    std::span<SpanSetupY> edges, int& numEdges, std::span<SetupIndices> indices, int& numIndices,
+    int scale, bool hires);
+MetaUniform PrepareMeta(const GPU3D& gpu, u32 polygons, u32 variants);
+void DecodeClearBitmap(const u8* textureVRAM, u32* colors, u32* depths, u8 dirty);
 }

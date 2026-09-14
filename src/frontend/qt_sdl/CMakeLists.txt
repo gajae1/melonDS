@@ -321,6 +321,14 @@ if (ENABLE_OGLRENDERER)
     target_compile_definitions(core PUBLIC MELONDS_GL_HEADER=${MELONDS_GL_HEADER})
 endif()
 
+if (TARGET vulkan-compute)
+    # Keep the MIT notice beside runtime output, including Windows builds.
+    add_custom_command(TARGET melonDS POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:melonDS>/licenses"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/src/Vulkan/LICENSE.volk"
+            "$<TARGET_FILE_DIR:melonDS>/licenses/volk-LICENSE.txt" VERBATIM)
+endif()
+
 if (MELONDS_BUILD_TESTS)
     include("${CMAKE_SOURCE_DIR}/tests/FrontendInput.cmake")
 endif()

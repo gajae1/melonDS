@@ -29,6 +29,11 @@
 #include "ARM.h"
 #include "GPU_OpenGL.h"
 #include "GPU_Soft.h"
+#include "RenderCost.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "GPU_Vulkan.h"
+#endif
+#include "frontend/qt_sdl/RendererSelection.h"
 #include <cstring>
 
 using namespace melonDS;
@@ -97,6 +102,7 @@ struct NativeContext
     }
 };
 struct EmuThread { bool emuIsActive() const { return false; } };
+struct PresentationWindow { int getWindowID() const { return 0; } };
 struct EmuInstance
 {
     EmuThread thread;
@@ -114,6 +120,9 @@ struct OSDItem
 class ScreenPanelGL
 {
 public:
+    RenderCostPresentMeter RenderCost;
+    PresentationWindow window;
+    PresentationWindow* mainWindow = &window;
     bool initOpenGL();
     bool deinitOpenGL();
     bool drawScreen();
@@ -294,7 +303,9 @@ bool RuntimeFailure(ScreenPanelGL& panel, bool current)
 
 namespace CoreLifetime
 {
-enum { renderer3D_Software, renderer3D_OpenGL, renderer3D_OpenGLCompute };
+using ::renderer3D_Software;
+using ::renderer3D_OpenGL;
+using ::renderer3D_OpenGLCompute;
 struct Config
 {
     int GetInt(const char* key) const { return !std::strcmp(key, "3D.GL.ScaleFactor") ? 1 : 0; }

@@ -1072,41 +1072,12 @@ if (WIN32)
     set_tests_properties(vulkan-native-presentation PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
 endif()
 
-if (WIN32 AND MELONDS_TEST_GPU)
-    find_program(MELONDS_GLSLANG_VALIDATOR NAMES glslangValidator glslang)
-    find_program(MELONDS_SPIRV_VAL NAMES spirv-val)
-    find_path(MELONDS_VULKAN_HEADERS vulkan/vulkan.h)
-    if (MELONDS_GLSLANG_VALIDATOR AND MELONDS_SPIRV_VAL AND MELONDS_VULKAN_HEADERS)
-        add_executable(ComputeShaderExport "${CMAKE_SOURCE_DIR}/tests/ComputeShaderExport.cpp"
-            "${CMAKE_SOURCE_DIR}/src/GPU3D_ComputeShader.cpp")
-        target_include_directories(ComputeShaderExport PRIVATE "${CMAKE_SOURCE_DIR}/src")
-        set(vulkan_shader_dir "${CMAKE_CURRENT_BINARY_DIR}/vulkan-compute-shaders")
-        set(vulkan_glsl_files)
-        set(vulkan_spirv_files)
-        foreach(variant RANGE 0 31)
-            list(APPEND vulkan_glsl_files "${vulkan_shader_dir}/${variant}.comp")
-        endforeach()
-        add_custom_command(OUTPUT "${vulkan_shader_dir}/export.stamp"
-            BYPRODUCTS ${vulkan_glsl_files}
-            COMMAND ComputeShaderExport "${vulkan_shader_dir}"
-            COMMAND "${CMAKE_COMMAND}" -E touch "${vulkan_shader_dir}/export.stamp"
-            DEPENDS ComputeShaderExport VERBATIM)
-        foreach(variant RANGE 0 31)
-            set(spirv "${vulkan_shader_dir}/${variant}.spv")
-            add_custom_command(OUTPUT "${spirv}"
-                COMMAND "${MELONDS_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
-                    "${vulkan_shader_dir}/${variant}.comp" -o "${spirv}"
-                COMMAND "${MELONDS_SPIRV_VAL}" --target-env vulkan1.1 "${spirv}"
-                DEPENDS "${vulkan_shader_dir}/export.stamp" "${vulkan_shader_dir}/${variant}.comp" VERBATIM)
-            list(APPEND vulkan_spirv_files "${spirv}")
-        endforeach()
-        add_executable(VulkanComputeSpans "${CMAKE_SOURCE_DIR}/tests/VulkanComputeSpans.cpp"
-            "${CMAKE_SOURCE_DIR}/src/GPU3D_ComputeData.cpp"
-            "${CMAKE_SOURCE_DIR}/src/GPU3D_ComputeShader.cpp"
-            "${CMAKE_SOURCE_DIR}/src/frontend/glad/glad.c" ${vulkan_spirv_files})
-        target_include_directories(VulkanComputeSpans PRIVATE "${CMAKE_SOURCE_DIR}/src" "${MELONDS_VULKAN_HEADERS}")
-        target_link_libraries(VulkanComputeSpans PRIVATE ${QT_LINK_LIBS})
-        add_test(NAME gpu-vulkan-compute-spans COMMAND VulkanComputeSpans "${vulkan_shader_dir}")
-        set_tests_properties(gpu-vulkan-compute-spans PROPERTIES TIMEOUT 40 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
-    endif()
+if (MELONDS_TEST_GPU AND TARGET vulkan-compute)
+    add_executable(VulkanComputeSpans "${CMAKE_SOURCE_DIR}/tests/VulkanComputeSpans.cpp"
+        "${CMAKE_SOURCE_DIR}/src/GPU3D_ComputeData.cpp"
+        "${CMAKE_SOURCE_DIR}/src/GPU3D_ComputeShader.cpp"
+        "${CMAKE_SOURCE_DIR}/src/frontend/glad/glad.c")
+    target_link_libraries(VulkanComputeSpans PRIVATE vulkan-compute ${QT_LINK_LIBS})
+    add_test(NAME gpu-vulkan-compute-spans COMMAND VulkanComputeSpans)
+    set_tests_properties(gpu-vulkan-compute-spans PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
 endif()

@@ -122,7 +122,7 @@
       <string>Display settings</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_2">
-      <item row="7" column="1">
+      <item row="8" column="1">
        <widget class="QSpinBox" name="sbVSyncInterval">
         <property name="whatsThis">
          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;The interval at which to synchronize to the monitor's refresh rate. Set to 1 for a 60Hz monitor, 2 for 120Hz, ...&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
@@ -135,13 +135,13 @@
         </property>
        </widget>
       </item>
-      <item row="8" column="0" colspan="2">
+      <item row="9" column="0" colspan="2">
        <widget class="QCheckBox" name="cbVulkanDisplay">
         <property name="text"><string>Vulkan display (experimental)</string></property>
-        <property name="toolTip"><string>Windows only. Displays Software-rendered screens using Vulkan. GPU 3D rendering is not included. Uses synchronized presentation; falls back to native display if unavailable.</string></property>
+        <property name="toolTip"><string>Windows only. Presents the DS screens using Vulkan, with either Software or Vulkan 3D rendering. Uses synchronized presentation; falls back to native display if unavailable.</string></property>
        </widget>
       </item>
-      <item row="5" column="0" colspan="2">
+      <item row="6" column="0" colspan="2">
        <widget class="QCheckBox" name="cbGLDisplay">
         <property name="whatsThis">
          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Use OpenGL to draw the DS screens to the main window. May result in better frame pacing. Mandatory when using the OpenGL 3D renderer.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
@@ -151,7 +151,7 @@
         </property>
        </widget>
       </item>
-      <item row="4" column="0" colspan="2">
+      <item row="5" column="0" colspan="2">
        <spacer name="verticalSpacer">
         <property name="orientation">
          <enum>Qt::Orientation::Vertical</enum>
@@ -167,7 +167,7 @@
         </property>
        </spacer>
       </item>
-      <item row="6" column="0" colspan="2">
+      <item row="7" column="0" colspan="2">
        <widget class="QCheckBox" name="cbVSync">
         <property name="whatsThis">
          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;When using OpenGL, synchronize the video output to your monitor's refresh rate.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
@@ -177,7 +177,7 @@
         </property>
        </widget>
       </item>
-      <item row="7" column="0">
+      <item row="8" column="0">
        <widget class="QLabel" name="label_2">
         <property name="sizePolicy">
          <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
@@ -227,6 +227,11 @@
         </property>
        </widget>
       </item>
+      <item row="4" column="0" colspan="2">
+       <widget class="QRadioButton" name="rb3DVulkan">
+        <property name="text"><string>Vulkan (Compute shader)</string></property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -235,6 +240,8 @@
  <tabstops>
   <tabstop>rb3DSoftware</tabstop>
   <tabstop>rb3DOpenGL</tabstop>
+  <tabstop>rb3DCompute</tabstop>
+  <tabstop>rb3DVulkan</tabstop>
   <tabstop>cbGLDisplay</tabstop>
   <tabstop>cbVSync</tabstop>
   <tabstop>sbVSyncInterval</tabstop>

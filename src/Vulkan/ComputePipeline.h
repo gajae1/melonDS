@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+#include "Device.h"
+#include "GPU3D_ComputeData.h"
+#include <array>
+#include <span>
+#include <vector>
+
+namespace melonDS::Vulkan {
+// Native-resolution compute graph. Prepared polygons and decoded texture arrays
+// use the same integer formats as the GL compute renderer.
+class ComputePipeline {
+public:
+    using Shaders=std::array<std::span<const uint32_t>,32>;
+    struct Texture {
+        std::shared_ptr<Device::Image> image;
+        uint32_t width, height, layers;
+        bool capture;
+    };
+    struct Variant {
+        uint32_t shader;
+        std::shared_ptr<const Texture> texture;
+        // 0 clamp, 1 repeat, 2 mirrored repeat, as in the DS texture parameters.
+        uint32_t wrapU=0, wrapV=0;
+        float captureYOffset=0;
+    };
+    struct Batch {
+        std::span<const ComputeData::RenderPolygon> polygons;
+        std::span<const ComputeData::SpanSetupY> edges;
+        std::span<const ComputeData::SetupIndices> indices;
+        std::span<const Variant> variants;
+        ComputeData::MetaUniform meta;
+        bool wbuffer=false;
+    };
+    explicit ComputePipeline(std::shared_ptr<Device> device,const Shaders& shaders);
+    ~ComputePipeline();
+    ComputePipeline(const ComputePipeline&)=delete;
+    ComputePipeline& operator=(const ComputePipeline&)=delete;
+    std::vector<uint32_t> Render(const Batch& batch);
+    std::vector<uint32_t> Render(std::span<const Batch> batches);
+    std::shared_ptr<const Texture> UploadTexture(uint32_t width, uint32_t height,
+        uint32_t layers, std::span<const uint32_t> pixels, bool capture=false);
+    std::shared_ptr<const Texture> CreateTexture(uint32_t width, uint32_t height, uint32_t layers);
+    void UploadTextureLayer(const Texture& texture, uint32_t layer, std::span<const uint32_t> pixels);
+    void UploadClearBitmap(std::span<const uint32_t> colors, std::span<const uint32_t> depths);
+private:
+    void Init(const Shaders& shaders);
+    void Cleanup();
+    void Bind(VkCommandBuffer command,unsigned shader,VkDescriptorSet storage,VkDescriptorSet image,
+        VkDescriptorSet textures=VK_NULL_HANDLE);
+    void Validate(const Batch& batch) const;
+    void RecordBatch(VkCommandBuffer command,const Batch& batch,bool first,std::span<const VkDescriptorSet> textures);
+    void WriteTextureSet(VkDescriptorSet set,const Variant& variant);
+    void UploadImage(const std::shared_ptr<Device::Image>& image,uint32_t width,uint32_t height,
+        uint32_t layers,std::span<const uint32_t> pixels,VkImageLayout oldLayout,uint32_t firstLayer=0);
+    void Barrier(VkCommandBuffer command);
+    std::shared_ptr<Device> owner;
+    const volk::VolkDeviceTable& f;
+    VkDevice device;
+    VkDescriptorPool pool{};
+    VkDescriptorPool texturePool{};
+    VkPipelineLayout layout{};
+    std::array<VkDescriptorSetLayout,4> setLayouts{};
+    std::array<VkPipeline,32> pipelines{};
+    VkDescriptorSet setupSet{},rasterSet{},metaSet{},textureSet{},indicesSet{},outputSet{};
+    // polygon, X span, Y span, color/depth/attributes, result, bin, work, meta, indices
+    std::array<std::shared_ptr<Device::Buffer>,11> buffers;
+    std::shared_ptr<Device::Buffer> readback;
+    std::shared_ptr<Device::Image> output,clearColor,clearDepth;
+    std::shared_ptr<const Texture> dummyTexture,dummyCapture;
+    VkBufferView indicesView{};
+    VkSampler sampler{};
+    std::array<VkSampler,9> textureSamplers{};
+    bool clearBitmapReady=false;
+};
+}

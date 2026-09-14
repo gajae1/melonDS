@@ -34,7 +34,7 @@
 inline bool VideoSettingsDialog::UsesGL()
 {
     auto& cfg = emuInstance->getGlobalConfig();
-    return (!cfg.GetBool("Screen.UseVulkan") && cfg.GetBool("Screen.UseGL")) || (cfg.GetInt("3D.Renderer") != renderer3D_Software);
+    return (!cfg.GetBool("Screen.UseVulkan") && cfg.GetBool("Screen.UseGL")) || RendererUsesOpenGL(cfg.GetInt("3D.Renderer"));
 }
 
 VideoSettingsDialog* VideoSettingsDialog::currentDlg = nullptr;
@@ -45,15 +45,16 @@ void VideoSettingsDialog::setEnabled()
     int renderer = cfg.GetInt("3D.Renderer");
 
     bool softwareRenderer = renderer == renderer3D_Software;
-    ui->cbGLDisplay->setEnabled(softwareRenderer && !cfg.GetBool("Screen.UseVulkan"));
+    const bool ramOutput = !RendererUsesOpenGL(renderer);
+    ui->cbGLDisplay->setEnabled(ramOutput && !cfg.GetBool("Screen.UseVulkan"));
 #ifdef Q_OS_WIN
-    ui->cbVulkanDisplay->setEnabled(softwareRenderer);
+    ui->cbVulkanDisplay->setEnabled(ramOutput);
 #else
     ui->cbVulkanDisplay->setEnabled(false);
 #endif
     ui->cbSoftwareThreaded->setEnabled(softwareRenderer);
-    ui->cbPixelConversion->setEnabled(softwareRenderer);
-    ui->cbxGLResolution->setEnabled(!softwareRenderer);
+    ui->cbPixelConversion->setEnabled(ramOutput);
+    ui->cbxGLResolution->setEnabled(RendererUsesOpenGL(renderer));
     ui->cbBetterPolygons->setEnabled(renderer == renderer3D_OpenGL);
     ui->cbxComputeHiResCoords->setEnabled(renderer == renderer3D_OpenGLCompute);
     setVsyncControlEnable(UsesGL());
@@ -82,6 +83,7 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     grp3DRenderer->addButton(ui->rb3DSoftware, renderer3D_Software);
     grp3DRenderer->addButton(ui->rb3DOpenGL,   renderer3D_OpenGL);
     grp3DRenderer->addButton(ui->rb3DCompute,  renderer3D_OpenGLCompute);
+    grp3DRenderer->addButton(ui->rb3DVulkan,   renderer3D_Vulkan);
 #if QT_VERSION < QT_VERSION_CHECK(5, 15, 0)
     connect(grp3DRenderer, SIGNAL(buttonClicked(int)), this, SLOT(onChange3DRenderer(int)));
 #else
@@ -91,6 +93,10 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
 
 #ifndef OGLRENDERER_ENABLED
     ui->rb3DOpenGL->setEnabled(false);
+    ui->rb3DCompute->setEnabled(false);
+#endif
+#ifndef VULKANRENDERER_ENABLED
+    ui->rb3DVulkan->setEnabled(false);
 #endif
 
 #ifdef __APPLE__
@@ -147,8 +153,16 @@ void VideoSettingsDialog::refreshRendererStatus()
         const QSignalBlocker blocker(ui->cbGLDisplay);
         ui->cbGLDisplay->setChecked(cfg.GetBool("Screen.UseGL"));
     }
-#ifndef __APPLE__
+#if defined(OGLRENDERER_ENABLED) && !defined(__APPLE__)
     ui->rb3DCompute->setEnabled(status.computeSupport != 0);
+#endif
+#ifdef VULKANRENDERER_ENABLED
+    ui->rb3DVulkan->setEnabled(status.vulkanSupport != 0);
+    ui->rb3DVulkan->setToolTip(status.vulkanSupport == 0
+        ? tr("No usable Vulkan 1.1 compute device was found.")
+        : tr("Renders 3D on the GPU at native 256x192 resolution. Internal upscaling is not available."));
+#else
+    ui->rb3DVulkan->setToolTip(tr("Vulkan 3D is not included in this build."));
 #endif
     ui->rb3DCompute->setToolTip(status.computeSupport == 0
         ? tr("Compute rendering requires OpenGL 4.3 and compute functions on this context.") : QString());
@@ -160,6 +174,7 @@ void VideoSettingsDialog::refreshRendererStatus()
             case renderer3D_Software: return tr("Software");
             case renderer3D_OpenGL: return tr("OpenGL");
             case renderer3D_OpenGLCompute: return tr("OpenGL Compute");
+            case renderer3D_Vulkan: return tr("Vulkan 3D (256x192)");
             default: return tr("Not started");
         }
     };
@@ -247,8 +262,7 @@ void VideoSettingsDialog::on_cbVulkanDisplay_stateChanged(int state)
     auto& cfg = emuInstance->getGlobalConfig();
     cfg.SetBool("Screen.UseVulkan", state != 0);
     setEnabled();
-    // Native and Vulkan both use Software rasterization but own different
-    // window resources, so a surface rebuild is required even without GL.
+    // Presentation owns different window resources, including with Vulkan 3D.
     emit updateVideoSettings(true);
 }
 

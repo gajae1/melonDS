@@ -160,6 +160,22 @@ int main(int argc, char** argv)
 #endif
 
         dialog = open();
+        auto* vulkan3D = dialog->findChild<QRadioButton*>("rb3DVulkan");
+        Require(vulkan3D, "Vulkan 3D selection missing");
+#ifdef VULKANRENDERER_ENABLED
+        worker.status.vulkanSupport = 1; publish();
+        vulkan3D->click(); QApplication::processEvents();
+        Require(cfg.GetInt("3D.Renderer") == renderer3D_Vulkan && !dialog->UsesGL() &&
+                !dialog->findChild<QComboBox*>("cbxGLResolution")->isEnabled(),
+                "Vulkan 3D requires GL or exposes unsupported upscaling");
+        worker.status.renderer = renderer3D_Vulkan; worker.status.pending = false; publish();
+        label = dialog->findChild<QLabel*>("lblRendererStatus");
+        Require(label->text().contains("Active: Vulkan 3D"), "Vulkan active status missing");
+        worker.status.vulkanSupport = 0; publish();
+        Require(!vulkan3D->isEnabled(), "unavailable Vulkan 3D remained selectable");
+#else
+        Require(!vulkan3D->isEnabled(), "build without Vulkan offered Vulkan 3D");
+#endif
         window.closed = true; publish(); dialog->reject();
         QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         std::puts("Video settings: pending/failure/retry/capability/native fallback/Cancel/closed owner PASS");

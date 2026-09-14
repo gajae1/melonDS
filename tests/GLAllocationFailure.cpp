@@ -3,6 +3,10 @@
 #include "NDS.h"
 #include "GPU_OpenGL.h"
 #include "GPU_Soft.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "GPU_Vulkan.h"
+#endif
+#include "frontend/qt_sdl/RendererSelection.h"
 #include <SDL2/SDL.h>
 #include <cstdio>
 #include <cstring>
@@ -12,7 +16,6 @@
 namespace AllocationFixture
 {
 using namespace melonDS;
-enum { renderer3D_Software, renderer3D_OpenGL, renderer3D_OpenGLCompute };
 struct Config
 {
     int Scale = 1;

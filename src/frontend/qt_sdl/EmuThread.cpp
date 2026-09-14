@@ -51,6 +51,9 @@
 #include "DSi.h"
 #include "DSi_I2C.h"
 #include "GPU_Soft.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "GPU_Vulkan.h"
+#endif
 #include "GPU_OpenGL.h"
 #include "OpenGLSupport.h"
 
@@ -122,20 +125,24 @@ void EmuThread::run()
     std::unique_ptr<GdbFrame> debugger;
 #endif
     Config::Table& globalCfg = emuInstance->getGlobalConfig();
+#ifdef VULKANRENDERER_ENABLED
+    {
+        std::string error;
+        const bool supported = VulkanRenderer::IsAvailable(error);
+        {
+            QMutexLocker locker(&videoSettingsMutex);
+            videoStatus.vulkanSupport = supported;
+        }
+        emit videoSettingsStatusChanged();
+    }
+#endif
     const auto applyPendingVideo = [&] {
         if (!videoSettingsDirty) return;
         QMutexLocker renderLocker(&emuInstance->renderLock);
         if (useOpenGL)
-        {
             emuInstance->setVSyncGL(true);
-            videoRenderer = globalCfg.GetInt("3D.Renderer");
-        }
-#ifdef OGLRENDERER_ENABLED
-        else
-#endif
-        {
-            videoRenderer = 0;
-        }
+        videoRenderer = globalCfg.GetInt("3D.Renderer");
+        if (!useOpenGL && RendererUsesOpenGL(videoRenderer)) videoRenderer = renderer3D_Software;
         updateRenderer();
         videoSettingsDirty = false;
     };
@@ -154,12 +161,13 @@ void EmuThread::run()
     if (emuInstance->usesOpenGL())
     {
         useOpenGL = initializeGL(0);
-        videoRenderer = useOpenGL ? globalCfg.GetInt("3D.Renderer") : renderer3D_Software;
+        videoRenderer = globalCfg.GetInt("3D.Renderer");
+        if (!useOpenGL && RendererUsesOpenGL(videoRenderer)) videoRenderer = renderer3D_Software;
     }
     else
     {
         useOpenGL = false;
-        videoRenderer = 0;
+        videoRenderer = globalCfg.GetInt("3D.Renderer");
     }
 
     //updateRenderer();
@@ -396,6 +404,13 @@ void EmuThread::run()
                     debugger.reset();
 #endif
                     nlines = emuInstance->nds->RunFrame();
+                }
+                if (emuInstance->nds->GetRenderer().HasRenderFailure())
+                {
+                    videoRenderer = renderer3D_Software;
+                    updateRenderer();
+                    publishVideoSettings(true);
+                    emuInstance->osdAddMessage(0xFFA0A0, "3D renderer failed; using software rendering");
                 }
                 for (const auto& error : emuInstance->nds->AREngine.TakeErrors())
                 {
@@ -805,8 +820,11 @@ void EmuThread::handleMessages()
                     reportGLFailure(0);
                     break;
                 }
-                videoRenderer = renderer3D_Software;
-                updateRenderer();
+                if (RendererUsesOpenGL(videoRenderer))
+                {
+                    videoRenderer = renderer3D_Software;
+                    updateRenderer();
+                }
             }
             if (!emuInstance->deinitOpenGL(msg.param.value<int>()))
             {
@@ -1353,20 +1371,37 @@ void EmuThread::updateRenderer()
                 nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
                 break;
             case renderer3D_OpenGL:
+#ifdef OGLRENDERER_ENABLED
                 nds->SetRenderer(std::make_unique<GLRenderer>(*nds, false));
+#else
+                nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
+#endif
                 break;
             case renderer3D_OpenGLCompute:
+#ifdef OGLRENDERER_ENABLED
                 nds->SetRenderer(std::make_unique<GLRenderer>(*nds, true));
+#else
+                nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
+#endif
                 break;
-            default: __builtin_unreachable();
+            case renderer3D_Vulkan:
+#ifdef VULKANRENDERER_ENABLED
+                nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds));
+#else
+                nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
+#endif
+                break;
+            default:
+                nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
+                break;
         }
     }
     if (videoRenderer != renderer3D_Software &&
-        dynamic_cast<SoftRenderer*>(&nds->GetRenderer()))
+        typeid(nds->GetRenderer()) == typeid(SoftRenderer))
     {
         videoRenderer = renderer3D_Software;
         failed = true;
-        emuInstance->osdAddMessage(0xFFA0A0, "OpenGL renderer initialization failed; using software rendering");
+        emuInstance->osdAddMessage(0xFFA0A0, "3D renderer initialization failed; using software rendering");
     }
     lastVideoRenderer = videoRenderer;
 

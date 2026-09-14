@@ -5,6 +5,10 @@
 #include "NDS.h"
 #include "GPU_OpenGL.h"
 #include "GPU_Soft.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "GPU_Vulkan.h"
+#endif
+#include "frontend/qt_sdl/RendererSelection.h"
 
 #include <cstdio>
 #include <cstring>
@@ -15,7 +19,6 @@
 // The production frontend methods run against the real GPU here. Only config
 // reads and OSD delivery are isolated; this is not the Qt window/event loop.
 using namespace melonDS;
-enum { renderer3D_Software, renderer3D_OpenGL, renderer3D_OpenGLCompute };
 struct FixtureConfig
 {
     int Scale = 1;

@@ -1547,7 +1547,12 @@ const std::string FinalPass =
 
 layout (local_size_x = 32) in;
 
+#ifdef VULKAN
+// The setup texel buffer occupies set 3 binding 0 in the shared pipeline layout.
+IMAGE_BINDING(1, rgba8) writeonly uniform image2D FinalFB;
+#else
 IMAGE_BINDING(0, rgba8) writeonly uniform image2D FinalFB;
+#endif
 
 uint BlendFog(uint color, uint depth)
 {

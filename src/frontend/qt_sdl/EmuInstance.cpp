@@ -418,8 +418,8 @@ void EmuInstance::emuStop(StopReason reason)
 
 bool EmuInstance::usesOpenGL()
 {
-    return globalCfg.GetBool("Screen.UseGL") ||
-           (globalCfg.GetInt("3D.Renderer") != renderer3D_Software);
+    return (!globalCfg.GetBool("Screen.UseVulkan") && globalCfg.GetBool("Screen.UseGL")) ||
+           RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer"));
 }
 
 bool EmuInstance::initOpenGL(int win)

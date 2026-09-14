@@ -29,9 +29,9 @@ namespace melonDS
 class SoftRenderer : public Renderer
 {
 public:
-    explicit SoftRenderer(melonDS::NDS& nds);
+    explicit SoftRenderer(melonDS::NDS& nds, std::unique_ptr<Renderer3D> renderer3D = {});
     ~SoftRenderer() override;
-    bool Init() override { return true; }
+    bool Init() override { return Rend3D->Init(); }
     void Reset() override;
     void Stop() override;
 

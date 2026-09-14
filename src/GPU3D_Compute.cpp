@@ -422,36 +422,15 @@ void ComputeRenderer3D::RenderFrame()
     ClearBitmapDirty |= clrBitmapDirty;
     if (GPU3D.RenderDispCnt & (1<<14))
     {
+        ComputeData::DecodeClearBitmap(GPU.VRAMFlat_Texture, ClearBitmap[0], ClearBitmap[1], ClearBitmapDirty);
         if (ClearBitmapDirty & (1<<0))
         {
-            u16* vram = (u16*)&GPU.VRAMFlat_Texture[0x40000];
-            for (int i = 0; i < 256*256; i++)
-            {
-                u16 color = vram[i];
-                u32 r = (color << 1) & 0x3E; if (r) r++;
-                u32 g = (color >> 4) & 0x3E; if (g) g++;
-                u32 b = (color >> 9) & 0x3E; if (b) b++;
-                u32 a = (color & 0x8000) ? 31 : 0;
-
-                ClearBitmap[0][i] = r | (g << 8) | (b << 16) | (a << 24);
-            }
-
             glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[0]);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 256, GL_RED_INTEGER, GL_UNSIGNED_INT, ClearBitmap[0]);
         }
 
         if (ClearBitmapDirty & (1<<1))
         {
-            u16* vram = (u16*)&GPU.VRAMFlat_Texture[0x60000];
-            for (int i = 0; i < 256*256; i++)
-            {
-                u16 val = vram[i];
-                u32 depth = ((val & 0x7FFF) * 0x200) + 0x1FF;
-                u32 fog = (val & 0x8000) << 9;
-
-                ClearBitmap[1][i] = depth | fog;
-            }
-
             glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[1]);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 256, GL_RED_INTEGER, GL_UNSIGNED_INT, ClearBitmap[1]);
         }
@@ -550,15 +529,6 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
     {
         Polygon* polygon = GPU3D.RenderPolygonRAM[first + i];
 
-        u32 nverts = polygon->NumVertices;
-        u32 vtop = polygon->VTop, vbot = polygon->VBottom;
-
-        u32 curVL = vtop, curVR = vtop;
-        u32 nextVL, nextVR;
-
-        RenderPolygons[i].FirstXSpan = numSetupIndices;
-        RenderPolygons[i].Attr = polygon->Attr;
-
         bool foundVariant = false;
         if (i > 0)
         {
@@ -649,137 +619,8 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
         RenderPolygons[i].Variant = prevVariant;
         RenderPolygons[i].TextureLayer = (float)prevTexLayer;
 
-        if (polygon->FacingView)
-        {
-            nextVL = curVL + 1;
-            if (nextVL >= nverts) nextVL = 0;
-            nextVR = curVR - 1;
-            if ((s32)nextVR < 0) nextVR = nverts - 1;
-        }
-        else
-        {
-            nextVL = curVL - 1;
-            if ((s32)nextVL < 0) nextVL = nverts - 1;
-            nextVR = curVR + 1;
-            if (nextVR >= nverts) nextVR = 0;
-        }
-
-        s32 scaledPositions[10][2];
-        s32 ytop = ScreenHeight, ybot = 0;
-        for (int i = 0; i < polygon->NumVertices; i++)
-        {
-            if (HiresCoordinates)
-            {
-                scaledPositions[i][0] = (polygon->Vertices[i]->HiresPosition[0] * ScaleFactor) >> 4;
-                scaledPositions[i][1] = (polygon->Vertices[i]->HiresPosition[1] * ScaleFactor) >> 4;
-            }
-            else
-            {
-                scaledPositions[i][0] = polygon->Vertices[i]->FinalPosition[0] * ScaleFactor;
-                scaledPositions[i][1] = polygon->Vertices[i]->FinalPosition[1] * ScaleFactor;
-            }
-            ytop = std::min(scaledPositions[i][1], ytop);
-            ybot = std::max(scaledPositions[i][1], ybot);
-        }
-        RenderPolygons[i].YTop = ytop;
-        RenderPolygons[i].YBot = ybot;
-        RenderPolygons[i].XMin = ScreenWidth;
-        RenderPolygons[i].XMax = 0;
-
-        if (ybot == ytop)
-        {
-            vtop = 0; vbot = 0;
-
-            RenderPolygons[i].YBot++;
-
-            int j = 1;
-            if (scaledPositions[j][0] < scaledPositions[vtop][0]) vtop = j;
-            if (scaledPositions[j][0] > scaledPositions[vbot][0]) vbot = j;
-
-            j = nverts - 1;
-            if (scaledPositions[j][0] < scaledPositions[vtop][0]) vtop = j;
-            if (scaledPositions[j][0] > scaledPositions[vbot][0]) vbot = j;
-
-            assert(numYSpans < MaxYSpanSetups);
-            u32 curSpanL = numYSpans;
-            SetupYSpanDummy(&RenderPolygons[i], &YSpanSetups[numYSpans++], polygon, vtop, 0, scaledPositions);
-            assert(numYSpans < MaxYSpanSetups);
-            u32 curSpanR = numYSpans;
-            SetupYSpanDummy(&RenderPolygons[i], &YSpanSetups[numYSpans++], polygon, vbot, 1, scaledPositions);
-
-            YSpanIndices[numSetupIndices].PolyIdx = i;
-            YSpanIndices[numSetupIndices].SpanIdxL = curSpanL;
-            YSpanIndices[numSetupIndices].SpanIdxR = curSpanR;
-            YSpanIndices[numSetupIndices].Y = ytop;
-            numSetupIndices++;
-        }
-        else
-        {
-            u32 curSpanL = numYSpans;
-            assert(numYSpans < MaxYSpanSetups);
-            SetupYSpan(&RenderPolygons[i], &YSpanSetups[numYSpans++], polygon, curVL, nextVL, 0, scaledPositions);
-            u32 curSpanR = numYSpans;
-            assert(numYSpans < MaxYSpanSetups);
-            SetupYSpan(&RenderPolygons[i], &YSpanSetups[numYSpans++], polygon, curVR, nextVR, 1, scaledPositions);
-
-            for (u32 y = ytop; y < ybot; y++)
-            {
-                if (y >= scaledPositions[nextVL][1] && curVL != polygon->VBottom)
-                {
-                    while (y >= scaledPositions[nextVL][1] && curVL != polygon->VBottom)
-                    {
-                        curVL = nextVL;
-                        if (polygon->FacingView)
-                        {
-                            nextVL = curVL + 1;
-                            if (nextVL >= nverts)
-                                nextVL = 0;
-                        }
-                        else
-                        {
-                            nextVL = curVL - 1;
-                            if ((s32)nextVL < 0)
-                                nextVL = nverts - 1;
-                        }
-                    }
-
-
-                    assert(numYSpans < MaxYSpanSetups);
-                    curSpanL = numYSpans;
-                    SetupYSpan(&RenderPolygons[i], &YSpanSetups[numYSpans++], polygon, curVL, nextVL, 0, scaledPositions);
-                }
-                if (y >= scaledPositions[nextVR][1] && curVR != polygon->VBottom)
-                {
-                    while (y >= scaledPositions[nextVR][1] && curVR != polygon->VBottom)
-                    {
-                        curVR = nextVR;
-                        if (polygon->FacingView)
-                        {
-                            nextVR = curVR - 1;
-                            if ((s32)nextVR < 0)
-                                nextVR = nverts - 1;
-                        }
-                        else
-                        {
-                            nextVR = curVR + 1;
-                            if (nextVR >= nverts)
-                                nextVR = 0;
-                        }
-                    }
-
-                    assert(numYSpans < MaxYSpanSetups);
-                    curSpanR = numYSpans;
-                    SetupYSpan(&RenderPolygons[i] ,&YSpanSetups[numYSpans++], polygon, curVR, nextVR, 1, scaledPositions);
-                }
-
-                YSpanIndices[numSetupIndices].PolyIdx = i;
-                YSpanIndices[numSetupIndices].SpanIdxL = curSpanL;
-                YSpanIndices[numSetupIndices].SpanIdxR = curSpanR;
-                YSpanIndices[numSetupIndices].Y = y;
-                numSetupIndices++;
-            }
-        }
-
+        ComputeData::PreparePolygon(polygon, i, RenderPolygons[i], YSpanSetups,
+            numYSpans, YSpanIndices, numSetupIndices, ScaleFactor, HiresCoordinates);
         //printf("polygon min max %d %d | %d %d\n", RenderPolygons[i].XMin, RenderPolygons[i].XMinY, RenderPolygons[i].XMax, RenderPolygons[i].XMaxY);
     }
 
@@ -817,62 +658,7 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, BinResultMemory);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, WorkDescMemory);
 
-    MetaUniform meta;
-    meta.DispCnt = GPU3D.RenderDispCnt;
-    meta.NumPolygons = count;
-    meta.NumVariants = numVariants;
-    meta.AlphaRef = GPU3D.RenderAlphaRef;
-    {
-        u32 r = (GPU3D.RenderClearAttr1 << 1) & 0x3E; if (r) r++;
-        u32 g = (GPU3D.RenderClearAttr1 >> 4) & 0x3E; if (g) g++;
-        u32 b = (GPU3D.RenderClearAttr1 >> 9) & 0x3E; if (b) b++;
-        u32 a = (GPU3D.RenderClearAttr1 >> 16) & 0x1F;
-        meta.ClearColor = r | (g << 8) | (b << 16) | (a << 24);
-        meta.ClearDepth = ((GPU3D.RenderClearAttr2 & 0x7FFF) * 0x200) + 0x1FF;
-        meta.ClearAttr = GPU3D.RenderClearAttr1 & 0x3F008000;
-
-        u8 xoff = (GPU3D.RenderClearAttr2 >> 16) & 0xFF;
-        u8 yoff = (GPU3D.RenderClearAttr2 >> 24) & 0xFF;
-        meta.ClearBitmapOffset[0] = (float)xoff / 256.0;
-        meta.ClearBitmapOffset[1] = (float)yoff / 256.0;
-    }
-    for (u32 i = 0; i < 32; i++)
-    {
-        u32 color = GPU3D.RenderToonTable[i];
-        u32 r = (color << 1) & 0x3E;
-        u32 g = (color >> 4) & 0x3E;
-        u32 b = (color >> 9) & 0x3E;
-        if (r) r++;
-        if (g) g++;
-        if (b) b++;
-
-        meta.ToonTable[i*4+0] = r | (g << 8) | (b << 16);
-    }
-    for (u32 i = 0; i < 34; i++)
-    {
-        meta.ToonTable[i*4+1] = GPU3D.RenderFogDensityTable[i];
-    }
-    for (u32 i = 0; i < 8; i++)
-    {
-        u32 color = GPU3D.RenderEdgeTable[i];
-        u32 r = (color << 1) & 0x3E;
-        u32 g = (color >> 4) & 0x3E;
-        u32 b = (color >> 9) & 0x3E;
-        if (r) r++;
-        if (g) g++;
-        if (b) b++;
-
-        meta.ToonTable[i*4+2] = r | (g << 8) | (b << 16);
-    }
-    meta.FogOffset = GPU3D.RenderFogOffset;
-    meta.FogShift = GPU3D.RenderFogShift;
-    {
-        u32 fogR = (GPU3D.RenderFogColor << 1) & 0x3E; if (fogR) fogR++;
-        u32 fogG = (GPU3D.RenderFogColor >> 4) & 0x3E; if (fogG) fogG++;
-        u32 fogB = (GPU3D.RenderFogColor >> 9) & 0x3E; if (fogB) fogB++;
-        u32 fogA = (GPU3D.RenderFogColor >> 16) & 0x1F;
-        meta.FogColor = fogR | (fogG << 8) | (fogB << 16) | (fogA << 24);
-    }
+    const MetaUniform meta = ComputeData::PrepareMeta(GPU3D, count, numVariants);
 
     glBindBuffer(GL_UNIFORM_BUFFER, MetaUniformMemory);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(MetaUniform), &meta);

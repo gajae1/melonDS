@@ -118,6 +118,14 @@ if (ENABLE_GDBSTUB)
     )
 endif()
 
+option(ENABLE_VULKANRENDERER "Enable Vulkan 3D when the shader toolchain is available" ON)
+if (ENABLE_VULKANRENDERER)
+    add_subdirectory(Vulkan)
+endif()
+if (ENABLE_OGLRENDERER OR TARGET vulkan-compute)
+    target_sources(core PRIVATE GPU3D_ComputeData.cpp)
+endif()
+
 if (ENABLE_OGLRENDERER)
     add_subdirectory(OpenGL_shaders)
     target_sources(core PRIVATE
@@ -126,7 +134,6 @@ if (ENABLE_OGLRENDERER)
         GPU3D_OpenGL.cpp
         GPU3D_Compute.cpp
         GPU3D_ComputeShader.cpp
-        GPU3D_ComputeData.cpp
         GPU3D_TexcacheOpenGL.cpp
         GPU3D_TexcacheOpenGL.h
         OpenGLSupport.cpp)

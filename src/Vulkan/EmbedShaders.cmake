@@ -1,0 +1,12 @@
+# Emit aligned integer words, independent of host endianness and runtime paths.
+file(WRITE "${OUTPUT_FILE}" "// Generated from the shared compute shaders.\n#include \"EmbeddedShaders.h\"\nnamespace melonDS::Vulkan {\nnamespace {\n")
+foreach(variant RANGE 0 31)
+    file(READ "${SHADER_DIR}/${variant}.spv" contents HEX)
+    string(REGEX REPLACE "(..)(..)(..)(..)" "0x\\4\\3\\2\\1," contents "${contents}")
+    file(APPEND "${OUTPUT_FILE}" "const uint32_t Shader${variant}[] = {${contents}};\n")
+endforeach()
+file(APPEND "${OUTPUT_FILE}" "}\nconst ComputePipeline::Shaders& EmbeddedShaders() {\nstatic const ComputePipeline::Shaders shaders{{\n")
+foreach(variant RANGE 0 31)
+    file(APPEND "${OUTPUT_FILE}" "Shader${variant},\n")
+endforeach()
+file(APPEND "${OUTPUT_FILE}" "}};\nreturn shaders;\n}\n}\n")

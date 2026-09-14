@@ -7,6 +7,9 @@
 #include "DSi.h"
 #include "Savestate.h"
 #include "GPU_OpenGL.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "GPU_Vulkan.h"
+#endif
 #include "UTF8.h"
 #include <fstream>
 #include <chrono>
@@ -63,7 +66,7 @@ static std::vector<melonDS::u8> Read(const char* name)
 int main(int argc, char** argv)
 {
     using namespace melonDS;
-    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM\n"); return 2; }
+    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute|vulkan frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM\n"); return 2; }
     const char* pcmPath = std::getenv("MELONDS_SMOKE_PCM");
     if (pcmPath && std::getenv("MELONDS_SMOKE_AUDIO_BUFFER")) {
         std::fprintf(stderr, "PCM export and device playback cannot consume the same queue\n");
@@ -82,11 +85,16 @@ int main(int argc, char** argv)
     if (menu && !dsi) return 2;
     const bool software = std::strcmp(argv[2], "software") == 0;
     const bool compute = std::strcmp(argv[2], "compute") == 0;
-    if (!software && !compute && std::strcmp(argv[2], "opengl")) return 2;
+    const bool vulkan = std::strcmp(argv[2], "vulkan") == 0;
+    if (!software && !compute && !vulkan && std::strcmp(argv[2], "opengl")) return 2;
+    const bool ramOutput = software || vulkan;
+#ifndef VULKANRENDERER_ENABLED
+    if (vulkan) { std::fprintf(stderr, "Vulkan renderer is not compiled\n"); return 77; }
+#endif
     const int frames = std::stoi(argv[3]);
     if (frames < 1 || frames > 36000) return 2;
     SDL_Window* window = nullptr; SDL_GLContext context = nullptr;
-    if (!software) {
+    if (!ramOutput) {
         if (SDL_Init(SDL_INIT_VIDEO)) return 77;
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, compute ? 4 : 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, compute ? 3 : 2);
@@ -151,10 +159,16 @@ int main(int argc, char** argv)
             nds = std::make_unique<NDS>(std::move(args));
         }
         nds->SetNDSCart(std::move(cart)); nds->Reset();
-        if (!software) {
+        if (!ramOutput) {
             nds->SetRenderer(std::make_unique<GLRenderer>(*nds, compute));
             if (!dynamic_cast<GLRenderer*>(&nds->GetRenderer())) return 5;
         }
+#ifdef VULKANRENDERER_ENABLED
+        if (vulkan) {
+            nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds));
+            if (!dynamic_cast<VulkanRenderer*>(&nds->GetRenderer())) return 5;
+        }
+#endif
         RendererSettings settings{1,false,false,false};
         if (!nds->GetRenderer().SetRenderSettings(settings)) return 5;
         while (nds->GetRenderer().NeedsShaderCompile())
@@ -231,6 +245,9 @@ int main(int argc, char** argv)
             std::chrono::steady_clock::time_point frameStart;
             if (frameTimesPath) frameStart = std::chrono::steady_clock::now();
             const int lines = nds->RunFrame();
+            if (nds->GetRenderer().HasRenderFailure()) {
+                std::fprintf(stderr, "renderer failed at frame=%d\n", i); return 5;
+            }
             if (frameTimesPath) {
                 frameTimes.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - frameStart).count());
@@ -252,7 +269,7 @@ int main(int argc, char** argv)
             if (std::fclose(pcm.release())) { std::fprintf(stderr, "PCM output close failed\n"); return 17; }
         }
         audio.Report();
-        if (!software) glFinish();
+        if (!ramOutput) glFinish();
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
         if (frameTimesPath) {
             try {
@@ -271,7 +288,7 @@ int main(int argc, char** argv)
         void *top = nullptr, *bottom = nullptr;
         nds->GetRenderer().GetFramebuffers(&top,&bottom);
         std::vector<u32> pixels(256*384);
-        if (software) {
+        if (ramOutput) {
             if (!top || !bottom) return 7;
             std::memcpy(pixels.data(),top,256*192*4);
             std::memcpy(pixels.data()+256*192,bottom,256*192*4);

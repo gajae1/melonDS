@@ -24,7 +24,7 @@
 namespace melonDS
 {
 
-SoftRenderer::SoftRenderer(melonDS::NDS& nds)
+SoftRenderer::SoftRenderer(melonDS::NDS& nds, std::unique_ptr<Renderer3D> renderer3D)
     : Renderer(nds.GPU)
 {
     const size_t len = 256 * 192;
@@ -36,7 +36,7 @@ SoftRenderer::SoftRenderer(melonDS::NDS& nds)
 
     Rend2D_A = std::make_unique<SoftRenderer2D>(GPU.GPU2D_A, *this);
     Rend2D_B = std::make_unique<SoftRenderer2D>(GPU.GPU2D_B, *this);
-    Rend3D = std::make_unique<SoftRenderer3D>(GPU.GPU3D, *this);
+    Rend3D = renderer3D ? std::move(renderer3D) : std::make_unique<SoftRenderer3D>(GPU.GPU3D, *this);
 }
 
 SoftRenderer::~SoftRenderer()
@@ -73,16 +73,19 @@ void SoftRenderer::Stop()
 
 void SoftRenderer::PreSavestate()
 {
+    Rend3D->FinishRendering();
     auto rend3d = dynamic_cast<SoftRenderer3D*>(Rend3D.get());
-    if (rend3d->IsThreaded())
+    if (rend3d && rend3d->IsThreaded())
         rend3d->SetupRenderThread();
 }
 
 void SoftRenderer::PostSavestate()
 {
     auto rend3d = dynamic_cast<SoftRenderer3D*>(Rend3D.get());
-    if (rend3d->IsThreaded())
+    if (rend3d && rend3d->IsThreaded())
         rend3d->EnableRenderThread();
+    // Loading already dirties VRAM and invalidates RenderFrameIdentical in GPU.
+    // Saving must leave the current 3D image available to the next scanlines.
 }
 
 
@@ -90,7 +93,7 @@ bool SoftRenderer::SetRenderSettings(RendererSettings& settings)
 {
     ExpandPixels = PixelConvert::Select(settings.PixelConversion);
     auto rend3d = dynamic_cast<SoftRenderer3D*>(Rend3D.get());
-    rend3d->SetThreaded(settings.Threaded);
+    if (rend3d) rend3d->SetThreaded(settings.Threaded);
     return true;
 }
 

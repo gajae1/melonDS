@@ -871,6 +871,8 @@ public:
     virtual void SwapBuffers() { BackBuffer ^= 1; }
 
     virtual bool NeedsShaderCompile() { return false; }
+    // A failed asynchronous/backend operation must be reported to the frontend.
+    virtual bool HasRenderFailure() const { return false; }
     // False is a terminal shader failure; caller must replace this renderer.
     virtual bool ShaderCompileStep(int& current, int& count) { return true; }
 
