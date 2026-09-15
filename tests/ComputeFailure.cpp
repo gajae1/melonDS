@@ -10,6 +10,7 @@
 #endif
 #include "frontend/qt_sdl/RendererSelection.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -22,6 +23,12 @@ using namespace melonDS;
 struct FixtureConfig
 {
     int Scale = 1;
+    void SetInt(const char* key, int value)
+    {
+        if (std::strcmp(key, "3D.GL.ScaleFactor") != 0)
+            throw std::runtime_error("unexpected renderer config key");
+        Scale = value;
+    }
     int GetInt(const char* key) const
     {
         if (std::strcmp(key, "3D.GL.ScaleFactor") == 0) return Scale;

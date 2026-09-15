@@ -59,6 +59,69 @@ static melonDS::u32 CompositeReference(melonDS::u32 a, melonDS::u32 b,
     return result;
 }
 
+
+static int CheckScaled2DEffects()
+{
+    using namespace melonDS;
+    NDSArgs args; args.JIT = std::nullopt;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    SoftRenderer parent(*nds);
+    auto& gpu = nds->GPU.GPU2D_A;
+    SoftRenderer2D renderer(gpu, parent);
+    renderer.Scaled3DActive = true;
+    constexpr u32 below = 0x04301A07, bottom = 0x20192B39;
+    constexpr u32 aboveFlags[] = {0x02, 0x80, 0xC1, 0xD0};
+    constexpr u32 alphas[] = {0, 1, 15, 31};
+    std::array<u32, 768> source;
+    std::array<u32, 770> output;
+    unsigned checked = 0;
+    for (int scale : {2, 3})
+    for (unsigned slot = 0; slot < 3; ++slot)
+    for (unsigned mode = 0; mode < 4; ++mode)
+    for (unsigned targets : {0u, 0x0101u, 0x3F3Fu})
+    for (unsigned factor : {0u, 8u, 16u})
+    for (u32 flag : aboveFlags)
+    {
+        gpu.BlendCnt = targets | (mode << 6);
+        gpu.EVA = factor; gpu.EVB = 16 - factor; gpu.EVY = factor;
+        const u32 upper = (flag << 24) | 0x001C350B;
+        for (int x = 0; x < 256; ++x)
+        {
+            renderer.Below3D[x] = below;
+            renderer.Below3D[x + 256] = bottom;
+            renderer.BGOBJLine[x] = slot == 0 ? 0x40000000 : upper;
+            renderer.BGOBJLine[x + 256] = slot == 1 ? 0x40000000 : below;
+            renderer.WindowMask[x] = (x & 1) ? 0x3F : 0x1F;
+        }
+        for (int x = 0; x < 256 * scale; ++x)
+            source[x] = (alphas[x % 4] << 24) | 0x00251F3F;
+        output.fill(0xBAADF00D);
+        renderer.ComposeScaledLine(output.data() + 1, source.data(), scale);
+        for (int x = 0; x < 256 * scale; ++x)
+        {
+            const u32 color = source[x];
+            const bool visible = color >> 24;
+            const u32 first = slot == 0 ? (visible ? (color | 0x40000000) : below) : upper;
+            const u32 second = slot == 0 ? (visible ? below : bottom) :
+                slot == 1 && visible ? (color | 0x40000000) : below;
+            const u32 expected = CompositeReference(first, second, gpu.BlendCnt,
+                gpu.EVA, gpu.EVB, gpu.EVY, renderer.WindowMask[x / scale] & 0x20);
+            if (output[x + 1] != expected)
+            {
+                std::fprintf(stderr, "scaled composite scale=%d slot=%u mode=%u pixel=%d expected=%08x actual=%08x\n",
+                    scale, slot, mode, x, expected, output[x + 1]);
+                return 1;
+            }
+            ++checked;
+        }
+        for (size_t x = 0; x < output.size(); ++x)
+            if ((x == 0 || x > size_t(256 * scale)) && output[x] != 0xBAADF00D) return 2;
+    }
+    std::printf("Scaled 2D composition: %u subpixels, alpha holes/occlusion/blending/windows/guards PASS\n", checked);
+    return 0;
+}
+
 static int CheckSoftware2DEffects()
 {
     using namespace melonDS;
@@ -467,7 +530,7 @@ int main(int argc, char** argv)
 {
     using namespace melonDS;
     if (argc == 2 && std::strcmp(argv[1], "software-2d-composite") == 0)
-        return CheckSoftware2DEffects();
+        return CheckSoftware2DEffects() || CheckScaled2DEffects();
     const bool failureCase = argc == 3 && std::strcmp(argv[1], "compute-failure") == 0;
     const bool captureCase = argc == 3 && std::strcmp(argv[1], "capture-readback") == 0;
     const bool midCaptureCase = argc == 3 && std::strcmp(argv[1], "capture-mid") == 0;

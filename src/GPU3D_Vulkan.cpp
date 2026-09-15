@@ -128,6 +128,8 @@ void VulkanRenderer3D::Reset()
 {
     if (Texcache) Texcache->Reset();
     ColorBuffer.fill(0);
+    ScaledColorBuffer.clear();
+    RenderedScale = 1;
     ClearBitmapDirty = 3;
     FrameDirty = true;
 }
@@ -151,6 +153,8 @@ void VulkanRenderer3D::RenderFrame()
         // replace it at the frame boundary; never claim a failed frame as GPU output.
         Failed = true;
         ColorBuffer.fill(0);
+        ScaledColorBuffer.clear();
+        RenderedScale = 1;
         Platform::Log(Platform::LogLevel::Error, "Vulkan 3D frame failed: %s\n", error.what());
     }
 }
@@ -212,6 +216,17 @@ void VulkanRenderer3D::DrawFrame()
         batches.push_back({batch.Polygons, batch.Edges, batch.Indices, batch.Variants,
             ComputeData::PrepareMeta(GPU3D, batch.Polygons.size(), batch.Variants.size()), wbuffer});
     const auto pixels = Pipeline->Render(batches);
+    // Retain all scaled samples for display. The native origin samples below
+    // remain the source of guest capture, independent of host presentation.
+    if (ScaleFactor > 1)
+    {
+        ScaledColorBuffer.resize(pixels.size());
+        std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
+            return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
+        });
+    }
+    else ScaledColorBuffer.clear();
+    RenderedScale = ScaleFactor;
     // Sample native pixel origins without filtering RGB6/A5 or inventing
     // capture alpha. At 1x this is exactly the previous byte conversion.
     // Scaled edge coverage follows the shared compute rasterizer, not a
@@ -224,6 +239,44 @@ void VulkanRenderer3D::DrawFrame()
         ColorBuffer[y * 256 + x] = ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
     }
     FrameDirty = false;
+}
+
+void VulkanRenderer3D::GetScaledLine(int line, int subline, int scale, u32* dst) const
+{
+    if (GPU3D.AbortFrame || line < 0 || line >= 192)
+    {
+        std::fill_n(dst, 256 * scale, 0);
+        return;
+    }
+    // A settings change retains the previous frame until RenderFrame runs.
+    // Sample that retained image at the new display size, not a freed pipeline.
+    const int sourceScale = ScaledColorBuffer.empty() ? 1 : RenderedScale;
+    const u32* source = ScaledColorBuffer.empty() ? ColorBuffer.data() : ScaledColorBuffer.data();
+    const int sourceY = (line * scale + subline) * sourceScale / scale;
+    source += sourceY * 256 * sourceScale;
+    if (sourceScale == scale)
+    {
+        // The steady-state path is contiguous runs, not one division/modulo
+        // per displayed pixel. The second half of the 9-bit scroll is blank.
+        const u32 width = 256 * scale, period = width * 2;
+        u32 position = (GPU3D.RenderXPos & 511) * scale;
+        u32 remaining = width;
+        while (remaining)
+        {
+            const u32 count = std::min(remaining, (position < width ? width : period) - position);
+            if (position < width) std::copy_n(source + position, count, dst);
+            else std::fill_n(dst, count, 0);
+            dst += count;
+            remaining -= count;
+            position = (position + count) % period;
+        }
+        return;
+    }
+    for (int x = 0; x < 256 * scale; ++x)
+    {
+        const u32 sourceX = (x * sourceScale / scale + GPU3D.RenderXPos * sourceScale) % (512 * sourceScale);
+        dst[x] = sourceX < u32(256 * sourceScale) ? source[sourceX] : 0;
+    }
 }
 
 u32* VulkanRenderer3D::GetLine(int line)

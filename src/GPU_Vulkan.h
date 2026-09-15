@@ -3,6 +3,8 @@
 #pragma once
 #include "GPU_Soft.h"
 #include <string>
+#include <array>
+#include <vector>
 
 namespace melonDS
 {
@@ -15,5 +17,15 @@ public:
     static bool IsAvailable(std::string& error);
     bool SetRenderSettings(RendererSettings& settings) override;
     bool HasRenderFailure() const override;
+    void Reset() override;
+    void Stop() override;
+    void DrawScanline(u32 line) override;
+    bool GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height) override;
+
+private:
+    using DisplayBuffers = std::array<std::array<std::vector<u32>, 2>, 2>;
+    DisplayBuffers ScaledBuffers;
+    int DisplayScale = 1;
+    std::array<u32, 256 * 3> ScaledLine3D {};
 };
 }

@@ -382,7 +382,7 @@ struct Variant
     u8 BlendMode;
     int CaptureYOffset;
 
-    bool operator==(const Variant& other)
+    bool operator==(const Variant& other) const noexcept
     {
         return Texture == other.Texture && Sampler == other.Sampler && BlendMode == other.BlendMode &&
                CaptureYOffset == other.CaptureYOffset;

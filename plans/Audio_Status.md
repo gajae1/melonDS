@@ -1,43 +1,43 @@
-# 오디오 점검 상태 — 1.1.126
+# 오디오 점검 상태 — 1.1.127
 
-2026-09-15. 기준 제품 소스 `4a6b2e71`, 작업 브랜치의 문서 기준 `48966ff9`.
-이 점검은 전체 오디오의 청감·물리 지연 또는 모든 장치의 정상 동작을 인증하지 않는다.
+2026-09-16. 기준 제품 1.1.126 `4a6b2e71`, 후속 문서/fixture `55dba795`에서 이어진 수정이다.
+이번 수정은 출력 장치 수명에 한정한다. SPU PCM 계산·Minimum-phase 계수·보간 선택·볼륨·필터 기본값은 바꾸지 않았다.
 
-## 실행한 검사
+## 해결한 종료 소유권 결함 — AD-04
 
-Windows x64의 CMake 4.4.3 / GCC 16.2.0, 기존 로컬 SDK와 CTest를 사용했다.
-오디오 설정 UI, 마이크 경계, callback, 장치 복구/종료, time-stretch, 상태 복원,
-Minimum-phase, SIMD 선택, core clock와 one-shot 상태의 기존 검사 **38/38 통과**, 실패/skip 0(13.97초).
-UI/마이크/device fixture의 대역·SDL dummy 사용과 실제 SPU/상태 검사를 구분한다.
-실제 게임 청취, 물리 endpoint 탈착, 출력 지연과 장기 부하 검사는 이번에 수행하지 않았다.
+1.1.126에서 native open이 `Close`와 `Owner`의 제한 대기보다 늦게 완료되면,
+future에 남은 장치가 생성한 제어 스레드가 아니라 호출 스레드에서 해제될 수 있었다.
+이전 점검은 반례와 Linux 대역 후보까지만 보존했다. 이번에는 Windows의 실제 product 코드에 수정했다.
 
-검사 준비 중 `StateLoadMessages`가 `RendererUsesOpenGL` 선언 누락으로 빌드되지 않았다.
-`RendererSelection.h`를 포함하고 복제한 Software renderer 상수를 제거하여 컴파일을 복구했다.
-이는 테스트 fixture 수정이며 PCM 생성·오디오 장치 구현 변경이 아니다.
+제어 스레드의 종료 분기가 미시작 job을 취소하고 미회수 result·retiring 장치를 정리한 뒤 exited를 게시한다.
+네이티브 해제 동안 handoff mutex를 잡지 않으며, live thread/callback을 detach하거나 메모리를 먼저 해제하지 않는다.
 
-## 새로 재현한 미해결 결함 — AD-04, pending open의 종료 소유권
+보존한 반례를 이번 Windows 실행에서 다시 적용했다.
+수정 전 `close count=1, wrong owner=1, exit observed=1`로 실패했고,
+수정 후 같은 pending-open 검사와 기존 callback/loss/reopen/async-owner 검사가 통과했다.
+관련 오디오·설정·상태·Minimum-phase 검사는 1.1.127의 관련 CTest 110개 묶음에 포함된다.
+UI/SDL dummy/합성 PCM 검사와 실제 OS 출력 검증은 서로 다른 근거다.
 
-`AudioOutput::~AudioOutput()`의 Close가 outstanding open을 기다리다 시간 초과되고,
-`Owner::~Owner()`까지 진입한 뒤 native open이 완료되면, 결과 future에 남은 Impl이
-생성한 제어 스레드가 아니라 호출 스레드에서 소멸한다. 현재 Owner의 종료 분기는
-future/retiring/job을 정리하지 않고 exited만 게시한다.
-기존 FrontendAudio의 SDL dummy/생성 스레드 기록에 결정적인 timeout 동기화를 추가하여
-`close count=1, wrong owner=1, exit observed=1`, exit 1로 재현했다.
-수정안은 제어 스레드에서 미시작 job을 취소하고 결과/retiring을 정리한 뒤 exited를 게시하는 것이다.
+## 실제 Windows 출력 경로 점검
 
-원본 Owner 제어 코드를 별도 Linux C++ 검사에 그대로 추출했다. 장치는 대역이다.
-원본은 3개 수명 시나리오 중 2개 통과, 수정 후보는 GCC 및 Clang ASan/UBSan에서 3개 통과했다.
-이는 Windows SDL/WASAPI 통합 검증이 아니다. 사용자 PC의 프로덕션 수정 요청은 도구 단계에서 차단되어 **수정안은 아직 미반영**이다.
-실패 재현용 테스트 diff와 원본 실행 로그는 로컬 작업 증거에 보존하고, 일반 CTest 소스는 원상복원했다.
-기존 38개 검사를 통과했다는 사실로 새로 재현한 이 결함을 닫지 않는다.
+제품 `melonds-audio-output`/`melonds-wasapi` 라이브러리에 로컬 전용 검사기를 연결했다.
+기본 endpoint에 무음만 전달하며 Open→Start→Stop→Resume→Close를 실행했다.
 
-## 다음 수락 조건
+| 경로 | 요청 frame | 확인한 rate / period | 결과 |
+|---|---:|---|---|
+| SDL의 WASAPI 드라이버 | 128 | 48000 Hz / 128 | 통과 |
+| SDL의 WASAPI 드라이버 | 512 | 48000 Hz / 512 | 통과 |
+| WASAPIShared | 128 | 48000 Hz / 480 | 통과 |
+| WASAPIShared | 512 | 48000 Hz / 480 | 통과 |
 
-1. 수정안과 보존한 FrontendAudio 회귀를 함께 적용해 Windows에서 실패→통과를 확인한다.
-2. pending open의 성공/실패, 미시작 요청 취소, Close timeout 후 재개방과 파괴의 소유권을 확인한다.
-3. 장치 관련 영향 검사와 실제 SDL/WASAPI 재개·종료를 확인한 뒤 프로덕션 수정으로 승격한다.
+Stop 뒤 source callback 증가가 멈추고 Resume 뒤 다시 증가하는 것과 Close 성공을 확인했다.
+이 period는 물리 speaker 지연이 아니다. endpoint는 OS의 현재 기본값이며 실제 청취·탈착·방송 루프백 검사는 아니다.
 
-기존 Stop의 callback 대기와 Owner의 마지막 join은 여전히 무제한일 수 있다.
-이 수정 후보는 잘못된 스레드에서의 자원 해제를 다루며, 영구 정지한 native API를 취소하지 않는다.
-스레드를 detach하거나 살아 있는 callback의 데이터를 해제해 대기만 제거하는 방식은 사용하지 않는다.
-Vulkan 확대 표시는 별도 D-004 작업이며 이번 점검에서 구현·성능·실기 정확도가 개선된 것은 아니다.
+## 남은 범위
+
+- `PauseCallbacks`와 destructor의 최종 join은 native 작업 완료를 기다린다. timeout은 영구 정지한 API를 취소하지 않는다.
+- 실제 게임 잡음, 장기 청취, underrun·물리 왕복 지연, 장치 분리/재연결 및 다른 OS는 별도 수락 대상이다.
+- 최소위상 보간의 고부하 비용과 음질 수락은 종료 소유권 수정과 별개다.
+
+기존 38개 통과 기록과 그 뒤 발견된 반례는 과거 근거로 유지한다. 이번 결과로 전체 오디오가 무결하다고 선언하지 않는다.
+재현·실패·수정 후 로그와 로컬 무음 검사기는 `build/evidence/resume-20260916/`에 보존한다.

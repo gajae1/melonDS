@@ -165,9 +165,24 @@ int main(int argc, char** argv)
 #ifdef VULKANRENDERER_ENABLED
         worker.status.vulkanSupport = 1; publish();
         vulkan3D->click(); QApplication::processEvents();
+        auto* resolution = dialog->findChild<QComboBox*>("cbxGLResolution");
         Require(cfg.GetInt("3D.Renderer") == renderer3D_Vulkan && !dialog->UsesGL() &&
-                !dialog->findChild<QComboBox*>("cbxGLResolution")->isEnabled(),
-                "Vulkan 3D requires GL or exposes unsupported upscaling");
+                resolution->isEnabled() && resolution->count() >= 3,
+                "Vulkan 3D requires GL or hides supported scaling");
+        for (int i = 0; i < resolution->count(); ++i)
+            Require(bool(resolution->model()->flags(resolution->model()->index(i, 0)) & Qt::ItemIsEnabled) == (i < 3),
+                    "Vulkan resolution choices do not match 1x/2x/3x support");
+        for (int i : {1, 2})
+        {
+            resolution->setCurrentIndex(i); QApplication::processEvents();
+            Require(cfg.GetInt("3D.GL.ScaleFactor") == i + 1, "Vulkan scale selection was not applied");
+        }
+        if (resolution->count() > 3)
+        {
+            resolution->setCurrentIndex(3); QApplication::processEvents();
+            Require(cfg.GetInt("3D.GL.ScaleFactor") == 3, "unsupported Vulkan 4x scale was applied");
+            resolution->setCurrentIndex(2);
+        }
         worker.status.renderer = renderer3D_Vulkan; worker.status.pending = false; publish();
         label = dialog->findChild<QLabel*>("lblRendererStatus");
         Require(label->text().contains("Active: Vulkan 3D"), "Vulkan active status missing");

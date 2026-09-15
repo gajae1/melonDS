@@ -123,6 +123,99 @@ std::vector<u32> Screen(NDS& nds, bool render3D = true)
     return {pixels, pixels + 256 * 192};
 }
 
+void ScaledDisplay(int scale)
+{
+    auto nds = Console(true, scale);
+    Scene(*nds, 0, false, false);
+    Screen(*nds); Screen(*nds, false);
+    void* top = nullptr; void* bottom = nullptr;
+    int width = 0, height = 0;
+    Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height), "display is not RAM");
+    Require(width == 256 * scale && height == 192 * scale, "scaled Vulkan display extent is still native");
+    const auto* pixels = static_cast<const u32*>(nds->GPU.ScreenSwap ? top : bottom);
+    Require(pixels && pixels[(80 * scale) * width + 80 * scale] == 0xFFFF0000, "scaled display lost foreground");
+    Require(pixels[(12 * scale) * width + 80 * scale] != 0xFFFF0000, "scaled display has wrong row stride");
+    std::printf("Vulkan %dx display extent and full-image addressing PASS\n", scale);
+}
+
+
+void DisplayOrigins(NDS& nds, int scale, bool requireDetail = false)
+{
+    void *nativeTop, *nativeBottom, *displayTop, *displayBottom;
+    auto& renderer = nds.GetRenderer();
+    Require(renderer.GetFramebuffers(&nativeTop, &nativeBottom), "native framebuffer missing");
+    int width = 0, height = 0;
+    Require(renderer.GetDisplayFramebuffers(&displayTop, &displayBottom, width, height), "display framebuffer missing");
+    Require(width == 256 * scale && height == 192 * scale, "display extent mismatch");
+    const u32* native[] = {static_cast<const u32*>(nativeTop), static_cast<const u32*>(nativeBottom)};
+    const u32* display[] = {static_cast<const u32*>(displayTop), static_cast<const u32*>(displayBottom)};
+    unsigned detail = 0;
+    for (int screen = 0; screen < 2; ++screen)
+    for (int y = 0; y < height; ++y)
+    for (int x = 0; x < width; ++x)
+    {
+        const u32 expected = native[screen][(y / scale) * 256 + x / scale];
+        const u32 actual = display[screen][size_t(y) * width + x];
+        if (x % scale == 0 && y % scale == 0)
+            Require(actual == expected, "scaled composition changed a native-origin pixel");
+        detail += actual != expected;
+    }
+    if (requireDetail) Require(detail != 0, "scaled display only stretches native pixels");
+}
+
+void ScaledDisplayLifecycle(int scale)
+{
+    auto nds = Console(true, scale);
+    auto& polygon = Scene(*nds, 0, false, false);
+    for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
+        vertex->HiresPosition[0] += 8;
+    // Transparent clear pixels expose the backdrop when the native sample
+    // misses a shape that still covers a displayed subpixel.
+    nds->GPU.GPU3D.RenderClearAttr1 = 0;
+    nds->ARM9Write16(0x05000000, 0x7C00);
+    RendererSettings settings{scale, false, true, false};
+    Require(nds->GetRenderer().SetRenderSettings(settings), "hires display setting rejected");
+    Screen(*nds); Screen(*nds, false);
+    DisplayOrigins(*nds, scale, true);
+    for (u16 scroll : {u16(7), u16(256), u16(505), u16(0)})
+    {
+        nds->GPU.GPU3D.RenderXPos = scroll;
+        Screen(*nds, false);
+        DisplayOrigins(*nds, scale);
+    }
+    for (u16 brightness : {u16(0x4008), u16(0x8010), u16(0x401F), u16(0)})
+    {
+        nds->ARM9Write16(0x0400006C, brightness);
+        Screen(*nds, false);
+        DisplayOrigins(*nds, scale);
+    }
+    nds->GPU.ScreenSwap = !nds->GPU.ScreenSwap;
+    Screen(*nds, false);
+    DisplayOrigins(*nds, scale, true);
+    nds->ARM9Write16(0x04000040, (64 << 8) | 192);
+    nds->ARM9Write16(0x04000044, (32 << 8) | 160);
+    nds->ARM9Write16(0x04000048, 0x3E); // Window hides BG0, preserves other layers.
+    nds->ARM9Write16(0x0400004A, 0x3F);
+    for (u32 display : {0x00012108u, 0x00010188u, 0x00020000u, 0x00030000u, 0u, 0x00010108u})
+    {
+        nds->ARM9Write32(0x04000000, display);
+        Screen(*nds, false); Screen(*nds, false);
+        DisplayOrigins(*nds, scale);
+    }
+    for (bool reset : {false, true})
+    {
+        if (reset) nds->GetRenderer().Reset();
+        else nds->GetRenderer().Stop();
+        void *top, *bottom; int width, height;
+        nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height);
+        Require(width == 256 * scale && height == 192 * scale, "stop/reset lost display allocation");
+        for (const auto* pixels : {static_cast<const u32*>(top), static_cast<const u32*>(bottom)})
+            Require(std::all_of(pixels, pixels + size_t(width) * height, [](u32 p) { return p == 0; }),
+                "stop/reset left stale scaled pixels");
+    }
+    std::printf("Vulkan %dx: real subpixel coverage, native-origin equivalence, scroll, brightness, swap, window, modes, stop/reset PASS\n", scale);
+}
+
 void TexturesAndState(int scale)
 {
     auto vk = Console(true, scale);
@@ -324,6 +417,7 @@ int main(int argc, char** argv)
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
         const int scale = argc == 2 && std::strcmp(argv[1], "2") == 0 ? 2 :
             argc == 2 && std::strcmp(argv[1], "3") == 0 ? 3 : 1;
+        if (scale > 1) { ScaledDisplay(scale); ScaledDisplayLifecycle(scale); }
         TexturesAndState(scale); Batches(scale); Capture(scale);
         if (scale == 1) ScaleChanges();
         return 0;

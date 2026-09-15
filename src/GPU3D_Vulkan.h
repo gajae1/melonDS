@@ -19,6 +19,7 @@ public:
     void RenderFrame() override;
     void RestartFrame() override;
     u32* GetLine(int line) override;
+    void GetScaledLine(int line, int subline, int scale, u32* dst) const;
     bool HasFailed() const { return Failed; }
 
 private:
@@ -27,6 +28,8 @@ private:
     std::unique_ptr<Vulkan::ComputePipeline> Pipeline;
     std::unique_ptr<Vulkan::TextureCache> Texcache;
     std::array<u32, 256 * 192> ColorBuffer{};
+    std::vector<u32> ScaledColorBuffer;
+    int RenderedScale = 1;
     std::array<u32, 256> ScrolledLine{};
     std::array<u32, 256 * 256> ClearColor{}, ClearDepth{};
     u8 ClearBitmapDirty = 3;

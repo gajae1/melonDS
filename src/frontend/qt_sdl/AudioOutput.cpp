@@ -22,9 +22,9 @@ namespace
 {
 constexpr int DefaultTeardownTimeoutMs = 2000;
 
-// A wedged driver call must not hang the UI thread forever. Every device
-// lifetime wait uses this limit and reports the exact call that did not
-// finish, so a slow-but-working driver and a stuck driver stay distinguishable.
+// Routine open/close waits report slow native calls after this limit.
+// Callback draining and the final ownership-preserving join still wait for
+// native work to finish; this timeout does not cancel a wedged driver.
 int BoundedWaitMs()
 {
     static const int configured = [] {
@@ -157,6 +157,19 @@ struct AudioOutput::Owner
                 wake.wait(guard, [&] { return exiting || closing || job.valid(); });
                 if (exiting)
                 {
+                    // Cancel unstarted work and release any unclaimed open result
+                    // on its native owner. A timed-out caller may never have
+                    // consumed the future, including when destruction began
+                    // while Open was still running. Never run native teardown
+                    // with the handoff lock held.
+                    auto cancelled = std::move(job);
+                    auto abandoned = std::move(result);
+                    doomed = std::move(retiring);
+                    guard.unlock();
+                    cancelled = {};
+                    abandoned = {};
+                    doomed.reset();
+                    guard.lock();
                     exited = true;
                     guard.unlock();
                     wake.notify_all();

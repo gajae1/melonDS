@@ -868,6 +868,13 @@ public:
     // a renderer may render to RAM buffers, or to something else (ie. OpenGL)
     // if the renderer uses RAM buffers, they should be 32-bit BGRA, 256x192 for each screen
     virtual bool GetFramebuffers(void** top, void** bottom) = 0;
+    // Host display view. RAM is tightly packed BGRA at the returned extent.
+    // Native RAM/capture consumers keep GetFramebuffers().
+    virtual bool GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height)
+    {
+        width = 256; height = 192;
+        return GetFramebuffers(top, bottom);
+    }
     virtual void SwapBuffers() { BackBuffer ^= 1; }
 
     virtual bool NeedsShaderCompile() { return false; }

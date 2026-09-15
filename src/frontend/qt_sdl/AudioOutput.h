@@ -41,7 +41,8 @@ public:
     bool IsOpening() const;
     bool IsOpenReady() const;
     bool FinishReopen(std::string& error);
-    // Device-lifetime waits are bounded. A failed Open/Close leaves the
+    // Routine Open/Close waits are bounded; callback drain and the final
+    // destructor join still wait for native work. A failed Open/Close leaves the
     // request outstanding so the next call can still consume it; a false
     // return with "bounded wait" in the error names the native call that did
     // not finish. The limit is TeardownTimeoutMs (default 2000,

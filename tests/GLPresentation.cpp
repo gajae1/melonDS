@@ -101,13 +101,14 @@ struct NativeContext
 #endif
     }
 };
-struct EmuThread { bool emuIsActive() const { return false; } };
+struct EmuThread { bool active = false; bool emuIsActive() const { return active; } };
 struct PresentationWindow { int getWindowID() const { return 0; } };
 struct EmuInstance
 {
     EmuThread thread;
     EmuThread* getEmuThread() { return &thread; }
-    NDS* getNDS() { return nullptr; } // The test presents the paused splash.
+    NDS* console = nullptr;
+    NDS* getNDS() { return console; } // Null for the existing paused-splash tests.
 };
 struct OSDItem
 {
@@ -153,6 +154,7 @@ public:
     std::array<QImage, 2> preservedFrame;
     unsigned int preservedFrameNumber = 0;
     GLuint screenVertexBuffer = 0, screenVertexArray = 0, screenTexture = 0, screenShaderProgram = 0;
+    int screenTextureWidth = 256, screenTextureHeight = 192;
     GLint screenShaderTransformULoc = 0, screenShaderScreenSizeULoc = 0;
     QMutex screenSettingsLock;
     WindowInfo windowInfo{};
@@ -301,6 +303,125 @@ bool RuntimeFailure(ScreenPanelGL& panel, bool current)
     return normal && rejected && noSwapWithoutCurrent && retried;
 }
 
+
+class DisplayFixture final : public SoftRenderer
+{
+public:
+    explicit DisplayFixture(NDS& nds) : SoftRenderer(nds) {}
+    int Width = 256, Height = 192;
+    std::array<std::vector<u32>, 2> Frames;
+    void Resize(int scale)
+    {
+        Width = 256 * scale; Height = 192 * scale;
+        for (int screen = 0; screen < 2; ++screen)
+        {
+            Frames[screen].resize(size_t(Width) * Height);
+            for (int y = 0; y < Height; ++y) for (int x = 0; x < Width; ++x)
+                Frames[screen][size_t(y) * Width + x] = 0xFF000000u |
+                    (((x * 17 + screen * 40) & 255) << 16) | ((y & 255) << 8) | ((x ^ y) & 255);
+        }
+    }
+    bool GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height) override
+    {
+        *top = Frames[0].data(); *bottom = Frames[1].data();
+        width = Width; height = Height; return true;
+    }
+};
+
+
+namespace DisplayResizeFault
+{
+PFNGLTEXIMAGE3DPROC texture;
+PFNGLGETERRORPROC error;
+PFNGLTEXSUBIMAGE3DPROC upload;
+bool pending = false;
+unsigned uploads = 0;
+void APIENTRY Reject(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*)
+{
+    pending = true;
+}
+GLenum APIENTRY Error()
+{
+    if (pending) { pending = false; return GL_OUT_OF_MEMORY; }
+    return error();
+}
+void APIENTRY Upload(GLenum target, GLint level, GLint x, GLint y, GLint z,
+    GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* pixels)
+{
+    ++uploads;
+    upload(target, level, x, y, z, width, height, depth, format, type, pixels);
+}
+}
+
+bool ScaledUpload(ScreenPanelGL& panel)
+{
+    NDSArgs args; args.JIT = std::nullopt;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    auto display = std::make_unique<DisplayFixture>(*nds);
+    auto* frame = display.get();
+    nds->SetRenderer(std::move(display));
+    panel.emuInstance->console = nds.get();
+    panel.emuInstance->thread.active = true;
+    if (!panel.initOpenGL()) return false;
+    const auto matches = [&](int width, int height, const u32* top, const u32* bottom) {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, panel.screenTexture);
+        GLint actualWidth = 0, actualHeight = 0;
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_WIDTH, &actualWidth);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_HEIGHT, &actualHeight);
+        if (actualWidth != width || actualHeight != height) return false;
+        const size_t size = size_t(width) * height;
+        std::vector<u32> actual(size * 2);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+        glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_BGRA, GL_UNSIGNED_BYTE, actual.data());
+        return glGetError() == GL_NO_ERROR && std::equal(top, top + size, actual.begin()) &&
+            std::equal(bottom, bottom + size, actual.begin() + size);
+    };
+    bool passed = true;
+    for (int scale : {1, 2, 3, 1, 3})
+    {
+        frame->Resize(scale);
+        passed &= panel.drawScreen() && matches(frame->Width, frame->Height,
+            frame->Frames[0].data(), frame->Frames[1].data());
+    }
+    // Fail a resize before uploading any frame. Retain the last successful
+    // allocation dimensions so that the next attempt actually retries it.
+    frame->Resize(2);
+    DisplayResizeFault::texture = glTexImage3D;
+    DisplayResizeFault::error = glGetError;
+    DisplayResizeFault::upload = glTexSubImage3D;
+    glTexImage3D = DisplayResizeFault::Reject;
+    glGetError = DisplayResizeFault::Error;
+    glTexSubImage3D = DisplayResizeFault::Upload;
+    const bool rejected = !panel.drawScreen();
+    const bool retained = panel.screenTextureWidth == 768 && panel.screenTextureHeight == 576;
+    const unsigned uploadsAfterFailure = DisplayResizeFault::uploads;
+    glTexImage3D = DisplayResizeFault::texture;
+    glGetError = DisplayResizeFault::error;
+    glTexSubImage3D = DisplayResizeFault::upload;
+    while (glGetError() != GL_NO_ERROR) {}
+    passed &= rejected && retained && uploadsAfterFailure == 0;
+    std::printf("scaled allocation failure: rejected=%d retained=%d uploads=%u\n", rejected, retained, uploadsAfterFailure);
+    passed &= panel.drawScreen() && matches(frame->Width, frame->Height,
+        frame->Frames[0].data(), frame->Frames[1].data());
+    panel.preservedFrame = {QImage(512, 384, QImage::Format_RGB32), QImage(512, 384, QImage::Format_RGB32)};
+    panel.preservedFrame[0].fill(0xFF123456u);
+    panel.preservedFrame[1].fill(0xFFABCDEFu);
+    panel.preservedFrameNumber = nds->NumFrames;
+    passed &= panel.drawScreen() && matches(512, 384,
+        reinterpret_cast<const u32*>(panel.preservedFrame[0].constBits()),
+        reinterpret_cast<const u32*>(panel.preservedFrame[1].constBits()));
+    panel.preservedFrame = {};
+    frame->Resize(1);
+    passed &= panel.drawScreen() && matches(256, 192, frame->Frames[0].data(), frame->Frames[1].data());
+    panel.emuInstance->thread.active = false;
+    panel.emuInstance->console = nullptr;
+    passed &= panel.deinitOpenGL();
+    std::printf("Scaled RAM display: 1x/2x/3x upload, both screens, paused frame and return to native %s\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
 namespace CoreLifetime
 {
 using ::renderer3D_Software;
@@ -308,7 +429,13 @@ using ::renderer3D_OpenGL;
 using ::renderer3D_OpenGLCompute;
 struct Config
 {
-    int GetInt(const char* key) const { return !std::strcmp(key, "3D.GL.ScaleFactor") ? 1 : 0; }
+    int Scale = 1;
+    int GetInt(const char* key) const { return !std::strcmp(key, "3D.GL.ScaleFactor") ? Scale : 0; }
+    void SetInt(const char* key, int value)
+    {
+        if (std::strcmp(key, "3D.GL.ScaleFactor")) throw std::runtime_error("unexpected config key");
+        Scale = value;
+    }
     bool GetBool(const char*) const { return false; }
 };
 struct Instance
@@ -456,7 +583,8 @@ int main(int argc, char** argv)
         bool passed = false;
         const int renderer = !std::strcmp(argv[1], "compute") ? CoreLifetime::renderer3D_OpenGLCompute : CoreLifetime::renderer3D_OpenGL;
         auto worker = std::unique_ptr<QThread>(QThread::create([&] {
-            if (!std::strncmp(argv[1], "fail-", 5)) passed = InitFailure::Check(panel, argv[1]);
+            if (!std::strcmp(argv[1], "scaled-display")) passed = ScaledUpload(panel);
+            else if (!std::strncmp(argv[1], "fail-", 5)) passed = InitFailure::Check(panel, argv[1]);
             else if (!std::strcmp(argv[1], "osd-reinit")) passed = InitFailure::OSD(panel);
             else if (!std::strcmp(argv[1], "runtime-current")) passed = RuntimeFailure(panel, true);
             else if (!std::strcmp(argv[1], "runtime-swap")) passed = RuntimeFailure(panel, false);

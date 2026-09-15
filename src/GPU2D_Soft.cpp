@@ -18,6 +18,7 @@
 
 #include "GPU_Soft.h"
 #include "GPU_ColorOp.h"
+#include <algorithm>
 
 namespace melonDS
 {
@@ -40,6 +41,7 @@ void SoftRenderer2D::Reset()
     memset(OBJWindow, 0, sizeof(OBJWindow));
 
     NumSprites = 0;
+    Scaled3DActive = false;
 }
 
 // Keep RGB6 components in separate 16-bit lanes for the weighted sum. The
@@ -70,79 +72,102 @@ static u32 ColorBlend5Packed(u32 val1, u32 val2)
 }
 
 template<u32 effect>
+static u32 CompositePixel(u32 val1, u32 val2, u32 blendCnt, u32 eva, u32 evb, u32 evy, u8 window)
+{
+    u32 flag1 = val1 >> 24;
+    if constexpr (effect == 1)
+        if (!(flag1 & 0xC0) && (!(blendCnt & flag1) || !(window & 0x20))) return val1;
+    if (effect == 1 || (flag1 & 0xC0))
+    {
+        const u32 flag2 = val2 >> 24;
+        const u32 target2 = (flag2 & 0x80) ? 0x1000 : (flag2 & 0x40) ? 0x0100 : flag2 << 8;
+        if (blendCnt & target2)
+        {
+            if ((flag1 & 0xC0) == 0x40) return ColorBlend5Packed(val1, val2);
+            if ((flag1 & 0xC0) == 0xC0)
+                return ColorBlend4Packed(val1, val2, flag1 & 0x1F, 16 - (flag1 & 0x1F));
+            return ColorBlend4Packed(val1, val2, eva, evb);
+        }
+    }
+    if constexpr (effect >= 2)
+    {
+        if (flag1 & 0x80) flag1 = 0x10;
+        else if (flag1 & 0x40) flag1 = 0x01;
+        if ((blendCnt & flag1) && (window & 0x20))
+        {
+            if constexpr (effect == 2) return ColorBrightnessUp(val1, evy, 0x8);
+            else return ColorBrightnessDown(val1, evy, 0x7);
+        }
+    }
+    return val1;
+}
+
+void SoftRenderer2D::Resolve3DPixel(int x, u32 color, u32& top, u32& second) const
+{
+    if (((top >> 24) & 0xC0) == 0x40)
+    {
+        if (color >> 24) top = color | 0x40000000;
+        else { top = Below3D[x]; second = Below3D[x + 256]; }
+    }
+    else if (((second >> 24) & 0xC0) == 0x40)
+        second = (color >> 24) ? color | 0x40000000 : Below3D[x];
+}
+
+template<u32 effect>
 void SoftRenderer2D::ColorComposite(u32* dst) const
 {
-    // Blend registers are constant for the scanline. Select the normal effect
-    // once, while retaining the per-pixel OBJ/3D blending and window rules.
-    const u32 blendCnt = GPU2D.BlendCnt;
-    const u32 blendEVA = GPU2D.EVA, blendEVB = GPU2D.EVB, blendEVY = GPU2D.EVY;
-
+    const u32 control = GPU2D.BlendCnt;
+    const u32 eva = GPU2D.EVA, evb = GPU2D.EVB, evy = GPU2D.EVY;
     if constexpr (effect <= 1)
     {
-        // Without second targets even forced OBJ/3D alpha blending is disabled.
-        if (!(blendCnt & 0x3F00))
+        if (!Scaled3DActive && !(control & 0x3F00))
         {
             memcpy(dst, BGOBJLine, 256 * sizeof(u32));
             return;
         }
     }
-
-    for (int i = 0; i < 256; i++)
+    for (int x = 0; x < 256; ++x)
     {
-        const u32 val1 = BGOBJLine[i];
-        u32 flag1 = val1 >> 24;
+        u32 top = BGOBJLine[x], second = BGOBJLine[x + 256];
+        if (Scaled3DActive) Resolve3DPixel(x, Parent.Output3D[x], top, second);
+        dst[x] = CompositePixel<effect>(top, second, control, eva, evb, evy, WindowMask[x]);
+    }
+}
 
-        // Normal alpha blending requires a first target and an enabled window.
-        // Semitransparent OBJ and 3D pixels bypass those two conditions.
-        if constexpr (effect == 1)
-        {
-            if (!(flag1 & 0xC0) && (!(blendCnt & flag1) || !(WindowMask[i] & 0x20)))
-            {
-                dst[i] = val1;
-                continue;
-            }
-        }
+template<u32 effect>
+void SoftRenderer2D::ComposeScaledLine(u32* dst, const u32* pixels3D, int scale) const
+{
+    const u32 control = GPU2D.BlendCnt;
+    const u32 eva = GPU2D.EVA, evb = GPU2D.EVB, evy = GPU2D.EVY;
+    for (int x = 0; x < 256; ++x)
+    for (int sub = 0; sub < scale; ++sub)
+    {
+        u32 top = BGOBJLine[x], second = BGOBJLine[x + 256];
+        Resolve3DPixel(x, pixels3D[x * scale + sub], top, second);
+        dst[x * scale + sub] = CompositePixel<effect>(top, second, control, eva, evb, evy, WindowMask[x]);
+    }
+}
 
-        if (effect == 1 || (flag1 & 0xC0))
-        {
-            const u32 val2 = BGOBJLine[256+i];
-            const u32 flag2 = val2 >> 24;
-            const u32 target2 = (flag2 & 0x80) ? 0x1000 : (flag2 & 0x40) ? 0x0100 : flag2 << 8;
-            if (blendCnt & target2)
-            {
-                if ((flag1 & 0xC0) == 0x40)
-                    dst[i] = ColorBlend5Packed(val1, val2);
-                else if ((flag1 & 0xC0) == 0xC0)
-                {
-                    const u32 eva = flag1 & 0x1F;
-                    dst[i] = ColorBlend4Packed(val1, val2, eva, 16 - eva);
-                }
-                else
-                    dst[i] = ColorBlend4Packed(val1, val2, blendEVA, blendEVB);
-                continue;
-            }
-        }
-
-        if constexpr (effect >= 2)
-        {
-            if      (flag1 & 0x80) flag1 = 0x10;
-            else if (flag1 & 0x40) flag1 = 0x01;
-
-            if ((blendCnt & flag1) && (WindowMask[i] & 0x20))
-            {
-                if constexpr (effect == 2)
-                    dst[i] = ColorBrightnessUp(val1, blendEVY, 0x8);
-                else
-                    dst[i] = ColorBrightnessDown(val1, blendEVY, 0x7);
-                continue;
-            }
-        }
-        dst[i] = val1;
+void SoftRenderer2D::ComposeScaledLine(u32* dst, const u32* pixels3D, int scale) const
+{
+    if (!Scaled3DActive)
+    {
+        for (int x = 0; x < 256; ++x)
+            std::fill_n(dst + x * scale, scale, Parent.Output2D[GPU2D.Num][x]);
+        return;
+    }
+    switch ((GPU2D.BlendCnt >> 6) & 3)
+    {
+        case 0: ComposeScaledLine<0>(dst, pixels3D, scale); break;
+        case 1: ComposeScaledLine<1>(dst, pixels3D, scale); break;
+        case 2: ComposeScaledLine<2>(dst, pixels3D, scale); break;
+        case 3: ComposeScaledLine<3>(dst, pixels3D, scale); break;
     }
 }
 
 void SoftRenderer2D::DrawScanline(u32 line)
 {
+    Scaled3DActive = false;
     u32* dst = Parent.Output2D[GPU2D.Num];
 
     if (!GPU2D.Enabled)
@@ -395,6 +420,21 @@ void SoftRenderer2D::DrawPixel(u32* dst, u16 color, u32 flag)
 
 void SoftRenderer2D::DrawBG_3D()
 {
+    if (Parent.ScaledDisplay)
+    {
+        // A native transparent sample may cover a different scaled subpixel.
+        // Preserve both lower layers and let subsequent layers occlude this
+        // placeholder normally. No guest registers or sprite state are replayed.
+        memcpy(Below3D, BGOBJLine, sizeof(Below3D));
+        Scaled3DActive = true;
+        for (int x = 0; x < 256; ++x)
+        {
+            if (!(WindowMask[x] & 1)) continue;
+            BGOBJLine[x + 256] = BGOBJLine[x];
+            BGOBJLine[x] = 0x40000000;
+        }
+        return;
+    }
     for (int i = 0; i < 256; i++)
     {
         u32 c = Parent.Output3D[i];

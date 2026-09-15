@@ -1409,7 +1409,7 @@ void EmuThread::updateRenderer()
     // A shared OpenGL configuration may request more than Vulkan's embedded
     // scales. Normalize only Vulkan; leave Software/OpenGL preferences alone.
     if (videoRenderer == renderer3D_Vulkan)
-        cfg.SetInt("3D.GL.ScaleFactor", qBound(1, cfg.GetInt("3D.GL.ScaleFactor"), 3));
+        cfg.SetInt("3D.GL.ScaleFactor", std::clamp(cfg.GetInt("3D.GL.ScaleFactor"), 1, 3));
     melonDS::RendererSettings settings = {
         .ScaleFactor = cfg.GetInt("3D.GL.ScaleFactor"),
         .Threaded = cfg.GetBool("3D.Soft.Threaded"),

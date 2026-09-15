@@ -54,6 +54,10 @@ public:
 private:
     friend class SoftRenderer2D;
     friend class SoftRenderer3D;
+    friend class VulkanRenderer;
+
+    // Keep a 3D placeholder only for the optional scaled host compositor.
+    bool ScaledDisplay = false;
 
     u32* Framebuffer[2][2];
     PixelConvert::Function ExpandPixels = PixelConvert::Select();

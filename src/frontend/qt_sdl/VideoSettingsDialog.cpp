@@ -164,7 +164,7 @@ void VideoSettingsDialog::refreshRendererStatus()
     ui->rb3DVulkan->setEnabled(status.vulkanSupport != 0);
     ui->rb3DVulkan->setToolTip(status.vulkanSupport == 0
         ? tr("No usable Vulkan 1.1 compute device was found.")
-        : tr("Renders 3D at 1x, 2x or 3x internal resolution using shared compute geometry. Screens and guest capture are resolved to native 256x192."));
+        : tr("Renders and displays 3D at 1x, 2x or 3x resolution using shared compute geometry. 2D layers keep their native detail; guest capture remains native 256x192."));
 #else
     ui->rb3DVulkan->setToolTip(tr("Vulkan 3D is not included in this build."));
 #endif

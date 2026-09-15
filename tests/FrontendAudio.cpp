@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdarg>
 #include <cstring>
 #include <future>
 #include <semaphore>
@@ -21,7 +22,20 @@
 #include "AudioTimeStretch.h"
 #include "Platform.h"
 using namespace melonDS;
-namespace melonDS::Platform { void Log(LogLevel, const char*, ...) {} }
+static std::binary_semaphore ownerStopTimedOut(0);
+namespace melonDS::Platform
+{
+void Log(LogLevel, const char* format, ...)
+{
+    if (!std::strstr(format, "Audio %s exceeded")) return;
+    va_list args;
+    va_start(args, format);
+    const char* call = va_arg(args, const char*);
+    const bool ownerStop = std::strcmp(call, "control-thread stop") == 0;
+    va_end(args);
+    if (ownerStop) ownerStopTimedOut.release();
+}
+}
 
 // Drive the production SDL callback with a deterministic sample producer.
 // Guard samples catch writes past the requested device buffer.
@@ -339,6 +353,31 @@ int main(int argc, char** argv)
             passed &= wrongCloseThread == 0;
         }
         std::printf("phase reopen-after-close-timeout: %lld ms\n", (long long)elapsed(phaseD));
+        // Destruction after a timed-out open must close the eventual device
+        // on its native owner thread, not in the caller's future destructor.
+        while (ownerStopTimedOut.try_acquire()) {}
+        const auto beforePendingOpen = closedNative.load();
+        std::atomic<bool> observedOwnerExit{false};
+        {
+            std::jthread unblock([&] {
+                observedOwnerExit = ownerStopTimedOut.try_acquire_for(3s);
+                releaseOpen.release();
+            });
+            {
+                AudioOutput output;
+                std::string error;
+                blockOpen = true;
+                passed &= output.BeginReopen({AudioOutput::SDL, {}, 128}, silence, nullptr, error);
+                passed &= openEntered.try_acquire_for(2s);
+                // Both bounded waits expire before unblock releases the API.
+            }
+        }
+        blockOpen = false;
+        const bool pendingOwnerCorrect = observedOwnerExit &&
+            closedNative.load() == beforePendingOpen + 1 && wrongCloseThread == 0;
+        passed &= pendingOwnerCorrect;
+        std::printf("pending-open destructor: close count=%d, wrong owner=%d, exit observed=%d\n",
+            closedNative.load() - beforePendingOpen, wrongCloseThread, int(observedOwnerExit.load()));
         SDL_AudioQuit();
         std::printf("Audio bounded teardown waits: %s\n", passed ? "passed" : "FAILED");
         return passed ? 0 : 1;

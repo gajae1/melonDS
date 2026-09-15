@@ -293,12 +293,29 @@ int main(int argc, char** argv)
             }
         }
         void *top = nullptr, *bottom = nullptr;
-        nds->GetRenderer().GetFramebuffers(&top,&bottom);
+        int frameWidth = 256, frameHeight = 192;
+        nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, frameWidth, frameHeight);
         std::vector<u32> pixels(256*384);
+        const auto resolve = [](const u32* source, u32* out, int factor) {
+            if (factor == 1) { std::memcpy(out, source, 256 * 192 * sizeof(u32)); return; }
+            const int width = 256 * factor;
+            const u32 count = u32(factor) * u32(factor);
+            for (int y = 0; y < 192; ++y) for (int x = 0; x < 256; ++x) {
+                u32 r = 0, g = 0, b = 0, a = 0;
+                for (int sy = 0; sy < factor; ++sy) for (int sx = 0; sx < factor; ++sx) {
+                    const u32 p = source[size_t(y * factor + sy) * width + x * factor + sx];
+                    r += (p >> 16) & 255; g += (p >> 8) & 255; b += p & 255; a += (p >> 24) & 255;
+                }
+                out[y * 256 + x] = ((a / count) << 24) | ((r / count) << 16) | ((g / count) << 8) | (b / count);
+            }
+        };
         if (ramOutput) {
             if (!top || !bottom) return 7;
-            std::memcpy(pixels.data(),top,256*192*4);
-            std::memcpy(pixels.data()+256*192,bottom,256*192*4);
+            const int factor = frameWidth / 256;
+            if (frameWidth % 256 || factor < 1 || frameHeight != 192 * factor) return 18;
+            if (factor > 1) std::printf("frontbuffer=%dx%d factor=%d\n", frameWidth, frameHeight, factor);
+            resolve(static_cast<const u32*>(top), pixels.data(), factor);
+            resolve(static_cast<const u32*>(bottom), pixels.data() + 256 * 192, factor);
         } else {
             if (!top) return 7;
             const GLuint texture = *static_cast<GLuint*>(top);
@@ -326,16 +343,7 @@ int main(int argc, char** argv)
                     continue;
                 }
                 glReadPixels(0,0,texW,texH,GL_BGRA,GL_UNSIGNED_BYTE,scaled.data());
-                u32* out = pixels.data()+layer*256*192;
-                const u32 count = u32(factor)*u32(factor);
-                for (int y=0;y<192;++y) for (int x=0;x<256;++x) {
-                    u32 r=0,g=0,b=0,a=0;
-                    for (int sy=0;sy<factor;++sy) for (int sx=0;sx<factor;++sx) {
-                        const u32 p = scaled[size_t(y*factor+sy)*texW + x*factor+sx];
-                        r += (p>>16)&0xFF; g += (p>>8)&0xFF; b += p&0xFF; a += (p>>24)&0xFF;
-                    }
-                    out[y*256+x] = ((a/count)<<24)|((r/count)<<16)|((g/count)<<8)|(b/count);
-                }
+                resolve(scaled.data(), pixels.data() + layer * 256 * 192, factor);
             }
             glDeleteFramebuffers(1,&fb);
             if (glGetError()!=GL_NO_ERROR) return 9;

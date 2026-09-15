@@ -34,6 +34,9 @@ public:
 
     void DrawScanline(u32 line) override;
     void DrawSprites(u32 line) override;
+    // Reuse the native layer stack with a different 3D sample per host pixel.
+    void ComposeScaledLine(u32* dst, const u32* pixels3D, int scale) const;
+    bool HasScaled3D() const { return Scaled3DActive; }
     void VBlank() override {}
     void VBlankEnd() override {};
 
@@ -52,6 +55,10 @@ private:
     };
 
     alignas(8) u32 BGOBJLine[256*2];
+    alignas(8) u32 Below3D[256*2] {};
+    bool Scaled3DActive = false;
+    void Resolve3DPixel(int x, u32 color, u32& top, u32& second) const;
+    template<u32 effect> void ComposeScaledLine(u32* dst, const u32* pixels3D, int scale) const;
 
     alignas(8) u8 WindowMask[256];
 

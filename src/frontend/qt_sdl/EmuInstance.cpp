@@ -465,10 +465,11 @@ bool EmuInstance::preserveFrame()
     if (!preservedFrame[0].isNull() && preservedFrameNumber == nds->NumFrames) return true;
     std::array<QImage, 2> images;
     void* top; void* bottom;
-    if (nds->GPU.GetFramebuffers(&top, &bottom))
+    int frameWidth = 256, frameHeight = 192;
+    if (nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, frameWidth, frameHeight))
     {
-        images[0] = QImage(static_cast<uchar*>(top), 256, 192, QImage::Format_RGB32).copy();
-        images[1] = QImage(static_cast<uchar*>(bottom), 256, 192, QImage::Format_RGB32).copy();
+        images[0] = QImage(static_cast<uchar*>(top), frameWidth, frameHeight, QImage::Format_RGB32).copy();
+        images[1] = QImage(static_cast<uchar*>(bottom), frameWidth, frameHeight, QImage::Format_RGB32).copy();
     }
     else
     {
@@ -495,7 +496,7 @@ bool EmuInstance::preserveFrame()
             if (!valid) break;
             glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, image.bits());
             valid = glGetError() == GL_NO_ERROR;
-            if (valid) images[screen] = image.scaled(256, 192);
+            if (valid) images[screen] = std::move(image);
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         glDeleteFramebuffers(1, &framebuffer);
