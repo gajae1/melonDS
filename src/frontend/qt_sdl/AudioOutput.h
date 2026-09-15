@@ -41,8 +41,14 @@ public:
     bool IsOpening() const;
     bool IsOpenReady() const;
     bool FinishReopen(std::string& error);
-    void Close();
+    // Device-lifetime waits are bounded. A failed Open/Close leaves the
+    // request outstanding so the next call can still consume it; a false
+    // return with "bounded wait" in the error names the native call that did
+    // not finish. The limit is TeardownTimeoutMs (default 2000,
+    // MELONDS_AUDIO_TIMEOUT_MS overrides, clamped to 100..60000).
+    bool Close();
     bool Start(std::string& error);
+    int TeardownTimeoutMs() const;
     // Waits until client callbacks finish. Native delivery fades to silence
     // without consuming source PCM; Close releases the device itself.
     void Stop();

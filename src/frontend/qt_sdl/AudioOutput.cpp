@@ -5,15 +5,49 @@
 #include <atomic>
 #include <bit>
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <condition_variable>
 #include <future>
 #include <mutex>
 #include <thread>
+#include "Platform.h"
 #ifdef _WIN32
 #include <windows.h>
 #include "miniaudio/DeviceOnly.h"
 #endif
+
+namespace
+{
+constexpr int DefaultTeardownTimeoutMs = 2000;
+
+// A wedged driver call must not hang the UI thread forever. Every device
+// lifetime wait uses this limit and reports the exact call that did not
+// finish, so a slow-but-working driver and a stuck driver stay distinguishable.
+int BoundedWaitMs()
+{
+    static const int configured = [] {
+        const char* value = std::getenv("MELONDS_AUDIO_TIMEOUT_MS");
+        if (!value || !*value) return DefaultTeardownTimeoutMs;
+        long parsed = 0;
+        for (; *value; ++value)
+        {
+            if (*value < '0' || *value > '9') return DefaultTeardownTimeoutMs;
+            parsed = parsed * 10 + (*value - '0');
+            if (parsed > 60000) return 60000;
+        }
+        return static_cast<int>(std::clamp(parsed, 100L, 60000L));
+    }();
+    return configured;
+}
+
+void ReportBoundedWait(const char* call, const char* action)
+{
+    melonDS::Platform::Log(melonDS::Platform::LogLevel::Error,
+        "Audio %s exceeded the %d ms bounded wait; %s\n", call, BoundedWaitMs(), action);
+}
+}
 
 struct AudioOutput::Impl
 {
@@ -112,17 +146,30 @@ struct AudioOutput::Owner
     std::unique_ptr<Impl> retiring;
     bool exiting = false;
     bool closing = false;
+    bool exited = false;
     std::thread thread{[this] {
         for (;;)
         {
+            std::unique_ptr<Impl> doomed;
             std::packaged_task<Result()> next;
             {
                 std::unique_lock guard(lock);
                 wake.wait(guard, [&] { return exiting || closing || job.valid(); });
-                if (exiting) return;
+                if (exiting)
+                {
+                    exited = true;
+                    guard.unlock();
+                    wake.notify_all();
+                    return;
+                }
                 next = std::move(job);
+                doomed = std::move(retiring);
             }
-            retiring.reset();
+            // The retired device is destroyed here, on this thread and outside
+            // the lock: a timed-out Close lets the caller submit again while a
+            // native close is still running, so the handoff slot must not be
+            // touched unlocked.
+            doomed.reset();
             if (next.valid()) next();
             else
             {
@@ -136,7 +183,15 @@ struct AudioOutput::Owner
     {
         { std::lock_guard guard(lock); exiting = true; }
         wake.notify_one();
-        thread.join(); // Never detach native work beyond SDL/instance teardown.
+        // Bounded wait, then the join remains the correctness backstop: the
+        // control thread leaves before the queue's storage or a captured Impl
+        // can be released. Never detach native work beyond SDL/instance teardown.
+        {
+            std::unique_lock guard(lock);
+            if (!wake.wait_for(guard, std::chrono::milliseconds(BoundedWaitMs()), [&] { return exited; }))
+                ReportBoundedWait("control-thread stop", "the final join still waits for the native call to return");
+        }
+        thread.join();
     }
 
     void Submit(std::packaged_task<Result()> next, std::unique_ptr<Impl>& old)
@@ -144,17 +199,24 @@ struct AudioOutput::Owner
         auto future = next.get_future();
         std::lock_guard guard(lock);
         result = std::move(future);
-        retiring = std::move(old);
+        // A pending handoff stays with the control thread; releasing it here
+        // would run the native close on the caller's thread.
+        if (old) retiring = std::move(old);
         job = std::move(next);
         wake.notify_one();
     }
-    void Close(std::unique_ptr<Impl>& old)
+    bool Close(std::unique_ptr<Impl>& old)
     {
         std::unique_lock guard(lock);
         retiring = std::move(old);
         closing = true;
         wake.notify_one();
-        wake.wait(guard, [&] { return !closing; });
+        if (!wake.wait_for(guard, std::chrono::milliseconds(BoundedWaitMs()), [&] { return !closing; }))
+        {
+            ReportBoundedWait("device close", "the native device is still being released");
+            return false;
+        }
+        return true;
     }
     static Result Open(const Settings&, Callback, void* userdata);
 };
@@ -183,7 +245,14 @@ bool AudioOutput::Open(const Settings& requested, Callback callback, void* userd
     error.clear();
     if (impl) { error = "Audio output must be closed before opening"; return false; }
     if (!BeginReopen(requested, callback, userdata, error)) return false;
-    owner->result.wait(); // Startup/manual requests retain their synchronous API.
+    // Startup/manual requests retain their synchronous API, bounded so a
+    // driver that never returns from Open cannot hang the caller forever.
+    if (owner->result.wait_for(std::chrono::milliseconds(BoundedWaitMs())) != std::future_status::ready)
+    {
+        ReportBoundedWait("device open", "the request stays outstanding and the next call consumes it");
+        error = "Audio device open exceeded the bounded wait; the request is still in progress";
+        return false;
+    }
     return FinishReopen(error);
 }
 
@@ -254,18 +323,26 @@ bool AudioOutput::FinishReopen(std::string& error)
     }
 }
 
-void AudioOutput::Close()
+bool AudioOutput::Close()
 {
     if (IsOpening())
     {
-        owner->result.wait();
+        // An outstanding open must drain before the device is released here,
+        // otherwise the control thread could publish a device nobody owns.
+        if (owner->result.wait_for(std::chrono::milliseconds(BoundedWaitMs())) != std::future_status::ready)
+        {
+            ReportBoundedWait("device close", "the outstanding open is still running");
+            return false;
+        }
         std::string ignored;
         FinishReopen(ignored);
     }
-    if (!impl) return;
+    if (!impl) return true;
     Stop();
-    owner->Close(impl);
+    return owner->Close(impl);
 }
+
+int AudioOutput::TeardownTimeoutMs() const { return BoundedWaitMs(); }
 
 AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, Callback callback, void* userdata)
 {

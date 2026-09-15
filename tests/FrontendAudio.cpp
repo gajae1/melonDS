@@ -93,8 +93,11 @@ static bool manualOutput = false, manualPaused = true;
 static std::atomic<bool> outputDisconnected{false};
 static bool blockOpen = false;
 static std::binary_semaphore openEntered(0), releaseOpen(0);
+static bool blockClose = false;
+static std::binary_semaphore closeEntered(0), releaseClose(0);
 static std::thread::id deviceOwner;
 static int wrongCloseThread = 0;
+static std::atomic<int> closedNative{0};
 static SDL_AudioStatus OutputStatus(SDL_AudioDeviceID id)
 {
     if (outputDisconnected) return SDL_AUDIO_STOPPED;
@@ -127,7 +130,9 @@ static SDL_AudioDeviceID OpenOutput(const char* name, int capture, const SDL_Aud
 static void CloseOutput(SDL_AudioDeviceID id)
 {
     if (std::this_thread::get_id() != deviceOwner) ++wrongCloseThread;
+    if (blockClose) { closeEntered.release(); releaseClose.acquire(); }
     SDL_CloseAudioDevice(id);
+    ++closedNative;
 }
 static void PauseOutput(SDL_AudioDeviceID id, int paused)
 {
@@ -203,6 +208,139 @@ int main(int argc, char** argv)
         }
         SDL_AudioQuit();
         std::printf("Audio asynchronous replacement and native owner: %s\n", passed ? "passed" : "FAILED");
+        return passed ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--bounded-teardown") == 0)
+    {
+        // The bound is read once per process; every phase below must see the
+        // same short limit that the native owner thread applies.
+#ifdef _WIN32
+        _putenv_s("MELONDS_AUDIO_TIMEOUT_MS", "300");
+#else
+        setenv("MELONDS_AUDIO_TIMEOUT_MS", "300", 1);
+#endif
+        if (SDL_AudioInit("dummy") != 0) return 2;
+        using namespace std::chrono;
+        const auto elapsed = [](const auto& from) {
+            return duration_cast<milliseconds>(steady_clock::now() - from).count();
+        };
+        bool passed = true;
+        const auto phaseStart = steady_clock::now();
+        long long phaseAElapsed = 0;
+        const auto silence = [](void*, uint8_t* bytes, int count) { std::memset(bytes, 0, count); };
+        {
+            AudioOutput output;
+            std::string error;
+            const AudioOutput::Settings settings{AudioOutput::SDL, {}, 128};
+            passed &= output.TeardownTimeoutMs() == 300;
+            const auto firstOpen = steady_clock::now();
+            passed &= output.Open(settings, silence, nullptr, error);
+            std::printf("phase A open: %lld ms\n", (long long)elapsed(firstOpen));
+            // A native close that outlives the bound must report a bounded
+            // wait instead of blocking the caller for the whole call.
+            blockClose = true;
+            const auto closeStarted = steady_clock::now();
+            passed &= !output.Close();
+            const auto closeElapsed = elapsed(closeStarted);
+            std::printf("first close: %lld ms\n", (long long)closeElapsed);
+            passed &= closeElapsed >= 120 && closeElapsed < 1500;
+            passed &= closeEntered.try_acquire_for(2s);
+            std::printf("close entered after: %lld ms\n", (long long)elapsed(closeStarted));
+            releaseClose.release();
+            // The outstanding close finishes natively; the next call only
+            // observes it and must not repeat the native release.
+            const auto drainDeadline = steady_clock::now() + 2s;
+            while (closedNative.load() < 1 && steady_clock::now() < drainDeadline) std::this_thread::yield();
+            passed &= closedNative.load() >= 1;
+            const auto drainStart = steady_clock::now();
+            passed &= output.Close();
+            std::printf("drain tail: %lld ms\n", (long long)elapsed(drainStart));
+            passed &= elapsed(drainStart) < 500;
+            passed &= !output.IsOpening() && !output;
+            blockClose = false;
+            phaseAElapsed = elapsed(closeStarted);
+            std::printf("phase A scope end: %lld ms\n", (long long)elapsed(closeStarted));
+        }
+        std::printf("phase A destroyed: %lld -> %lld ms\n", (long long)phaseAElapsed, (long long)elapsed(phaseStart));
+        std::printf("phase close-timeout: %lld ms\n", (long long)elapsed(phaseStart));
+        const auto phaseB = steady_clock::now();
+        {
+            AudioOutput output;
+            std::string error;
+            const AudioOutput::Settings settings{AudioOutput::SDL, {}, 128};
+            blockOpen = true;
+            const auto openStarted = steady_clock::now();
+            const bool opened = output.Open(settings, silence, nullptr, error);
+            const auto openElapsed = elapsed(openStarted);
+            passed &= !opened;
+            passed &= openElapsed >= 120 && openElapsed < 1500;
+            passed &= error.find("bounded wait") != std::string::npos;
+            passed &= openEntered.try_acquire_for(2s);
+            releaseOpen.release();
+            // The outstanding open must still be usable and finish normally.
+            const auto readyDeadline = steady_clock::now() + 2s;
+            while (!output.IsOpenReady() && steady_clock::now() < readyDeadline) std::this_thread::yield();
+            passed &= output.FinishReopen(error) && error.empty() && static_cast<bool>(output);
+            blockOpen = false;
+            output.Close();
+        }
+        std::printf("phase open-timeout: %lld ms\n", (long long)elapsed(phaseB));
+        const auto phaseC = steady_clock::now();
+        {
+            std::string error;
+            const AudioOutput::Settings settings{AudioOutput::SDL, {}, 128};
+            const auto destroyStarted = steady_clock::now();
+            {
+                AudioOutput output;
+                passed &= output.Open(settings, silence, nullptr, error);
+                blockClose = true;
+                output.Close(); // Times out; destruction still drains the thread.
+                std::thread unblock([started = steady_clock::now()] {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    (void)started;
+                    releaseClose.release();
+                });
+                unblock.detach();
+            }
+            // Destruction keeps the join, so a stuck native close is drained
+            // with a diagnostic before this scope is left.
+            passed &= elapsed(destroyStarted) < 2000;
+            blockClose = false;
+            while (releaseClose.try_acquire()) {} // Leave the flag drained for later phases.
+        }
+        std::printf("phase destroy-drain: %lld ms\n", (long long)elapsed(phaseC));
+        const auto phaseD = steady_clock::now();
+        {
+            // The product path behind the bound: a close times out and the very
+            // next request is a new open. The retired device must still be
+            // released on the control thread, and the deferred open must not be
+            // lost when the caller submits against the pending handoff.
+            AudioOutput output;
+            std::string error;
+            const AudioOutput::Settings settings{AudioOutput::SDL, {}, 128};
+            passed &= output.Open(settings, silence, nullptr, error);
+            blockClose = true;
+            passed &= !output.Close();
+            const bool reopened = output.Open(settings, silence, nullptr, error);
+            if (!reopened) passed &= error.find("bounded wait") != std::string::npos;
+            releaseClose.release();
+            passed &= closeEntered.try_acquire_for(2s);
+            if (!reopened)
+            {
+                const auto readyDeadline = steady_clock::now() + 2s;
+                while (!output.IsOpenReady() && steady_clock::now() < readyDeadline) std::this_thread::yield();
+                passed &= output.IsOpenReady() && output.FinishReopen(error);
+            }
+            // The retired device was released on the control thread before the
+            // deferred open could report ready.
+            passed &= static_cast<bool>(output) && closedNative.load() >= 1;
+            blockClose = false;
+            passed &= output.Close();
+            passed &= wrongCloseThread == 0;
+        }
+        std::printf("phase reopen-after-close-timeout: %lld ms\n", (long long)elapsed(phaseD));
+        SDL_AudioQuit();
+        std::printf("Audio bounded teardown waits: %s\n", passed ? "passed" : "FAILED");
         return passed ? 0 : 1;
     }
     if (argc == 2 && std::strcmp(argv[1], "--device-loss") == 0)
