@@ -18,10 +18,17 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
+#include <cstdlib>
 #include <QDir>
 #include <QFileInfo>
 #include <QMutexLocker>
 #include <QSaveFile>
+#include <QThread>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "SaveManager.h"
 #include "Platform.h"
@@ -29,18 +36,101 @@
 using namespace melonDS;
 using namespace melonDS::Platform;
 
+namespace
+{
+constexpr int DefaultRetryAttempts = 5;
+constexpr int DefaultRetryDelayMs = 40;
+
+int ReadBoundedEnv(const char* name, int fallback, int min, int max)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) return fallback;
+    long parsed = 0;
+    for (; *value; ++value)
+    {
+        if (*value < '0' || *value > '9') return fallback;
+        parsed = parsed * 10 + (*value - '0');
+        if (parsed > max) return max;
+    }
+    return static_cast<int>(std::clamp(parsed, static_cast<long>(min), static_cast<long>(max)));
+}
+
+// A scanner or indexer holding a freshly written file without FILE_SHARE_DELETE
+// makes the atomic replace fail with a sharing violation that clears on its own.
+// Only those transient codes are retried; the wait is bounded and a permanent
+// denial still ends as a reported failure with the original file untouched.
+int RetryAttempts()
+{
+    static const int configured = ReadBoundedEnv("MELONDS_SAVE_RETRY_ATTEMPTS", DefaultRetryAttempts, 1, 20);
+    return configured;
+}
+
+int RetryDelayMs()
+{
+    static const int configured = ReadBoundedEnv("MELONDS_SAVE_RETRY_DELAY_MS", DefaultRetryDelayMs, 10, 5000);
+    return configured;
+}
+
+bool LastErrorIsTransient()
+{
+#ifdef _WIN32
+    const DWORD error = GetLastError();
+    return error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION
+        || error == ERROR_LOCK_VIOLATION;
+#else
+    return false;
+#endif
+}
+
+enum class WriteStage
+{
+    Ok,
+    Open,
+    Write,
+    Commit,
+};
+
+// One attempt owns a fresh QSaveFile: reopening the object after a denied commit
+// commits an empty file, so a retry must start from a new staging file.
+WriteStage TryWriteSaveFile(const QString& path, const u8* bytes, u32 length)
+{
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    const auto stage = [&] {
+        if (!file.open(QIODevice::WriteOnly)) return WriteStage::Open;
+        if (file.write(reinterpret_cast<const char*>(bytes), length) != length) return WriteStage::Write;
+        if (!file.commit()) return WriteStage::Commit;
+        return WriteStage::Ok;
+    };
+    const WriteStage result = stage();
+    if (result == WriteStage::Ok) return result;
+    Log(LogLevel::Error, "SaveManager: Failed to %s save %s (Qt error %d): %s\n",
+        result == WriteStage::Open ? "open" : result == WriteStage::Write ? "write" : "commit",
+        path.toUtf8().constData(), int(file.error()), file.errorString().toUtf8().constData());
+    return result;
+}
+}
+
 static bool WriteSaveFile(const std::string& path, const u8* bytes, u32 length)
 {
-    QSaveFile file(QString::fromStdString(path));
-    file.setDirectWriteFallback(false);
-    const auto failed = [&](const char* phase) {
-        Log(LogLevel::Error, "SaveManager: Failed to %s save %s (Qt error %d): %s\n",
-            phase, path.c_str(), int(file.error()), file.errorString().toUtf8().constData());
+    const QString target = QString::fromStdString(path);
+    const int budget = RetryAttempts();
+    WriteStage stage = WriteStage::Ok;
+    for (int attempt = 1; ; ++attempt)
+    {
+        stage = TryWriteSaveFile(target, bytes, length);
+        if (stage == WriteStage::Ok) break;
+        if (attempt >= budget || !LastErrorIsTransient()) break;
+        QThread::msleep(static_cast<unsigned long>(RetryDelayMs()));
+    }
+    if (stage != WriteStage::Ok)
+    {
+        if (budget > 1)
+            Log(LogLevel::Error,
+                "SaveManager: Save %s was still denied after %d bounded replace attempts; keeping the pending save\n",
+                path.c_str(), budget);
         return false;
-    };
-    if (!file.open(QIODevice::WriteOnly)) return failed("open");
-    if (file.write(reinterpret_cast<const char*>(bytes), length) != length) return failed("write");
-    if (!file.commit()) return failed("commit");
+    }
     Log(LogLevel::Info, "SaveManager: Wrote %u bytes to %s\n", length, path.c_str());
     return true;
 }

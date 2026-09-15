@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDeadlineTimer>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QSaveFile>
 #include <QSemaphore>
@@ -169,7 +170,12 @@ int main(int argc, char** argv)
                 check(probe.write(next) == next.size(), "Rename fixture failed before commit");
                 check(!probe.commit(), "Rename fixture unexpectedly allowed replacement");
             }
+            // The denial is permanent here, so the bounded transient retries must
+            // still end as a failure, and must not stretch the wait past the budget.
+            QElapsedTimer denial;
+            denial.start();
             check(!manager.Flush(), "Failed replacement was reported as a successful flush");
+            check(denial.elapsed() < 3000, "Denied replacement ignored its bounded retry budget");
             check(manager.NeedsFlush(), "Locked save discarded the pending write");
             check(Read(path) == previous, "Failed replacement damaged the previous save");
             CloseHandle(lock);
@@ -180,6 +186,70 @@ int main(int argc, char** argv)
         check(manager.Flush(), "File replacement did not report a committed flush");
         check(!manager.NeedsFlush(), "Successful file replacement remained pending");
         check(Read(path) == next, "File replacement lost bytes or retained the previous tail");
+    }
+    else if (!std::strcmp(argv[1], "replace-retry"))
+    {
+#ifdef _WIN32
+        // A scanner or indexer holds the file for a moment and clears on its own:
+        // the atomic replace must recover inside its bounded budget, and must stay
+        // a reported failure that keeps the original bytes when the hold persists.
+        const QString path = directory.filePath(QStringLiteral("save-transient-\uD55C\uAE00.bin"));
+        if (!Write(path, previous)) return 2;
+        SaveManager manager(""); // Drive flushes synchronously without a worker race.
+        manager.SetPath(path.toStdString());
+        Queue(manager, next);
+
+        QSemaphore held;
+        std::atomic_bool holderFailed{false};
+        auto holder = std::unique_ptr<QThread>(QThread::create([&] {
+            HANDLE lock = CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_READ,
+                                      FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (lock == INVALID_HANDLE_VALUE) { holderFailed = true; held.release(); return; }
+            held.release();
+            // Own the denial past the first replace, then clear it inside the
+            // bounded retry budget so only a retry can commit.
+            QThread::msleep(120);
+            CloseHandle(lock);
+        }));
+        holder->start();
+        check(held.tryAcquire(1, 2000), "Transient replacement fixture never reported its lock");
+        check(!holderFailed.load(), "Transient replacement fixture could not lock the save");
+        check(manager.Flush(), "Transient replacement denial was not retried to a commit");
+        check(!manager.NeedsFlush(), "Retried replacement remained pending");
+        check(Read(path) == next, "Retried replacement lost bytes or retained the previous tail");
+        holder->wait();
+
+        const QString deniedPath = directory.filePath(QStringLiteral("save-held-\uD55C\uAE00.bin"));
+        if (!Write(deniedPath, previous)) return 2;
+        QSemaphore deniedHeld;
+        std::atomic_bool releaseDenied{false};
+        std::atomic_bool deniedFailed{false};
+        auto persistent = std::unique_ptr<QThread>(QThread::create([&] {
+            HANDLE lock = CreateFileW(reinterpret_cast<LPCWSTR>(deniedPath.utf16()), GENERIC_READ,
+                                      FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (lock == INVALID_HANDLE_VALUE) { deniedFailed = true; deniedHeld.release(); return; }
+            deniedHeld.release();
+            while (!releaseDenied.load()) QThread::msleep(5);
+            CloseHandle(lock);
+        }));
+        persistent->start();
+        check(deniedHeld.tryAcquire(1, 2000), "Persistent denial fixture never reported its lock");
+        check(!deniedFailed.load(), "Persistent denial fixture could not lock the save");
+        manager.SetPath(deniedPath.toStdString());
+        Queue(manager, next);
+        QElapsedTimer denial;
+        denial.start();
+        check(!manager.Flush(), "Persistent denial was reported as a successful flush");
+        check(denial.elapsed() < 3000, "Persistent denial ignored its bounded retry budget");
+        check(manager.NeedsFlush(), "Persistent denial discarded the pending save");
+        check(Read(deniedPath) == previous, "Persistent denial damaged the previous save");
+        releaseDenied = true;
+        persistent->wait();
+        check(manager.Flush(), "Held save could not commit after the denial cleared");
+        check(Read(deniedPath) == next, "Recovered save lost bytes after the denial cleared");
+#else
+        return 77;
+#endif
     }
     else if (!std::strcmp(argv[1], "path-during-flush"))
     {

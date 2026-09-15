@@ -417,10 +417,12 @@ else()
 endif()
 foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush buffer-resize
         unpublished-pending memory-copy-pending flush-latest recovery-copy same-copy-path copy-commit-failure
-        relocation-pending allocation-capture allocation-publish producer-during-flush)
+        relocation-pending allocation-capture allocation-publish producer-during-flush replace-retry)
     add_test(NAME save-manager-${case} COMMAND SaveManagerIO ${case})
     set_tests_properties(save-manager-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()
+set_tests_properties(save-manager-replace-retry PROPERTIES TIMEOUT 30
+    ENVIRONMENT "MELONDS_SAVE_RETRY_ATTEMPTS=5;MELONDS_SAVE_RETRY_DELAY_MS=40")
 
 set(state_writer "${CMAKE_CURRENT_BINARY_DIR}/saveState.inc")
 add_custom_command(OUTPUT "${state_writer}"
