@@ -417,7 +417,7 @@ else()
 endif()
 foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush buffer-resize
         unpublished-pending memory-copy-pending flush-latest recovery-copy same-copy-path copy-commit-failure
-        relocation-pending allocation-capture allocation-publish producer-during-flush replace-retry)
+        relocation-pending relocation-clean allocation-capture allocation-publish producer-during-flush replace-retry)
     add_test(NAME save-manager-${case} COMMAND SaveManagerIO ${case})
     set_tests_properties(save-manager-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()

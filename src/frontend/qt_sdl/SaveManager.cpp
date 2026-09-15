@@ -193,8 +193,10 @@ std::string SaveManager::GetPath()
 void SaveManager::SetPath(const std::string& path)
 {
     QMutexLocker lock(&StateLock);
+    // Relocating only changes where the next write lands. Marking a flush here
+    // would re-commit the previously finished bytes to the new path, which
+    // overwrites the save the new game already owns there.
     Path = path;
-    FlushRequested = true;
 }
 
 void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen)

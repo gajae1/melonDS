@@ -347,6 +347,35 @@ int main(int argc, char** argv)
         check(Read(oldPath) == previous, "Relocated flush changed the previous file");
         check(!manager.NeedsFlush(), "Committed relocation remained pending");
     }
+    else if (!std::strcmp(argv[1], "relocation-clean"))
+    {
+        // Switching games relocates the manager after the previous game was
+        // already committed. The destination belongs to the new game, so a
+        // path change must not re-commit the finished bytes over it.
+        const QString oldPath = directory.filePath("relocated-from.bin");
+        const QString newPath = directory.filePath("relocated-own.bin");
+        if (!Write(oldPath, previous) || !Write(newPath, next)) return 2;
+        SaveManager manager("");
+        manager.SetPath(oldPath.toStdString());
+        Queue(manager, previous);
+        check(manager.Flush() && Read(oldPath) == previous, "Relocation fixture never committed first");
+        check(!manager.NeedsFlush(), "Committed fixture stayed pending");
+
+        manager.SetPath(newPath.toStdString());
+        check(!manager.NeedsFlush(), "Relocation of finished bytes requested another write");
+        check(Read(newPath) == next, "Relocation damaged the destination save");
+        // The producer publishes every frame, so the worker would have written
+        // the finished bytes on its next cycle without this guard.
+        manager.CheckFlush();
+        check(!manager.NeedsFlush(), "Published relocation of finished bytes stayed pending");
+        check(Read(newPath) == next, "Relocation rewrote the destination after a publish");
+
+        // Later data from the new game still goes to the new path.
+        Queue(manager, next);
+        check(manager.Flush(), "New data could not be committed after relocation");
+        check(Read(newPath) == next, "Relocated flush lost the new game's bytes");
+        check(!manager.NeedsFlush(), "Relocated write stayed pending");
+    }
     else if (!std::strcmp(argv[1], "allocation-capture"))
     {
         const QByteArray grown(8193, '\x5C');
