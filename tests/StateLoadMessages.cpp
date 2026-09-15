@@ -26,6 +26,7 @@
 #include "Platform.h"
 #include "SPU.h"
 #include "AssetIdentity.h"
+#include "RendererSelection.h"
 #ifdef GDBSTUB_ENABLED
 #include "GdbFrame.h"
 #endif
@@ -38,7 +39,6 @@ using Platform::FileLength;
 using Platform::CloseFile;
 
 enum class ImportFailure { None, Short, Error, Oversize };
-constexpr int renderer3D_Software = 0;
 static ImportFailure importFailure = ImportFailure::None;
 static unsigned openFiles = 0;
 static bool failAllocation = false;

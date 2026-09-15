@@ -49,3 +49,13 @@
 화면 불일치는 동일 입력·native 배율에서 3D 출력, 2D 합성, guest capture, 최종 표시의 첫 차이를 분리한다.
 Vulkan/OpenGL 최적화는 기존 `MELONDS_RENDER_DIAGNOSTICS` 계측을 먼저 확인하고, upload/readback/CPU 합성/present 비용을 구분한다.
 DSi 실기 실행·NAND/BIOS 덤프는 사용자 준비 이후 별도 진행하며, 이 문서 작업에서는 개인 runtime 파일을 사용하지 않았다.
+
+## 후속 오디오 점검 — 2026-09-15
+
+[오디오 점검 현황](Audio_Status.md)에 기존 38개 검사 통과와 새 pending-open 종료 소유권 결함을 분리해 기록했다.
+StateLoadMessages의 RendererSelection 선언 누락은 테스트 소스에서 수정했다.
+새 결함은 Windows의 실제 AudioOutput 제어 코드와 SDL dummy로 재현했으며,
+수정 후보는 별도 Linux의 원본 Owner 제어 코드/대역 장치에서만 검사했다.
+렌더러 및 오디오 프로덕션 변경 요청은 도구 단계에서 차단되어 `src/`에는 변경이 없다.
+D-004 확대 표시, 오디오 결함의 Windows 수정 후 통과, 실제 장치 청취/지연은 미완료다.
+제품 버전은 1.1.126을 유지하며, 전체 계획 완료·성능 향상·실기 정확성 개선을 선언하지 않는다.
