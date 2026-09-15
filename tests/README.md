@@ -352,6 +352,12 @@ physical latency or listening quality. Device results are opt-in, outside
 CTest, require authorized local game/BIOS inputs, and must not use dummy-driver
 timing as evidence about a physical backend. Keep enough frames to reach a
 known scene; a uniform transition frame fails the existing smoke acceptance.
+`MELONDS_SMOKE_SCALE` (1..16) and `MELONDS_SMOKE_HIRES` are diagnostic
+overrides used by the GR-15 real-game scale sweep; product defaults stay 1x
+and hires off. Scaled GL compute runs present a 512x384/768x576 front buffer,
+so ROMSmoke queries the front buffer texture size and box-averages it back to
+256x192 before comparing captures, failing with exit 18 when the size is not an
+integer multiple of 256x192. Without the overrides the capture path is unchanged.
 
 `CoreExecution device-execution` runs a generated ARM9 guest through real Timer0
 MMIO, HALT and IRQ entry. Five cold/warmed phases check F preservation, IME/IE

@@ -66,7 +66,7 @@ static std::vector<melonDS::u8> Read(const char* name)
 int main(int argc, char** argv)
 {
     using namespace melonDS;
-    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute|vulkan frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM\n"); return 2; }
+    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute|vulkan frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM, MELONDS_SMOKE_SCALE, MELONDS_SMOKE_HIRES\n"); return 2; }
     const char* pcmPath = std::getenv("MELONDS_SMOKE_PCM");
     if (pcmPath && std::getenv("MELONDS_SMOKE_AUDIO_BUFFER")) {
         std::fprintf(stderr, "PCM export and device playback cannot consume the same queue\n");
@@ -169,7 +169,14 @@ int main(int argc, char** argv)
             if (!dynamic_cast<VulkanRenderer*>(&nds->GetRenderer())) return 5;
         }
 #endif
-        RendererSettings settings{1,false,false,false};
+        // Diagnostic 3D-scale overrides; the config default stays 1x, hires off.
+        int scale = 1;
+        if (const char* scaleEnv = std::getenv("MELONDS_SMOKE_SCALE")) {
+            scale = std::atoi(scaleEnv);
+            if (scale < 1 || scale > 16) { std::fprintf(stderr, "invalid MELONDS_SMOKE_SCALE\n"); return 2; }
+        }
+        const bool hiresCoords = std::getenv("MELONDS_SMOKE_HIRES") != nullptr;
+        RendererSettings settings{scale,false,hiresCoords,false};
         if (!nds->GetRenderer().SetRenderSettings(settings)) return 5;
         while (nds->GetRenderer().NeedsShaderCompile())
         {
@@ -294,12 +301,41 @@ int main(int argc, char** argv)
             std::memcpy(pixels.data()+256*192,bottom,256*192*4);
         } else {
             if (!top) return 7;
+            const GLuint texture = *static_cast<GLuint*>(top);
+            glBindTexture(GL_TEXTURE_2D_ARRAY,texture);
+            GLint texW = 0, texH = 0;
+            glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY,0,GL_TEXTURE_WIDTH,&texW);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY,0,GL_TEXTURE_HEIGHT,&texH);
+            glBindTexture(GL_TEXTURE_2D_ARRAY,0);
+            // Scaled renderers present a bigger front buffer; average it back to
+            // the DS resolution instead of reading a corner of it.
+            const int factor = texW/256;
+            if (texW % 256 || texH % 192 || factor < 1 || texH != 192*factor) {
+                std::fprintf(stderr,"unexpected frontbuffer %dx%d\n",texW,texH); return 18;
+            }
+            if (factor > 1) std::printf("frontbuffer=%dx%d factor=%d\n",texW,texH,factor);
+            std::vector<u32> scaled;
+            if (factor > 1) scaled.resize(size_t(texW)*size_t(texH));
             GLuint fb; glGenFramebuffers(1,&fb); glBindFramebuffer(GL_READ_FRAMEBUFFER,fb);
             for (int layer=0;layer<2;++layer) {
-                glFramebufferTextureLayer(GL_READ_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,*static_cast<GLuint*>(top),0,layer);
+                glFramebufferTextureLayer(GL_READ_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,texture,0,layer);
                 glReadBuffer(GL_COLOR_ATTACHMENT0);
                 if(glCheckFramebufferStatus(GL_READ_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) return 8;
-                glReadPixels(0,0,256,192,GL_BGRA,GL_UNSIGNED_BYTE,pixels.data()+layer*256*192);
+                if (factor == 1) {
+                    glReadPixels(0,0,256,192,GL_BGRA,GL_UNSIGNED_BYTE,pixels.data()+layer*256*192);
+                    continue;
+                }
+                glReadPixels(0,0,texW,texH,GL_BGRA,GL_UNSIGNED_BYTE,scaled.data());
+                u32* out = pixels.data()+layer*256*192;
+                const u32 count = u32(factor)*u32(factor);
+                for (int y=0;y<192;++y) for (int x=0;x<256;++x) {
+                    u32 r=0,g=0,b=0,a=0;
+                    for (int sy=0;sy<factor;++sy) for (int sx=0;sx<factor;++sx) {
+                        const u32 p = scaled[size_t(y*factor+sy)*texW + x*factor+sx];
+                        r += (p>>16)&0xFF; g += (p>>8)&0xFF; b += p&0xFF; a += (p>>24)&0xFF;
+                    }
+                    out[y*256+x] = ((a/count)<<24)|((r/count)<<16)|((g/count)<<8)|(b/count);
+                }
             }
             glDeleteFramebuffers(1,&fb);
             if (glGetError()!=GL_NO_ERROR) return 9;
