@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Real extracted GUI creation calls + Qt borrow handler. Native GL/WGL lookup,
 // widgets and config are isolated; no driver pointer is corrupted or invoked.
+#include "RendererSelection.h"
 #include <QCoreApplication>
 #include <QMutex>
 #include <QQueue>
@@ -75,7 +76,7 @@ struct Configuration
 {
     bool GL = true;
     int Renderer = 1;
-    bool GetBool(const char*) const { return GL; }
+    bool GetBool(const char* key) const { return std::string_view(key) != "Screen.UseVulkan" && GL; }
     int GetInt(const char*) const { return Renderer; }
     void SetBool(const char*, bool value) { GL = value; }
     void SetInt(const char*, int value) { Renderer = value; }
@@ -93,7 +94,7 @@ public:
     unsigned int preservedFrameNumber = 0;
     Configuration Config;
     EmuThread* getEmuThread() { return emuThread; }
-    bool usesOpenGL() const { return Config.GL || Config.Renderer != 0; }
+    bool usesOpenGL() const { return Config.GL || RendererUsesOpenGL(Config.Renderer); }
     void createWindow(int id = -1);
     void doOnAllWindows(std::function<void(MainWindow*)> func, int exclude = -1);
     int releaseGL();
@@ -258,8 +259,10 @@ class ScreenPanelNative : public Panel
 {
 public:
     explicit ScreenPanelNative(MainWindow*) {}
+    bool initVulkan() { StopTest(1, "unexpected Vulkan path in GL-only fixture"); }
+    bool usesVulkan() const { return false; }
+    void osdAddMessage(unsigned, const char*, ...) {}
 };
-constexpr int renderer3D_Software = 0;
 namespace Platform { enum class LogLevel { Error }; }
 void Log(Platform::LogLevel, const char*, ...) {}
 

@@ -2,6 +2,7 @@
 // Compile the production method with a recording GL boundary. This tests byte
 // ranges and dirty flags, NOT OpenGL drivers, shader output, or game timing.
 #include <array>
+#include <cstdint>
 #include <algorithm>
 #include <stdio.h>
 #include <string.h>
@@ -32,6 +33,11 @@ class GLRenderer
 {
 public:
     GPUFixture& GPU;
+    struct ReadbackCost {
+        std::uint64_t bytes = 0;
+        std::uint64_t ReadbackStart() { return 0; }
+        void ReadbackEnd(std::uint64_t, std::uint64_t count) { bytes += count; }
+    } Cost;
     int CaptureSyncFB = 0;
     int CaptureLines = 0;
     bool CaptureWriteThrough = false;
@@ -56,7 +62,7 @@ int main()
             BytesWritten = 0;
             renderer.SyncVRAMCapture(2, start, len, true);
             unsigned blocks = len == 0 ? 1 : len;
-            bool okay = BytesWritten == blocks * 32768;
+            bool okay = BytesWritten == blocks * 32768 && renderer.Cost.bytes == BytesWritten;
             for (u32 bank = 0; bank < 4; bank++)
             {
                 for (u32 offset = 0; offset < 128 * 1024; offset++)

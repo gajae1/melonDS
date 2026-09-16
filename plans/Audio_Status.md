@@ -41,3 +41,14 @@ Stop 뒤 source callback 증가가 멈추고 Resume 뒤 다시 증가하는 것�
 
 기존 38개 통과 기록과 그 뒤 발견된 반례는 과거 근거로 유지한다. 이번 결과로 전체 오디오가 무결하다고 선언하지 않는다.
 재현·실패·수정 후 로그와 로컬 무음 검사기는 `build/evidence/resume-20260916/`에 보존한다.
+
+
+## 1.1.129 후속 확인 — 2026-09-16
+
+이번 제품 변경은 렌더링 버퍼 수명·전송 비용이며 오디오 PCM·최소위상 계수·필터·기본 설정은 바꾸지 않았다.
+전체 Windows CTest960개 중 오디오/오디오 상태 복원32개도 모두 통과했다. 실패/skip은0이다.
+실제 Windows 기본 endpoint에서 현재 AudioOutput 라이브러리로 무음 Open→Start→Stop→Resume→Close를 재실행했다.
+SDL requested128/512:48000Hz, actual period128/512; WASAPIShared requested128/512:48000Hz, actual period480/480. 네 조건 모두 통과했다.
+정지 동안 client callback 증가가 멈추고 재개 뒤 증가하는 것을 확인했다. 이 값은 음질·장치 탈착·장기 부하·물리 지연의 판정이 아니다.
+영구 정지한 드라이버와 callback drain/최종join의 무제한 대기 가능성은 계속 열려 있다.
+근거: [1.1.129 구현·검증](releases/1.1.129.md), 로컬 `build/evidence/costs-1.1.129/native-audio-test.log`.

@@ -1425,8 +1425,20 @@ int main(int argc, char** argv)
                 ReadSaveFile(expected) == bytes &&
                 std::memcmp(loader.nds->GetNDSSave(), bytes.constData(), bytes.size()) == 0;
             if (reset)
-                passed &= currentManager->GetPath() == nextPath && ReadSaveFile(nextPath) == bytes &&
+            {
+                // Since 1.1.125 a clean relocation does not republish the old
+                // game bytes. New guest writes must still reach the new path.
+                passed &= currentManager->GetPath() == nextPath &&
+                    !QFile::exists(QString::fromStdString(nextPath)) &&
                     loader.dsAssetPaths.Name == next.Name;
+                const QByteArray continued(8192, '\x4D');
+                captureCartSave = true;
+                loader.nds->SetNDSSave(reinterpret_cast<const u8*>(continued.constData()), continued.size());
+                captureCartSave = false;
+                passed &= currentManager->Flush() && ReadSaveFile(nextPath) == continued &&
+                    ReadSaveFile(expected) == bytes &&
+                    std::memcmp(loader.nds->GetNDSSave(), continued.constData(), continued.size()) == 0;
+            }
             else
                 passed &= currentManager->GetPath() == expected && !QFile::exists(QString::fromStdString(nextPath)) &&
                     loader.dsAssetPaths.Name == oldSelection.Name;

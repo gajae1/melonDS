@@ -287,3 +287,16 @@ DS/DSi·1/16채널·고정/가변 timer8부하의3쌍에서 PCM+guest SPU state 
 검증: 1.1.126 트리에서 ROMSmoke를 재빌드해 run-gr15.ps1 전체 leg 29런을 다시 실행했고 tag별 exit·PPM·PCM이 직전 측정과 29/29 동일했다. Black은 software·compute·vulkan 1200프레임, compute/vulkan 1x/2x/3x, 1x hires가 모두 0AE834F389C6D37F로 바이트 동일하고 1800프레임도 세 renderer가 EF23190059B44F04로 동일하다. 확대 compute 런은 frontbuffer=768x576 factor=3 로그와 exit 0을 남기며 전면 검정이 아니라 8색(98,304픽셀 중 97,353 검정)이다. Solatorobo 1x는 compute=vulkan(8D58BB3965D2795C)이고 software만 하단 547픽셀 차이(x 83~253, y 12~124)로, 1.1.122 릴리스 빌드 대조군과 diff 개수·좌표가 같다. 대조군 PPM도 현재 1x 결과와 바이트 동일하다(software 700258B3FAF62DBE, compute/vulkan 8D58BB3965D2795C). 입력 ROM/save/state 5개 파일 hash는 실행 전후 보존됐고 PCM은 scale과 무관하게 같은 프레임 수에서 동일하다.
 2x/3x는 compute와 vulkan이 서로 다르다(s2 F990551F582BBB4B vs 9E9FA665F9B83F86, s3 4EB41A5A8F5C0CEF vs 6356DF7EE2A35896). 원인은 표시 경로다: GLRenderer의 compute 경로는 확대 front buffer를 표시하고 VulkanRenderer는 softRenderer 기반 native 256×192를 GPU3D_Vulkan.cpp scale 블록에서 점 샘플 resolve한다. 색 분포도 갈린다(compute s2/s3 7,081/8,687색, vulkan s2/s3 1,922/1,849색, 1x 2,224색). 이번 릴리스에서 확대 표시를 제품 범위에 넣을지는 미결정이었고 그때까지 제품 소스는 바꾸지 않았다. 이후 사용자 결정(D-004)으로 Vulkan도 OpenGL compute 경로처럼 확대 front buffer를 표시하도록 구현하기로 했으며, 1.1.126의 제품 소스는 그대로다.
 한계: 실제 게임 2종의 1200/1800프레임 한 장면이며 실제 기기·AMD/Intel·다른 OS·4x 이상 scale·장기 사용은 미검증이다. scale>1 비교는 확대 front buffer를 256×192로 박스 평균한 값과 native 출력의 비교이므로 표시 경로 자체의 등가성을 뜻하지 않는다. savestate leg는 여전히 exit 15다. 이 릴리스는 테스트 하네스와 버전만 바꾸며 제품 동작 변경이 없다.
+
+
+## 1.1.129 — 전체 로컬 회귀와 렌더링 비용
+
+2026-09-16. 기준739ec2eb. OpenGL batch scratch/한도 검사, Vulkan staging 재사용 및 cached CPU readback view를 구현했다.
+전체 Windows 타깃 빌드 성공 후 CTest **960/960 통과, 실패0·skip0**(117.79초)을 확인했다.
+초기 실행의 asset-reset1실패·GL loader11미실행은 로그에 보존했다. fixture를 현재 API/1.1.125의 clean-relocation 계약에 맞추고 재실행했다.
+저장 경로 변경만으로 완료된 데이터가 재기록되지 않는 제품 정책은 유지했으며, 뒤따르는 실제 guest 쓰기가 새 경로에 커밋됨도 검사한다.
+실제 기본 endpoint의 SDL/WASAPIShared 요청128/512 무음 생명주기4조건도 별도 통과했다. 물리 지연·청감 검사가 아니다.
+전후 소스별 측정은1/3/8배·7쌍씩, 업로드 약70~76% 시간 감소와 clear/readback/full-color 소비의 제한적 개선이다. 전체 게임 FPS가 아니다.
+직접 GPU mapping을 읽는 후보는 전체 색 변환에서 느려져 폐기했다. 출력 동일성만으로 최적화를 수락하지 않았다.
+구현·미적용 경계와 수치는 [1.1.129 기록](releases/1.1.129.md), 원자료는 로컬 `build/evidence/costs-1.1.129/`를 따른다.
+현재 Windows 구성 전체의 회귀 결과이며 DSi 실기·모든 게임·다른 GPU/OS·Vulkan validation layer 수락은 아니다. Actions는 사용하지 않았다.

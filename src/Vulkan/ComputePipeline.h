@@ -40,6 +40,10 @@ public:
     ComputePipeline& operator=(const ComputePipeline&)=delete;
     std::vector<uint32_t> Render(const Batch& batch);
     std::vector<uint32_t> Render(std::span<const Batch> batches);
+    // Completed readback in cached CPU memory. Valid until the next render attempt
+    // or pipeline destruction; consume before submitting another frame.
+    // Call Render when an independently owned snapshot is needed instead.
+    std::span<const uint32_t> RenderView(std::span<const Batch> batches);
     std::shared_ptr<const Texture> UploadTexture(uint32_t width, uint32_t height,
         uint32_t layers, std::span<const uint32_t> pixels, bool capture=false);
     std::shared_ptr<const Texture> CreateTexture(uint32_t width, uint32_t height, uint32_t layers);
@@ -72,6 +76,11 @@ private:
     // polygon, X span, Y span, color/depth/attributes, result, bin, work, meta, indices
     std::array<std::shared_ptr<Device::Buffer>,11> buffers;
     std::shared_ptr<Device::Buffer> readback;
+    // Mapped host-coherent memory need not be CPU-cached. Copy once with memcpy,
+    // then let color conversion/native sampling read this reusable allocation.
+    std::vector<uint32_t> hostReadback;
+    // Reused only after the synchronous upload fence has completed.
+    std::shared_ptr<Device::Buffer> uploadStaging;
     std::shared_ptr<Device::Image> output,clearColor,clearDepth;
     std::shared_ptr<const Texture> dummyTexture,dummyCapture;
     VkBufferView indicesView{};

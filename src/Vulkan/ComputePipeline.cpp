@@ -19,7 +19,7 @@ void ImageBarrier(const volk::VolkDeviceTable& f,VkCommandBuffer command,VkImage
 
 ComputePipeline::ComputePipeline(std::shared_ptr<Device> device,const Shaders& shaders,int scale)
     :owner(std::move(device)),f(owner->Functions()),device(owner->Handle()),
-    Resources(scale, owner->Properties().limits)
+    Resources(scale, owner->Properties().limits), hostReadback(Resources.Pixels)
 {
     try{Init(shaders);}catch(...){Cleanup();throw;}
 }
@@ -127,7 +127,11 @@ void ComputePipeline::Init(const Shaders& shaders)
 void ComputePipeline::UploadImage(const std::shared_ptr<Device::Image>& image,uint32_t width,uint32_t height,
     uint32_t layers,std::span<const uint32_t> pixels,VkImageLayout oldLayout,uint32_t firstLayer)
 {
-    auto staging=owner->CreateBuffer(pixels.size_bytes(),VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);
+    // Keep the old buffer if growth fails. SubmitAndWait below completes every
+    // transfer before a subsequent host write can reuse this coherent mapping.
+    if (!uploadStaging || uploadStaging->Size() < pixels.size_bytes())
+        uploadStaging = owner->CreateBuffer(pixels.size_bytes(),VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);
+    const auto& staging = uploadStaging;
     std::memcpy(staging->Data(),pixels.data(),pixels.size_bytes());
     const auto command=owner->Begin();
     const bool fresh=oldLayout==VK_IMAGE_LAYOUT_UNDEFINED;
@@ -317,6 +321,12 @@ std::vector<uint32_t> ComputePipeline::Render(const Batch& batch)
 
 std::vector<uint32_t> ComputePipeline::Render(std::span<const Batch> batches)
 {
+    const auto pixels = RenderView(batches);
+    return {pixels.begin(), pixels.end()};
+}
+
+std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> batches)
+{
     if(batches.empty())throw std::invalid_argument("Compute frame needs a clear batch");
     size_t variantCount=0,polygonCount=0;
     for(const auto& batch:batches) {
@@ -361,6 +371,8 @@ std::vector<uint32_t> ComputePipeline::Render(std::span<const Batch> batches)
     ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_READ_BIT,VK_ACCESS_SHADER_WRITE_BIT);
     VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};download.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
     f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
-    owner->SubmitAndWait();std::vector<uint32_t> result(Resources.Pixels);std::memcpy(result.data(),readback->Data(),Resources.Pixels*4);return result;
+    owner->SubmitAndWait();
+    std::memcpy(hostReadback.data(), readback->Data(), Resources.Pixels * sizeof(uint32_t));
+    return hostReadback;
 }
 }

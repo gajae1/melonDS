@@ -1057,7 +1057,7 @@ add_custom_command(OUTPUT "${gl_loader_guard}"
 add_executable(GLLoaderBoundary "${CMAKE_SOURCE_DIR}/tests/GLLoaderBoundary.cpp"
     ${gl_loader_methods} "${gl_loader_guard}" "${gl_borrow_handler}" "${gl_borrow_state}"
     "${gl_borrow_request}" "${gl_borrow_return}")
-target_include_directories(GLLoaderBoundary PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(GLLoaderBoundary PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 if (USE_QT6)
     target_link_libraries(GLLoaderBoundary PRIVATE Qt6::Core)
 else()

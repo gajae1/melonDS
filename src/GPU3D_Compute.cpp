@@ -247,9 +247,15 @@ bool ComputeRenderer3D::CheckScaleFactor(int scale) const
     // counts; the texture-buffer limit instead counts RGBA16UI texels (8 bytes).
     const u64 pixels = u64(256) * 192 * scale * scale;
     const u64 indices = u64(64) * 2048 * scale;
-    // Tile storage is 4 * TileSize^2 * MaxWorkTiles = 64 * screen pixels.
-    // Other scalable SSBOs are smaller than this or the X-span setup buffer.
-    const u64 largest = std::max({64 * pixels, sizeof(SpanSetupX) * indices,
+    const u64 tile = scale >= 9 ? 32 : scale >= 5 ? 16 : 8;
+    GLint groupsX = 0, groupsZ = 0;
+    glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, &groupsX);
+    glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2, &groupsZ);
+    if (groupsX <= 0 || groupsZ <= 0) return false;
+    const u64 batch = std::min({pixels / (tile * tile) * 16, u64(groupsZ), u64(groupsX) * 32});
+    // Match the actual scratch allocation. The persistent seven-layer output
+    // and span storage may now be larger; bin/work buffers are below 28*pixels.
+    const u64 largest = std::max({4 * tile * tile * batch, 28 * pixels, sizeof(SpanSetupX) * indices,
         u64(sizeof(SpanSetupY)) * MaxYSpanSetups, u64(sizeof(RenderPolygon)) * 2048});
     GLint64 storageLimit = 0;
     GLint texelLimit = 0;
@@ -325,7 +331,9 @@ bool ComputeRenderer3D::SetRenderSettings(int scale, bool highResolutionCoordina
     for (int i = 0; i < tilememoryLayer_Num; i++)
     {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, TileMemory[i]);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, 4*TileSize*TileSize*MaxWorkTiles, nullptr, GL_DYNAMIC_DRAW);
+        // Raster storage is reused after each batch; work descriptors still use
+        // MaxWorkTiles because the shader offsets its sorted half by that value.
+        glBufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(4)*TileSize*TileSize*MaxBatchWork, nullptr, GL_DYNAMIC_DRAW);
         if (!OpenGL::CheckError("Compute tile storage")) return false;
     }
 

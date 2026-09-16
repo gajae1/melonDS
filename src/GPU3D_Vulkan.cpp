@@ -217,7 +217,8 @@ void VulkanRenderer3D::DrawFrame()
     for (const auto& batch : prepared)
         batches.push_back({batch.Polygons, batch.Edges, batch.Indices, batch.Variants,
             ComputeData::PrepareMeta(GPU3D, batch.Polygons.size(), batch.Variants.size()), wbuffer});
-    const auto pixels = Pipeline->Render(batches);
+    // Consume the completed readback view before any subsequent render reuses it.
+    const auto pixels = Pipeline->RenderView(batches);
     // Retain all scaled samples for display. The native origin samples below
     // remain the source of guest capture, independent of host presentation.
     if (ScaleFactor > 1)

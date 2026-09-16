@@ -15,6 +15,14 @@ using namespace melonDS;
 PFNGLDISPATCHCOMPUTEINDIRECTPROC DriverIndirect;
 PFNGLGETINTEGERI_VPROC DriverGetIndexed;
 GLint LimitZ;
+PFNGLGETINTEGER64VPROC DriverGet64;
+GLint64 StorageBudget = 0;
+void APIENTRY Get64(GLenum name, GLint64* value)
+{
+    DriverGet64(name, value);
+    if (name == GL_MAX_SHADER_STORAGE_BLOCK_SIZE && StorageBudget)
+        *value = std::min(*value, StorageBudget);
+}
 unsigned IndirectCalls;
 unsigned MaxProduced;
 
@@ -105,7 +113,7 @@ bool Render(Scene& scene, int scale, GLint limit, std::vector<u32>& pixels, u32 
     auto* renderer = dynamic_cast<GLRenderer*>(&nds->GetRenderer());
     if (!renderer) return false;
     RendererSettings settings{scale, false, false, false};
-    renderer->SetRenderSettings(settings);
+    if (!renderer->SetRenderSettings(settings)) return false;
     while (renderer->NeedsShaderCompile())
     {
         int step, count;
@@ -141,6 +149,26 @@ bool Render(Scene& scene, int scale, GLint limit, std::vector<u32>& pixels, u32 
     }
     std::printf("workload polygons=%zu scale=%d limit=%d max_produced=%u indirect_calls=%u\n",
         scene.Polygons.size(), scale, limit, MaxProduced, IndirectCalls);
+    if (limit > 0)
+    {
+        // Inspect the real scratch buffers after every split-batch draw.
+        const int tile = scale >= 9 ? 32 : scale >= 5 ? 16 : 8;
+        const GLint64 budget = GLint64(limit) * tile * tile * sizeof(u32);
+        for (GLuint binding = 2; binding <= 4; ++binding)
+        {
+            GLint buffer = 0;
+            DriverGetIndexed(GL_SHADER_STORAGE_BUFFER_BINDING, binding, &buffer);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+            GLint64 bytes = 0;
+            glGetBufferParameteri64v(GL_SHADER_STORAGE_BUFFER, GL_BUFFER_SIZE, &bytes);
+            if (bytes <= 0 || bytes > budget)
+            {
+                std::fprintf(stderr, "split-batch scratch binding=%u bytes=%lld budget=%lld\n",
+                    binding, (long long)bytes, (long long)budget);
+                success = false;
+            }
+        }
+    }
     return success && glGetError() == GL_NO_ERROR;
 }
 
@@ -190,6 +218,9 @@ bool CheckBlendContinuation()
 
 int CheckComputeWorkload(const char* name)
 {
+    DriverGet64 = glad_glGetInteger64v;
+    glad_glGetInteger64v = Get64;
+    StorageBudget = !std::strcmp(name, "scratch-limits") ? GLint64(128) * 1024 * 1024 : 0;
     DriverIndirect = glad_glDispatchComputeIndirect;
     DriverGetIndexed = glad_glGetIntegeri_v;
     glad_glDispatchComputeIndirect = Indirect;
@@ -204,7 +235,7 @@ int CheckComputeWorkload(const char* name)
         const bool spans = !std::strcmp(name, "spans");
         Scene scene(storage ? 17 : dispatch ? 10 : spans ? 685 : 1);
         std::vector<u32> pixels;
-        const int scale = dispatch ? 3 : 1;
+        const int scale = StorageBudget ? 8 : dispatch ? 3 : 1;
         passed = Render(scene, scale, 0, pixels);
         if (passed)
         {
@@ -215,6 +246,8 @@ int CheckComputeWorkload(const char* name)
                     passed &= pixels[y * 256 * scale + x] == 0xFFFF0000;
         }
     }
+    glad_glGetInteger64v = DriverGet64;
+    StorageBudget = 0;
     glad_glDispatchComputeIndirect = DriverIndirect;
     glad_glGetIntegeri_v = DriverGetIndexed;
     std::printf("compute_workload=%s %s\n", name, passed ? "PASS" : "FAIL");
