@@ -3,6 +3,7 @@
 #pragma once
 #include "GPU_Soft.h"
 #include <string>
+#include "GPU3D_ComputeShader.h"
 #include <array>
 #include <vector>
 
@@ -26,6 +27,6 @@ private:
     using DisplayBuffers = std::array<std::array<std::vector<u32>, 2>, 2>;
     DisplayBuffers ScaledBuffers;
     int DisplayScale = 1;
-    std::array<u32, 256 * 3> ScaledLine3D {};
+    std::array<u32, 256 * ComputeShader::VulkanMaxScale> ScaledLine3D {};
 };
 }

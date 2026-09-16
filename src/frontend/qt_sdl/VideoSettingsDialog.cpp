@@ -56,9 +56,7 @@ void VideoSettingsDialog::setEnabled()
     ui->cbPixelConversion->setEnabled(ramOutput);
     const bool vulkanRenderer = renderer == renderer3D_Vulkan;
     ui->cbxGLResolution->setEnabled(RendererUsesOpenGL(renderer) || vulkanRenderer);
-    auto resolutionModel = static_cast<QStandardItemModel*>(ui->cbxGLResolution->model());
-    for (int i = 0; i < ui->cbxGLResolution->count(); ++i)
-        resolutionModel->item(i)->setEnabled(!vulkanRenderer || i < 3);
+
     ui->cbBetterPolygons->setEnabled(renderer == renderer3D_OpenGL);
     ui->cbxComputeHiResCoords->setEnabled(renderer == renderer3D_OpenGLCompute || vulkanRenderer);
     setVsyncControlEnable(UsesGL());
@@ -164,7 +162,7 @@ void VideoSettingsDialog::refreshRendererStatus()
     ui->rb3DVulkan->setEnabled(status.vulkanSupport != 0);
     ui->rb3DVulkan->setToolTip(status.vulkanSupport == 0
         ? tr("No usable Vulkan 1.1 compute device was found.")
-        : tr("Renders and displays 3D at 1x, 2x or 3x resolution using shared compute geometry. 2D layers keep their native detail; guest capture remains native 256x192."));
+        : tr("Renders and displays 3D at 1x to 16x resolution, subject to GPU resource limits. 2D layers keep their native detail; guest capture remains native 256x192. Higher scales require more memory and processing time."));
 #else
     ui->rb3DVulkan->setToolTip(tr("Vulkan 3D is not included in this build."));
 #endif
@@ -249,7 +247,7 @@ void VideoSettingsDialog::onChange3DRenderer(int renderer)
     cfg.SetInt("3D.Renderer", renderer);
     if (renderer == renderer3D_Vulkan)
     {
-        const int scale = qBound(1, cfg.GetInt("3D.GL.ScaleFactor"), 3);
+        const int scale = qBound(1, cfg.GetInt("3D.GL.ScaleFactor"), 16);
         cfg.SetInt("3D.GL.ScaleFactor", scale);
         const QSignalBlocker blocker(ui->cbxGLResolution);
         ui->cbxGLResolution->setCurrentIndex(scale - 1);
@@ -314,7 +312,7 @@ void VideoSettingsDialog::on_cbxGLResolution_currentIndexChanged(int idx)
     if (ui->cbxGLResolution->count() < 16 || idx < 0) return;
 
     auto& cfg = emuInstance->getGlobalConfig();
-    if (cfg.GetInt("3D.Renderer") == renderer3D_Vulkan && idx >= 3) return;
+    if (idx < 0 || idx >= ui->cbxGLResolution->count()) return;
     cfg.SetInt("3D.GL.ScaleFactor", idx+1);
 
     setVsyncControlEnable(UsesGL());

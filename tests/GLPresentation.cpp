@@ -379,7 +379,7 @@ bool ScaledUpload(ScreenPanelGL& panel)
             std::equal(bottom, bottom + size, actual.begin() + size);
     };
     bool passed = true;
-    for (int scale : {1, 2, 3, 1, 3})
+    for (int scale : {1, 2, 3, 4, 8, 16, 1, 3})
     {
         frame->Resize(scale);
         passed &= panel.drawScreen() && matches(frame->Width, frame->Height,

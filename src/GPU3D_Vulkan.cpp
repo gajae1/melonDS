@@ -22,9 +22,9 @@ struct PreparedBatch
 
 // Match the pipeline's scaled full-width work bound and indirect-dispatch limit.
 // Whole polygons in order preserve depth, translucent IDs and shadow stencil.
-u32 BatchSize(std::span<Polygon* const> polygons, int scale, bool hires, u32 capacity)
+u32 BatchSize(std::span<Polygon* const> polygons, int scale, bool hires, u32 capacity, u32 spanCapacity, u32 tileSize)
 {
-    u32 work = 0, count = 0;
+    u32 work = 0, count = 0, spans = 0;
     for (const auto* polygon : polygons)
     {
         int top = 192 * scale, bottom = 0;
@@ -36,9 +36,11 @@ u32 BatchSize(std::span<Polygon* const> polygons, int scale, bool hires, u32 cap
             bottom = std::max(bottom, y);
         }
         bottom = std::max(top + 1, bottom);
-        const u32 tiles = 32 * scale * ((bottom + 7) / 8 - top / 8);
-        if (count == ComputeData::MaxVariants || work + tiles > capacity) break;
+        const u32 tiles = (256 * scale / tileSize) * ((bottom + tileSize - 1) / tileSize - top / tileSize);
+        const u32 lines = bottom - top;
+        if (count == ComputeData::MaxVariants || work + tiles > capacity || spans + lines > spanCapacity) break;
         work += tiles;
+        spans += lines;
         ++count;
     }
     if (!count && !polygons.empty()) throw std::runtime_error("Vulkan polygon exceeds batch capacity");
@@ -94,7 +96,7 @@ bool VulkanRenderer3D::Init()
 
 bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
 {
-    if (scale < 1 || scale > 3 || Failed || !Pipeline) return false;
+    if (scale < 1 || scale > ComputeShader::VulkanMaxScale || Failed || !Pipeline) return false;
     // Native coordinates include the DS divider's precision loss. Keep 1x
     // byte-identical even when the shared high-resolution option is enabled.
     hires = hires && scale > 1;
@@ -184,7 +186,7 @@ void VulkanRenderer3D::DrawFrame()
     u32 first = 0;
     do
     {
-        const u32 count = BatchSize(polygons.subspan(first), ScaleFactor, HiresCoordinates, Pipeline->WorkCapacity());
+        const u32 count = BatchSize(polygons.subspan(first), ScaleFactor, HiresCoordinates, Pipeline->WorkCapacity(), Pipeline->SpanCapacity(), Pipeline->TileSize());
         auto& batch = prepared.emplace_back();
         batch.Polygons.resize(count);
         batch.Edges.resize(count * 12);

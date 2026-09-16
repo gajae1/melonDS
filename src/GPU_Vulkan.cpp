@@ -22,7 +22,7 @@ bool VulkanRenderer::IsAvailable(std::string& error)
 bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
 {
     const int scale = settings.ScaleFactor;
-    if (scale < 1 || scale > 3) return false;
+    if (scale < 1 || scale > ComputeShader::VulkanMaxScale) return false;
     try
     {
         DisplayBuffers next;

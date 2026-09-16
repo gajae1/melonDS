@@ -224,10 +224,15 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
         }
         glUseProgram(program);
     };
-    const size_t tiles=32*24*scale*scale,work=tiles*16,pixels=256*192*scale*scale;
-    const size_t sizes[]={2048*sizeof(RenderPolygon),131072*scale*sizeof(SpanSetupX),12288*sizeof(SpanSetupY),
-        work*64*4,work*64*4,work*64*4,pixels*7*4,
-        sizeof(BinResultHeader)+tiles*(2+64+64)*4,work*2*8,sizeof(MetaUniform),131072*scale*sizeof(SetupIndices)};
+    const size_t tile = config.TileSize, pixels = 256*192*scale*scale;
+    const size_t tiles = pixels/(tile*tile), work = config.MaxWorkTiles;
+    size_t scratch = 1;
+    for (const auto& polygon : batch.polygons)
+        scratch += (config.ScreenWidth/tile) * ((polygon.YBot+tile-1)/tile-polygon.YTop/tile) * tile*tile;
+    const size_t spans = std::max(size_t(32), (batch.indices.size()+31)&~size_t(31));
+    const size_t sizes[]={2048*sizeof(RenderPolygon),spans*sizeof(SpanSetupX),12288*sizeof(SpanSetupY),
+        scratch*4,scratch*4,scratch*4,pixels*7*4,
+        sizeof(BinResultHeader)+tiles*(2+64+64)*4,work*2*8,sizeof(MetaUniform),spans*sizeof(SetupIndices)};
     glGenBuffers(11,resources.buffers);glGenTextures(4,resources.textures);
     resources.materials.resize(batch.variants.size()*2);glGenTextures(resources.materials.size(),resources.materials.data());
     const GLint modes[]={GL_CLAMP_TO_EDGE,GL_REPEAT,GL_MIRRORED_REPEAT};
@@ -275,10 +280,10 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
     glTexBuffer(GL_TEXTURE_BUFFER,GL_RGBA16UI,resources.buffers[10]);
     glBindImageTexture(0,resources.textures[0],0,GL_FALSE,0,GL_READ_ONLY,GL_RGBA16UI);
     auto barrier=[] {glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT|GL_COMMAND_BARRIER_BIT);};
-    use(21);glDispatchCompute(12*scale*scale,1,1);
+    use(21);glDispatchCompute(tiles/config.ClearCoarseBinMaskLocalSize,1,1);
     if(!batch.polygons.empty()) {
         use(batch.wbuffer?1:0);glDispatchCompute(indices.size()/32,1,1);barrier();
-        use(2);glDispatchCompute((batch.polygons.size()+31)/32,4*scale,6*scale);barrier();
+        use(2);glDispatchCompute((batch.polygons.size()+31)/32,config.ScreenWidth/(8*tile),config.ScreenHeight/(config.CoarseTileCountY*tile));barrier();
         use(22);glDispatchCompute((batch.variants.size()+31)/32,1,1);barrier();
         glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER,resources.buffers[7]);
         use(23);glDispatchComputeIndirect(offsetof(BinResultHeader,SortWorkWorkCount));barrier();
@@ -310,7 +315,7 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
     }
-    use(batch.wbuffer?4:3);glUniform1i(0,1);glDispatchCompute(32*scale,24*scale,1);barrier();
+    use(batch.wbuffer?4:3);glUniform1i(0,1);glDispatchCompute(config.ScreenWidth/tile,config.ScreenHeight/tile,1);barrier();
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,resources.textures[1]);
     glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,256*scale,192*scale);
     glBindImageTexture(0,resources.textures[1],0,GL_FALSE,0,GL_WRITE_ONLY,GL_RGBA8);
@@ -440,7 +445,9 @@ int main(int argc,char** argv)
     QOffscreenSurface surface;surface.setFormat(context.format());surface.create();if(!context.makeCurrent(&surface))return 77;
     if(!gladLoadGLLoader([](const char* name)->void*{return reinterpret_cast<void*>(QOpenGLContext::currentContext()->getProcAddress(name));}))return 77;
     try {
-        for(unsigned scale=1;scale<=3;++scale) {
+        const bool high = argc == 2 && std::strcmp(argv[1], "high-scales") == 0;
+        const std::vector<unsigned> scales = high ? std::vector<unsigned>{4,5,8,9,16} : std::vector<unsigned>{1,2,3};
+        for(unsigned scale : scales) {
             const Inputs input(scale);
             std::array<std::unique_ptr<VulkanSpans>,2> devices;
             for(auto& vk:devices){vk=std::make_unique<VulkanSpans>();if(!vk->Init())return 77;}

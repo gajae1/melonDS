@@ -8,7 +8,7 @@ int main(int argc, char** argv)
 {
     if (argc != 2) return 1;
     const std::filesystem::path directory(argv[1]);
-    for (int scale = 1; scale <= 3; ++scale)
+    for (int scale = 1; scale <= melonDS::ComputeShader::VulkanMaxScale; ++scale)
     {
         const auto scaledDirectory = directory / std::to_string(scale);
         std::filesystem::create_directories(scaledDirectory);

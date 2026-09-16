@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "Device.h"
+#include "ComputeResources.h"
 #include "GPU3D_ComputeData.h"
 #include "GPU3D_ComputeShader.h"
 #include <array>
@@ -44,7 +45,9 @@ public:
     std::shared_ptr<const Texture> CreateTexture(uint32_t width, uint32_t height, uint32_t layers);
     void UploadTextureLayer(const Texture& texture, uint32_t layer, std::span<const uint32_t> pixels);
     void UploadClearBitmap(std::span<const uint32_t> colors, std::span<const uint32_t> depths);
-    uint32_t WorkCapacity() const { return BatchWork; }
+    uint32_t WorkCapacity() const { return Resources.BatchWork; }
+    uint32_t SpanCapacity() const { return Resources.MaxSpans; }
+    uint32_t TileSize() const { return Resources.config.TileSize; }
 private:
     void Init(const Shaders& shaders);
     void Cleanup();
@@ -59,9 +62,7 @@ private:
     std::shared_ptr<Device> owner;
     const volk::VolkDeviceTable& f;
     VkDevice device;
-    const ComputeShader::Config config;
-    const uint32_t Pixels,Tiles,Work,MaxSpans,BatchWork;
-    const std::array<VkDeviceSize,11> Sizes;
+    const ComputeResources Resources;
     VkDescriptorPool pool{};
     VkDescriptorPool texturePool{};
     VkPipelineLayout layout{};

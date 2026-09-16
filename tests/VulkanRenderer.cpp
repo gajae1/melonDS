@@ -353,6 +353,40 @@ void Batches(int scale)
     std::printf("Vulkan %dx batch planner: 257 overlapping polygons, final polygon preserved PASS\n", scale);
 }
 
+void HighScales()
+{
+    auto nds = Console(true), soft = Console(false);
+    Scene(*soft, 0, false, false);
+    Screen(*soft);
+    const auto expected = Screen(*soft, false);
+    for (int scale = 4; scale <= 16; ++scale)
+    {
+        RendererSettings settings{scale, false, false, false};
+        Require(nds->GetRenderer().SetRenderSettings(settings), "high Vulkan scale rejected");
+        auto& polygon = Scene(*nds, 0, false, false);
+        for (bool wbuffer : {false, true})
+        {
+            polygon.WBuffer = wbuffer;
+            nds->GPU.GPU3D.RenderFrameIdentical = false;
+            Screen(*nds);
+            const auto native = Screen(*nds, false);
+            Require(native == expected, "high scale changed native rectangle/capture source");
+            void* top = nullptr; void* bottom = nullptr; int width = 0, height = 0;
+            Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height), "high scale RAM view unavailable");
+            Require(width == 256 * scale && height == 192 * scale, "high display extent mismatch");
+            const u32* pixels = static_cast<const u32*>(nds->GPU.ScreenSwap ? top : bottom);
+            for (unsigned y = 0; y < 192; ++y)
+            for (unsigned x = 0; x < 256; ++x)
+                Require(pixels[size_t(y * scale) * width + x * scale] == native[y * 256 + x], "high scaled origin mismatch");
+        }
+        std::printf("Vulkan %dx: Z/W, full native rectangle and scaled origins PASS\n", scale);
+        std::fflush(stdout);
+    }
+    RendererSettings native{1, false, false, false};
+    Require(nds->GetRenderer().SetRenderSettings(native) && Screen(*nds) == expected, "16x to native recovery failed");
+    Batches(16); Capture(16);
+}
+
 void ScaleChanges()
 {
     auto nds = Console(true);
@@ -380,7 +414,7 @@ void ScaleChanges()
         Require((actual == native) == (scale == 1), "scale/hires change did not update subpixel coverage");
         previous = actual;
     }
-    for (int scale : {0, 4})
+    for (int scale : {0, 17})
     {
         RendererSettings settings{scale, false, false, false};
         Require(!nds->GetRenderer().SetRenderSettings(settings), "unsupported Vulkan scale was accepted");
@@ -415,6 +449,7 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
+        if (argc == 2 && std::strcmp(argv[1], "high-scales") == 0) { HighScales(); return 0; }
         const int scale = argc == 2 && std::strcmp(argv[1], "2") == 0 ? 2 :
             argc == 2 && std::strcmp(argv[1], "3") == 0 ? 3 : 1;
         if (scale > 1) { ScaledDisplay(scale); ScaledDisplayLifecycle(scale); }
