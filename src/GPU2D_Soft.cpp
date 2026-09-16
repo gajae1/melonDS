@@ -19,6 +19,8 @@
 #include "GPU_Soft.h"
 #include "GPU_ColorOp.h"
 #include <algorithm>
+#include <bit>
+#include "Platform.h"
 
 namespace melonDS
 {
@@ -42,6 +44,7 @@ void SoftRenderer2D::Reset()
 
     NumSprites = 0;
     Scaled3DActive = false;
+    CaptureLayersActive = false;
 }
 
 // Keep RGB6 components in separate 16-bit lanes for the weighted sum. The
@@ -148,8 +151,13 @@ void SoftRenderer2D::ComposeScaledLine(u32* dst, const u32* pixels3D, int scale)
     }
 }
 
-void SoftRenderer2D::ComposeScaledLine(u32* dst, const u32* pixels3D, int scale) const
+void SoftRenderer2D::ComposeScaledLine(u32* dst, const u32* pixels3D, int scale, int subline) const
 {
+    if (CaptureLayersActive && CaptureScale == u32(scale))
+    {
+        std::copy_n(CaptureOutput.data() + size_t(subline) * 256 * scale, 256 * scale, dst);
+        return;
+    }
     if (!Scaled3DActive)
     {
         for (int x = 0; x < 256; ++x)
@@ -165,9 +173,107 @@ void SoftRenderer2D::ComposeScaledLine(u32* dst, const u32* pixels3D, int scale)
     }
 }
 
+u32 SoftRenderer2D::SampleBitmapLayer(u32 layer, u32 x, u32 subx, u32 suby) const
+{
+    const auto& bitmap = BitmapLines[layer - 2];
+    const u32 native = DisplayLayers[layer][x];
+    if (!bitmap.enabled || !(WindowMask[x] & (1u << layer))) return native;
+    const u32 dimensions = bitmap.control >> 14;
+    const u32 width = dimensions == 0 ? 128 : dimensions == 1 ? 256 : 512;
+    const u32 height = dimensions == 0 ? 128 : dimensions == 3 ? 512 : 256;
+    const u32 mask = GPU2D.Num ? 0x1FFFF : 0x7FFFF;
+    const u32 base = (bitmap.control & 0x1F00) << 6;
+    u32 address, fracX, fracY, denominator;
+    if (bitmap.a == 256 && bitmap.b == 0 && bitmap.c == 0 && bitmap.d == 256 &&
+        ((bitmap.x | bitmap.y) & 255) == 0)
+    {
+        // Common captured-screen path: integer translation and a 1:1 affine
+        // matrix. Keep the exact subpixel, avoiding division by the scale.
+        const s64 px = s64(bitmap.x) / 256 + x, py = s64(bitmap.y) / 256;
+        if (!(bitmap.control & (1u << 13)) &&
+            (px < 0 || py < 0 || px >= width || py >= height)) return 0;
+        address = (base + (((u32(py) & (height - 1)) * width +
+            (u32(px) & (width - 1))) * 2)) & mask;
+        fracX = subx; fracY = suby; denominator = CaptureScale;
+    }
+    else
+    {
+        const s64 unit = 256 * CaptureScale;
+        // Signed wide intermediates preserve negative affine coordinates.
+        s64 fx = (s64(bitmap.x) + s64(x) * bitmap.a) * CaptureScale +
+            s64(subx) * bitmap.a + s64(suby) * bitmap.b;
+        s64 fy = (s64(bitmap.y) + s64(x) * bitmap.c) * CaptureScale +
+            s64(subx) * bitmap.c + s64(suby) * bitmap.d;
+        if (bitmap.control & (1u << 13))
+        {
+            fx %= width * unit; if (fx < 0) fx += width * unit;
+            fy %= height * unit; if (fy < 0) fy += height * unit;
+        }
+        else if (fx < 0 || fy < 0 || fx >= width * unit || fy >= height * unit) return 0;
+        address = (base + ((fy / unit) * width + fx / unit) * 2) & mask;
+        fracX = fx % unit; fracY = fy % unit; denominator = unit;
+    }
+    u16 color;
+    if (!Parent.SampleCapturedBackground(GPU2D.Num, address, fracX, fracY, denominator, color)) return native;
+    if (!(color & 0x8000)) return 0;
+    return ((color & 31) << 1) | ((color & 0x3E0) << 4) |
+        ((color & 0x7C00) << 7) | (0x01000000u << layer);
+}
+
+template<u32 effect>
+void SoftRenderer2D::ComposeCapturedLine(u32* dst, u32 subline) const
+{
+    for (u32 x = 0; x < 256; ++x)
+    for (u32 subx = 0; subx < CaptureScale; ++subx)
+    {
+        u32 top = DisplayBackdrop, second = 0, topRank = 32, secondRank = 33;
+        for (u32 layer = 0; layer < 5; ++layer)
+        {
+            u32 color = DisplayLayers[layer][x];
+            if (layer >= 2 && layer < 4) color = SampleBitmapLayer(layer, x, subx, subline);
+            if (layer == 0 && color == 0x40000000)
+            {
+                color = dst[x * CaptureScale + subx];
+                color = color >> 24 ? color | 0x40000000 : 0;
+            }
+            if (!color) continue;
+            const u32 rank = layer == 4 ? ((OBJLine[x] >> 16) & 3) * 8
+                : (GPU2D.BGCnt[layer] & 3) * 8 + layer + 1;
+            if (rank < topRank) { second = top; secondRank = topRank; top = color; topRank = rank; }
+            else if (rank < secondRank) { second = color; secondRank = rank; }
+        }
+        dst[x * CaptureScale + subx] = CompositePixel<effect>(top, second,
+            GPU2D.BlendCnt, GPU2D.EVA, GPU2D.EVB, GPU2D.EVY, WindowMask[x]);
+    }
+}
+
+void SoftRenderer2D::PrepareCapturedLine(u32 line)
+{
+    try { CaptureOutput.resize(size_t(256) * CaptureScale * CaptureScale); }
+    catch (const std::exception& error)
+    {
+        CaptureLayersActive = false;
+        Platform::Log(Platform::LogLevel::Warn, "Captured BG display unavailable: %s\n", error.what());
+        return;
+    }
+    for (u32 sub = 0; sub < CaptureScale; ++sub)
+    {
+        auto* dst = CaptureOutput.data() + sub * 256 * CaptureScale;
+        if (Scaled3DActive) Parent.GetCaptureDisplay3DLine(line, sub, CaptureScale, dst);
+        switch ((GPU2D.BlendCnt >> 6) & 3)
+        {
+            case 0: ComposeCapturedLine<0>(dst, sub); break;
+            case 1: ComposeCapturedLine<1>(dst, sub); break;
+            case 2: ComposeCapturedLine<2>(dst, sub); break;
+            case 3: ComposeCapturedLine<3>(dst, sub); break;
+        }
+    }
+}
+
 void SoftRenderer2D::DrawScanline(u32 line)
 {
     Scaled3DActive = false;
+    CaptureLayersActive = false;
     u32* dst = Parent.Output2D[GPU2D.Num];
 
     if (!GPU2D.Enabled)
@@ -209,8 +315,18 @@ void SoftRenderer2D::DrawScanline(u32 line)
         GPU.MakeVRAMFlat_BOBJExtPalCoherent(objExtPalDirty);
     }
 
-    // render BG layers and sprites
+    const u32 mode = GPU2D.DispCnt & 7;
+    const auto directBitmap = [&](u32 bg) {
+        return (GPU2D.LayerEnable & (1u << bg)) && (GPU2D.BGCnt[bg] & 0xC4) == 0x84;
+    };
+    const bool capturedBG = (mode == 5 && directBitmap(2)) || (mode >= 3 && mode <= 5 && directBitmap(3));
+    CaptureScale = Parent.ScaledDisplay && capturedBG ? Parent.CaptureBackgroundScale(GPU2D.Num) : 0;
+    CaptureLayersActive = CaptureScale > 1;
+    if (CaptureLayersActive) { DisplayLayers = {}; BitmapLines = {}; }
+    // Native registers and layer rendering execute once. Resolve enhanced
+    // samples now, before this scanline can overwrite a capture source.
     DrawScanline_BGOBJ(line, dst);
+    if (CaptureLayersActive) PrepareCapturedLine(line);
 }
 
 #define DoDrawBG(type, line, num) \
@@ -377,6 +493,8 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
             *(u64*)&BGOBJLine[i] = 0;
     }
 
+    if (CaptureLayersActive) DisplayBackdrop = BGOBJLine[0];
+
     if (GPU2D.DispCnt & 0xE000)
         GPU2D.CalculateWindowMask(WindowMask, OBJWindow);
     else
@@ -416,6 +534,11 @@ void SoftRenderer2D::DrawPixel(u32* dst, u16 color, u32 flag)
 
     *(dst+256) = *dst;
     *dst = r | (g << 8) | (b << 16) | flag;
+    if (CaptureLayersActive)
+    {
+        const u32 layer = flag & 0xF0000000 ? 4 : std::countr_zero(flag >> 24);
+        DisplayLayers[layer][dst - BGOBJLine] = *dst;
+    }
 }
 
 void SoftRenderer2D::DrawBG_3D()
@@ -432,6 +555,7 @@ void SoftRenderer2D::DrawBG_3D()
             if (!(WindowMask[x] & 1)) continue;
             BGOBJLine[x + 256] = BGOBJLine[x];
             BGOBJLine[x] = 0x40000000;
+            if (CaptureLayersActive) DisplayLayers[0][x] = 0x40000000;
         }
         return;
     }
@@ -761,6 +885,9 @@ void SoftRenderer2D::DrawBG_Extended(u32 line, u32 bgnum)
         if (bgcnt & (1<<2))
         {
             // direct color bitmap
+            if (CaptureLayersActive && !(bgcnt & (1u << 6)))
+                BitmapLines[bgnum - 2] = {true, bgcnt, rotX, rotY, rotA,
+                    GPU2D.BGRotB[bgnum - 2], rotC, GPU2D.BGRotD[bgnum - 2]};
 
             u16 color;
 

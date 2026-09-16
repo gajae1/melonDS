@@ -19,6 +19,8 @@
 #pragma once
 
 #include "GPU2D.h"
+#include <array>
+#include <vector>
 
 namespace melonDS
 {
@@ -35,8 +37,8 @@ public:
     void DrawScanline(u32 line) override;
     void DrawSprites(u32 line) override;
     // Reuse the native layer stack with a different 3D sample per host pixel.
-    void ComposeScaledLine(u32* dst, const u32* pixels3D, int scale) const;
-    bool HasScaled3D() const { return Scaled3DActive; }
+    void ComposeScaledLine(u32* dst, const u32* pixels3D, int scale, int subline = 0) const;
+    bool HasScaledLayers() const { return Scaled3DActive || CaptureLayersActive; }
     void VBlank() override {}
     void VBlankEnd() override {};
 
@@ -57,6 +59,23 @@ private:
     alignas(8) u32 BGOBJLine[256*2];
     alignas(8) u32 Below3D[256*2] {};
     bool Scaled3DActive = false;
+    // Keep each native candidate, not just the top two: a captured subpixel
+    // can become transparent and expose a layer discarded by native rendering.
+    std::array<std::array<u32, 256>, 5> DisplayLayers{};
+    struct BitmapLine
+    {
+        bool enabled = false;
+        u16 control = 0;
+        s32 x = 0, y = 0;
+        s16 a = 0, b = 0, c = 0, d = 0;
+    };
+    std::array<BitmapLine, 2> BitmapLines{};
+    bool CaptureLayersActive = false;
+    u32 CaptureScale = 1, DisplayBackdrop = 0;
+    std::vector<u32> CaptureOutput;
+    u32 SampleBitmapLayer(u32 layer, u32 x, u32 subx, u32 suby) const;
+    void PrepareCapturedLine(u32 line);
+    template<u32 effect> void ComposeCapturedLine(u32* dst, u32 subline) const;
     void Resolve3DPixel(int x, u32 color, u32& top, u32& second) const;
     template<u32 effect> void ComposeScaledLine(u32* dst, const u32* pixels3D, int scale) const;
 
@@ -91,7 +110,7 @@ private:
     void DrawScanlineBGMode7(u32 line);
     void DrawScanline_BGOBJ(u32 line, u32* dst);
 
-    static void DrawPixel(u32* dst, u16 color, u32 flag);
+    void DrawPixel(u32* dst, u16 color, u32 flag);
 
     void DrawBG_3D();
     template<bool mosaic> void DrawBG_Text(u32 line, u32 bgnum);

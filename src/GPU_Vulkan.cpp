@@ -76,41 +76,44 @@ void VulkanRenderer::Stop()
 
 void VulkanRenderer::DrawScanline(u32 line)
 {
-    // Read display VRAM before this scanline can capture back into the same bank.
     const bool capturedDisplay = DrawCapturedDisplay(line);
-    // Native layers, register side effects and guest capture execute once.
+    // Guest layers/capture run once; capture-aware layer output was latched
+    // by each 2D compositor before native capture writes this scanline.
     SoftRenderer::DrawScanline(line);
     if (DisplayScale == 1) return;
     const int scale = DisplayScale, width = 256 * scale;
-    const auto& compositor = static_cast<const SoftRenderer2D&>(*Rend2D_A);
     const u32 vcount = GPU.VCount;
     const int mainScreen = GPU.ScreenSwap ? 0 : 1;
-    const bool compose3D = GPU.ScreensEnabled && vcount < 192 &&
-        ((GPU.GPU2D_A.DispCnt >> 16) & 3) == 1 && compositor.HasScaled3D();
+    const auto& rasterizer = static_cast<const VulkanRenderer3D&>(*Rend3D);
     for (int screen = 0; screen < 2; ++screen)
     {
-        if ((compose3D || capturedDisplay) && screen == mainScreen) continue;
-        const u32* native = Framebuffer[BackBuffer][screen] + line * 256;
+        const bool main = screen == mainScreen;
+        if (capturedDisplay && main) continue;
+        const auto& compositor = static_cast<const SoftRenderer2D&>(main ? *Rend2D_A : *Rend2D_B);
+        const u32 display = main ? GPU.GPU2D_A.DispCnt : GPU.GPU2D_B.DispCnt;
+        const bool compose = GPU.ScreensEnabled && vcount < 192 &&
+            ((display >> 16) & (main ? 3 : 1)) == 1 && compositor.HasScaledLayers();
         u32* first = ScaledBuffers[BackBuffer][screen].data() + size_t(line) * scale * width;
-        for (int x = 0; x < 256; ++x) std::fill_n(first + x * scale, scale, native[x]);
-        for (int sub = 1; sub < scale; ++sub) std::copy_n(first, width, first + sub * width);
-    }
-    if (!compose3D) return;
-
-    const auto& rasterizer = static_cast<const VulkanRenderer3D&>(*Rend3D);
-    const int screen = mainScreen;
-    const u16 brightness = GPU.MasterBrightnessA;
-    const u32 mode = brightness >> 14, factor = std::min<u32>(brightness & 31, 16);
-    for (int sub = 0; sub < scale; ++sub)
-    {
-        u32* dst = ScaledBuffers[BackBuffer][screen].data() + (size_t(line) * scale + sub) * width;
-        rasterizer.GetScaledLine(vcount, sub, scale, ScaledLine3D.data());
-        compositor.ComposeScaledLine(dst, ScaledLine3D.data(), scale);
-        if (mode == 1)
-            for (int x = 0; x < width; ++x) dst[x] = ColorBrightnessUp(dst[x], factor, 0x0);
-        else if (mode == 2)
-            for (int x = 0; x < width; ++x) dst[x] = ColorBrightnessDown(dst[x], factor, 0xF);
-        ExpandPixels(dst, width);
+        if (!compose)
+        {
+            const u32* native = Framebuffer[BackBuffer][screen] + line * 256;
+            for (int x = 0; x < 256; ++x) std::fill_n(first + x * scale, scale, native[x]);
+            for (int sub = 1; sub < scale; ++sub) std::copy_n(first, width, first + sub * width);
+            continue;
+        }
+        const u16 brightness = main ? GPU.MasterBrightnessA : GPU.MasterBrightnessB;
+        const u32 mode = brightness >> 14, factor = std::min<u32>(brightness & 31, 16);
+        for (int sub = 0; sub < scale; ++sub)
+        {
+            u32* dst = first + sub * width;
+            if (main) rasterizer.GetScaledLine(vcount, sub, scale, ScaledLine3D.data());
+            compositor.ComposeScaledLine(dst, ScaledLine3D.data(), scale, sub);
+            if (mode == 1)
+                for (int x = 0; x < width; ++x) dst[x] = ColorBrightnessUp(dst[x], factor, 0x0);
+            else if (mode == 2)
+                for (int x = 0; x < width; ++x) dst[x] = ColorBrightnessDown(dst[x], factor, 0xF);
+            ExpandPixels(dst, width);
+        }
     }
 }
 

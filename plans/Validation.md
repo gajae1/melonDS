@@ -339,3 +339,16 @@ Actions·macOS 빌드·개인 ROM/BIOS/NAND/저장 파일 사용은 하지 않�
 전체970과 관련8개·반복10회를 합산하지 않는다. 런타임 실패의 잠금 추가는 별도 강제 Qt end-to-end 검사까지 수행한 것은 아니다.
 실제 사용자 crash·모든 게임·실기 그래픽 정확성과 다른 GPU/OS 수락을 이 결과로 승격하지 않는다.
 근거: `build/evidence/lifetime-1.1.134/`, [릴리스 기록](releases/1.1.134.md). Actions 미사용.
+
+## 1.1.135 — 캡처 bitmap BG와 버전별 Windows 배포
+
+2026-09-16, 메인 `F:/melonDS`, Windows/GCC16.2/CMake4.4.3, C23·C++26 Release/LTO OFF.
+전체 기본 타깃 빌드 성공, 전체 등록 CTest971/971(실패0·skip0·disabled0),155.07초를 확인했다.
+신규 BG 조건은2/3/5/8배의 양 engine, native 원점·VRAM 보존, affine·창·효과·일반 OBJ 겹침·다중 mapping·CPU 무효화를 포함한다.
+기존 captured-display·Vulkan high-scale·Native frame lifetime 및 오디오/저장 검사는 유지했다.
+제품 최적화의3x/8x 합성 비용 감소는 같은 BG 구현의 좌표 계산 전후 비교다. 다른 renderer·실기·게임 FPS의 증거는 아니다.
+직접 행 샘플링 추가 후보는 도구 차단으로 미적용이며 일반 제품 source와 구분한다.
+독립 runtime은 기존 deployment 도구의 명시적 DLL/license manifest로 준비하고, package 도구가 committed source identity를 대조한다.
+초기 license 누락과 기존 배포본의 정확한 DLL/notice 해시 재사용 증거도 보존한다. 검증을 끄거나 임의 파일을 수집하지 않는다.
+실제 패키징 결과는 `build/1.1.135-packages/1.1.135-melonDS-manifest.json`을 따른다.
+자세한 구현·측정·제한은 [1.1.135](releases/1.1.135.md), 원자료는 `build/evidence/bitmap-1.1.135/resume-desktop/`에 있다.

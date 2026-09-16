@@ -4,10 +4,55 @@
 #include "GPU3D_Vulkan.h"
 #include "Platform.h"
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 namespace melonDS
 {
+u32 VulkanRenderer::CaptureBackgroundScale(u32 engine) const
+{
+    if (DisplayScale == 1) return 0;
+    const u32* mapping = engine ? GPU.VRAMMap_BBG : GPU.VRAMMap_ABG;
+    for (u32 i = 0; i < (engine ? 8u : 32u); ++i)
+    {
+        const u32 mask = mapping[i];
+        // Multiple mapped banks are ORed by hardware; never replace that
+        // result with a high-resolution sample from just one bank.
+        if (!std::has_single_bit(mask) || !(mask & 15)) continue;
+        const u32 first = std::countr_zero(mask) * 4;
+        for (u32 slot = first; slot < first + 4; ++slot)
+            if (!DisplayCaptures[slot].pixels.empty() &&
+                std::any_of(DisplayCaptures[slot].valid.begin(), DisplayCaptures[slot].valid.end(),
+                    [](bool valid) { return valid; })) return DisplayScale;
+    }
+    return 0;
+}
+
+void VulkanRenderer::GetCaptureDisplay3DLine(u32 line, u32 subline, u32 scale, u32* dst) const
+{
+    static_cast<const VulkanRenderer3D&>(*Rend3D).GetScaledLine(line, subline, scale, dst);
+}
+
+bool VulkanRenderer::SampleCapturedBackground(u32 engine, u32 address, u32 fracX,
+    u32 fracY, u32 denominator, u16& color) const
+{
+    const u32 mask = engine ? GPU.VRAMMap_BBG[(address >> 14) & 7]
+                            : GPU.VRAMMap_ABG[(address >> 14) & 31];
+    if (!std::has_single_bit(mask) || !(mask & 15)) return false;
+    const u32 bank = std::countr_zero(mask), word = (address & 0x1FFFF) / 2;
+    const int slot = GPU.GetCaptureBlock_LCDC(bank * 131072 + word * 2);
+    if (slot < 0) return false;
+    const auto& capture = DisplayCaptures[slot];
+    if (capture.pixels.empty()) return false;
+    const u32 offset = (word - capture.start * 16384) & 0xFFFF;
+    const u32 y = offset / capture.width, x = offset % capture.width;
+    if (y >= capture.height || !capture.valid[y]) return false;
+    const u32 sx = capture.scale == denominator ? fracX : u64(fracX) * capture.scale / denominator;
+    const u32 sy = capture.scale == denominator ? fracY : u64(fracY) * capture.scale / denominator;
+    color = capture.pixels[(size_t(y * capture.scale + sy) * capture.width + x) * capture.scale + sx];
+    return true;
+}
+
 void VulkanRenderer::AllocCapture(u32 bank, u32 start, u32 size)
 {
     if (DisplayScale == 1) { DisplayCaptures[bank * 4 + start] = {}; return; }
@@ -113,7 +158,7 @@ void VulkanRenderer::DoCapture(u32 line)
         {
             raster.GetScaledLine(line, sy, scale, ScaledLine3D.data());
             if (!(control & (1u << 24)))
-                compositor.ComposeScaledLine(ScaledLine3D.data(), ScaledLine3D.data(), scale);
+                compositor.ComposeScaledLine(ScaledLine3D.data(), ScaledLine3D.data(), scale, sy);
         }
         for (u32 x = 0; x < width; ++x)
         for (u32 sx = 0; sx < scale; ++sx)

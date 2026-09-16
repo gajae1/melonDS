@@ -43,6 +43,10 @@ private:
     void DoCapture(u32 line) override;
     bool ReadDisplayCapture(u32 bank, u32 word, u32 subx, u32 suby, u16& color) const;
     bool DrawCapturedDisplay(u32 line);
+    u32 CaptureBackgroundScale(u32 engine) const override;
+    bool SampleCapturedBackground(u32 engine, u32 address, u32 fracX,
+        u32 fracY, u32 denominator, u16& color) const override;
+    void GetCaptureDisplay3DLine(u32 line, u32 subline, u32 scale, u32* dst) const override;
 
     std::array<u32, 256 * ComputeShader::VulkanMaxScale> ScaledLine3D {};
 };

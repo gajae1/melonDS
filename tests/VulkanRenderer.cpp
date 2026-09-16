@@ -4,6 +4,13 @@
 #include "GPU_Vulkan.h"
 #include "Savestate.h"
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include <utility>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -237,6 +244,190 @@ void CapturedDisplay(int scale)
     Screen(*nds, false);
     Require(DisplayOrigins(*nds, scale) == 0, "invalidated display capture retained detail");
     std::printf("Captured 3D %dx: subpixel detail, native origins and invalidation PASS\n", scale);
+}
+
+void CapturedBitmapBG(int scale, unsigned engine, bool benchmark = false)
+{
+    auto nds = Console(true, scale);
+    const unsigned bank = engine ? 2 : 1;
+    nds->ARM9Write8(0x04000240 + bank, 0x80);
+    nds->Start(); nds->RunFrame();
+    auto& polygon = Scene(*nds, 0, false, false);
+    for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
+        vertex->HiresPosition[0] += 8;
+    nds->GPU.GPU3D.RenderClearAttr1 = 0;
+    RendererSettings settings{scale, false, true, false};
+    Require(nds->GetRenderer().SetRenderSettings(settings), "BG capture settings failed");
+    nds->GetRenderer().Start3DRendering();
+    nds->ARM9Write32(0x04000064, 0x81300000 | (bank << 16));
+    nds->RunFrame();
+    const std::vector<u8> captured(nds->GPU.VRAM[bank], nds->GPU.VRAM[bank] + 131072);
+    nds->ARM9Write8(0x04000240 + bank, engine ? 0x84 : 0x81);
+    const u32 reg = 0x04000000 + engine * 0x1000;
+    nds->ARM9Write32(0x04000000, 0x00010000);
+    nds->ARM9Write16(0x05000000 + engine * 0x400, 0x7C00);
+    nds->ARM9Write32(reg, 0x00010405); // Mode 5, direct-color BG2.
+    nds->ARM9Write16(reg + 0x0C, 0x4084); // 256x256, map base 0.
+    nds->ARM9Write16(reg + 0x20, 0x100);
+    nds->ARM9Write16(reg + 0x26, 0x100);
+    nds->ARM9Write32(reg + 0x28, 0); nds->ARM9Write32(reg + 0x2C, 0);
+    Screen(*nds, false); Screen(*nds, false);
+    DisplayOrigins(*nds, scale, true);
+    Require(std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]), "BG enhancement modified guest capture");
+    if (benchmark)
+    {
+        for (int frame = 0; frame < 4; ++frame) Screen(*nds, false);
+        const auto begin = std::chrono::steady_clock::now();
+        for (int frame = 0; frame < 16; ++frame) Screen(*nds, false);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - begin).count() / 16;
+        void *top, *bottom; int width, height;
+        nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height);
+        u64 checksum = 0;
+        for (const auto* pixels : {static_cast<const u32*>(top), static_cast<const u32*>(bottom)})
+        for (size_t pixel = 0; pixel < size_t(width) * height; ++pixel) checksum += pixels[pixel];
+        std::printf("bitmap_ns=%lld checksum=%llu scale=%d\n",
+            static_cast<long long>(elapsed), static_cast<unsigned long long>(checksum), scale);
+        return;
+    }
+    // Integer affine transforms must retain the native-origin samples.
+    // Other subpixels may differ: that is the requested display enhancement.
+    unsigned cases = 0;
+    const auto checkFrame = [&] {
+        Screen(*nds, false); Screen(*nds, false);
+        DisplayOrigins(*nds, scale);
+        ++cases;
+    };
+    for (const auto& transform : {std::array<s32, 6>{256,0,0,256,0,0},
+            {256,0,0,256,17*256,9*256}, {-256,0,0,256,255*256,0},
+            {0,256,-256,0,0,191*256}, {512,0,0,256,-32*256,0}})
+    {
+        for (u32 i = 0; i < 4; ++i) nds->ARM9Write16(reg + 0x20 + 2*i, transform[i]);
+        nds->ARM9Write32(reg + 0x28, transform[4]);
+        nds->ARM9Write32(reg + 0x2C, transform[5]);
+        for (bool wrap : {false, true}) {
+            nds->ARM9Write16(reg + 0x0C, 0x4084 | (wrap ? 0x2000 : 0));
+            checkFrame();
+        }
+    }
+    nds->ARM9Write16(reg + 0x20, 256); nds->ARM9Write16(reg + 0x22, 0);
+    nds->ARM9Write16(reg + 0x24, 0); nds->ARM9Write16(reg + 0x26, 256);
+    nds->ARM9Write32(reg + 0x28, 0); nds->ARM9Write32(reg + 0x2C, 0);
+    nds->ARM9Write16(reg + 0x0C, 0x4084);
+    // A second captured bitmap can expose a lower layer through transparent edges.
+    nds->ARM9Write32(reg, 0x00010C05);
+    nds->ARM9Write16(reg + 0x0E, 0x4085);
+    nds->ARM9Write16(reg + 0x30, 256); nds->ARM9Write16(reg + 0x36, 256);
+    nds->ARM9Write32(reg + 0x38, 32*256); nds->ARM9Write32(reg + 0x3C, 0);
+    nds->ARM9Write16(reg + 0x52, 0x0808); nds->ARM9Write16(reg + 0x54, 7);
+    for (u16 effect = 0; effect < 4; ++effect) {
+        nds->ARM9Write16(reg + 0x50, (effect << 6) | 0x3F3F);
+        for (u16 priority : {u16(0), u16(1), u16(3)}) {
+            nds->ARM9Write16(reg + 0x0C, 0x4084 | priority);
+            checkFrame();
+        }
+    }
+    // Native OBJ still competes with captured BG at every priority/effect.
+    nds->ARM9Write8(0x04000243, 0x80); // D: prepare an ordinary OBJ tile.
+    for (u32 offset = 0; offset < 32; offset += 2)
+        nds->ARM9Write16(0x06860000 + offset, 0x1111);
+    nds->ARM9Write8(0x04000243, engine ? 0x84 : 0x82);
+    const u32 oam = 0x07000000 + engine * 0x400;
+    for (u32 object = 0; object < 128; ++object)
+        nds->ARM9Write16(oam + object * 8, 0x0200);
+    nds->ARM9Write16(oam + 2, 28);
+    nds->ARM9Write16(0x05000202 + engine * 0x400, 0x7C1F);
+    nds->ARM9Write32(reg, 0x00011C05);
+    for (u16 spriteMode : {u16(0), u16(0x400)})
+    for (u16 priority : {u16(0), u16(1), u16(3)})
+    {
+        nds->ARM9Write16(oam, 64 | spriteMode);
+        nds->ARM9Write16(oam + 4, priority << 10);
+        for (u16 effect = 0; effect < 4; ++effect) {
+            nds->ARM9Write16(reg + 0x50, (effect << 6) | 0x3F3F);
+            checkFrame();
+        }
+    }
+    nds->ARM9Write16(oam, 0x0200);
+    nds->ARM9Write16(reg + 0x40, (24 << 8) | 110);
+    nds->ARM9Write16(reg + 0x44, 192);
+    nds->ARM9Write16(reg + 0x48, 0x3B); // Hide BG2 inside WIN0.
+    nds->ARM9Write16(reg + 0x4A, 0x3F);
+    nds->ARM9Write32(reg, 0x00012C05); checkFrame();
+    nds->ARM9Write32(reg, 0x00010405); nds->ARM9Write16(reg + 0x50, 0);
+    nds->ARM9Write16(reg + 0x0C, 0x4084);
+    nds->ARM9Write16(reg + 0x4C, 0x0033);
+    nds->ARM9Write16(reg + 0x0C, 0x40C4); checkFrame(); // Mosaic stays native.
+    nds->ARM9Write16(reg + 0x0C, 0x4084);
+    checkFrame(); DisplayOrigins(*nds, scale, true);
+    Require(std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]),
+        "display-only affine/blend processing modified emulated VRAM");
+    // Conflicting mappings must retain the hardware's ORed native value.
+    const u32 otherControl = engine ? 0x04000248 : 0x04000240; // H follows WRAMCNT.
+    nds->ARM9Write8(otherControl, 0x81);
+    Require((engine ? nds->GPU.VRAMMap_BBG[0] : nds->GPU.VRAMMap_ABG[0]) ==
+        (engine ? ((1u << 2) | (1u << 7)) : ((1u << 0) | (1u << 1))),
+        "fixture did not create overlapping background mappings");
+    checkFrame();
+    {
+        void *top, *bottom, *nativeTop, *nativeBottom; int width, height;
+        nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height);
+        nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom);
+        const unsigned selected = engine ? !nds->GPU.ScreenSwap : nds->GPU.ScreenSwap;
+        const auto* display = static_cast<const u32*>(selected ? top : bottom);
+        const auto* native = static_cast<const u32*>(selected ? nativeTop : nativeBottom);
+        for (int y = 0; y < 64 * scale; ++y)
+        for (int x = 0; x < width; ++x)
+            Require(display[size_t(y)*width+x] == native[(y/scale)*256+x/scale],
+                "overlapping VRAM mappings used one bank's enhanced pixels");
+    }
+    nds->ARM9Write8(otherControl, 0);
+    checkFrame(); DisplayOrigins(*nds, scale, true);
+    if (!engine)
+    {
+        nds->ARM9Write32(reg, 0x0001050D); // Captured BG2 and live 3D BG0.
+        for (u16 effect = 0; effect < 4; ++effect) {
+            nds->ARM9Write16(reg + 8, effect & 3);
+            nds->ARM9Write16(reg + 0x50, (effect << 6) | 0x3F3F);
+            checkFrame();
+        }
+        nds->ARM9Write32(reg, 0x00010405); nds->ARM9Write16(reg + 0x50, 0);
+    }
+    for (u16 dimensions = 0; dimensions < 4; ++dimensions) {
+        nds->ARM9Write16(reg + 0x0C, 0x2084 | (dimensions << 14));
+        checkFrame();
+    }
+    nds->ARM9Write16(reg + 0x0C, 0x4084);
+    nds->ARM9Write16(reg + 0x0E, 0x4084);
+    nds->ARM9Write32(reg + 0x38, 0);
+    for (u32 mode : {3u, 4u, 5u}) {
+        nds->ARM9Write32(reg, 0x00010800 | mode);
+        checkFrame();
+    }
+    nds->ARM9Write32(reg, 0x00010405);
+    for (int nextScale : {1, scale == 2 ? 3 : 2, scale}) {
+        RendererSettings next{nextScale, false, true, false};
+        Require(nds->GetRenderer().SetRenderSettings(next), "captured BG scale transition failed");
+        Screen(*nds, false); Screen(*nds, false);
+        DisplayOrigins(*nds, nextScale, nextScale == scale);
+    }
+    // A same-value CPU write still invalidates the enhanced provenance.
+    const u32 alias = engine ? 0x06200000 : 0x06000000;
+    const u16 original = nds->ARM9Read16(alias + 0xA040);
+    nds->ARM9Write16(alias + 0xA040, original);
+    checkFrame();
+    void *top, *bottom; int displayWidth, displayHeight;
+    nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, displayWidth, displayHeight);
+    void *nativeTop, *nativeBottom; nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom);
+    for (const auto& pair : {std::pair{top,nativeTop}, std::pair{bottom,nativeBottom}})
+    for (int y = 0; y < displayHeight; ++y)
+    for (int x = 0; x < displayWidth; ++x)
+        Require(static_cast<const u32*>(pair.first)[size_t(y)*displayWidth+x] ==
+                static_cast<const u32*>(pair.second)[(y/scale)*256+x/scale],
+                "CPU alias write left stale enhanced bitmap samples");
+    std::printf("BG engine %u scale %d: %u affine/priority/effect/window/mosaic/invalidation frames PASS\n",
+        engine, scale, cases);
+    std::printf("Captured bitmap BG engine %u at %dx retains detail and native VRAM PASS\n", engine, scale);
 }
 
 void CheckCacheClear(NDS& nds, const std::vector<u32>& native)
@@ -494,6 +685,15 @@ int main(int argc, char** argv)
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
         if (argc == 2 && std::strcmp(argv[1], "captured-display") == 0) { for (int scale : {2, 3, 5, 8, 16}) CapturedDisplay(scale); return 0; }
+        if (argc == 3 && std::strcmp(argv[1], "bitmap-benchmark") == 0) {
+#ifdef _WIN32
+            DWORD_PTR mask = 0, system = 0;
+            Require(GetProcessAffinityMask(GetCurrentProcess(), &mask, &system) &&
+                SetProcessAffinityMask(GetCurrentProcess(), mask & (~mask + 1)), "CPU affinity failed");
+#endif
+            CapturedBitmapBG(std::atoi(argv[2]), 0, true); return 0;
+        }
+        if (argc == 2 && std::strcmp(argv[1], "captured-bitmap-bg") == 0) { for (int scale : {2, 3, 5, 8}) { CapturedBitmapBG(scale, 0); CapturedBitmapBG(scale, 1); } return 0; }
         if (argc == 2 && std::strcmp(argv[1], "high-scales") == 0) { HighScales(); return 0; }
         const int scale = argc == 2 && std::strcmp(argv[1], "2") == 0 ? 2 :
             argc == 2 && std::strcmp(argv[1], "3") == 0 ? 3 : 1;
