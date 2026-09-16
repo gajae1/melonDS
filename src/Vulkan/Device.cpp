@@ -128,6 +128,28 @@ VkPipelineCache Device::GetPipelineCache()
     return pipelineCache;
 }
 
+void Device::ClearPipelineCache()
+{
+    // Pipeline construction and cache controls share the rendering thread.
+    // Compiled VkPipeline objects do not retain this cache object.
+    if (pipelineCache) functions.vkDestroyPipelineCache(device,pipelineCache,nullptr);
+    pipelineCache=VK_NULL_HANDLE;
+    pipelineCacheInitialized=false;
+}
+
+void Device::TrimPipelineCache()
+{
+    if (!pipelineCache) return;
+    // Exportable data size is a soft growth limit, not total driver residency.
+    // Query only: no large allocation and no cache files are written.
+    constexpr size_t maxDataBytes=32u*1024u*1024u;
+    size_t bytes=0;
+    const auto result=functions.vkGetPipelineCacheData(device,pipelineCache,&bytes,nullptr);
+    if (result==VK_ERROR_OUT_OF_HOST_MEMORY || result==VK_ERROR_OUT_OF_DEVICE_MEMORY ||
+        (result==VK_SUCCESS && bytes>maxDataBytes)) ClearPipelineCache();
+    else Check(result,"Query compute pipeline cache size");
+}
+
 uint32_t Device::MemoryType(uint32_t bits,VkMemoryPropertyFlags required,VkMemoryPropertyFlags preferred) const
 {
     return SelectMemoryType(memoryProperties,bits,required,preferred);

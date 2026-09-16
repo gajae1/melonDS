@@ -64,6 +64,8 @@ public:
     // Device-owned, transient compiler cache. Optional OOM keeps uncached rendering.
     // Like command recording, initialization belongs to the rendering thread.
     VkPipelineCache GetPipelineCache();
+    void ClearPipelineCache();
+    void TrimPipelineCache();
 private:
     Device() = default;
     void Init();

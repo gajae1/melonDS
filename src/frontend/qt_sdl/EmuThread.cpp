@@ -626,6 +626,19 @@ void EmuThread::waitAllMessages()
         msgSemaphore.acquire();
 }
 
+bool EmuThread::clearRendererCacheOnThread()
+{
+#ifdef VULKANRENDERER_ENABLED
+    if (emuInstance->nds)
+        if (auto* renderer = dynamic_cast<VulkanRenderer*>(&emuInstance->nds->GetRenderer()))
+        {
+            renderer->ClearPipelineCache();
+            return true;
+        }
+#endif
+    return false;
+}
+
 void EmuThread::handleMessages()
 {
     bool glborrow = false;
@@ -650,7 +663,8 @@ void EmuThread::handleMessages()
         // the core. All other consumers must have the root context first.
         const bool control = msg.type == msg_Exit || msg.type == msg_EmuPause ||
             msg.type == msg_EmuUnpause || msg.type == msg_InitGL ||
-            msg.type == msg_DeInitGL || msg.type == msg_BorrowGL || msg.type == msg_AudioSettings;
+            msg.type == msg_DeInitGL || msg.type == msg_BorrowGL || msg.type == msg_AudioSettings ||
+            msg.type == msg_ClearRendererCache;
         if (!control && !prepareGL())
         {
             msgResult = 0; // Also StateLoadResult::Failed: the old state is intact.
@@ -965,6 +979,9 @@ void EmuThread::handleMessages()
             break;
         }
 
+        case msg_ClearRendererCache:
+            emit rendererCacheCleared(clearRendererCacheOnThread());
+            break;
         case msg_EnableCheats:
             emuInstance->enableCheats(msg.param.value<bool>());
             break;

@@ -62,6 +62,9 @@ private:
     void WriteTextureSet(VkDescriptorSet set,const Variant& variant);
     void UploadImage(const std::shared_ptr<Device::Image>& image,uint32_t width,uint32_t height,
         uint32_t layers,std::span<const uint32_t> pixels,VkImageLayout oldLayout,uint32_t firstLayer=0);
+    void RecordImageUpload(VkCommandBuffer command,const std::shared_ptr<Device::Image>& image,
+        uint32_t width,uint32_t height,uint32_t layers,VkImageLayout oldLayout,
+        uint32_t firstLayer,VkDeviceSize offset);
     void Barrier(VkCommandBuffer command);
     std::shared_ptr<Device> owner;
     const volk::VolkDeviceTable& f;

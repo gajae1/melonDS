@@ -216,6 +216,26 @@ void ScaledDisplayLifecycle(int scale)
     std::printf("Vulkan %dx: real subpixel coverage, native-origin equivalence, scroll, brightness, swap, window, modes, stop/reset PASS\n", scale);
 }
 
+void CheckCacheClear(NDS& nds, const std::vector<u32>& native)
+{
+    auto& renderer = static_cast<VulkanRenderer&>(nds.GetRenderer());
+    void *top, *bottom; int width, height;
+    Require(renderer.GetDisplayFramebuffers(&top, &bottom, width, height), "display view unavailable");
+    const size_t count = size_t(width) * height;
+    const std::vector<u32> beforeTop(static_cast<u32*>(top), static_cast<u32*>(top)+count);
+    const std::vector<u32> beforeBottom(static_cast<u32*>(bottom), static_cast<u32*>(bottom)+count);
+    renderer.ClearPipelineCache();
+    int afterWidth, afterHeight;
+    Require(renderer.GetDisplayFramebuffers(&top, &bottom, afterWidth, afterHeight) &&
+        width == afterWidth && height == afterHeight, "cache clear changed display extent");
+    Require(std::equal(beforeTop.begin(), beforeTop.end(), static_cast<u32*>(top)) &&
+        std::equal(beforeBottom.begin(), beforeBottom.end(), static_cast<u32*>(bottom)),
+        "cache clear changed the current display pixels");
+    Require(renderer.GetFramebuffers(&top, &bottom), "native view unavailable after cache clear");
+    Require(std::equal(native.begin(), native.end(), static_cast<u32*>(nds.GPU.ScreenSwap ? top : bottom)),
+        "cache clear changed the current native pixels");
+}
+
 void TexturesAndState(int scale)
 {
     auto vk = Console(true, scale);
@@ -240,6 +260,7 @@ void TexturesAndState(int scale)
             std::fprintf(stderr, "%u native pixel differences\n", differences);
         }
         Require(actual == expected, "native Vulkan/Software screen pixels differ");
+        CheckCacheClear(*vk, actual);
         if (actual[80 * 256 + 80] != 0xFFFF0000)
             std::fprintf(stderr, "native format=%u w=%d center=%08x dispcnt=%08x\n",
                 format, wbuffer, actual[80 * 256 + 80], vk->GPU.GPU2D_A.DispCnt);

@@ -18,6 +18,7 @@ public:
     static bool IsAvailable(std::string& error);
     bool SetRenderSettings(RendererSettings& settings) override;
     bool HasRenderFailure() const override;
+    void ClearPipelineCache();
     void Reset() override;
     void Stop() override;
     void DrawScanline(u32 line) override;

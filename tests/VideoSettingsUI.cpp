@@ -13,10 +13,13 @@ class VideoWorker : public QObject
 public:
     EmuThread::VideoSettingsStatus status;
     bool displayFailed = false;
+    unsigned cacheClearRequests = 0;
+    void clearRendererCache() { ++cacheClearRequests; }
     auto videoSettingsStatus() { return status; }
     bool hasGLFailure() { return displayFailed; }
 signals:
     void videoSettingsStatusChanged();
+    void rendererCacheCleared(bool cleared);
 };
 struct VideoInstance
 {
@@ -85,6 +88,8 @@ int main(int argc, char** argv)
         auto* compute = dialog->findChild<QRadioButton*>("rb3DCompute");
         auto* label = dialog->findChild<QLabel*>("lblRendererStatus");
         Require(label && label->text().contains("Active: OpenGL"), "initial active renderer missing");
+        auto* clear = dialog->findChild<QPushButton*>("btnClearPipelineCache");
+        Require(clear && !clear->isEnabled(), "cache clear offered for non-Vulkan renderer");
         compute->click(); QApplication::processEvents();
         Require(cfg.GetInt("3D.Renderer") == 2 && label->text().contains("pending"),
                 "paused selection was reported as already applied");
@@ -180,6 +185,19 @@ int main(int argc, char** argv)
         worker.status.renderer = renderer3D_Vulkan; worker.status.pending = false; publish();
         label = dialog->findChild<QLabel*>("lblRendererStatus");
         Require(label->text().contains("Active: Vulkan 3D"), "Vulkan active status missing");
+        clear = dialog->findChild<QPushButton*>("btnClearPipelineCache");
+        Require(clear && clear->isEnabled(), "active Vulkan cache clear unavailable");
+        const auto originalScale = cfg.GetInt("3D.GL.ScaleFactor");
+        clear->click(); clear->click();
+        Require(worker.cacheClearRequests == 1 && !clear->isEnabled(), "cache request was not queued exactly once");
+        emit worker.rendererCacheCleared(true); QApplication::processEvents();
+        Require(clear->isEnabled() && cfg.GetInt("3D.GL.ScaleFactor") == originalScale,
+                "cache clear changed settings or stayed pending");
+        Require(dialog->findChild<QLabel*>("lblPipelineCacheStatus")->text().contains("cleared"),
+                "cache completion not reported");
+        clear->click(); emit worker.rendererCacheCleared(false); QApplication::processEvents();
+        Require(dialog->findChild<QLabel*>("lblPipelineCacheStatus")->text().contains("unavailable"),
+                "failed cache request reported success");
         worker.status.vulkanSupport = 0; publish();
         Require(!vulkan3D->isEnabled(), "unavailable Vulkan 3D remained selectable");
 #else

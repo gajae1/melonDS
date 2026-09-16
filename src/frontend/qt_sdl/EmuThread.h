@@ -89,6 +89,7 @@ public:
 
         msg_EnableCheats,
         msg_AudioSettings,
+        msg_ClearRendererCache,
     };
 
     struct Message
@@ -155,6 +156,7 @@ public:
     bool borrowGL();
     void returnGL();
     void updateVideoSettings();
+    void clearRendererCache() { sendMessage(msg_ClearRendererCache); }
     void updateVideoRenderer() { updateVideoSettings(); lastVideoRenderer = -1; }
 
     struct VideoSettingsStatus
@@ -182,6 +184,7 @@ signals:
     void windowEmuReset();
     void windowOpenGLFailed(int win);
     void videoSettingsStatusChanged();
+    void rendererCacheCleared(bool cleared);
 
     void windowLimitFPSChange();
 
@@ -196,6 +199,7 @@ signals:
 
 private:
     void handleMessages();
+    bool clearRendererCacheOnThread();
     bool initializeGL(int win);
     bool prepareGL();
     void reportGLFailure(int win);

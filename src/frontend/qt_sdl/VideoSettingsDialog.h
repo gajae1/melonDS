@@ -59,6 +59,8 @@ signals:
 
 private slots:
     void refreshRendererStatus();
+    void on_btnClearPipelineCache_clicked();
+    void onRendererCacheCleared(bool cleared);
     void on_VideoSettingsDialog_accepted();
     void on_VideoSettingsDialog_rejected();
 
@@ -78,6 +80,7 @@ private:
     void setVsyncControlEnable(bool hasOGL);
     void setEnabled();
 
+    bool cacheClearPending = false;
     Ui::VideoSettingsDialog* ui;
     EmuInstance* emuInstance;
 

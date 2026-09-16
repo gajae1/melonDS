@@ -120,6 +120,11 @@ bool VulkanRenderer::GetDisplayFramebuffers(void** top, void** bottom, int& widt
     return true;
 }
 
+void VulkanRenderer::ClearPipelineCache()
+{
+    static_cast<VulkanRenderer3D&>(*Rend3D).ClearPipelineCache();
+}
+
 bool VulkanRenderer::HasRenderFailure() const
 {
     return static_cast<const VulkanRenderer3D&>(*Rend3D).HasFailed();

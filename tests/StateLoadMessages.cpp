@@ -118,6 +118,8 @@ public:
     int loads = 0, undos = 0;
     unsigned resets = 0;
     bool currentAvailable = true;
+    bool cacheAvailable = true;
+    unsigned cacheCalls = 0;
     std::vector<EmuThread::CartLoadRequest> cartLoads;
     std::vector<bool> cartResets;
     QMutex renderLock;
@@ -183,6 +185,7 @@ struct MPInterface
 
 // A real Qt object and signals, but no event-loop or device thread is started.
 void EmuThread::run() {}
+bool EmuThread::clearRendererCacheOnThread() { ++emuInstance->cacheCalls; return emuInstance->cacheAvailable; }
 bool EmuThread::initializeGL(int) { std::abort(); }
 void EmuThread::setComputeSupport(int) { std::abort(); }
 void EmuThread::updateRenderer() { std::abort(); }
@@ -227,6 +230,20 @@ int main(int argc, char** argv)
         thread.handleMessages();
         check(thread.msgSemaphore.tryAcquire(), "Message failed to acknowledge completion");
     };
+    unsigned cacheReplies = 0;
+    bool cacheResult = false;
+    QObject::connect(&thread, &EmuThread::rendererCacheCleared, [&](bool cleared) {
+        ++cacheReplies; cacheResult = cleared;
+    });
+    thread.useOpenGL = true; instance.currentAvailable = false;
+    thread.clearRendererCache(); thread.waitMessage();
+    check(cacheReplies == 1 && cacheResult && instance.cacheCalls == 1,
+          "Cache control required a GL context or lost its acknowledgement");
+    instance.cacheAvailable = false;
+    thread.clearRendererCache(); thread.waitMessage();
+    check(cacheReplies == 2 && !cacheResult && instance.cacheCalls == 2,
+          "Unavailable cache control reported success");
+    thread.useOpenGL = false; instance.currentAvailable = true;
 #ifdef GDBSTUB_ENABLED
     if (argc == 2 && std::string(argv[1]) == "gdb-suspended")
     {

@@ -134,6 +134,8 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
 
     connect(emuInstance->getEmuThread(), &EmuThread::videoSettingsStatusChanged,
             this, &VideoSettingsDialog::refreshRendererStatus, Qt::QueuedConnection);
+    connect(emuInstance->getEmuThread(), &EmuThread::rendererCacheCleared,
+            this, &VideoSettingsDialog::onRendererCacheCleared, Qt::QueuedConnection);
     refreshRendererStatus();
 }
 
@@ -148,6 +150,8 @@ void VideoSettingsDialog::refreshRendererStatus()
     if (!static_cast<MainWindow*>(parent())->getEmuInstance()) return;
     auto* thread = emuInstance->getEmuThread();
     const auto status = thread->videoSettingsStatus();
+    ui->btnClearPipelineCache->setEnabled(!cacheClearPending && !status.pending &&
+        !status.compiling && status.renderer == renderer3D_Vulkan);
     auto& cfg = emuInstance->getGlobalConfig();
     const int selected = cfg.GetInt("3D.Renderer");
     if (auto* button = grp3DRenderer->button(selected)) button->setChecked(true);
@@ -196,6 +200,24 @@ void VideoSettingsDialog::refreshRendererStatus()
     if (status.computeSupport == 0)
         text += tr("\nCompute rendering is unavailable on this OpenGL context.");
     ui->lblRendererStatus->setText(text);
+}
+
+void VideoSettingsDialog::on_btnClearPipelineCache_clicked()
+{
+    if (cacheClearPending || !static_cast<MainWindow*>(parent())->getEmuInstance()) return;
+    cacheClearPending = true;
+    ui->btnClearPipelineCache->setEnabled(false);
+    ui->lblPipelineCacheStatus->setText(tr("Clear request pending..."));
+    emuInstance->getEmuThread()->clearRendererCache();
+}
+
+void VideoSettingsDialog::onRendererCacheCleared(bool cleared)
+{
+    cacheClearPending = false;
+    ui->lblPipelineCacheStatus->setText(cleared
+        ? tr("Vulkan compilation cache cleared; current graphics retained.")
+        : tr("Vulkan renderer unavailable; no cache was cleared."));
+    refreshRendererStatus();
 }
 
 void VideoSettingsDialog::on_VideoSettingsDialog_accepted()

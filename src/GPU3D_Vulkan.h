@@ -21,6 +21,7 @@ public:
     u32* GetLine(int line) override;
     void GetScaledLine(int line, int subline, int scale, u32* dst) const;
     bool HasFailed() const { return Failed; }
+    void ClearPipelineCache() { if (Device) Device->ClearPipelineCache(); }
 
 private:
     void DrawFrame();

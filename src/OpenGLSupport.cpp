@@ -18,13 +18,6 @@
 
 #include "OpenGLSupport.h"
 
-#include <unordered_map>
-#include <vector>
-
-#include <assert.h>
-
-#define XXH_STATIC_LINKING_ONLY
-#include "xxhash/xxhash.h"
 
 namespace melonDS
 {
@@ -54,156 +47,6 @@ bool CheckError(const char* operation)
         success = false;
     }
     return success;
-}
-
-struct ShaderCacheEntry
-{
-    u32 Length;
-    u8* Data;
-    u32 BinaryFormat;
-
-    ShaderCacheEntry(u8* data, u32 length, u32 binaryFmt)
-        : Length(length), Data(data), BinaryFormat(binaryFmt)
-    {
-        assert(data != nullptr);
-    }
-
-    ShaderCacheEntry(const ShaderCacheEntry&) = delete;
-    ShaderCacheEntry(ShaderCacheEntry&& other)
-    {
-        Data = other.Data;
-        Length = other.Length;
-        BinaryFormat = other.BinaryFormat;
-
-        other.Data = nullptr;
-        other.Length = 0;
-        other.BinaryFormat = 0;
-    }
-
-    ~ShaderCacheEntry()
-    {
-        if (Data) // check whether it was moved
-            delete[] Data;
-    }
-};
-
-std::unordered_map<u64, ShaderCacheEntry> ShaderCache;
-std::vector<u64> NewShaders;
-
-constexpr u32 ShaderCacheMagic = 0x11CAC4E1;
-constexpr u32 ShaderCacheVersion = 1;
-
-void LoadShaderCache()
-{
-    // for now the shader cache only contains only compute shaders
-    // because they take the longest to compile
-    Platform::FileHandle* file = Platform::OpenLocalFile("shadercache", Platform::FileMode::Read);
-    if (file == nullptr)
-    {
-        Log(LogLevel::Error, "Could not find shader cache\n");
-        return;
-    }
-
-    u32 magic, version, numPrograms;
-    if (Platform::FileRead(&magic, 4, 1, file) != 1 || magic != ShaderCacheMagic)
-    {
-        Log(LogLevel::Error, "Shader cache file has invalid magic\n");
-        goto fileInvalid;
-    }
-
-    if (Platform::FileRead(&version, 4, 1, file) != 1 || version != ShaderCacheVersion)
-    {
-        Log(LogLevel::Error, "Shader cache file has bad version\n");
-        goto fileInvalid;
-    }
-
-    if (Platform::FileRead(&numPrograms, 4, 1, file) != 1)
-    {
-        Log(LogLevel::Error, "Shader cache file invalid program count\n");
-        goto fileInvalid;
-    }
-
-    // not the best approach, because once changes pile up
-    // we read and overwrite the old files
-    for (u32 i = 0; i < numPrograms; i++)
-    {
-        int error = 3;
-
-        u32 length, binaryFormat;
-        u64 sourceHash;
-        error -= Platform::FileRead(&sourceHash, 8, 1, file);
-        error -= Platform::FileRead(&length, 4, 1, file);
-        error -= Platform::FileRead(&binaryFormat, 4, 1, file);
-
-        if (error != 0)
-        {
-            Log(LogLevel::Error, "Invalid shader cache entry\n");
-            goto fileInvalid;
-        }
-
-        u8* data = new u8[length];
-        if (Platform::FileRead(data, length, 1, file) != 1)
-        {
-            Log(LogLevel::Error, "Could not read shader cache entry data\n");
-            delete[] data;
-            goto fileInvalid;
-        }
-
-        ShaderCache.erase(sourceHash);
-        ShaderCache.emplace(sourceHash, ShaderCacheEntry(data, length, binaryFormat));
-    }
-
-fileInvalid:
-    Platform::CloseFile(file);
-}
-
-void SaveShaderCache()
-{
-    Platform::FileHandle* file = Platform::OpenLocalFile("shadercache", Platform::FileMode::ReadWrite);
-
-    if (file == nullptr)
-    {
-        Log(LogLevel::Error, "Could not open or create shader cache file\n");
-        return;
-    }
-
-    int written = 3;
-    u32 magic = ShaderCacheMagic, version = ShaderCacheVersion, numPrograms = ShaderCache.size();
-    written -= Platform::FileWrite(&magic, 4, 1, file);
-    written -= Platform::FileWrite(&version, 4, 1, file);
-    written -= Platform::FileWrite(&numPrograms, 4, 1, file);
-
-    if (written != 0)
-    {
-        Log(LogLevel::Error, "Could not write shader cache header\n");
-        goto writeError;
-    }
-
-    Platform::FileSeek(file, 0, Platform::FileSeekOrigin::End);
-
-    printf("new shaders %zu\n", NewShaders.size());
-
-    for (u64 newShader : NewShaders)
-    {
-        int error = 4;
-        auto it = ShaderCache.find(newShader);
-
-        error -= Platform::FileWrite(&it->first, 8, 1, file);
-        error -= Platform::FileWrite(&it->second.Length, 4, 1, file);
-        error -= Platform::FileWrite(&it->second.BinaryFormat, 4, 1, file);
-        error -= Platform::FileWrite(it->second.Data, it->second.Length, 1, file);
-
-        if (error != 0)
-        {
-            Log(LogLevel::Error, "Could not insert new shader cache entry\n");
-            goto writeError;
-        }
-    }
-
-writeError:
-    Platform::CloseFile(file);
-
-    NewShaders.clear();
 }
 
 bool CompilerShader(GLuint& id, const std::string& source, const std::string& name, const std::string& type)
@@ -282,23 +125,7 @@ bool CompileComputeProgram(GLuint& result, const std::string& source, const std:
 {
     result = glCreateProgram();
 
-    /*u64 sourceHash = XXH64(source.data(), source.size(), 0);
-    auto it = ShaderCache.find(sourceHash);
-    if (it != ShaderCache.end())
-    {
-        glProgramBinary(result, it->second.BinaryFormat, it->second.Data, it->second.Length);
 
-        GLint linkStatus;
-        glGetProgramiv(result, GL_LINK_STATUS, &linkStatus);
-        if (linkStatus == GL_TRUE)
-        {
-            Log(LogLevel::Info, "Restored shader %s from cache\n", name.c_str());
-            return true;
-        }
-        else
-        {
-        }
-    }*/
     GLuint shader = 0;
     bool linkingSucess = false;
 
@@ -321,18 +148,7 @@ error:
         glDeleteProgram(result);
         result = 0;
     }
-    /*else
-    {
-        GLint length;
-        GLenum format;
-        glGetProgramiv(result, GL_PROGRAM_BINARY_LENGTH, &length);
 
-        u8* buffer = new u8[length];
-        glGetProgramBinary(result, length, nullptr, &format, buffer);
-
-        ShaderCache.emplace(sourceHash, ShaderCacheEntry(buffer, length, format));
-        NewShaders.push_back(sourceHash);
-    }*/
 
     return linkingSucess;
 }

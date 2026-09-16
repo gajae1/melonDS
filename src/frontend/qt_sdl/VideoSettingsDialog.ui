@@ -107,6 +107,18 @@
     </widget>
    </item>
    <item row="4" column="0" colspan="2">
+    <layout class="QHBoxLayout" name="pipelineCacheLayout">
+     <item><widget class="QPushButton" name="btnClearPipelineCache">
+      <property name="text"><string>Clear Vulkan pipeline cache</string></property>
+      <property name="toolTip"><string>Clears this instance's RAM-only compilation cache. Active pipelines, textures, saves and driver-managed disk caches are not deleted. Cache data is rebuilt when needed.</string></property>
+     </widget></item>
+     <item><widget class="QLabel" name="lblPipelineCacheStatus">
+      <property name="text"><string>RAM only; no application cache files.</string></property>
+      <property name="wordWrap"><bool>true</bool></property>
+     </widget></item>
+    </layout>
+   </item>
+   <item row="5" column="0" colspan="2">
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="orientation">
       <enum>Qt::Orientation::Horizontal</enum>

@@ -34,9 +34,6 @@ bool CheckError(const char* operation);
 // Requires the renderer's context to be current on the calling thread.
 bool SupportsCompute();
 
-void LoadShaderCache();
-void SaveShaderCache();
-
 struct AttributeTarget
 {
     const char* Name;

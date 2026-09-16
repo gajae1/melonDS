@@ -84,6 +84,7 @@ void ComputePipeline::Init(const Shaders& shaders)
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_COMPUTE_BIT,module,"main",nullptr};
         const auto result=f.vkCreateComputePipelines(device,cache,1,&info,nullptr,&pipelines[i]);f.vkDestroyShaderModule(device,module,nullptr);Device::Check(result,"Create compute pipeline");
     }
+    owner->TrimPipelineCache();
     const VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,16},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,3},{VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,1},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1}};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=5;poolInfo.poolSizeCount=5;poolInfo.pPoolSizes=sizes;
@@ -136,15 +137,21 @@ void ComputePipeline::UploadImage(const std::shared_ptr<Device::Image>& image,ui
     const auto& staging = uploadStaging;
     std::memcpy(staging->Data(),pixels.data(),pixels.size_bytes());
     const auto command=owner->Begin();
+    RecordImageUpload(command,image,width,height,layers,oldLayout,firstLayer,0);
+    owner->SubmitAndWait();
+}
+
+void ComputePipeline::RecordImageUpload(VkCommandBuffer command,const std::shared_ptr<Device::Image>& image,
+    uint32_t width,uint32_t height,uint32_t layers,VkImageLayout oldLayout,uint32_t firstLayer,VkDeviceSize offset)
+{
     const bool fresh=oldLayout==VK_IMAGE_LAYOUT_UNDEFINED;
     ImageBarrier(f,command,image->Handle(),oldLayout,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         fresh?VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT:VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,fresh?0:VK_ACCESS_SHADER_READ_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,layers,firstLayer);
-    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,firstLayer,layers};copy.imageExtent={width,height,1};
-    f.vkCmdCopyBufferToImage(command,staging->Handle(),image->Handle(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
+    VkBufferImageCopy copy{};copy.bufferOffset=offset;copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,firstLayer,layers};copy.imageExtent={width,height,1};
+    f.vkCmdCopyBufferToImage(command,uploadStaging->Handle(),image->Handle(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
     ImageBarrier(f,command,image->Handle(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,layers,firstLayer);
-    owner->SubmitAndWait();
 }
 
 std::shared_ptr<const ComputePipeline::Texture> ComputePipeline::UploadTexture(uint32_t width,uint32_t height,
@@ -190,9 +197,17 @@ void ComputePipeline::UploadTextureLayer(const Texture& texture,uint32_t layer,s
 void ComputePipeline::UploadClearBitmap(std::span<const uint32_t> colors,std::span<const uint32_t> depths)
 {
     if(colors.size()!=256*256||depths.size()!=256*256)throw std::invalid_argument("Invalid clear bitmap dimensions");
+    const size_t bytes=colors.size_bytes();
+    if (!uploadStaging || uploadStaging->Size()<2*bytes)
+        uploadStaging=owner->CreateBuffer(2*bytes,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);
+    auto* staging=static_cast<unsigned char*>(uploadStaging->Data());
+    std::memcpy(staging,colors.data(),bytes);
+    std::memcpy(staging+bytes,depths.data(),bytes);
+    const auto command=owner->Begin();
     clearBitmapReady=false;
-    UploadImage(clearColor,256,256,1,colors,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    UploadImage(clearDepth,256,256,1,depths,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    RecordImageUpload(command,clearColor,256,256,1,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,0,0);
+    RecordImageUpload(command,clearDepth,256,256,1,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,0,bytes);
+    owner->SubmitAndWait();
     clearBitmapReady=true;
 }
 

@@ -10,8 +10,10 @@ using namespace melonDS::Vulkan;
 namespace {
 PFN_vkCreateBuffer DriverCreate;
 PFN_vkAllocateMemory DriverAllocate;
+PFN_vkQueueSubmit DriverSubmit;
 std::vector<uint32_t> MemoryChoices;
 VkResult FailAllocation = VK_SUCCESS;
+unsigned Submissions = 0;
 VKAPI_ATTR VkResult VKAPI_CALL Allocate(VkDevice device, const VkMemoryAllocateInfo* info,
     const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory)
 {
@@ -20,6 +22,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Allocate(VkDevice device, const VkMemoryAllocateI
         const auto result = FailAllocation; FailAllocation = VK_SUCCESS; return result;
     }
     return DriverAllocate(device, info, callbacks, memory);
+}
+VKAPI_ATTR VkResult VKAPI_CALL Submit(VkQueue queue, uint32_t count, const VkSubmitInfo* submits, VkFence fence)
+{
+    ++Submissions;
+    return DriverSubmit(queue, count, submits, fence);
 }
 unsigned Allocations = 0;
 bool FailNext = false;
@@ -37,10 +44,11 @@ struct Observe {
     {
         DriverCreate = table.vkCreateBuffer; table.vkCreateBuffer = Create;
         DriverAllocate = table.vkAllocateMemory; table.vkAllocateMemory = Allocate;
+        DriverSubmit = table.vkQueueSubmit; table.vkQueueSubmit = Submit;
     }
     ~Observe() {
         table.vkCreateBuffer = DriverCreate; table.vkAllocateMemory = DriverAllocate;
-        FailNext = false; FailAllocation = VK_SUCCESS;
+        table.vkQueueSubmit = DriverSubmit; FailNext = false; FailAllocation = VK_SUCCESS;
     }
 };
 }
@@ -125,6 +133,31 @@ int main()
             "non-memory failure was hidden by a preference retry");
         std::printf("memory preference: default=%u cached=%u fallback=%s\n", defaultType, cachedType,
             cachedType != defaultType ? "tested" : "not needed on this device");
+        batch.meta.ClearColor = 0x1F102030;
+        const auto expectedClear = pipeline.Render(batch);
+        std::vector<uint32_t> clearColors(256 * 256, batch.meta.ClearColor), clearDepths(256 * 256, batch.meta.ClearDepth);
+        const auto beforeFailure = Submissions;
+        FailNext = true;
+        bool clearFailed = false;
+        try { pipeline.UploadClearBitmap(clearColors, clearDepths); }
+        catch (const std::runtime_error&) { clearFailed = true; }
+        Require(clearFailed && !FailNext && Submissions == beforeFailure,
+                "clear staging growth failure submitted partial work");
+        Require(pipeline.Render(batch) == expectedClear, "failed clear allocation damaged rendering");
+        const auto beforeClear = Submissions;
+        pipeline.UploadClearBitmap(clearColors, clearDepths);
+        std::printf("clear-bitmap submissions=%u\n", Submissions - beforeClear);
+        Require(Submissions == beforeClear + 1, "paired clear images require redundant submit/waits");
+        batch.meta.DispCnt |= 1u << 14;
+        Require(pipeline.Render(batch) == expectedClear, "paired clear upload changed image contents");
+        const auto beforeInvalid = Submissions;
+        bool clearRejected = false;
+        try { pipeline.UploadClearBitmap({}, clearDepths); }
+        catch (const std::invalid_argument&) { clearRejected = true; }
+        Require(clearRejected && Submissions == beforeInvalid && pipeline.Render(batch) == expectedClear,
+                "invalid clear pair damaged the previous images");
+        pipeline.UploadTextureLayer(*small, 0, pixels);
+        Require(pipeline.Render(batch) == expectedClear, "staging reuse corrupted clear images");
         std::puts("Vulkan staging reuse, growth failure/retry, memory choice and readback lifetime PASS");
         return 0;
     } catch (const std::exception& e) {
