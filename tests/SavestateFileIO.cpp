@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QSaveFile>
 #include <QTemporaryDir>
+#include <QThread>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -18,6 +19,10 @@ using namespace melonDS;
 
 enum class WriteFailure { None, ShortWrite, Error };
 static WriteFailure writeFailure = WriteFailure::None;
+static unsigned commitAttempts = 0;
+#ifdef _WIN32
+static HANDLE* releaseAfterCommit = nullptr;
+#endif
 
 // Inject only the write boundary. Successful/prefix writes use real Qt files.
 static qint64 WriteBytes(QIODevice& file, const char* bytes, qint64 length)
@@ -71,7 +76,16 @@ public:
     }
     bool commit()
     {
+        ++commitAttempts;
         const bool result = QSaveFile::commit();
+        std::fprintf(stderr, "Qt commit error=%d, attempt=%u\n", int(error()), commitAttempts);
+#ifdef _WIN32
+        if (releaseAfterCommit) {
+            CloseHandle(*releaseAfterCommit);
+            *releaseAfterCommit = INVALID_HANDLE_VALUE;
+            releaseAfterCommit = nullptr;
+        }
+#endif
         std::fprintf(stderr, "QSaveFile commit: %s\n", result ? "success" : "failure");
         return result;
     }
@@ -81,9 +95,11 @@ struct FixtureConsole
 {
     enum class Failure { None, ErrorFlag, Reject };
     Failure failure = Failure::None;
+    unsigned serializations = 0;
 
     bool DoSavestate(Savestate* state)
     {
+        ++serializations;
         if (failure == Failure::Reject) return false;
         state->Section("TEST");
         if (failure == Failure::ErrorFlag)
@@ -142,7 +158,11 @@ int main(int argc, char** argv)
 
     FixtureConsole console;
     StateWriter writer{&console};
-    const bool success = !std::strcmp(argv[1], "roundtrip");
+    const bool transient = !std::strcmp(argv[1], "transient-commit-failure");
+#ifndef _WIN32
+    if (transient) return 77;
+#endif
+    const bool success = !std::strcmp(argv[1], "roundtrip") || transient;
     const bool locked = !std::strcmp(argv[1], "commit-failure");
     if (!std::strcmp(argv[1], "serialize-error")) console.failure = FixtureConsole::Failure::ErrorFlag;
     else if (!std::strcmp(argv[1], "serialize-reject")) console.failure = FixtureConsole::Failure::Reject;
@@ -152,11 +172,12 @@ int main(int argc, char** argv)
 
 #ifdef _WIN32
     HANDLE lock = INVALID_HANDLE_VALUE;
-    if (locked)
+    if (locked || transient)
     {
         lock = CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_READ,
                            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (lock == INVALID_HANDLE_VALUE) return 2;
+        if (transient) releaseAfterCommit = &lock;
     }
 #else
     if (locked) return 77;
@@ -171,6 +192,8 @@ int main(int argc, char** argv)
     const auto check = [&](bool ok, const char* message) {
         if (!ok) { ++failures; std::fprintf(stderr, "%s\n", message); }
     };
+    if (transient) check(commitAttempts >= 2 && commitAttempts <= 5, "Transient commit was not retried within bounds");
+    check(console.serializations == 1, "Save retry serialized guest state more than once");
     check(saved == success, "Save result does not report the serialization or I/O failure");
     if (success)
     {

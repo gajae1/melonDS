@@ -31,6 +31,7 @@
 #include <QDateTime>
 #include <QMutexLocker>
 #include <QSaveFile>
+#include <QThread>
 #include <QStandardPaths>
 
 #include <zstd.h>
@@ -961,23 +962,36 @@ bool EmuInstance::saveState(const std::string& filename)
     Savestate state;
     if (state.Error) return false;
 
-    // Finish serialization before touching the existing file.
+    // Serialize once: retries must write the same snapshot, not rerun the guest.
     if (!nds->DoSavestate(&state) || state.Error) return false;
-
-    QSaveFile file(QString::fromStdString(filename));
-    if (!file.open(QIODevice::WriteOnly) ||
-        file.write(static_cast<const char*>(state.Buffer()), state.Length()) != state.Length() ||
-        !file.commit())
+#ifdef _WIN32
+    int commitFailures = 0;
+#endif
+    for (;;)
     {
-        Platform::Log(Platform::Error,
-                      "Failed to save state to %s: %s\n",
-                      filename.c_str(), file.errorString().toUtf8().constData()
-        );
+        // A denied commit closes its staging file. Never reopen that object or
+        // fall back to truncating the previous state in place.
+        QSaveFile file(QString::fromStdString(filename));
+        file.setDirectWriteFallback(false);
+        const bool written = file.open(QIODevice::WriteOnly) &&
+            file.write(static_cast<const char*>(state.Buffer()), state.Length()) == state.Length();
+        if (written && file.commit()) return true;
+#ifdef _WIN32
+        // QFile exposes RenameError, not a durable native sharing-error code.
+        // Retry only this final replacement, at most five attempts, including
+        // permanent denials. Native I/O time is not bounded by this sleep budget.
+        if (written && file.error() == QFileDevice::RenameError && ++commitFailures < 5)
+        {
+            QThread::msleep(40);
+            continue;
+        }
+#endif
+        Platform::Log(Platform::Error, "Failed to save state to %s: %s\n",
+                      filename.c_str(), file.errorString().toUtf8().constData());
         return false;
     }
-
-    return true;
 }
+
 
 StateLoadResult EmuInstance::undoStateLoad()
 {
