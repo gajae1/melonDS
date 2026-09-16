@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Device.h"
+#include "MemoryType.h"
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -107,19 +108,32 @@ Device::~Device()
         functions.vkDeviceWaitIdle(device);
         if(fence)functions.vkDestroyFence(device,fence,nullptr);
         if(pool)functions.vkDestroyCommandPool(device,pool,nullptr);
+        if(pipelineCache)functions.vkDestroyPipelineCache(device,pipelineCache,nullptr);
         functions.vkDestroyDevice(device,nullptr);
     }
     if(instance)instanceFunctions.vkDestroyInstance(instance,nullptr);
 }
 
-uint32_t Device::MemoryType(uint32_t bits,VkMemoryPropertyFlags required) const
+VkPipelineCache Device::GetPipelineCache()
 {
-    for(uint32_t i=0;i<memoryProperties.memoryTypeCount;++i)
-        if((bits&(1u<<i))&&(memoryProperties.memoryTypes[i].propertyFlags&required)==required)return i;
-    throw std::runtime_error("Required Vulkan memory type unavailable");
+    if (!pipelineCacheInitialized) {
+        VkPipelineCacheCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        VkPipelineCache created{};
+        const auto result=functions.vkCreatePipelineCache(device,&info,nullptr,&created);
+        if (result==VK_SUCCESS) pipelineCache=created;
+        else if (result!=VK_ERROR_OUT_OF_HOST_MEMORY && result!=VK_ERROR_OUT_OF_DEVICE_MEMORY)
+            Check(result,"Create compute pipeline cache");
+        pipelineCacheInitialized=true;
+    }
+    return pipelineCache;
 }
 
-std::shared_ptr<Device::Buffer> Device::CreateBuffer(VkDeviceSize size,VkBufferUsageFlags usage,bool hostVisible)
+uint32_t Device::MemoryType(uint32_t bits,VkMemoryPropertyFlags required,VkMemoryPropertyFlags preferred) const
+{
+    return SelectMemoryType(memoryProperties,bits,required,preferred);
+}
+
+std::shared_ptr<Device::Buffer> Device::CreateBuffer(VkDeviceSize size,VkBufferUsageFlags usage,bool hostVisible,VkMemoryPropertyFlags preferred)
 {
     if(!size)throw std::invalid_argument("Zero-sized Vulkan buffer");
     auto buffer=std::shared_ptr<Buffer>(new Buffer(shared_from_this()));buffer->size=size;
@@ -127,9 +141,21 @@ std::shared_ptr<Device::Buffer> Device::CreateBuffer(VkDeviceSize size,VkBufferU
     Check(functions.vkCreateBuffer(device,&info,nullptr,&buffer->buffer),"Create compute buffer");
     VkMemoryRequirements req{};functions.vkGetBufferMemoryRequirements(device,buffer->buffer,&req);
     VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};allocation.allocationSize=req.size;
-    allocation.memoryTypeIndex=MemoryType(req.memoryTypeBits,hostVisible?
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT:VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    Check(functions.vkAllocateMemory(device,&allocation,nullptr,&buffer->memory),"Allocate compute buffer memory");
+    const VkMemoryPropertyFlags required=hostVisible?
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT:VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    allocation.memoryTypeIndex=MemoryType(req.memoryTypeBits,required,preferred);
+    VkDeviceMemory allocated{};
+    auto result=functions.vkAllocateMemory(device,&allocation,nullptr,&allocated);
+    if (preferred && (result==VK_ERROR_OUT_OF_DEVICE_MEMORY || result==VK_ERROR_OUT_OF_HOST_MEMORY)) {
+        const auto fallback=MemoryType(req.memoryTypeBits,required);
+        if (fallback!=allocation.memoryTypeIndex) {
+            allocation.memoryTypeIndex=fallback;
+            allocated=VK_NULL_HANDLE;
+            result=functions.vkAllocateMemory(device,&allocation,nullptr,&allocated);
+        }
+    }
+    Check(result,"Allocate compute buffer memory");
+    buffer->memory=allocated;
     Check(functions.vkBindBufferMemory(device,buffer->buffer,buffer->memory,0),"Bind compute buffer");
     if(hostVisible)Check(functions.vkMapMemory(device,buffer->memory,0,size,0,&buffer->mapped),"Map compute buffer");
     return buffer;

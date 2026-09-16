@@ -20,8 +20,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Warn on CMake API deprecations
-set(CMAKE_WARN_DEPRECATED ON)
+# Inherit the caller's deprecation diagnostics (warnings are enabled by default).
+# Do not override policy with variables deprecated by CMake 4.4.
 
 # Disable in-source builds
 set(CMAKE_DISABLE_SOURCE_CHANGES ON)

@@ -9,6 +9,18 @@
 using namespace melonDS::Vulkan;
 namespace {
 PFN_vkCreateBuffer DriverCreate;
+PFN_vkAllocateMemory DriverAllocate;
+std::vector<uint32_t> MemoryChoices;
+VkResult FailAllocation = VK_SUCCESS;
+VKAPI_ATTR VkResult VKAPI_CALL Allocate(VkDevice device, const VkMemoryAllocateInfo* info,
+    const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory)
+{
+    MemoryChoices.push_back(info->memoryTypeIndex);
+    if (FailAllocation != VK_SUCCESS) {
+        const auto result = FailAllocation; FailAllocation = VK_SUCCESS; return result;
+    }
+    return DriverAllocate(device, info, callbacks, memory);
+}
 unsigned Allocations = 0;
 bool FailNext = false;
 VKAPI_ATTR VkResult VKAPI_CALL Create(VkDevice device, const VkBufferCreateInfo* info,
@@ -22,8 +34,14 @@ void Require(bool ok, const char* message) { if (!ok) throw std::runtime_error(m
 struct Observe {
     volk::VolkDeviceTable& table;
     explicit Observe(Device& d) : table(const_cast<volk::VolkDeviceTable&>(d.Functions()))
-    { DriverCreate = table.vkCreateBuffer; table.vkCreateBuffer = Create; }
-    ~Observe() { table.vkCreateBuffer = DriverCreate; FailNext = false; }
+    {
+        DriverCreate = table.vkCreateBuffer; table.vkCreateBuffer = Create;
+        DriverAllocate = table.vkAllocateMemory; table.vkAllocateMemory = Allocate;
+    }
+    ~Observe() {
+        table.vkCreateBuffer = DriverCreate; table.vkAllocateMemory = DriverAllocate;
+        FailNext = false; FailAllocation = VK_SUCCESS;
+    }
 };
 }
 int main()
@@ -82,7 +100,32 @@ int main()
         try { (void)pipeline.RenderView({}); }
         catch (const std::invalid_argument&) { rejected = true; }
         Require(rejected && changed.front() == retained, "rejected frame damaged retained readback");
-        std::puts("Vulkan staging reuse, growth failure/retry and readback lifetime PASS");
+        // Compatible cached memory is preferred only for readback. An allocation
+        // failure can fall back to the original coherent type, not weaker flags.
+        auto normalMemory = device->CreateBuffer(4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+        const auto defaultType = MemoryChoices.back();
+        auto cachedMemory = device->CreateBuffer(4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+            VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        const auto cachedType = MemoryChoices.back();
+        if (cachedType != defaultType) {
+            const auto attempts = MemoryChoices.size();
+            FailAllocation = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+            auto fallback = device->CreateBuffer(4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            Require(MemoryChoices.size() == attempts + 2 && MemoryChoices.back() == defaultType && fallback->Data(),
+                "cached allocation did not fall back to compatible coherent memory");
+        }
+        const auto attempts = MemoryChoices.size();
+        FailAllocation = VK_ERROR_DEVICE_LOST;
+        bool unrelatedFailure = false;
+        try { (void)device->CreateBuffer(4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT); }
+        catch (const std::runtime_error&) { unrelatedFailure = true; }
+        Require(unrelatedFailure && MemoryChoices.size() == attempts + 1,
+            "non-memory failure was hidden by a preference retry");
+        std::printf("memory preference: default=%u cached=%u fallback=%s\n", defaultType, cachedType,
+            cachedType != defaultType ? "tested" : "not needed on this device");
+        std::puts("Vulkan staging reuse, growth failure/retry, memory choice and readback lifetime PASS");
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what()); return 1;

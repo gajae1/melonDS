@@ -1,4 +1,6 @@
-# 오디오 점검 상태 — 1.1.127
+# 오디오 점검 상태 — 1.1.130
+
+최신 재검증은 아래 1.1.130 항목을 따른다. 먼저 남긴 1.1.127 구현 이력은 당시 기준으로 보존한다.
 
 2026-09-16. 기준 제품 1.1.126 `4a6b2e71`, 후속 문서/fixture `55dba795`에서 이어진 수정이다.
 이번 수정은 출력 장치 수명에 한정한다. SPU PCM 계산·Minimum-phase 계수·보간 선택·볼륨·필터 기본값은 바꾸지 않았다.
@@ -52,3 +54,13 @@ SDL requested128/512:48000Hz, actual period128/512; WASAPIShared requested128/51
 정지 동안 client callback 증가가 멈추고 재개 뒤 증가하는 것을 확인했다. 이 값은 음질·장치 탈착·장기 부하·물리 지연의 판정이 아니다.
 영구 정지한 드라이버와 callback drain/최종join의 무제한 대기 가능성은 계속 열려 있다.
 근거: [1.1.129 구현·검증](releases/1.1.129.md), 로컬 `build/evidence/costs-1.1.129/native-audio-test.log`.
+
+## 1.1.130 재검증 — 2026-09-16
+
+오디오 제품 소스·SPU PCM·보간/필터 계수는 이번 버전에서 변경하지 않았다.
+현재 구성의 전체 CTest 962개(실패0·skip0)에 오디오 callback/장치 복구·설정/상태 복원과 SPU 회귀가 포함된다.
+최종 AudioOutput 라이브러리에 다시 링크한 무음 실행기도 실제 Windows 기본 endpoint에서 실행했다.
+SDL(WASAPI 드라이버)과 WASAPIShared 각각 요청128/512의 Open→Start→Stop→Resume→Close 4조건이 통과했다.
+48000Hz, SDL period128/512·WASAPIShared period480/480을 관측했다. 정지 중 source callback 정지와 재개를 확인했다.
+이는 짧은 무음 제어 시험이며 실제 게임 음질·장기 부족·물리 지연·핫플러그 또는 모든 장치의 수락이 아니다.
+로그는 `build/evidence/continue-1.1.130/native-audio-test.log`에 있다.

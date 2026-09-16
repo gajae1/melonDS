@@ -79,7 +79,7 @@ ScreenPanel::ScreenPanel(QWidget* parent) : QWidget(parent)
     mouseHideDelay = 0;
 
     QTimer* mouseTimer = setupMouseTimer();
-    connect(mouseTimer, &QTimer::timeout, [=] { if (mouseHide) setCursor(Qt::BlankCursor);});
+    connect(mouseTimer, &QTimer::timeout, [this] { if (mouseHide) setCursor(Qt::BlankCursor);});
 
     osdEnabled = false;
     osdID = 1;

@@ -101,7 +101,7 @@ int main(int argc, char** argv)
 
     QKeyEvent keypad(QEvent::KeyPress, Qt::Key_1, Qt::KeypadModifier | Qt::ShiftModifier);
     mapKey(input.keyMapping[1], false, keypad);
-    check(input.keyMapping[1] == (Qt::Key_1 | Qt::KeypadModifier), "Keypad identity lost during capture");
+    check(input.keyMapping[1] == (int(Qt::Key_1) | int(Qt::KeypadModifier)), "Keypad identity lost during capture");
     input.onKeyPress(&keypad);
     check(!(input.keyInputMask & 2), "Keypad binding does not press B while Shift is held");
     QKeyEvent releaseKeypad(QEvent::KeyRelease, Qt::Key_1, Qt::KeypadModifier);
@@ -139,7 +139,7 @@ int main(int argc, char** argv)
 
     QKeyEvent shortcut(QEvent::KeyPress, Qt::Key_F, Qt::ControlModifier);
     mapKey(input.hkKeyMapping[HK_FastForward], true, shortcut);
-    check(input.hkKeyMapping[HK_FastForward] == (Qt::Key_F | Qt::ControlModifier),
+    check(input.hkKeyMapping[HK_FastForward] == (int(Qt::Key_F) | int(Qt::ControlModifier)),
           "Hotkey capture lost its modifier");
     input.onKeyPress(&shortcut);
     check(input.keyHotkeyMask & (1 << HK_FastForward), "Modified hotkey did not start");

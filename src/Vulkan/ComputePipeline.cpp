@@ -46,7 +46,8 @@ void ComputePipeline::Init(const Shaders& shaders)
             VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|(i==7?VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT:0);
         buffers[i]=owner->CreateBuffer(Resources.Sizes[i],usage,false);
     }
-    readback=owner->CreateBuffer(Resources.Pixels*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,true);
+    readback=owner->CreateBuffer(Resources.Pixels*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,true,
+        VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     output=owner->CreateImage(Resources.config.ScreenWidth,Resources.config.ScreenHeight,1,VK_FORMAT_R8G8B8A8_UNORM,VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     clearColor=owner->CreateImage(256,256,1,VK_FORMAT_R32_UINT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     clearDepth=owner->CreateImage(256,256,1,VK_FORMAT_R32_UINT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
@@ -76,11 +77,12 @@ void ComputePipeline::Init(const Shaders& shaders)
     VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,24};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layoutInfo.setLayoutCount=4;layoutInfo.pSetLayouts=setLayouts.data();layoutInfo.pushConstantRangeCount=1;layoutInfo.pPushConstantRanges=&push;
     Device::Check(f.vkCreatePipelineLayout(device,&layoutInfo,nullptr,&layout),"Create compute pipeline layout");
+    const auto cache=owner->GetPipelineCache();
     for(unsigned i=0;i<shaders.size();++i) {
         VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};moduleInfo.codeSize=shaders[i].size_bytes();moduleInfo.pCode=shaders[i].data();VkShaderModule module{};
         Device::Check(f.vkCreateShaderModule(device,&moduleInfo,nullptr,&module),"Create compute shader");
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_COMPUTE_BIT,module,"main",nullptr};
-        const auto result=f.vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&info,nullptr,&pipelines[i]);f.vkDestroyShaderModule(device,module,nullptr);Device::Check(result,"Create compute pipeline");
+        const auto result=f.vkCreateComputePipelines(device,cache,1,&info,nullptr,&pipelines[i]);f.vkDestroyShaderModule(device,module,nullptr);Device::Check(result,"Create compute pipeline");
     }
     const VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,16},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,3},{VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,1},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1}};

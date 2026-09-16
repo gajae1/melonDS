@@ -62,7 +62,7 @@
       <item row="1" column="0">
        <widget class="QComboBox" name="cbxGLResolution">
         <property name="whatsThis">
-         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;The internal resolution of 3D rendering. Higher resolutions may cause glitches. OpenGL can present the enlarged 3D output directly. Vulkan supports 1x/2x/3x internally and resolves the screens and guest capture to native 256x192.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;The internal resolution of 3D rendering. OpenGL and Vulkan support 1x to 16x, subject to GPU limits. Higher resolutions increase memory and processing costs and may change edge coverage. 2D layers retain their native detail; guest capture remains at native resolution.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
         </property>
        </widget>
       </item>

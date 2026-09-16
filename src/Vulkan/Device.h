@@ -52,7 +52,8 @@ public:
     VkDevice Handle() const { return device; }
     const volk::VolkDeviceTable& Functions() const { return functions; }
     const VkPhysicalDeviceProperties& Properties() const { return properties; }
-    std::shared_ptr<Buffer> CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible);
+    std::shared_ptr<Buffer> CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible,
+        VkMemoryPropertyFlags preferred = 0);
     std::shared_ptr<Image> CreateImage(uint32_t width,uint32_t height,uint32_t layers,
         VkFormat format,VkImageUsageFlags usage,bool arrayView=false);
     // Buffers may be reused after successful SubmitAndWait. A submission failure
@@ -60,10 +61,14 @@ public:
     VkCommandBuffer Begin();
     void SubmitAndWait();
     static void Check(VkResult result, const char* operation);
+    // Device-owned, transient compiler cache. Optional OOM keeps uncached rendering.
+    // Like command recording, initialization belongs to the rendering thread.
+    VkPipelineCache GetPipelineCache();
 private:
     Device() = default;
     void Init();
-    uint32_t MemoryType(uint32_t bits,VkMemoryPropertyFlags required) const;
+    uint32_t MemoryType(uint32_t bits,VkMemoryPropertyFlags required,
+        VkMemoryPropertyFlags preferred = 0) const;
     VkInstance instance{};
     volk::VolkInstanceTable instanceFunctions{};
     VkPhysicalDevice physical{};
@@ -75,6 +80,8 @@ private:
     VkCommandPool pool{};
     VkCommandBuffer command{};
     VkFence fence{};
+    VkPipelineCache pipelineCache{};
+    bool pipelineCacheInitialized=false;
     bool recording=false;
     bool failed=false;
 };

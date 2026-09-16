@@ -300,3 +300,16 @@ DS/DSi·1/16채널·고정/가변 timer8부하의3쌍에서 PCM+guest SPU state 
 직접 GPU mapping을 읽는 후보는 전체 색 변환에서 느려져 폐기했다. 출력 동일성만으로 최적화를 수락하지 않았다.
 구현·미적용 경계와 수치는 [1.1.129 기록](releases/1.1.129.md), 원자료는 로컬 `build/evidence/costs-1.1.129/`를 따른다.
 현재 Windows 구성 전체의 회귀 결과이며 DSi 실기·모든 게임·다른 GPU/OS·Vulkan validation layer 수락은 아니다. Actions는 사용하지 않았다.
+
+## 1.1.130 — readback/cache 수락, 2026-09-16
+
+[릴리스 기록](releases/1.1.130.md)에 구현·측정 조건과 미적용 항목을 구분했다.
+중단된 1.1.129의 현재 소스를 먼저 전체 빌드·960/960으로 재검증했다.
+1.1.130 캐시/메모리 구현과 TOML·Teakra·도움말 수정까지 전체 빌드 및 CTest962/962, 실패0·skip0(171.81초)을 확인했다.
+메모리 우선 선택·fallback·필수 조건, pipeline cache 재사용·선택적 OOM 및 다른 오류 전파를 새 검사로 추가했다.
+최종 경고 정리 3파일(Screen의 this capture, 테스트의 키 정수/Windows 매크로 표기)은 이후 재빌드 성공까지이며,
+그 단계의 영향 검사 재실행 요청은 도구 차단으로 미실행이다. 전체962 결과를 마지막 표기 변경 후 재실행한 것으로 세지 않는다.
+readback 전후는 동일 1.1.129/후보 lib·전체 색 변환·checksum 소비, 배율별7쌍의 고정 CPU/무작위 순서로 비교했다.
+clear frame 수치를 게임 FPS로 확대하지 않는다. pipeline cache는 사전 prototype 측정과 제품 회귀를 구분했다.
+Windows 기본 SDL/WASAPIShared의 무음4조건도 현재 라이브러리로 별도 통과했다. 실기·청취·물리 지연·장기 게임은 별도다.
+전체 실행 목록/JUnit/RED·GREEN/벤치 원자료는 `build/evidence/continue-1.1.130/`이다. Actions·macOS 빌드는 사용하지 않았다.
