@@ -1,38 +1,30 @@
-# 현재 개발 상태 — 1.1.133
+# 현재 개발 상태 — 1.1.134
 
-2026-09-16. 기준은 1.1.132 `a5d58f08`이다. 현재 구현 범위는 [1.1.133 기록](releases/1.1.133.md)을 따른다.
-이전 미커밋 1.1.132 저장 수정은 원본 해시와 저장 회귀를 확인하고 별도 커밋했다.
+2026-09-16. 기준은 1.1.133 `7e771592`다. 현재 변경과 실제 검증은 [1.1.134 기록](releases/1.1.134.md)을 따른다.
+메인 작업/빌드 경로는 `F:/melonDS`와 `F:/melonDS/build/windows-dev`다. 과거 릴리스의 실행 이력은 보존한다.
 
 | 영역 | 현재 구현 | 남은 경계 |
 |---|---|---|
-| Vulkan 확대 표시 | 1~16배 3D 표시와 LCDC VRAM 직접 표시용 고해상도 캡처 사본 | 캡처를 bitmap BG/OBJ·3D texture로 재사용하는 경로는 native |
-| native 캡처 | 기존 CPU/DMA용 RGB555 VRAM 기록 유지, 표시 사본은 별도 | 실기 절대 정확성과 모든 캡처 경계는 별도 판정 |
-| 캐시/전송 | RAM-only pipeline cache·비우기·32MiB 소프트 제한, clear 이미지 묶음 전송, readback 메모리 선택 | GPU 2D·직접 표시·프레임 단위 전체 업로드 묶음 |
-| 저장 | Windows RenameError 최대5회 재시도, 직렬화1회·기존 파일 보존 | 외부 잠금 원인·전원 손실 내구성은 별도 |
-| 오디오 | 이전 PCM·보간·필터·종료 소유권 정책 유지 | 장기 청취·물리 지연·장치 탈착은 이번에 검증하지 않음 |
+| GR-11/16 표시 수명 | paint의 잠금 안에서 framebuffer 재조회, 사라진 source의 기존 이미지 보존, 실패 fallback 교체 잠금 | 사용자 crash와의 동일성, 장기/다중 창/물리 device loss의 모든 경우 |
+| Vulkan 확대 표시 | 1~16배 직접 3D와 LCDC VRAM 직접 표시용 고해상도 사본 유지 | 캡처의 bitmap BG/OBJ·3D texture 재사용은 native |
+| native 캡처 | CPU/DMA용 RGB555 VRAM 기록 유지 | 실기 기대값과 모든 캡처·alias 경계 검증 |
+| 캐시/전송 | RAM-only cache·비우기·32MiB 소프트 제한, clear 이미지 묶음·cached readback | GPU 2D·직접 GPU 표시·프레임 전체 업로드 묶음 |
+| 저장 | 1.1.132의 Windows 교체 재시도·직렬화1회·이전 파일 보존 유지 | 외부 잠금 원인·전원 손실 내구성 |
+| 오디오 | 기존 PCM·보간·필터·종료 소유권 정책 유지 | 실제 장기 청취·장치 탈착·물리 지연 |
 
-## 실제 확인
+## 이번에 닫은 반례
 
-메인 `F:/melonDS`의 앱과 전체 기본 타깃을 빌드했고 도움말 버전1.1.133을 확인했다.
-RTX5080/드라이버610.88에서 최종 등록 CTest969/969, 실패0·skip0(103.51초)를 확인했다.
-새 캡처 직접 표시 검사는2/3/5/8/16배의 실제 subpixel 차이·native 원점·무효화 복귀를 포함한다.
-이 숫자는 등록된 회귀의 통과이며 아래 미해결 반례까지 통과한 결과가 아니다.
-
-## 우선 수정할 표시 수명 결함
-
-실제 `ScreenPanelNative::paintEvent`를 추출한 Qt 검사에서 배율 변경 뒤 이전 framebuffer를 읽는 반례가 실패했다.
-`paint consumed retired framebuffer at 2x`로 재현됐으며, 실제 메모리가 해제됐다면 잘못된 접근으로 이어질 수 있다.
-제품 수정 요청이 차단되어 Screen.cpp는 변경하지 않았다. 반례는 evidence에 별도로 보존하고 기본 검사 등록에서 분리했다.
-사용자가 경험한 종료와의 동일성은 아직 확정하지 않았다. 해상도 전환 안정성의 완료를 선언하지 않는다.
+별도 보존돼 있던 `paint consumed retired framebuffer at 2x`는 수정 전 재현 후 수정본에서 통과했다.
+NativeFrameLifetime을 기본 회귀에 등록했다. 여러 배율의 전체 subpixel 데이터, source 부재·null·잘못된 크기와 paused image 보존을 검사한다.
+기존 ComputeFailure는 실제 shader compile/link 실패의 fallback에서 잠금 유지와 반납을 확인하도록 보강했다.
+이전 테스트 수치에 이 반례를 소급 포함하지 않는다. 최종 빌드/전체 테스트 결과는 릴리스 기록에 기재한다.
 
 ## 다음 단계
 
-1. paint 시점의 framebuffer 주소·크기를 renderLock 안에서 다시 얻도록 수명 결함을 수정하고 보존한 반례를 통과시킨다.
-2. 캡처의 bitmap BG/OBJ 및 3D texture 재사용까지 고해상도 표현과 native 값을 분리하고, CPU/DMA 쓰기·bank alias·상태 복원으로 검증한다.
-3. 실기와 다른 native 화면은 같은 입력의3D 결과→2D 합성→capture→표시에서 최초 차이를 찾고 독립 관측값으로 판정한다.
-4. 실제 게임의 업로드·readback·CPU 합성·표시 시간을 따로 측정한다. Vulkan API 사용이나 합성 루틴의 개선율을 전체 FPS 우위로 해석하지 않는다.
+1. 캡처의 bitmap BG/OBJ 경로부터 고해상도 표시 사본을 연결한다. native VRAM, CPU/DMA 쓰기·bank alias·상태 복원 무효화 기준을 먼저 확정한다.
+2. 캡처를 3D texture로 재사용하는 경우의 표시 향상을 별도로 설계한다. native guest 결과와 enhanced texture를 섞어 정확성 통과로 처리하지 않는다.
+3. 실기와 다른 native 화면은 같은 입력의 3D→2D→capture→표시 중 최초 차이를 찾아 독립 관측으로 판정한다.
+4. 실제 게임의 업로드·readback·CPU 합성·표시 비용을 각각 측정한다. Vulkan이라는 이유만으로 전체 FPS 우위를 가정하지 않는다.
 
-최종 로그·새 캡처 검사·미해결 Native 표시 반례는 `build/evidence/display-1.1.133/`에 있다.
-전체 계획의125개 ID와 역사적 책임 버전은 유지한다. 현재 작업은 전체 로드맵 완료가 아니다.
-[캐시 정책](Caching.md)의32MiB는 직렬화 가능한 데이터 기준 소프트 제한이며, 드라이버 전체 RAM/VRAM 하드 상한이 아니다.
-개인 ROM/BIOS/NAND/저장 파일·드라이버 전역 캐시·다른 작업트리는 변경하지 않았다. Actions는 사용하지 않는다.
+이번 버전은 캡처 BG/OBJ/texture 개선이나 전체 Vulkan 최적화의 완료가 아니다. Classic도 실기 전체의 정답으로 고정하지 않는다.
+원125개 과제 ID와 역사적 책임 버전은 유지한다. Actions·다른 작업트리·개인 ROM/BIOS/NAND/저장 파일·드라이버 전역 캐시는 변경하지 않는다.

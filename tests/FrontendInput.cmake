@@ -1087,3 +1087,15 @@ if (MELONDS_TEST_GPU AND TARGET vulkan-compute)
     add_test(NAME gpu-vulkan-compute-spans COMMAND VulkanComputeSpans)
     set_tests_properties(gpu-vulkan-compute-spans PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
 endif()
+
+# Verify that delayed paint never reads a framebuffer retired by scale changes.
+set(native_frame_paint "${CMAKE_CURRENT_BINARY_DIR}/nativeFramePaint.inc")
+add_custom_command(OUTPUT "${native_frame_paint}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "void ScreenPanelNative::paintEvent(QPaintEvent* event)" "${native_frame_paint}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
+add_executable(NativeFrameLifetime "${CMAKE_SOURCE_DIR}/tests/NativeFrameLifetime.cpp" "${native_frame_paint}")
+target_include_directories(NativeFrameLifetime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(NativeFrameLifetime PRIVATE ${QT_LINK_LIBS})
+add_test(NAME native-frame-lifetime COMMAND NativeFrameLifetime)
+set_tests_properties(native-frame-lifetime PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

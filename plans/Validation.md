@@ -328,3 +328,14 @@ Windows 기본 SDL/WASAPIShared의 무음4조건도 현재 라이브러리로 �
 오디오 코어/계수는 바꾸지 않았고, 이번 메인 전체 회귀가 물리 청취·장치 탈착·지연 측정을 대신하지 않는다.
 원본 로그·JUnit·측정 원자료는 기존 `build/evidence/cache-controls-1.1.131/`에 있고, 최종 메인 증거 ZIP으로도 보존한다.
 Actions·macOS 빌드·개인 ROM/BIOS/NAND/저장 파일 사용은 하지 않았다.
+
+## 1.1.134 — 메인 표시 수명 검증 (2026-09-16)
+
+메인 `F:/melonDS`, CMake4.4.3/GCC16.2/C23·C++26/Release/LTO OFF에서 전체 기본 타깃 빌드 성공.
+현재 소스로 전체 CTest970/970, 실패·skip·disabled0(165.85초). `final-tests.xml`에서 집계를 확인했다.
+별도 보존됐던 Native paint의 이전 framebuffer 참조 반례를 재현·수정하고 기본 검사에 등록했다.
+1/2/3/8/16배 subpixel·source 소실·null·invalid 크기·paused image·잠금 조회를 포함하며 독립10회도 통과했다.
+실제 GL compile/link 오류의 Software fallback은 기존 fixture에서 표시 잠금 유지/반납을 추가 확인했다.
+전체970과 관련8개·반복10회를 합산하지 않는다. 런타임 실패의 잠금 추가는 별도 강제 Qt end-to-end 검사까지 수행한 것은 아니다.
+실제 사용자 crash·모든 게임·실기 그래픽 정확성과 다른 GPU/OS 수락을 이 결과로 승격하지 않는다.
+근거: `build/evidence/lifetime-1.1.134/`, [릴리스 기록](releases/1.1.134.md). Actions 미사용.

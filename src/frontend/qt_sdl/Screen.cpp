@@ -863,6 +863,17 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
         bufferLock.lock();
         if (hasBuffers)
         {
+            // drawScreen may have published before a scale/renderer change.
+            // Reacquire under the same lock that protects renderer replacement;
+            // never dereference the previously published raw addresses.
+            auto* nds = emuInstance->getNDS();
+            hasBuffers = nds && nds->GetRenderer().GetDisplayFramebuffers(
+                &topBuffer, &bottomBuffer, bufferWidth, bufferHeight);
+            hasBuffers = hasBuffers && topBuffer && bottomBuffer &&
+                bufferWidth > 0 && bufferHeight > 0;
+        }
+        if (hasBuffers)
+        {
             if (screen[0].size() != QSize(bufferWidth, bufferHeight))
             {
                 QImage top(bufferWidth, bufferHeight, QImage::Format_RGB32);

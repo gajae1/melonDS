@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <mutex>
 
 #include <SDL2/SDL.h>
 
@@ -407,6 +408,8 @@ void EmuThread::run()
                 }
                 if (emuInstance->nds->GetRenderer().HasRenderFailure())
                 {
+                    // Native painting may still be copying the previous frame.
+                    std::lock_guard renderLocker(emuInstance->renderLock);
                     videoRenderer = renderer3D_Software;
                     updateRenderer();
                     publishVideoSettings(true);
@@ -1459,6 +1462,7 @@ void EmuThread::compileShaders()
     {
         if (!renderer.ShaderCompileStep(currentShader, shadersCount))
         {
+            std::lock_guard renderLocker(emuInstance->renderLock);
             videoRenderer = renderer3D_Software;
             updateRenderer();
             publishVideoSettings(true);

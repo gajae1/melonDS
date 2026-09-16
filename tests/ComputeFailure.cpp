@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <SDL2/SDL.h>
 
@@ -43,10 +44,18 @@ struct FixtureConfig
         throw std::runtime_error("unexpected renderer config key");
     }
 };
+struct ObservedRenderMutex
+{
+    std::mutex mutex;
+    bool held = false;
+    void lock() { mutex.lock(); held = true; }
+    void unlock() { held = false; mutex.unlock(); }
+};
 struct FixtureInstance
 {
     NDS* nds;
     FixtureConfig Config;
+    ObservedRenderMutex renderLock;
     unsigned Errors = 0;
     unsigned Progress = 0;
     FixtureConfig& getGlobalConfig() { return Config; }
@@ -62,7 +71,11 @@ struct EmuThread
     int videoRenderer = renderer3D_OpenGLCompute;
     int lastVideoRenderer = renderer3D_Software;
     bool PublishedFailure = false;
-    void publishVideoSettings(bool failed = false) { PublishedFailure = failed; }
+    bool InspectLock = false, UnlockedFallback = false;
+    void publishVideoSettings(bool failed = false) {
+        PublishedFailure = failed;
+        if (InspectLock && !emuInstance->renderLock.held) UnlockedFallback = true;
+    }
     void updateRenderer();
     void compileShaders();
 };
@@ -244,7 +257,11 @@ bool CheckFrontendFailure(NDS& nds)
     EmuThread thread{&instance};
     thread.updateRenderer();
     ActiveFault = Fault::Compile;
+    thread.InspectLock = true;
     thread.compileShaders();
+    thread.InspectLock = false;
+    passed &= Check(!thread.UnlockedFallback && !instance.renderLock.held,
+                    "shader fallback failed to hold/release the paint lock");
     passed &= Check(ObservedCompileFailures == 1, "frontend driver failure not observed");
     passed &= Check(thread.videoRenderer == renderer3D_Software &&
                     thread.lastVideoRenderer == renderer3D_Software,
@@ -270,7 +287,11 @@ bool CheckFrontendFailure(NDS& nds)
     const unsigned progress = instance.Progress;
     ActiveFault = Fault::Link;
     Injected = false;
+    thread.InspectLock = true; thread.UnlockedFallback = false;
     thread.compileShaders();
+    thread.InspectLock = false;
+    passed &= Check(!thread.UnlockedFallback && !instance.renderLock.held,
+                    "recompile fallback failed to hold/release the paint lock");
     passed &= Check(ObservedLinkFailures == 1 && instance.Errors == 2 &&
                     instance.Progress == progress, "frontend recompile failure lost its terminal error");
     passed &= Check(SoftwareFrame(nds), "frontend recompile fallback did not produce RAM framebuffers");
