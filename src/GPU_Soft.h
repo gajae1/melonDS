@@ -68,7 +68,7 @@ private:
     void DrawScanlineA(u32 line, u32* dst);
     void DrawScanlineB(u32 line, u32* dst);
 
-    void DoCapture(u32 line);
+    virtual void DoCapture(u32 line);
 
     void ApplyMasterBrightness(u16 regval, u32* dst);
     void ExpandColor(u32* dst);

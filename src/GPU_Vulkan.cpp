@@ -61,6 +61,7 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
 void VulkanRenderer::Reset()
 {
     SoftRenderer::Reset();
+    DisplayCaptures = {};
     for (auto& buffer : ScaledBuffers)
         for (auto& screen : buffer) std::fill(screen.begin(), screen.end(), 0);
 }
@@ -68,12 +69,15 @@ void VulkanRenderer::Reset()
 void VulkanRenderer::Stop()
 {
     SoftRenderer::Stop();
+    DisplayCaptures = {};
     for (auto& buffer : ScaledBuffers)
         for (auto& screen : buffer) std::fill(screen.begin(), screen.end(), 0);
 }
 
 void VulkanRenderer::DrawScanline(u32 line)
 {
+    // Read display VRAM before this scanline can capture back into the same bank.
+    const bool capturedDisplay = DrawCapturedDisplay(line);
     // Native layers, register side effects and guest capture execute once.
     SoftRenderer::DrawScanline(line);
     if (DisplayScale == 1) return;
@@ -85,7 +89,7 @@ void VulkanRenderer::DrawScanline(u32 line)
         ((GPU.GPU2D_A.DispCnt >> 16) & 3) == 1 && compositor.HasScaled3D();
     for (int screen = 0; screen < 2; ++screen)
     {
-        if (compose3D && screen == mainScreen) continue;
+        if ((compose3D || capturedDisplay) && screen == mainScreen) continue;
         const u32* native = Framebuffer[BackBuffer][screen] + line * 256;
         u32* first = ScaledBuffers[BackBuffer][screen].data() + size_t(line) * scale * width;
         for (int x = 0; x < 256; ++x) std::fill_n(first + x * scale, scale, native[x]);

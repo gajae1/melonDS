@@ -60,7 +60,7 @@ target_include_directories(vulkan-compute SYSTEM PUBLIC "${MELONDS_VULKAN_HEADER
     PRIVATE "${MELONDS_VOLK_SOURCE}")
 target_compile_features(vulkan-compute PUBLIC cxx_std_26)
 target_link_libraries(vulkan-compute PRIVATE ${CMAKE_DL_LIBS})
-target_sources(core PRIVATE ../GPU_Vulkan.cpp ../GPU3D_Vulkan.cpp)
+target_sources(core PRIVATE ../GPU_Vulkan.cpp ../GPU_VulkanCapture.cpp ../GPU3D_Vulkan.cpp)
 target_link_libraries(core PUBLIC vulkan-compute)
 target_compile_definitions(core PUBLIC VULKANRENDERER_ENABLED)
 install(FILES LICENSE.volk DESTINATION share/licenses/melonDS/volk RENAME LICENSE)

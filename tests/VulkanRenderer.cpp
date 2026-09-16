@@ -139,7 +139,7 @@ void ScaledDisplay(int scale)
 }
 
 
-void DisplayOrigins(NDS& nds, int scale, bool requireDetail = false)
+unsigned DisplayOrigins(NDS& nds, int scale, bool requireDetail = false)
 {
     void *nativeTop, *nativeBottom, *displayTop, *displayBottom;
     auto& renderer = nds.GetRenderer();
@@ -161,6 +161,7 @@ void DisplayOrigins(NDS& nds, int scale, bool requireDetail = false)
         detail += actual != expected;
     }
     if (requireDetail) Require(detail != 0, "scaled display only stretches native pixels");
+    return detail;
 }
 
 void ScaledDisplayLifecycle(int scale)
@@ -214,6 +215,28 @@ void ScaledDisplayLifecycle(int scale)
                 "stop/reset left stale scaled pixels");
     }
     std::printf("Vulkan %dx: real subpixel coverage, native-origin equivalence, scroll, brightness, swap, window, modes, stop/reset PASS\n", scale);
+}
+
+void CapturedDisplay(int scale)
+{
+    auto nds = Console(true, scale);
+    nds->ARM9Write8(0x04000241, 0x80);
+    nds->Start(); nds->RunFrame();
+    auto& polygon = Scene(*nds, 0, false, false);
+    for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
+        vertex->HiresPosition[0] += 8;
+    RendererSettings settings{scale, false, true, false};
+    Require(nds->GetRenderer().SetRenderSettings(settings), "capture scale setup failed");
+    nds->GetRenderer().Start3DRendering();
+    nds->ARM9Write32(0x04000064, 0x81310000); // 3D -> bank B, 256x192.
+    nds->RunFrame();
+    nds->ARM9Write32(0x04000000, 0x00060000); // Display bank B directly.
+    Screen(*nds, false);
+    DisplayOrigins(*nds, scale, true);
+    nds->GPU.SyncAllVRAMCaptures();
+    Screen(*nds, false);
+    Require(DisplayOrigins(*nds, scale) == 0, "invalidated display capture retained detail");
+    std::printf("Captured 3D %dx: subpixel detail, native origins and invalidation PASS\n", scale);
 }
 
 void CheckCacheClear(NDS& nds, const std::vector<u32>& native)
@@ -470,6 +493,7 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
+        if (argc == 2 && std::strcmp(argv[1], "captured-display") == 0) { for (int scale : {2, 3, 5, 8, 16}) CapturedDisplay(scale); return 0; }
         if (argc == 2 && std::strcmp(argv[1], "high-scales") == 0) { HighScales(); return 0; }
         const int scale = argc == 2 && std::strcmp(argv[1], "2") == 0 ? 2 :
             argc == 2 && std::strcmp(argv[1], "3") == 0 ? 3 : 1;

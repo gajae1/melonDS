@@ -22,12 +22,28 @@ public:
     void Reset() override;
     void Stop() override;
     void DrawScanline(u32 line) override;
+    void AllocCapture(u32 bank, u32 start, u32 size) override;
+    void InvalidateDisplayCapture(u32 bank, u32 start) override { DisplayCaptures[bank * 4 + start] = {}; }
     bool GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height) override;
 
 private:
     using DisplayBuffers = std::array<std::array<std::vector<u32>, 2>, 2>;
     DisplayBuffers ScaledBuffers;
     int DisplayScale = 1;
+    struct DisplayCapture
+    {
+        u32 width = 0, height = 0, scale = 1, start = 0;
+        std::array<bool, 192> valid{};
+        std::vector<u16> pixels;
+    };
+    std::array<DisplayCapture, 16> DisplayCaptures;
+    // A whole scaled row is prepared before replacing a capture, including
+    // when source B aliases the destination bank.
+    std::array<u16, 256 * ComputeShader::VulkanMaxScale * ComputeShader::VulkanMaxScale> CaptureRow{};
+    void DoCapture(u32 line) override;
+    bool ReadDisplayCapture(u32 bank, u32 word, u32 subx, u32 suby, u16& color) const;
+    bool DrawCapturedDisplay(u32 line);
+
     std::array<u32, 256 * ComputeShader::VulkanMaxScale> ScaledLine3D {};
 };
 }

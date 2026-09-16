@@ -1600,6 +1600,7 @@ void GPU::VRAMCBFlagsClear(u32 bank, u32 block)
     u32 start = flags & 0x3;
     u32 len = (flags >> 4) & 0x3;
 
+    Rend->InvalidateDisplayCapture(bank, start);
     u32 b = start;
     for (u32 i = 0; i < len; i++)
     {

@@ -864,6 +864,8 @@ public:
 
     virtual void AllocCapture(u32 bank, u32 start, u32 len) = 0;
     virtual void SyncVRAMCapture(u32 bank, u32 start, u32 len, bool complete) = 0;
+    // Drop presentation-only derivatives when capture provenance is invalidated.
+    virtual void InvalidateDisplayCapture(u32 bank, u32 start) {}
 
     // a renderer may render to RAM buffers, or to something else (ie. OpenGL)
     // if the renderer uses RAM buffers, they should be 32-bit BGRA, 256x192 for each screen
