@@ -88,6 +88,16 @@ private:
     std::vector<u32> CaptureOBJLine;
     u32 CaptureOBJScale = 0;
     bool CaptureOBJActive = false;
+    // Unlike an in-bounds transparent texel (-1), an out-of-bounds source
+    // never participates in the native OBJ winner/mosaic state.
+    static constexpr int OBJ_Outside = -2;
+    struct BitmapOBJTransform
+    {
+        u32 base, pitch, mask;
+        u32 width, height; // Source bounds in 8.8, not double-size OBJ bounds.
+        s32 x, y;         // Native source origin in signed 8.8.
+        s16 a, b, c, d;
+    };
 
     u32 NumSprites;
 
@@ -125,7 +135,8 @@ private:
 
     void ApplySpriteMosaicX();
     void InterleaveSprites(u32 prio);
-    template<bool window> void DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 captureAddress = ~0u);
+    template<bool window> void DrawSpritePixel(int color, u32 pixelattr, s32 xpos,
+        u32 captureAddress = ~0u, const BitmapOBJTransform* transform = nullptr);
     template<bool window> void DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheight, u32 width, u32 height, s32 xpos, s32 ypos);
     template<bool window> void DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos, s32 ypos);
 };

@@ -1379,7 +1379,8 @@ void SoftRenderer2D::DrawSprites(u32 line)
 }
 
 template<bool window>
-void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 captureAddress)
+void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 captureAddress,
+    const BitmapOBJTransform* transform)
 {
     if (window)
     {
@@ -1389,6 +1390,7 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 cap
     else
     {
         const auto merge = [pixelattr](u32& oldpixel, int sample) {
+            if (sample == OBJ_Outside) return;
             const bool oldisopaque = !!(oldpixel & OBJ_IsOpaque);
             const bool newisopaque = (sample != -1);
             const bool priocheck = (pixelattr & OBJ_BGPrioMask) < (oldpixel & OBJ_BGPrioMask);
@@ -1403,6 +1405,63 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 cap
         // Native color and OAM ordering are unchanged. The display line uses
         // the same winner rules independently, including transparent origins.
         merge(OBJLine[xpos], color);
+        // Integer identity uses the existing borrowed-row fast path. General
+        // transforms need the source mapper as well as the native address.
+        if (transform && color != OBJ_Outside && transform->a == 256 &&
+            transform->b == 0 && transform->c == 0 && transform->d == 256 &&
+            ((transform->x | transform->y) & 255) == 0)
+        {
+            captureAddress = (transform->base + (transform->y / 256) * transform->pitch +
+                (transform->x / 256) * 2) & transform->mask;
+            transform = nullptr;
+        }
+        if (transform && CaptureOBJScale)
+        {
+            const auto& t = *transform;
+            const s64 scale = CaptureOBJScale, unit = 256 * scale;
+            const bool capturedOrigin = color != OBJ_Outside && Parent.CapturedObjectRow(GPU2D.Num,
+                (t.base + (t.y / 256) * t.pitch + (t.x / 256) * 2) & t.mask, 0, CaptureOBJScale);
+            CaptureOBJActive |= capturedOrigin;
+            for (u32 sy = 0; sy < CaptureOBJScale; ++sy)
+            {
+                // X/Y and A/B/C/D are signed 8.8. Multiplying the native
+                // origin by S gives denominator 256*S; BOTH matrix columns
+                // transform destination offsets. Bounds precede division, so
+                // negative coordinates cannot truncate into source texel zero.
+                s64 fx = s64(t.x) * scale + s64(sy) * t.b;
+                s64 fy = s64(t.y) * scale + s64(sy) * t.d;
+                auto* dst = CaptureOBJLine.data() + (size_t(sy) * 256 + xpos) * CaptureOBJScale;
+                for (u32 sx = 0; sx < CaptureOBJScale; ++sx, fx += t.a, fy += t.c)
+                {
+                    int sample = color;
+                    // Pin the exact native candidate, including fractional
+                    // affine origins and absent (out-of-bounds) candidates.
+                    if (sx || sy)
+                    {
+                        if (fx < 0 || fy < 0 || fx >= s64(t.width) * scale || fy >= s64(t.height) * scale)
+                        {
+                            // An unrelated captured OBJ must not trim this
+                            // sprite's native-only coverage on partial mappings.
+                            if (capturedOrigin) sample = OBJ_Outside;
+                        }
+                        else
+                        {
+                            const u32 address = (t.base + (fy / unit) * t.pitch + (fx / unit) * 2) & t.mask;
+                            const u32 sourceX = (fx % unit) / 256, sourceY = (fy % unit) / 256;
+                            if (const u16* row = Parent.CapturedObjectRow(GPU2D.Num, address, sourceY, CaptureOBJScale))
+                            {
+                                sample = (row[sourceX] & 0x8000) ? int(row[sourceX]) : -1;
+                                CaptureOBJActive = true;
+                            }
+                            // Missing provenance/rows or incompatible scale:
+                            // keep this destination's original native sample.
+                        }
+                    }
+                    merge(dst[sx], sample);
+                }
+            }
+            return;
+        }
         for (u32 sy = 0; sy < CaptureOBJScale; ++sy)
         {
             const u16* row = captureAddress == ~0u ? nullptr :
@@ -1462,8 +1521,8 @@ void SoftRenderer2D::DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheigh
     s16 rotC = (s16)rotparams[8];
     s16 rotD = (s16)rotparams[12];
 
-    s32 rotX = ((xoff-centerX) * rotA) + ((ypos-centerY) * rotB) + (width << 7);
-    s32 rotY = ((xoff-centerX) * rotC) + ((ypos-centerY) * rotD) + (height << 7);
+    s32 rotX = ((s32(xoff)-centerX) * rotA) + ((ypos-centerY) * rotB) + s32(width << 7);
+    s32 rotY = ((s32(xoff)-centerX) * rotC) + ((ypos-centerY) * rotD) + s32(height << 7);
 
     width <<= 8;
     height <<= 8;
@@ -1508,13 +1567,22 @@ void SoftRenderer2D::DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheigh
             }
         }
 
+        BitmapOBJTransform transform{pixelsaddr, ytilefactor, objvrammask,
+            width, height, rotX, rotY, rotA, rotB, rotC, rotD};
         for (; xoff < boundwidth;)
         {
+            transform.x = rotX; transform.y = rotY;
             if ((u32)rotX < width && (u32)rotY < height)
             {
                 color = *(u16*)&objvram[(pixelsaddr + ((rotY >> 8) * ytilefactor) + ((rotX >> 8) << 1)) & objvrammask];
 
-                DrawSpritePixel<window>((color&0x8000) ? color : -1, pixelattr, xpos);
+                DrawSpritePixel<window>((color&0x8000) ? color : -1, pixelattr, xpos, ~0u, &transform);
+            }
+            else if (CaptureOBJScale)
+            {
+                // A subpixel can enter the source even when the native origin
+                // is outside. Do not insert a transparent native OBJ candidate.
+                DrawSpritePixel<window>(OBJ_Outside, pixelattr, xpos, ~0u, &transform);
             }
 
             rotX += rotA;
@@ -1653,6 +1721,7 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
         pixelattr |= (0xC0000000 | (alpha << 24));
 
         u32 pixelsaddr = tilenum;
+        u32 ytilefactor;
         if (GPU2D.DispCnt & 0x40)
         {
             if (GPU2D.DispCnt & 0x20)
@@ -1665,7 +1734,8 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
             else
             {
                 pixelsaddr <<= (7 + ((GPU2D.DispCnt >> 22) & 0x1));
-                pixelsaddr += (ypos * width * 2);
+                ytilefactor = width * 2;
+                pixelsaddr += (ypos * ytilefactor);
             }
         }
         else
@@ -1673,15 +1743,18 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
             if (GPU2D.DispCnt & 0x20)
             {
                 pixelsaddr = ((tilenum & 0x01F) << 4) + ((tilenum & 0x3E0) << 7);
-                pixelsaddr += (ypos * 256 * 2);
+                ytilefactor = 256 * 2;
+                pixelsaddr += (ypos * ytilefactor);
             }
             else
             {
                 pixelsaddr = ((tilenum & 0x00F) << 4) + ((tilenum & 0x3F0) << 7);
-                pixelsaddr += (ypos * 128 * 2);
+                ytilefactor = 128 * 2;
+                pixelsaddr += (ypos * ytilefactor);
             }
         }
 
+        const u32 captureBase = pixelsaddr - ypos * ytilefactor;
         s32 pixelstride;
 
         if (attrib[1] & (1<<12)) // xflip
@@ -1696,17 +1769,22 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
             pixelstride = 2;
         }
 
+        // Reflection is around the native sample origin, not a reversal of
+        // one texel's subpixel block: source = (width-1-x) - subx/S. Positive
+        // destination offsets can therefore enter the preceding source texel.
+        BitmapOBJTransform transform{captureBase, ytilefactor, objvrammask,
+            width << 8, height << 8,
+            s32((attrib[1] & 0x1000) ? width - 1 - xoff : xoff) * 256, ypos * 256,
+            s16(pixelstride * 128), 0, 0, s16((attrib[1] & 0x2000) ? -256 : 256)};
         for (; xoff < xend;)
         {
             color = *(u16*)&objvram[pixelsaddr & objvrammask];
-
-            // Affine and flipped bitmap OBJ keep native sampling in this slice.
-            // The untransformed path uses the exact address already resolved by
-            // the native 1D/2D bitmap mapper, and consumes borrowed rows now.
-            const u32 captureAddress = (attrib[1] & 0x3000) ? ~0u : pixelsaddr & objvrammask;
+            const u32 captureAddress = pixelsaddr & objvrammask;
             pixelsaddr += pixelstride;
 
-            DrawSpritePixel<window>((color&0x8000) ? color : -1, pixelattr, xpos, captureAddress);
+            DrawSpritePixel<window>((color&0x8000) ? color : -1, pixelattr, xpos, captureAddress,
+                (attrib[1] & 0x3000) ? &transform : nullptr);
+            transform.x += transform.a;
 
             xoff++;
             xpos++;

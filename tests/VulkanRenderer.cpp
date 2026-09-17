@@ -251,6 +251,10 @@ void CapturedBitmapOBJ(int scale, unsigned engine)
     auto nds = Console(true, scale);
     const unsigned bank = engine ? 3 : 1; // B -> AOBJ, D -> BOBJ.
     nds->ARM9Write8(0x04000240 + bank, 0x80);
+    // The capture ends at row 192. Keep a distinguishable native-only tail
+    // for partial-provenance/fallback checks, without later VRAM writes.
+    for (u32 offset = 192 * 512; offset < 131072; offset += 2)
+        nds->ARM9Write16(0x06800000 + bank * 131072 + offset, 0xFC00);
     nds->Start(); nds->RunFrame();
     auto& polygon = Scene(*nds, 0, false, false);
     for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
@@ -487,22 +491,190 @@ void CapturedBitmapOBJ(int scale, unsigned engine)
     Require(pixel(4, 28) == 0xFF000000 && pixel(16, 40) == 0xFFFB0000, "OBJ window masking changed");
     nds->ARM9Write32(reg, 0x00011020);
 
-    // The bounded slice deliberately leaves transformed/mosaic OBJ native.
-    for (u16 flips : {u16(0x1000), u16(0x2000), u16(0x3000)})
+    // Coordinate/color oracle: no LCDC or enhanced sampler is read here.
+    // Compute from absolute destination coordinates, then quantize onto the
+    // source capture grid. Fixed color probes below also pin the convention.
+    struct Transform
     {
-        nds->ARM9Write16(oam + 2, 0xC000 | flips);
-        checkFrame(scale); requireNativeDisplay(scale);
+        const char* name;
+        u16 type = 0x0D00, flips = 0, tile = 4;
+        int x = 0, y = 0;
+        s16 a = 256, b = 0, c = 0, d = 256;
+        u32 control = 0x00011020, base = 64, pitch = 512;
+        bool companion = false;
+    };
+    const auto guestColor = [&](u32 address) {
+        Require(address + 1 < captured.size(), "transform oracle source address outside fixture");
+        const u16 c = captured[address] | (u16(captured[address + 1]) << 8);
+        const auto channel = [](u32 value) { return value * 8 + value / 8; };
+        return !(c & 0x8000) ? 0xFF000000u : 0xFF000000u |
+            (channel(c & 31) << 16) | (channel((c >> 5) & 31) << 8) | channel((c >> 10) & 31);
+    };
+    const auto capturedColor = [&](s64 hx, s64 hy) {
+        // The fixture's half-pixel X offset is quantized by the rasterizer
+        // onto this scale's grid; Y is integral. RGB555 red expands to 251.
+        return hx >= 32 * scale + scale / 2 && hx < 224 * scale + scale / 2 &&
+            hy >= 24 * scale && hy < 168 * scale ? 0xFFFB0000u : 0xFF000000u;
+    };
+    unsigned transforms = 0, fixedProbes = 0;
+    size_t transformDifferences = 0, fixedFailures = 0;
+    for (const Transform t : {
+        Transform{.name = "x-flip", .type = 0x0C00, .flips = 0x1000, .tile = 6, .base = 96},
+        Transform{.name = "y-flip", .type = 0x0C00, .flips = 0x2000},
+        Transform{.name = "xy-flip", .type = 0x0C00, .flips = 0x3000, .tile = 6, .base = 96},
+        Transform{.name = "identity"},
+        Transform{.name = "fractional", .a = 384, .d = 192},
+        Transform{.name = "shear", .b = 128, .c = -64},
+        Transform{.name = "quarter-turn", .a = 0, .b = -256, .c = 256, .d = 0},
+        Transform{.name = "negative-matrix", .a = -256, .b = 64, .c = -128},
+        Transform{.name = "double-half", .type = 0x0F00, .a = 128, .d = 128},
+        Transform{.name = "double-clipped", .type = 0x0F00, .x = 237, .y = 174,
+            .a = 128, .b = 64, .c = -64, .d = 192},
+        Transform{.name = "negative-position", .x = -7, .y = -11,
+            .a = 192, .b = -128, .c = 128, .d = 192},
+        Transform{.name = "signed-extremes", .a = -32768, .b = 32767, .c = 32767, .d = -32768},
+        Transform{.name = "affine-1d-128", .tile = 0x60, .a = 384, .b = 64, .c = -64, .d = 192,
+            .control = 0x00011040, .base = 0x3000, .pitch = 128},
+        Transform{.name = "affine-1d-boundary", .tile = u16(engine ? 0x60 : 0x30),
+            .a = 384, .b = 64, .c = -64, .d = 192,
+            .control = 0x00411040, .base = 0x3000, .pitch = 128},
+        Transform{.name = "affine-2d-128", .tile = 0x60, .a = 384, .b = 64, .c = -64, .d = 192,
+            .control = 0x00011000, .base = 0x3000, .pitch = 256},
+        Transform{.name = "partial-provenance", .type = 0x0C00, .flips = 0x1000,
+            .tile = 0x286, .base = 0x14060, .companion = true}})
+    {
+        nds->ARM9Write32(reg, t.control);
+        nds->ARM9Write16(oam, t.type | (t.y & 255));
+        nds->ARM9Write16(oam + 2, 0xC000 | t.flips | (t.x & 511));
+        nds->ARM9Write16(oam + 4, 0xF000 | t.tile);
+        nds->ARM9Write16(oam + 6, u16(t.a)); nds->ARM9Write16(oam + 14, u16(t.b));
+        nds->ARM9Write16(oam + 22, u16(t.c)); nds->ARM9Write16(oam + 30, u16(t.d));
+        // A captured companion makes the display-only OBJ line active even
+        // where the first sprite's source is native-only. It does not overlap.
+        nds->ARM9Write16(oam + 8, t.companion ? 0x0C00 : 0x0200);
+        nds->ARM9Write16(oam + 10, 0xC080); nds->ARM9Write16(oam + 12, 0xF004);
+        checkFrame(scale);
+        const int bound = (t.type & 0x0200) ? 128 : 64;
+        const auto coordinates = [&](s64 dx, s64 dy, s64 units) -> std::array<s64, 2> {
+            if (t.type & 0x0100)
+            {
+                dx -= bound * units / 2; dy -= bound * units / 2;
+                return {32 * 256 * units + t.a * dx + t.b * dy,
+                        32 * 256 * units + t.c * dx + t.d * dy};
+            }
+            return {256 * ((t.flips & 0x1000) ? 63 * units - dx : dx),
+                    256 * ((t.flips & 0x2000) ? 63 * units - dy : dy)};
+        };
+        const auto inside = [](const auto& p, s64 units) {
+            return p[0] >= 0 && p[1] >= 0 && p[0] < 64 * 256 * units && p[1] < 64 * 256 * units;
+        };
+        size_t differences = 0;
+        for (int ny = 0; ny < 192; ++ny)
+        for (int nx = 0; nx < 256; ++nx)
+        {
+            const int dx = nx - t.x, dy = (ny - t.y) & 255;
+            const bool covered = dx >= 0 && dx < bound && dy < bound;
+            const bool companion = t.companion && nx >= 128 && nx < 192 && ny < 64;
+            const auto origin = coordinates(dx, dy, 1);
+            const bool nativeInside = covered && inside(origin, 1);
+            const u32 nativeAddress = nativeInside ?
+                t.base + u32(origin[1] / 256) * t.pitch + u32(origin[0] / 256) * 2 : 0;
+            const u32 nativeExpected = nativeInside ? guestColor(nativeAddress) : companion ?
+                guestColor((ny * 256 + nx - 128 + 32) * 2) : 0xFF000000u;
+            if (native[ny * 256 + nx] != nativeExpected)
+            {
+                std::fprintf(stderr, "OBJ %s engine=%u native=(%d,%d) expected=%08x actual=%08x\n",
+                    t.name, engine, nx, ny, nativeExpected, native[ny * 256 + nx]);
+                Require(false, "transformed native OBJ differs from coordinate/guest-VRAM oracle");
+            }
+            for (int sy = 0; sy < scale; ++sy)
+            for (int sx = 0; sx < scale; ++sx)
+            {
+                u32 expected = nativeExpected;
+                if (sx || sy)
+                {
+                    if (covered)
+                    {
+                        const auto p = coordinates(s64(dx) * scale + sx, s64(dy) * scale + sy, scale);
+                        if (inside(p, scale))
+                        {
+                            // First quantize to the high-resolution source grid,
+                            // then apply the independent native bitmap layout.
+                            const s64 hx = p[0] / 256, hy = p[1] / 256;
+                            const u32 address = t.base + u32(hy / scale) * t.pitch + u32(hx / scale) * 2;
+                            if (address < 192 * 512)
+                                expected = capturedColor((address / 2 % 256) * scale + hx % scale,
+                                    (address / 512) * scale + hy % scale);
+                            // No valid capture: retain THIS destination's native
+                            // result, not a newly transformed guest-VRAM sample.
+                        }
+                        else if (nativeInside && nativeAddress < 192 * 512)
+                            expected = 0xFF000000;
+                    }
+                    else if (companion)
+                        expected = capturedColor((nx - 128 + 32) * scale + sx, ny * scale + sy);
+                }
+                const u32 observed = actual[size_t(ny * scale + sy) * width + nx * scale + sx];
+                if (observed != expected)
+                {
+                    if (!differences) std::fprintf(stderr,
+                        "OBJ %s engine=%u scale=%d dst=(%d,%d)+(%d,%d) expected=%08x actual=%08x\n",
+                        t.name, engine, scale, nx, ny, sx, sy, expected, observed);
+                    ++differences;
+                }
+            }
+        }
+        const auto fixed = [&](int x, int y, int sx, int sy, u32 expected) {
+            ++fixedProbes;
+            const u32 observed = actual[size_t(y * scale + sy) * width + x * scale + sx];
+            if (observed != expected)
+            {
+                ++fixedFailures;
+                std::fprintf(stderr, "OBJ fixed %s (%d,%d)+(%d,%d): expected=%08x actual=%08x\n",
+                    t.name, x, y, sx, sy, expected, observed);
+            }
+        };
+        if (scale == 3)
+        {
+            if (std::strcmp(t.name, "x-flip") == 0)
+            { fixed(63, 40, 0, 0, 0xFFFB0000); fixed(63, 40, 1, 0, 0xFF000000); }
+            if (std::strcmp(t.name, "y-flip") == 0)
+            { fixed(16, 39, 0, 0, 0xFFFB0000); fixed(16, 39, 0, 1, 0xFF000000); }
+            if (std::strcmp(t.name, "xy-flip") == 0)
+            { fixed(63, 39, 0, 0, 0xFFFB0000); fixed(63, 39, 1, 1, 0xFF000000); }
+            if (std::strcmp(t.name, "identity") == 0)
+            { fixed(0, 24, 0, 0, 0xFF000000); fixed(0, 24, 1, 0, 0xFFFB0000); }
+            if (std::strcmp(t.name, "fractional") == 0)
+            { fixed(11, 40, 0, 0, 0xFF000000); fixed(11, 40, 1, 0, 0xFFFB0000); fixed(11, 40, 0, 1, 0xFFFB0000); }
+            if (std::strcmp(t.name, "quarter-turn") == 0)
+            { fixed(24, 0, 0, 0, 0xFF000000); fixed(24, 0, 0, 1, 0xFFFB0000); }
+            if (std::strcmp(t.name, "double-half") == 0)
+            { fixed(0, 48, 0, 0, 0xFF000000); fixed(0, 48, 1, 0, 0xFF000000); fixed(0, 48, 2, 0, 0xFFFB0000); }
+            if (std::strcmp(t.name, "signed-extremes") == 0)
+            { fixed(32, 32, 0, 0, 0xFFFB0000); fixed(32, 32, 1, 0, 0xFF000000); }
+            if (t.companion)
+            { fixed(63, 32, 0, 0, 0xFF0000FB); fixed(63, 32, 1, 0, 0xFF0000FB);
+              fixed(63, 0, 0, 0, 0xFFFB0000); fixed(63, 0, 1, 0, 0xFF000000); }
+        }
+        std::printf("OBJ transform=%s engine=%u scale=%d native=49152 display=%zu differences=%zu\n",
+            t.name, engine, scale, size_t(width) * height, differences);
+        transformDifferences += differences;
+        ++transforms;
     }
-    nds->ARM9Write16(oam + 2, 0xC000);
-    nds->ARM9Write16(oam, 0x0D00);
+    std::printf("OBJ transforms engine=%u scale=%d cases=%u fixed-probes=%u fixed-failures=%zu differences=%zu\n",
+        engine, scale, transforms, fixedProbes, fixedFailures, transformDifferences);
+    Require(transformDifferences == 0 && fixedFailures == 0, "captured OBJ transform feature assertions failed");
+
+    nds->ARM9Write16(oam + 8, 0x0200);
+    nds->ARM9Write16(oam + 2, 0xC000); nds->ARM9Write16(oam + 4, 0xF004);
     nds->ARM9Write16(oam + 6, 0x100); nds->ARM9Write16(oam + 14, 0);
     nds->ARM9Write16(oam + 22, 0); nds->ARM9Write16(oam + 30, 0x100);
-    checkFrame(scale); requireNativeDisplay(scale);
-    nds->ARM9Write16(oam, 0x0F00); nds->ARM9Write16(oam + 6, 0x80);
-    checkFrame(scale); requireNativeDisplay(scale);
+    nds->ARM9Write32(reg, 0x00011020);
+    // Mosaic is still a native-only line, not an implemented enhancement.
     nds->ARM9Write16(oam, 0x1C00); nds->ARM9Write16(reg + 0x4C, 0x3300);
     checkFrame(scale); requireNativeDisplay(scale);
-    nds->ARM9Write16(oam, 0x0C00); nds->ARM9Write16(reg + 0x4C, 0);
+    // Exercise mapping/scale/invalidation fallbacks on the new affine path.
+    nds->ARM9Write16(oam, 0x0D00); nds->ARM9Write16(reg + 0x4C, 0);
 
     const u32 otherControl = engine ? 0x04000249 : 0x04000240;
     nds->ARM9Write8(otherControl, 0x82); // I -> BOBJ, A -> AOBJ: overlapping bank.
