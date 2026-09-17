@@ -246,6 +246,295 @@ void CapturedDisplay(int scale)
     std::printf("Captured 3D %dx: subpixel detail, native origins and invalidation PASS\n", scale);
 }
 
+void CapturedBitmapOBJ(int scale, unsigned engine)
+{
+    auto nds = Console(true, scale);
+    const unsigned bank = engine ? 3 : 1; // B -> AOBJ, D -> BOBJ.
+    nds->ARM9Write8(0x04000240 + bank, 0x80);
+    nds->Start(); nds->RunFrame();
+    auto& polygon = Scene(*nds, 0, false, false);
+    for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
+        vertex->HiresPosition[0] += 8;
+    nds->GPU.GPU3D.RenderClearAttr1 = 0;
+    RendererSettings settings{scale, false, true, false};
+    Require(nds->GetRenderer().SetRenderSettings(settings), "OBJ capture settings failed");
+    nds->GetRenderer().Start3DRendering();
+    nds->ARM9Write32(0x04000064, 0x81300000 | (bank << 16));
+    nds->RunFrame();
+    const std::vector<u8> captured(nds->GPU.VRAM[bank], nds->GPU.VRAM[bank] + 131072);
+
+    // Read the same capture through the existing LCDC display, before remapping.
+    // Transparent clear is black, matching the OBJ scene backdrop.
+    nds->ARM9Write32(0x04000000, 0x00020000 | (bank << 18));
+    Screen(*nds, false); Screen(*nds, false);
+    void *top, *bottom; int width, height;
+    Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+        "LCDC reference framebuffer unavailable");
+    Require(width == 256 * scale && height == 192 * scale, "LCDC reference extent mismatch");
+    const auto* source = static_cast<const u32*>(nds->GPU.ScreenSwap ? top : bottom);
+    const std::vector<u32> reference(source, source + size_t(width) * height);
+    if (scale > 1) DisplayOrigins(*nds, scale, true);
+
+    nds->ARM9Write8(0x04000240 + bank, engine ? 0x84 : 0x82);
+    Require((engine ? nds->GPU.VRAMMap_BOBJ[0] : nds->GPU.VRAMMap_AOBJ[0]) == (1u << bank),
+        "fixture did not map capture to OBJ");
+    const u32 reg = 0x04000000 + engine * 0x1000;
+    const u32 oam = 0x07000000 + engine * 0x400;
+    nds->ARM9Write32(0x04000000, 0x00010000);
+    nds->ARM9Write16(0x05000000 + engine * 0x400, 0);
+    for (u32 object = 0; object < 128; ++object) nds->ARM9Write16(oam + object * 8, 0x0200);
+    nds->ARM9Write16(oam, 0x0C00); // Bitmap OBJ at y=0.
+    nds->ARM9Write16(oam + 2, 0xC000); // 64x64 at x=0.
+    nds->ARM9Write16(oam + 4, 0xF004); // Alpha 16; source x=32, y=0.
+    nds->ARM9Write32(reg, 0x00011020); // 2D bitmap OBJ mapping, 256-pixel pitch.
+    Screen(*nds, false); Screen(*nds, false);
+    DisplayOrigins(*nds, scale);
+    Require(std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]),
+        "OBJ display modified guest capture VRAM");
+    Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+        "OBJ display framebuffer unavailable");
+    const bool selected = engine ? !nds->GPU.ScreenSwap : nds->GPU.ScreenSwap;
+    const auto* actual = static_cast<const u32*>(selected ? top : bottom);
+    void *nativeTop, *nativeBottom;
+    Require(nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom), "native OBJ framebuffer unavailable");
+    const auto* native = static_cast<const u32*>(selected ? nativeTop : nativeBottom);
+    // Independent RGB555 VRAM -> native OBJ check; no enhanced renderer oracle.
+    for (u32 y = 0; y < 64; ++y)
+    for (u32 x = 0; x < 64; ++x)
+    {
+        const u32 address = (y * 256 + x + 32) * 2;
+        const u16 pixel = captured[address] | (u16(captured[address + 1]) << 8);
+        // Native six-bit expansion replicates the high bits into the low bits.
+        const auto channel = [](u32 value) { return value * 8 + value / 8; };
+        const u32 expected = !(pixel & 0x8000) ? 0xFF000000 :
+            0xFF000000 | (channel(pixel & 31) << 16) |
+            (channel((pixel >> 5) & 31) << 8) | channel((pixel >> 10) & 31);
+        if (native[y * 256 + x] != expected)
+        {
+            std::fprintf(stderr, "OBJ native engine=%u src=(%u,%u) bank=%u offset=%05x dst=(%u,%u) rgb555=%04x expected=%08x actual=%08x\n",
+                engine, x + 32, y, bank, address, x, y, pixel, expected, native[y * 256 + x]);
+            Require(false, "native OBJ differs from source VRAM");
+        }
+    }
+    std::printf("OBJ engine=%u scale=%d native VRAM comparison PASS (4096 pixels)\n", engine, scale);
+    // RGB555 red expands through the native six-bit compositor (31 -> 62 -> 251).
+    Require(reference[size_t(40 * scale) * width + 48 * scale] == 0xFFFB0000 &&
+        actual[size_t(40 * scale) * width + 16 * scale] == 0xFFFB0000,
+        "fixture bitmap OBJ did not reach the display");
+    if (scale == 3)
+    {
+        // The known boundary: source texel (32,24) -> OBJ texel (0,24).
+        // Read final renderer output, LCDC reference and guest bytes separately.
+        const size_t guestOffset = (24 * 256 + 32) * 2;
+        const u16 guestPixel = captured[guestOffset] | (u16(captured[guestOffset + 1]) << 8);
+        std::printf("OBJ boundary engine=%u source=(32,24) guestByteOffset=%zu RGB555=%04x nativeARGB=%08x\n",
+            engine, guestOffset, guestPixel, native[24 * 256]);
+        for (int sy = 0; sy < 3; ++sy)
+        {
+            const size_t row = size_t(72 + sy) * width;
+            std::printf("subrow=%d OBJ=[%08x %08x %08x] LCDC=[%08x %08x %08x]\n", sy,
+                actual[row], actual[row + 1], actual[row + 2],
+                reference[row + 96], reference[row + 97], reference[row + 98]);
+        }
+    }
+    size_t differences = 0;
+    for (int y = 0; y < height; ++y)
+    for (int x = 0; x < width; ++x)
+    {
+        const u32 expected = x < 64 * scale && y < 64 * scale
+            ? reference[size_t(y) * width + x + 32 * scale] : 0xFF000000;
+        if (actual[size_t(y) * width + x] != expected)
+        {
+            // Diagnostics must also be safe for a mismatch at the frame edge.
+            if (!differences) std::fprintf(stderr,
+                "OBJ engine=%u scale=%d xy=%d,%d expected=%08x actual=%08x nativeOrigin=%08x\n",
+                engine, scale, x, y, expected, actual[size_t(y) * width + x],
+                native[(size_t(y) / scale) * 256 + x / scale]);
+            ++differences;
+        }
+    }
+    std::printf("OBJ engine=%u scale=%d LCDC pixel differences=%zu\n", engine, scale, differences);
+    Require(differences == 0, "bitmap OBJ lost captured subpixel detail");
+    // Independent known-color assertion, not another enhanced renderer oracle.
+    // This fixture's half-pixel red edge has a transparent native origin at 3x.
+    if (scale == 3)
+        for (int sy = 0; sy < scale; ++sy)
+        {
+            const size_t row = size_t(24 * scale + sy) * width;
+            Require(actual[row] == 0xFF000000 && actual[row + 1] == 0xFFFB0000 &&
+                actual[row + 2] == 0xFFFB0000, "independent red OBJ boundary mismatch");
+        }
+
+    unsigned cases = 0;
+    const auto checkFrame = [&](int currentScale) {
+        Screen(*nds, false); Screen(*nds, false);
+        DisplayOrigins(*nds, currentScale);
+        Require(std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]),
+            "OBJ variant changed guest capture bytes");
+        Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+            "OBJ variant display unavailable");
+        Require(nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom),
+            "OBJ variant native framebuffer unavailable");
+        actual = static_cast<const u32*>(selected ? top : bottom);
+        native = static_cast<const u32*>(selected ? nativeTop : nativeBottom);
+        ++cases;
+    };
+    const auto requireNativeDisplay = [&](int currentScale) {
+        for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+            Require(actual[size_t(y) * width + x] == native[(y / currentScale) * 256 + x / currentScale],
+                "unsupported OBJ condition did not retain native display");
+    };
+    const auto pixel = [&](int x, int y, int subx = 0) {
+        return actual[size_t(y * scale) * width + x * scale + subx];
+    };
+
+    // Both 1D boundaries on engine A, and 128-pixel 2D pitch, reuse the same
+    // guest addresses. Engine B masks out DISPCNT bit 22 (GPU2D::Write32), so
+    // its tile number must still select the 128-byte boundary in that case.
+    struct Layout { u32 control; u16 tile; u32 pitch; };
+    for (const auto layout : {Layout{0x00011040, 0x60, 128},
+            Layout{0x00411040, u16(engine ? 0x60 : 0x30), 128}, Layout{0x00011000, 0x60, 256}})
+    {
+        nds->ARM9Write32(reg, layout.control);
+        if (engine) Require(!(nds->ARM9Read32(reg) & (1u << 22)), "engine B accepted the reserved bitmap boundary bit");
+        nds->ARM9Write16(oam + 4, 0xF000 | layout.tile);
+        checkFrame(scale);
+        for (int y = 0; y < 64 * scale; ++y)
+        for (int x = 0; x < 64 * scale; ++x)
+        {
+            const u32 word = (0x3000 + (y / scale) * layout.pitch + (x / scale) * 2) / 2;
+            const size_t src = size_t((word / 256) * scale + y % scale) * width +
+                (word % 256) * scale + x % scale;
+            Require(actual[size_t(y) * width + x] == reference[src], "OBJ bitmap pitch/addressing mismatch");
+        }
+    }
+    nds->ARM9Write32(reg, 0x00011020);
+    nds->ARM9Write16(oam + 4, 0x7004); // Alpha 8 over a blue backdrop.
+    nds->ARM9Write16(0x05000000 + engine * 0x400, 0x7C00);
+    nds->ARM9Write16(reg + 0x50, 0x2000);
+    checkFrame(scale);
+    Require(pixel(16, 40) == 0xFF7D007D, "bitmap OBJ alpha blend mismatch");
+    if (scale == 3)
+        Require(pixel(0, 24) == 0xFF0000FB && pixel(0, 24, 1) == 0xFF7D007D,
+            "captured OBJ transparency/alpha did not resolve per subpixel");
+    nds->ARM9Write16(0x05000000 + engine * 0x400, 0);
+    nds->ARM9Write16(reg + 0x50, 0);
+    nds->ARM9Write16(oam + 4, 0x0004);
+    checkFrame(scale);
+    Require(std::all_of(actual, actual + size_t(width) * height, [](u32 c) { return c == 0xFF000000; }),
+        "zero-alpha bitmap OBJ became visible");
+    nds->ARM9Write16(oam + 4, 0xF004);
+
+    if (scale == 3)
+    {
+        // A later ordinary OBJ uses existing capture bytes as palette indices.
+        // No guest VRAM writes or new capture source are needed for overlap.
+        for (u32 index : {1u, 8u, 15u})
+            nds->ARM9Write16(0x05000200 + engine * 0x400 + index * 2, 0x7C00);
+        nds->ARM9Write16(oam + 8, 24);
+        nds->ARM9Write16(oam + 10, 0);
+        nds->ARM9Write16(oam + 12, 0x0183);
+        checkFrame(scale);
+        Require(pixel(0, 24) == 0xFF0000FB && pixel(0, 24, 1) == 0xFFFB0000,
+            "native-transparent captured OBJ lost OAM priority or its lower OBJ candidate");
+        nds->ARM9Write16(oam + 4, 0xF404);
+        checkFrame(scale);
+        Require(pixel(0, 24, 1) == 0xFF0000FB, "ordinary OBJ priority did not occlude captured detail");
+        nds->ARM9Write16(oam, 24); nds->ARM9Write16(oam + 2, 0); nds->ARM9Write16(oam + 4, 0x0183);
+        nds->ARM9Write16(oam + 8, 0x0C00); nds->ARM9Write16(oam + 10, 0xC000); nds->ARM9Write16(oam + 12, 0xF004);
+        checkFrame(scale);
+        Require(pixel(0, 24, 1) == 0xFF0000FB, "equal-priority OAM ordering changed");
+        nds->ARM9Write16(oam + 8, 0x0200);
+        nds->ARM9Write16(oam, 0x0C00); nds->ARM9Write16(oam + 2, 0xC000); nds->ARM9Write16(oam + 4, 0xF004);
+    }
+
+    // OBJ/BG priority must use the enhanced winner, not the native-origin OBJ.
+    const u32 bgBank = engine ? 2 : 0;
+    nds->ARM9Write8(0x04000240 + bgBank, 0x80);
+    for (u32 offset = 0; offset < 32; offset += 2)
+        nds->ARM9Write16(0x06800000 + bgBank * 0x20000 + 0x4000 + offset, 0x1111);
+    nds->ARM9Write8(0x04000240 + bgBank, engine ? 0x84 : 0x81);
+    nds->ARM9Write16(0x05000002 + engine * 0x400, 0x7C00);
+    nds->ARM9Write16(reg + 0x0A, 4); // Solid blue text BG1, priority 0.
+    nds->ARM9Write32(reg, 0x00011220);
+    checkFrame(scale);
+    Require(pixel(16, 40) == 0xFFFB0000, "equal-priority BG occluded captured OBJ");
+    if (scale == 3)
+        Require(pixel(0, 24) == 0xFF0000FB && pixel(0, 24, 1) == 0xFFFB0000,
+            "captured OBJ native-transparent edge lost BG priority");
+    nds->ARM9Write16(oam + 4, 0xF404);
+    checkFrame(scale);
+    Require(pixel(16, 40) == 0xFF0000FB && pixel(0, 24, scale > 1 ? 1 : 0) == 0xFF0000FB,
+        "higher-priority BG did not occlude captured OBJ");
+    nds->ARM9Write16(oam + 4, 0xF004);
+    nds->ARM9Write8(0x04000240 + bgBank, 0);
+
+    nds->ARM9Write16(oam + 8, 0x0818); // Ordinary OBJ-window sprite at (0,24).
+    nds->ARM9Write16(oam + 10, 0); nds->ARM9Write16(oam + 12, 0x0183);
+    nds->ARM9Write16(reg + 0x4A, 0x2F3F);
+    nds->ARM9Write32(reg, 0x00019020);
+    checkFrame(scale);
+    Require(pixel(0, 24, scale > 1 ? 1 : 0) == 0xFF000000 && pixel(16, 40) == 0xFFFB0000,
+        "OBJ-window did not mask captured OBJ detail");
+    nds->ARM9Write16(oam + 8, 0x0200);
+    nds->ARM9Write16(reg + 0x40, 8);
+    nds->ARM9Write16(reg + 0x44, (24 << 8) | 32);
+    nds->ARM9Write16(reg + 0x48, 0x2F); // WIN0 hides OBJ.
+    nds->ARM9Write16(reg + 0x4A, 0x3F);
+    nds->ARM9Write32(reg, 0x00013020);
+    checkFrame(scale);
+    Require(pixel(4, 28) == 0xFF000000 && pixel(16, 40) == 0xFFFB0000, "OBJ window masking changed");
+    nds->ARM9Write32(reg, 0x00011020);
+
+    // The bounded slice deliberately leaves transformed/mosaic OBJ native.
+    for (u16 flips : {u16(0x1000), u16(0x2000), u16(0x3000)})
+    {
+        nds->ARM9Write16(oam + 2, 0xC000 | flips);
+        checkFrame(scale); requireNativeDisplay(scale);
+    }
+    nds->ARM9Write16(oam + 2, 0xC000);
+    nds->ARM9Write16(oam, 0x0D00);
+    nds->ARM9Write16(oam + 6, 0x100); nds->ARM9Write16(oam + 14, 0);
+    nds->ARM9Write16(oam + 22, 0); nds->ARM9Write16(oam + 30, 0x100);
+    checkFrame(scale); requireNativeDisplay(scale);
+    nds->ARM9Write16(oam, 0x0F00); nds->ARM9Write16(oam + 6, 0x80);
+    checkFrame(scale); requireNativeDisplay(scale);
+    nds->ARM9Write16(oam, 0x1C00); nds->ARM9Write16(reg + 0x4C, 0x3300);
+    checkFrame(scale); requireNativeDisplay(scale);
+    nds->ARM9Write16(oam, 0x0C00); nds->ARM9Write16(reg + 0x4C, 0);
+
+    const u32 otherControl = engine ? 0x04000249 : 0x04000240;
+    nds->ARM9Write8(otherControl, 0x82); // I -> BOBJ, A -> AOBJ: overlapping bank.
+    Require((engine ? nds->GPU.VRAMMap_BOBJ[0] : nds->GPU.VRAMMap_AOBJ[0]) ==
+        ((1u << bank) | (engine ? (1u << 8) : 1u)), "OBJ fixture did not overlap VRAM banks");
+    checkFrame(scale);
+    for (int y = 0; y < 32 * scale; ++y)
+    for (int x = 0; x < 64 * scale; ++x)
+        Require(actual[size_t(y) * width + x] == native[(y / scale) * 256 + x / scale],
+            "overlapping OBJ banks used one bank's capture detail");
+    nds->ARM9Write8(otherControl, 0);
+    checkFrame(scale);
+    if (scale > 1) DisplayOrigins(*nds, scale, true);
+
+    if (scale > 1)
+    {
+        const int different = scale == 2 ? 3 : 2;
+        RendererSettings next{different, false, true, false};
+        Require(nds->GetRenderer().SetRenderSettings(next), "OBJ scale transition failed");
+        checkFrame(different); requireNativeDisplay(different);
+        next.ScaleFactor = scale;
+        Require(nds->GetRenderer().SetRenderSettings(next), "OBJ scale restoration failed");
+        checkFrame(scale); DisplayOrigins(*nds, scale, true);
+    }
+    const u32 alias = engine ? 0x06600000 : 0x06400000;
+    const u16 original = nds->ARM9Read16(alias + 0x3040);
+    nds->ARM9Write16(alias + 0x3040, original);
+    checkFrame(scale); requireNativeDisplay(scale);
+    std::printf("OBJ engine=%u scale=%d: 131072 guest bytes unchanged; %zu baseline display pixels; %u layout/alpha/priority/window/fallback/invalidation cases PASS\n",
+        engine, scale, reference.size(), cases);
+}
+
 void CapturedBitmapBG(int scale, unsigned engine, bool benchmark = false)
 {
     auto nds = Console(true, scale);
@@ -684,6 +973,11 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
+        if (argc == 4 && std::strcmp(argv[1], "captured-bitmap-obj") == 0) {
+            const int scale = std::atoi(argv[2]), engine = std::atoi(argv[3]);
+            Require(scale >= 1 && scale <= 16 && engine >= 0 && engine <= 1, "invalid OBJ fixture arguments");
+            CapturedBitmapOBJ(scale, engine); return 0;
+        }
         if (argc == 2 && std::strcmp(argv[1], "captured-display") == 0) { for (int scale : {2, 3, 5, 8, 16}) CapturedDisplay(scale); return 0; }
         if (argc == 3 && std::strcmp(argv[1], "bitmap-benchmark") == 0) {
 #ifdef _WIN32

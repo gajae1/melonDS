@@ -83,6 +83,11 @@ private:
 
     alignas(8) u32 OBJLine[256];
     alignas(8) u8 OBJWindow[256];
+    // Display-only, current-scanline OBJ winners. Merge every native candidate
+    // so a captured transparent origin cannot discard a lower OBJ prematurely.
+    std::vector<u32> CaptureOBJLine;
+    u32 CaptureOBJScale = 0;
+    bool CaptureOBJActive = false;
 
     u32 NumSprites;
 
@@ -120,7 +125,7 @@ private:
 
     void ApplySpriteMosaicX();
     void InterleaveSprites(u32 prio);
-    template<bool window> void DrawSpritePixel(int color, u32 pixelattr, s32 xpos);
+    template<bool window> void DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 captureAddress = ~0u);
     template<bool window> void DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheight, u32 width, u32 height, s32 xpos, s32 ypos);
     template<bool window> void DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos, s32 ypos);
 };

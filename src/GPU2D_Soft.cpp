@@ -45,6 +45,8 @@ void SoftRenderer2D::Reset()
     NumSprites = 0;
     Scaled3DActive = false;
     CaptureLayersActive = false;
+    CaptureOBJScale = 0;
+    CaptureOBJActive = false;
 }
 
 // Keep RGB6 components in separate 16-bit lanes for the weighted sum. The
@@ -248,9 +250,15 @@ void SoftRenderer2D::ComposeCapturedLine(u32* dst, u32 subline) const
             rows[layer - 2][x] = Parent.CapturedBackgroundRow(GPU2D.Num, address, subline, CaptureScale);
         }
     }
+    const bool capturedOBJ = CaptureOBJActive && CaptureOBJScale == CaptureScale &&
+        (GPU2D.LayerEnable & 0x10) && NumSprites;
+    const u16* objPal = reinterpret_cast<const u16*>(&GPU.Palette[GPU2D.Num ? 0x600 : 0x200]);
+    const u16* objExtPal = capturedOBJ ? GPU2D.GetOBJExtPal() : nullptr;
     for (u32 x = 0; x < 256; ++x)
     for (u32 subx = 0; subx < CaptureScale; ++subx)
     {
+        const u32 object = capturedOBJ ? CaptureOBJLine[(size_t(subline) * 256 + x) * CaptureScale + subx]
+            : OBJLine[x];
         u32 top = DisplayBackdrop, second = 0, topRank = 32, secondRank = 33;
         for (u32 layer = 0; layer < 5; ++layer)
         {
@@ -265,13 +273,24 @@ void SoftRenderer2D::ComposeCapturedLine(u32* dst, u32 subline) const
                 }
                 else color = SampleBitmapLayer(layer, x, subx, subline);
             }
+            if (layer == 4 && capturedOBJ)
+            {
+                color = 0;
+                if ((object & OBJ_IsOpaque) && (WindowMask[x] & 0x10))
+                {
+                    const u16 pixel = object & OBJ_DirectColor ? object & 0x7FFF :
+                        object & OBJ_StandardPal ? objPal[object & 0xFF] : objExtPal[object & 0xFFF];
+                    color = ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) |
+                        ((pixel & 0x8000) >> 7) | ((pixel & 0x7C00) << 7) | (object & 0xFF000000);
+                }
+            }
             if (layer == 0 && color == 0x40000000)
             {
                 color = dst[x * CaptureScale + subx];
                 color = color >> 24 ? color | 0x40000000 : 0;
             }
             if (!color) continue;
-            const u32 rank = layer == 4 ? ((OBJLine[x] >> 16) & 3) * 8
+            const u32 rank = layer == 4 ? ((object >> 16) & 3) * 8
                 : (GPU2D.BGCnt[layer] & 3) * 8 + layer + 1;
             if (rank < topRank) { second = top; secondRank = topRank; top = color; topRank = rank; }
             else if (rank < secondRank) { second = color; secondRank = rank; }
@@ -287,7 +306,7 @@ void SoftRenderer2D::PrepareCapturedLine(u32 line)
     catch (const std::exception& error)
     {
         CaptureLayersActive = false;
-        Platform::Log(Platform::LogLevel::Warn, "Captured BG display unavailable: %s\n", error.what());
+        Platform::Log(Platform::LogLevel::Warn, "Captured layer display unavailable: %s\n", error.what());
         return;
     }
     for (u32 sub = 0; sub < CaptureScale; ++sub)
@@ -355,6 +374,8 @@ void SoftRenderer2D::DrawScanline(u32 line)
     };
     const bool capturedBG = (mode == 5 && directBitmap(2)) || (mode >= 3 && mode <= 5 && directBitmap(3));
     CaptureScale = Parent.ScaledDisplay && capturedBG ? Parent.CaptureBackgroundScale(GPU2D.Num) : 0;
+    if (Parent.ScaledDisplay && (GPU2D.LayerEnable & 0x10) && NumSprites && CaptureOBJActive)
+        CaptureScale = std::max(CaptureScale, CaptureOBJScale);
     CaptureLayersActive = CaptureScale > 1;
     if (CaptureLayersActive) { DisplayLayers = {}; BitmapLines = {}; }
     // Native registers and layer rendering execute once. Resolve enhanced
@@ -1267,9 +1288,22 @@ void SoftRenderer2D::DrawSprites(u32 line)
     NumSprites = 0;
     memset(OBJLine, 0, sizeof(OBJLine));
     memset(OBJWindow, 0, sizeof(OBJWindow));
+    CaptureOBJScale = 0;
+    CaptureOBJActive = false;
 
     if (!GPU2D.OBJEnable)
         return;
+
+    CaptureOBJScale = Parent.ScaledDisplay ? Parent.CaptureObjectScale(GPU2D.Num) : 0;
+    if (CaptureOBJScale > 1)
+    {
+        try { CaptureOBJLine.assign(size_t(256) * CaptureOBJScale * CaptureOBJScale, 0); }
+        catch (const std::exception& error)
+        {
+            CaptureOBJScale = 0;
+            Platform::Log(Platform::LogLevel::Warn, "Captured OBJ display unavailable: %s\n", error.what());
+        }
+    }
 
     u16* oam = (u16*)&GPU.OAM[GPU2D.Num ? 0x400 : 0];
 
@@ -1321,6 +1355,10 @@ void SoftRenderer2D::DrawSprites(u32 line)
 
         if ((attrib[0] & (1<<12)) && (!iswin))
         {
+            // X mosaic is a post-OBJ latch operation involving all sprites.
+            // Keep the whole OBJ line native rather than mixing latch domains.
+            CaptureOBJScale = 0;
+            CaptureOBJActive = false;
             // adjust Y position for sprite mosaic
             // (sprite mosaic does not apply to OBJ-window sprites)
             // a ypos greater than the sprite height means we underflowed, due to OBJMosaicLine being
@@ -1341,7 +1379,7 @@ void SoftRenderer2D::DrawSprites(u32 line)
 }
 
 template<bool window>
-void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos)
+void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 captureAddress)
 {
     if (window)
     {
@@ -1350,19 +1388,32 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos)
     }
     else
     {
-        u32 oldpixel = OBJLine[xpos];
-        bool oldisopaque = !!(oldpixel & OBJ_IsOpaque);
-        bool newisopaque = (color != -1);
-        bool priocheck = (pixelattr & OBJ_BGPrioMask) < (oldpixel & OBJ_BGPrioMask);
-
-        if (newisopaque && (!oldisopaque || priocheck))
+        const auto merge = [pixelattr](u32& oldpixel, int sample) {
+            const bool oldisopaque = !!(oldpixel & OBJ_IsOpaque);
+            const bool newisopaque = (sample != -1);
+            const bool priocheck = (pixelattr & OBJ_BGPrioMask) < (oldpixel & OBJ_BGPrioMask);
+            if (newisopaque && (!oldisopaque || priocheck))
+                oldpixel = sample | pixelattr;
+            else if (!newisopaque && !oldisopaque)
+            {
+                oldpixel &= ~(OBJ_Mosaic | OBJ_BGPrioMask);
+                oldpixel |= (pixelattr & (OBJ_IsSprite | OBJ_Mosaic | OBJ_BGPrioMask));
+            }
+        };
+        // Native color and OAM ordering are unchanged. The display line uses
+        // the same winner rules independently, including transparent origins.
+        merge(OBJLine[xpos], color);
+        for (u32 sy = 0; sy < CaptureOBJScale; ++sy)
         {
-            OBJLine[xpos] = color | pixelattr;
-        }
-        else if (!newisopaque && !oldisopaque)
-        {
-            OBJLine[xpos] &= ~(OBJ_Mosaic | OBJ_BGPrioMask);
-            OBJLine[xpos] |= (pixelattr & (OBJ_IsSprite | OBJ_Mosaic | OBJ_BGPrioMask));
+            const u16* row = captureAddress == ~0u ? nullptr :
+                Parent.CapturedObjectRow(GPU2D.Num, captureAddress, sy, CaptureOBJScale);
+            if (row) CaptureOBJActive = true;
+            auto* dst = CaptureOBJLine.data() + (size_t(sy) * 256 + xpos) * CaptureOBJScale;
+            for (u32 sx = 0; sx < CaptureOBJScale; ++sx)
+            {
+                const int sample = row ? ((row[sx] & 0x8000) ? int(row[sx]) : -1) : color;
+                merge(dst[sx], sample);
+            }
         }
     }
 }
@@ -1649,9 +1700,13 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
         {
             color = *(u16*)&objvram[pixelsaddr & objvrammask];
 
+            // Affine and flipped bitmap OBJ keep native sampling in this slice.
+            // The untransformed path uses the exact address already resolved by
+            // the native 1D/2D bitmap mapper, and consumes borrowed rows now.
+            const u32 captureAddress = (attrib[1] & 0x3000) ? ~0u : pixelsaddr & objvrammask;
             pixelsaddr += pixelstride;
 
-            DrawSpritePixel<window>((color&0x8000) ? color : -1, pixelattr, xpos);
+            DrawSpritePixel<window>((color&0x8000) ? color : -1, pixelattr, xpos, captureAddress);
 
             xoff++;
             xpos++;

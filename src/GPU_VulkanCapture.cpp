@@ -11,9 +11,18 @@ namespace melonDS
 {
 u32 VulkanRenderer::CaptureBackgroundScale(u32 engine) const
 {
+    return CaptureMappedScale(engine ? GPU.VRAMMap_BBG : GPU.VRAMMap_ABG, engine ? 8 : 32);
+}
+
+u32 VulkanRenderer::CaptureObjectScale(u32 engine) const
+{
+    return CaptureMappedScale(engine ? GPU.VRAMMap_BOBJ : GPU.VRAMMap_AOBJ, engine ? 8 : 16);
+}
+
+u32 VulkanRenderer::CaptureMappedScale(const u32* mapping, u32 count) const
+{
     if (DisplayScale == 1) return 0;
-    const u32* mapping = engine ? GPU.VRAMMap_BBG : GPU.VRAMMap_ABG;
-    for (u32 i = 0; i < (engine ? 8u : 32u); ++i)
+    for (u32 i = 0; i < count; ++i)
     {
         const u32 mask = mapping[i];
         // Multiple mapped banks are ORed by hardware; never replace that
@@ -58,6 +67,19 @@ const u16* VulkanRenderer::CapturedBackgroundRow(u32 engine, u32 address,
 {
     const u32 mask = engine ? GPU.VRAMMap_BBG[(address >> 14) & 7]
                             : GPU.VRAMMap_ABG[(address >> 14) & 31];
+    return CapturedMappedRow(mask, address, subline, scale);
+}
+
+const u16* VulkanRenderer::CapturedObjectRow(u32 engine, u32 address,
+    u32 subline, u32 scale) const
+{
+    const u32 mask = engine ? GPU.VRAMMap_BOBJ[(address >> 14) & 7]
+                            : GPU.VRAMMap_AOBJ[(address >> 14) & 15];
+    return CapturedMappedRow(mask, address, subline, scale);
+}
+
+const u16* VulkanRenderer::CapturedMappedRow(u32 mask, u32 address, u32 subline, u32 scale) const
+{
     if (!std::has_single_bit(mask) || !(mask & 15)) return nullptr;
     const u32 bank = std::countr_zero(mask), word = (address & 0x1FFFF) / 2;
     const int slot = GPU.GetCaptureBlock_LCDC(bank * 131072 + word * 2);

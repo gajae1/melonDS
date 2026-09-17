@@ -326,6 +326,14 @@ if (MELONDS_TEST_GPU AND TARGET vulkan-compute)
     set_tests_properties(gpu-vulkan-capture-display PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     add_test(NAME gpu-vulkan-capture-bitmap-bg COMMAND VulkanRendererIntegration captured-bitmap-bg)
     set_tests_properties(gpu-vulkan-capture-bitmap-bg PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    foreach(scale IN ITEMS 1 3)
+        foreach(engine RANGE 0 1)
+            add_test(NAME gpu-vulkan-capture-bitmap-obj-${scale}x-${engine}
+                COMMAND VulkanRendererIntegration captured-bitmap-obj ${scale} ${engine})
+            set_tests_properties(gpu-vulkan-capture-bitmap-obj-${scale}x-${engine}
+                PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+        endforeach()
+    endforeach()
     add_test(NAME gpu-vulkan-unavailable COMMAND VulkanRendererIntegration unavailable)
     set_tests_properties(gpu-vulkan-unavailable PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE
         ENVIRONMENT "VK_DRIVER_FILES=${CMAKE_CURRENT_BINARY_DIR}/missing-vulkan-driver.json")
