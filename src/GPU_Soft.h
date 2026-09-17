@@ -62,6 +62,9 @@ private:
     virtual u32 CaptureBackgroundScale(u32 engine) const { return 0; }
     virtual bool SampleCapturedBackground(u32 engine, u32 address, u32 fracX,
         u32 fracY, u32 denominator, u16& color) const { return false; }
+    // Borrow one texel's horizontal subpixels only for the current composition.
+    virtual const u16* CapturedBackgroundRow(u32 engine, u32 address,
+        u32 subline, u32 scale) const { return nullptr; }
     virtual void GetCaptureDisplay3DLine(u32 line, u32 subline, u32 scale, u32* dst) const {}
 
     u32* Framebuffer[2][2];

@@ -53,6 +53,23 @@ bool VulkanRenderer::SampleCapturedBackground(u32 engine, u32 address, u32 fracX
     return true;
 }
 
+const u16* VulkanRenderer::CapturedBackgroundRow(u32 engine, u32 address,
+    u32 subline, u32 scale) const
+{
+    const u32 mask = engine ? GPU.VRAMMap_BBG[(address >> 14) & 7]
+                            : GPU.VRAMMap_ABG[(address >> 14) & 31];
+    if (!std::has_single_bit(mask) || !(mask & 15)) return nullptr;
+    const u32 bank = std::countr_zero(mask), word = (address & 0x1FFFF) / 2;
+    const int slot = GPU.GetCaptureBlock_LCDC(bank * 131072 + word * 2);
+    if (slot < 0) return nullptr;
+    const auto& capture = DisplayCaptures[slot];
+    if (capture.pixels.empty() || capture.scale != scale || subline >= scale) return nullptr;
+    const u32 offset = (word - capture.start * 16384) & 0xFFFF;
+    const u32 y = offset / capture.width, x = offset % capture.width;
+    if (y >= capture.height || !capture.valid[y]) return nullptr;
+    return capture.pixels.data() + (size_t(y * scale + subline) * capture.width + x) * scale;
+}
+
 void VulkanRenderer::AllocCapture(u32 bank, u32 start, u32 size)
 {
     if (DisplayScale == 1) { DisplayCaptures[bank * 4 + start] = {}; return; }

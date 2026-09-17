@@ -223,6 +223,31 @@ u32 SoftRenderer2D::SampleBitmapLayer(u32 layer, u32 x, u32 subx, u32 suby) cons
 template<u32 effect>
 void SoftRenderer2D::ComposeCapturedLine(u32* dst, u32 subline) const
 {
+    // Resolve before the subpixel loop. These pointers never survive this
+    // synchronous composition or a subsequent capture write/invalidation.
+    std::array<std::array<const u16*, 256>, 2> rows{};
+    for (u32 layer = 2; layer < 4; ++layer)
+    {
+        const auto& bitmap = BitmapLines[layer - 2];
+        if (!bitmap.enabled || bitmap.a != 256 || bitmap.b != 0 || bitmap.c != 0 ||
+            bitmap.d != 256 || ((bitmap.x | bitmap.y) & 255) != 0) continue;
+        const u32 dimensions = bitmap.control >> 14;
+        const u32 width = dimensions == 0 ? 128 : dimensions == 1 ? 256 : 512;
+        const u32 height = dimensions == 0 ? 128 : dimensions == 3 ? 512 : 256;
+        const u32 mask = GPU2D.Num ? 0x1FFFF : 0x7FFFF;
+        const u32 base = (bitmap.control & 0x1F00) << 6;
+        const s64 py = s64(bitmap.y) / 256;
+        for (u32 x = 0; x < 256; ++x)
+        {
+            if (!(WindowMask[x] & (1u << layer))) continue;
+            const s64 px = s64(bitmap.x) / 256 + x;
+            if (!(bitmap.control & (1u << 13)) &&
+                (px < 0 || py < 0 || px >= width || py >= height)) continue;
+            const u32 address = (base + (((u32(py) & (height - 1)) * width +
+                (u32(px) & (width - 1))) * 2)) & mask;
+            rows[layer - 2][x] = Parent.CapturedBackgroundRow(GPU2D.Num, address, subline, CaptureScale);
+        }
+    }
     for (u32 x = 0; x < 256; ++x)
     for (u32 subx = 0; subx < CaptureScale; ++subx)
     {
@@ -230,7 +255,16 @@ void SoftRenderer2D::ComposeCapturedLine(u32* dst, u32 subline) const
         for (u32 layer = 0; layer < 5; ++layer)
         {
             u32 color = DisplayLayers[layer][x];
-            if (layer >= 2 && layer < 4) color = SampleBitmapLayer(layer, x, subx, subline);
+            if (layer >= 2 && layer < 4)
+            {
+                if (const auto* row = rows[layer - 2][x])
+                {
+                    const u16 pixel = row[subx];
+                    color = pixel & 0x8000 ? ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) |
+                        ((pixel & 0x7C00) << 7) | (0x01000000u << layer) : 0;
+                }
+                else color = SampleBitmapLayer(layer, x, subx, subline);
+            }
             if (layer == 0 && color == 0x40000000)
             {
                 color = dst[x * CaptureScale + subx];
