@@ -246,7 +246,7 @@ void CapturedDisplay(int scale)
     std::printf("Captured 3D %dx: subpixel detail, native origins and invalidation PASS\n", scale);
 }
 
-void CapturedBitmapOBJ(int scale, unsigned engine)
+void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
 {
     auto nds = Console(true, scale);
     const unsigned bank = engine ? 3 : 1; // B -> AOBJ, D -> BOBJ.
@@ -259,6 +259,20 @@ void CapturedBitmapOBJ(int scale, unsigned engine)
     auto& polygon = Scene(*nds, 0, false, false);
     for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
         vertex->HiresPosition[0] += 8;
+    if (boundaryOnly)
+    {
+        // Expand the original captured rectangle by one source texel on each
+        // side, preserving its half-pixel X offset. No renderer edits.
+        for (unsigned i = 0; i < polygon.NumVertices; ++i)
+        {
+            auto& v = *polygon.Vertices[i];
+            const int dx = (i == 0 || i == 3) ? -1 : 1;
+            const int dy = i < 2 ? -1 : 1;
+            v.FinalPosition[0] += dx; v.HiresPosition[0] += dx * 16;
+            v.FinalPosition[1] += dy; v.HiresPosition[1] += dy * 16;
+        }
+        --polygon.YTop; ++polygon.YBottom;
+    }
     nds->GPU.GPU3D.RenderClearAttr1 = 0;
     RendererSettings settings{scale, false, true, false};
     Require(nds->GetRenderer().SetRenderSettings(settings), "OBJ capture settings failed");
@@ -287,6 +301,70 @@ void CapturedBitmapOBJ(int scale, unsigned engine)
     nds->ARM9Write32(0x04000000, 0x00010000);
     nds->ARM9Write16(0x05000000 + engine * 0x400, 0);
     for (u32 object = 0; object < 128; ++object) nds->ARM9Write16(oam + object * 8, 0x0200);
+    if (boundaryOnly)
+    {
+        Require(scale == 5, "boundary fixture requires exact 5x scale");
+        nds->ARM9Write16(oam, 0x0C00 | 29);
+        nds->ARM9Write16(oam + 2, 0xF000 | 17); // 64x64, XY flip, x=17.
+        nds->ARM9Write16(oam + 4, 0xF004); // Source (32,0), alpha 16.
+        nds->ARM9Write32(reg, 0x00011020);
+        Screen(*nds, false); Screen(*nds, false);
+        void *nt, *nb;
+        Require(nds->GetRenderer().GetFramebuffers(&nt, &nb), "boundary native frame missing");
+        Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+            "boundary display frame missing");
+        const bool selected = engine ? !nds->GPU.ScreenSwap : nds->GPU.ScreenSwap;
+        const auto* display = static_cast<const u32*>(selected ? top : bottom);
+        const auto* nativeFrame = static_cast<const u32*>(selected ? nt : nb);
+        size_t nativeErrors = 0, displayErrors = 0;
+        // CPU reference uses guest RGB555 bytes at native origins and the
+        // analytic expanded rectangle elsewhere, never the capture sampler.
+        for (int y = 0; y < 192; ++y)
+        for (int x = 0; x < 256; ++x)
+        {
+            const int lx = x - 17, ly = y - 29;
+            const bool covered = lx >= 0 && lx < 64 && ly >= 0 && ly < 64;
+            u32 nativeExpected = 0xFF000000;
+            if (covered)
+            {
+                const size_t address = ((63 - ly) * 256 + 95 - lx) * 2;
+                const u16 c = captured[address] | (u16(captured[address + 1]) << 8);
+                const auto channel = [](u32 v) { return v * 8 + v / 8; };
+                if (c & 0x8000) nativeExpected |= channel(c & 31) << 16 |
+                    channel((c >> 5) & 31) << 8 | channel((c >> 10) & 31);
+            }
+            nativeErrors += nativeFrame[y * 256 + x] != nativeExpected;
+            for (int sy = 0; sy < 5; ++sy)
+            for (int sx = 0; sx < 5; ++sx)
+            {
+                u32 expected = nativeExpected;
+                if (sx || sy)
+                {
+                    const int sourceX = (95 - lx) * 5 - sx;
+                    const int sourceY = (63 - ly) * 5 - sy;
+                    // Local source domain is [0,64); capture rectangle is
+                    // [31.5,225.5) x [23,169), quantized to the 5x grid.
+                    const bool inside = covered && (63 - lx) * 5 >= sx &&
+                        (63 - ly) * 5 >= sy;
+                    expected = inside && sourceX >= 31 * 5 + 2 && sourceX < 225 * 5 + 2 &&
+                        sourceY >= 23 * 5 && sourceY < 169 * 5 ? 0xFFFB0000 : 0xFF000000;
+                }
+                const u32 observed = display[size_t(y * 5 + sy) * width + x * 5 + sx];
+                if (observed != expected)
+                {
+                    if (!displayErrors) std::fprintf(stderr,
+                        "Boundary engine=%u dst=(%d,%d)+(%d,%d) CPU=%08x actual=%08x\n",
+                        engine, x, y, sx, sy, expected, observed);
+                    ++displayErrors;
+                }
+            }
+        }
+        const bool unchanged = std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]);
+        std::printf("Boundary 5x engine=%u origin=(17,29) expansion=1 XY-flip: native=49152 errors=%zu display=1228800 errors=%zu guest-unchanged=%d\n",
+            engine, nativeErrors, displayErrors, unchanged);
+        Require(!nativeErrors && !displayErrors && unchanged, "5x inverted OBJ boundary differs from CPU reference");
+        return;
+    }
     nds->ARM9Write16(oam, 0x0C00); // Bitmap OBJ at y=0.
     nds->ARM9Write16(oam + 2, 0xC000); // 64x64 at x=0.
     nds->ARM9Write16(oam + 4, 0xF004); // Alpha 16; source x=32, y=0.
@@ -1145,6 +1223,9 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
+        if (argc == 2 && std::strcmp(argv[1], "captured-obj-boundary") == 0) {
+            CapturedBitmapOBJ(5, 0, true); CapturedBitmapOBJ(5, 1, true); return 0;
+        }
         if (argc == 4 && std::strcmp(argv[1], "captured-bitmap-obj") == 0) {
             const int scale = std::atoi(argv[2]), engine = std::atoi(argv[3]);
             Require(scale >= 1 && scale <= 16 && engine >= 0 && engine <= 1, "invalid OBJ fixture arguments");
