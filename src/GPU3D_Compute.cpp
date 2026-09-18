@@ -778,17 +778,22 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
                 }
 
                 glUniform1ui(UniformIdxCurVariant, i);
-                glUniform2f(UniformIdxTextureSize, 1.f / variants[i].Width, 1.f / variants[i].Height);
-                if (variants[i].CaptureYOffset != -1)
+                // The rasterise template declares every uniform at a fixed
+                // location, but NoTexture and ShadowMask builds never reference
+                // the texture ones, so strict drivers raise GL_INVALID_OPERATION
+                // there (and the pending error then fails later CheckError
+                // sites). Only the texture rasteriser programs use them.
+                if (variants[i].Texture != 0 && variants[i].BlendMode != 4)
                 {
-                    if (variants[i].Width == 128)
-                        glUniform1i(UniformIdxTexIsCapture, 1);
+                    glUniform2f(UniformIdxTextureSize, 1.f / variants[i].Width, 1.f / variants[i].Height);
+                    if (variants[i].CaptureYOffset != -1)
+                    {
+                        glUniform1i(UniformIdxTexIsCapture, variants[i].Width == 128 ? 1 : 2);
+                        glUniform1f(UniformIdxCaptureYOffset, (float)variants[i].CaptureYOffset / (float)variants[i].Height);
+                    }
                     else
-                        glUniform1i(UniformIdxTexIsCapture, 2);
-                    glUniform1f(UniformIdxCaptureYOffset, (float)variants[i].CaptureYOffset / (float)variants[i].Height);
+                        glUniform1i(UniformIdxTexIsCapture, 0);
                 }
-                else
-                    glUniform1i(UniformIdxTexIsCapture, 0);
                 glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, BinResultMemory);
                 glDispatchComputeIndirect(offsetof(BinResultHeader, VariantWorkCount) + i*4*4);
             }

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 namespace AllocationFixture
 {
@@ -33,6 +34,11 @@ struct Config
         throw std::runtime_error("unexpected config key");
     }
     bool GetBool(const char*) const { return false; }
+    std::string GetString(const char* key) const
+    {
+        if (!std::strcmp(key, "Video.GPU")) return {};
+        throw std::runtime_error("unexpected config key");
+    }
 };
 struct Instance
 {
@@ -47,6 +53,7 @@ struct EmuThread
     Instance* emuInstance;
     int videoRenderer = renderer3D_OpenGLCompute;
     int lastVideoRenderer = renderer3D_Software;
+    std::string lastVideoGPU;
     bool PublishedFailure = false;
     void publishVideoSettings(bool failed = false) { PublishedFailure = failed; }
     void updateRenderer();

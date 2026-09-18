@@ -6,6 +6,7 @@
 #include <volk.h>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace melonDS::Vulkan {
 // A core compute device, independent of Qt, windows and the presentation device.
@@ -45,7 +46,10 @@ public:
         VkImageView view{};
         VkDeviceMemory memory{};
     };
-    static std::shared_ptr<Device> Create(std::string& error);
+    struct Adapter { std::string id, name; VkPhysicalDeviceType type; };
+    static std::vector<Adapter> Enumerate(std::string& error);
+    static std::shared_ptr<Device> Create(std::string& error, const std::string& preferred = {});
+    const std::string& Id() const { return id; }
     ~Device();
     Device(const Device&) = delete;
     Device& operator=(const Device&) = delete;
@@ -68,7 +72,8 @@ public:
     void TrimPipelineCache();
 private:
     Device() = default;
-    void Init();
+    void Init(const std::string& preferred, std::vector<Adapter>* adapters = nullptr);
+    std::string id;
     uint32_t MemoryType(uint32_t bits,VkMemoryPropertyFlags required,
         VkMemoryPropertyFlags preferred = 0) const;
     VkInstance instance{};

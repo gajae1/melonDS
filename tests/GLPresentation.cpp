@@ -431,6 +431,7 @@ struct Config
 {
     int Scale = 1;
     int GetInt(const char* key) const { return !std::strcmp(key, "3D.GL.ScaleFactor") ? Scale : 0; }
+    std::string GetString(const char*) const { return {}; }
     void SetInt(const char* key, int value)
     {
         if (std::strcmp(key, "3D.GL.ScaleFactor")) throw std::runtime_error("unexpected config key");
@@ -454,6 +455,7 @@ struct EmuThread
 {
     Instance* emuInstance;
     int videoRenderer, lastVideoRenderer = renderer3D_Software;
+    std::string lastVideoGPU;
     bool useOpenGL = true, videoSettingsDirty = false;
     int unsafeRetires = 0;
     int msgResult = 0, glFailure = -1;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Device.h"
 #include "MemoryType.h"
+#include "AdapterSelection.h"
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -13,16 +14,25 @@ void Device::Check(VkResult result,const char* operation)
     if(result!=VK_SUCCESS)throw std::runtime_error(std::string(operation)+" (Vulkan "+std::to_string(result)+")");
 }
 
-std::shared_ptr<Device> Device::Create(std::string& error)
+std::vector<Device::Adapter> Device::Enumerate(std::string& error)
+{
+    error.clear();
+    std::vector<Adapter> adapters;
+    try { Device probe; probe.Init({}, &adapters); }
+    catch (const std::exception& failure) { error = failure.what(); adapters.clear(); }
+    return adapters;
+}
+
+std::shared_ptr<Device> Device::Create(std::string& error, const std::string& preferred)
 {
     error.clear();
     try {
         auto result=std::shared_ptr<Device>(new Device);
-        result->Init();return result;
+        result->Init(preferred);return result;
     }catch(const std::exception& failure){error=failure.what();return nullptr;}
 }
 
-void Device::Init()
+void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters)
 {
     // Process-wide loader only. Instance/device functions are never published
     // globally, so another emulator device cannot replace this one's dispatch.
@@ -47,6 +57,7 @@ void Device::Init()
     std::vector<VkPhysicalDevice> devices(count);
     Check(f.vkEnumeratePhysicalDevices(instance,&count,devices.data()),"Enumerate compute GPUs");
     uint32_t family=0;
+    int bestRank=-1;
     bool portabilitySubset=false;
     for(auto candidate:devices) {
         VkPhysicalDeviceProperties props{};f.vkGetPhysicalDeviceProperties(candidate,&props);
@@ -75,11 +86,21 @@ void Device::Init()
         f.vkGetPhysicalDeviceQueueFamilyProperties(candidate,&count,nullptr);
         std::vector<VkQueueFamilyProperties> queues(count);f.vkGetPhysicalDeviceQueueFamilyProperties(candidate,&count,queues.data());
         for(uint32_t i=0;i<count;++i)if(queues[i].queueCount&&(queues[i].queueFlags&VK_QUEUE_COMPUTE_BIT)) {
-            physical=candidate;properties=props;family=i;break;
+            VkPhysicalDeviceIDProperties ids{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+            VkPhysicalDeviceProperties2 details{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            details.pNext=&ids; f.vkGetPhysicalDeviceProperties2(candidate,&details);
+            const auto candidateId=AdapterId(ids.deviceUUID);
+            if(adapters) adapters->push_back({candidateId,props.deviceName,props.deviceType});
+            const int rank=AdapterRank(props.deviceType);
+            if((preferred.empty() && rank>bestRank) || (!preferred.empty() && candidateId==preferred)) {
+                physical=candidate;properties=props;family=i;id=candidateId;bestRank=rank;
+            }
+            break;
         }
-        if(physical)break;
     }
-    if(!physical)throw std::runtime_error("No GPU satisfies compute resource limits");
+    if(adapters)return;
+    if(!physical)throw std::runtime_error(preferred.empty() ? "No GPU satisfies compute resource limits" :
+        "Selected GPU is unavailable or does not satisfy compute resource limits");
     Check(f.vkEnumerateDeviceExtensionProperties(physical,nullptr,&count,nullptr),"Device extensions");
     extensions.resize(count);Check(f.vkEnumerateDeviceExtensionProperties(physical,nullptr,&count,extensions.data()),"Device extensions");
     // Portability subset is mandatory to enable when advertised (e.g. MoltenVK).

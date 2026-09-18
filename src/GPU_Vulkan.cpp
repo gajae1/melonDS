@@ -9,14 +9,19 @@
 
 namespace melonDS
 {
-VulkanRenderer::VulkanRenderer(NDS& nds)
-    : SoftRenderer(nds, std::make_unique<VulkanRenderer3D>(nds.GPU.GPU3D))
+VulkanRenderer::VulkanRenderer(NDS& nds, const std::string& preferred)
+    : SoftRenderer(nds, std::make_unique<VulkanRenderer3D>(nds.GPU.GPU3D, preferred))
 {
 }
 
 bool VulkanRenderer::IsAvailable(std::string& error)
 {
     return bool(Vulkan::Device::Create(error));
+}
+
+std::string VulkanRenderer::DeviceName() const
+{
+    return static_cast<const VulkanRenderer3D&>(*Rend3D).DeviceName();
 }
 
 bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)

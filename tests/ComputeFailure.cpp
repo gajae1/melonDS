@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <SDL2/SDL.h>
 
 // The production frontend methods run against the real GPU here. Only config
@@ -41,6 +42,11 @@ struct FixtureConfig
         if (std::strcmp(key, "3D.Soft.Threaded") == 0 ||
             std::strcmp(key, "3D.GL.HiresCoordinates") == 0 ||
             std::strcmp(key, "3D.GL.BetterPolygons") == 0) return false;
+        throw std::runtime_error("unexpected renderer config key");
+    }
+    std::string GetString(const char* key) const
+    {
+        if (std::strcmp(key, "Video.GPU") == 0) return {};
         throw std::runtime_error("unexpected renderer config key");
     }
 };
@@ -70,6 +76,7 @@ struct EmuThread
     FixtureInstance* emuInstance;
     int videoRenderer = renderer3D_OpenGLCompute;
     int lastVideoRenderer = renderer3D_Software;
+    std::string lastVideoGPU;
     bool PublishedFailure = false;
     bool InspectLock = false, UnlockedFallback = false;
     void publishVideoSettings(bool failed = false) {

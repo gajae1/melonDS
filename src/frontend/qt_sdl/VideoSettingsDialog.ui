@@ -119,6 +119,19 @@
     </layout>
    </item>
    <item row="5" column="0" colspan="2">
+    <layout class="QVBoxLayout" name="gpuLayout">
+     <item><widget class="QLabel" name="lblGPU">
+      <property name="text"><string>Graphics card (Vulkan):</string></property>
+      <property name="buddy"><cstring>cbGPU</cstring></property>
+     </widget></item>
+     <item><widget class="QComboBox" name="cbGPU"/></item>
+     <item><widget class="QLabel" name="lblGPUHelp">
+      <property name="text"><string>Applies to Vulkan rendering and Vulkan display. OpenGL uses the graphics card selected by your operating system. If a selected GPU is unavailable, Software/native display is used.</string></property>
+      <property name="wordWrap"><bool>true</bool></property>
+     </widget></item>
+    </layout>
+   </item>
+   <item row="6" column="0" colspan="2">
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="orientation">
       <enum>Qt::Orientation::Horizontal</enum>

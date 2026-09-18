@@ -25,6 +25,9 @@
 #include "Platform.h"
 #include "Config.h"
 #include "GPU.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "Vulkan/Device.h"
+#endif
 #include "main.h"
 
 #include "VideoSettingsDialog.h"
@@ -55,6 +58,10 @@ void VideoSettingsDialog::setEnabled()
     ui->cbSoftwareThreaded->setEnabled(softwareRenderer);
     ui->cbPixelConversion->setEnabled(ramOutput);
     const bool vulkanRenderer = renderer == renderer3D_Vulkan;
+    ui->cbGPU->setEnabled(vulkanRenderer || (ramOutput && cfg.GetBool("Screen.UseVulkan")));
+#ifndef VULKANRENDERER_ENABLED
+    ui->cbGPU->setEnabled(false);
+#endif
     ui->cbxGLResolution->setEnabled(RendererUsesOpenGL(renderer) || vulkanRenderer);
 
     ui->cbBetterPolygons->setEnabled(renderer == renderer3D_OpenGL);
@@ -71,6 +78,29 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
 
     auto& cfg = emuInstance->getGlobalConfig();
     oldRenderer = cfg.GetInt("3D.Renderer");
+    oldGPU = cfg.GetString("Video.GPU");
+    {
+        const QSignalBlocker blocker(ui->cbGPU);
+        ui->cbGPU->addItem(tr("Automatic (prefer discrete GPU)"), QString());
+#ifdef VULKANRENDERER_ENABLED
+        std::string error;
+        for (const auto& adapter : melonDS::Vulkan::Device::Enumerate(error))
+        {
+            const auto kind = adapter.type == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? tr("Discrete") :
+                adapter.type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? tr("Integrated") : tr("Other");
+            ui->cbGPU->addItem(QString::fromStdString(adapter.name) + tr(" (%1)").arg(kind),
+                QString::fromStdString(adapter.id));
+        }
+        if (!error.empty()) ui->lblGPUHelp->setText(tr("GPU discovery failed: %1").arg(QString::fromStdString(error)));
+#endif
+        int index = ui->cbGPU->findData(QString::fromStdString(oldGPU));
+        if (index < 0)
+        {
+            ui->cbGPU->addItem(tr("Previously selected GPU (unavailable)"), QString::fromStdString(oldGPU));
+            index = ui->cbGPU->count() - 1;
+        }
+        ui->cbGPU->setCurrentIndex(index);
+    }
     oldGLDisplay = cfg.GetBool("Screen.UseGL");
     oldVulkanDisplay = cfg.GetBool("Screen.UseVulkan");
     oldVSync = cfg.GetBool("Screen.VSync");
@@ -189,6 +219,7 @@ void VideoSettingsDialog::refreshRendererStatus()
         }
     };
     QString text = tr("Selected: %1. Active: %2.").arg(name(selected), name(status.renderer));
+    if (!status.gpuName.isEmpty()) text += tr("\nActive rendering GPU: %1").arg(status.gpuName);
     if (thread->hasGLFailure())
         text += tr("\nOpenGL display failed. Rendering is paused until recovery succeeds.");
     else if (status.pending)
@@ -238,7 +269,9 @@ void VideoSettingsDialog::on_VideoSettingsDialog_rejected()
     bool old_gl = UsesGL();
 
     auto& cfg = emuInstance->getGlobalConfig();
-    const bool vulkanChanged = cfg.GetBool("Screen.UseVulkan") != oldVulkanDisplay;
+    const bool vulkanChanged = cfg.GetBool("Screen.UseVulkan") != oldVulkanDisplay ||
+        cfg.GetString("Video.GPU") != oldGPU;
+    cfg.SetString("Video.GPU", oldGPU);
     cfg.SetBool("Screen.UseVulkan", oldVulkanDisplay);
     cfg.SetInt("3D.Renderer", oldRenderer);
     cfg.SetBool("Screen.UseGL", oldGLDisplay);
@@ -298,6 +331,18 @@ void VideoSettingsDialog::on_cbVulkanDisplay_stateChanged(int state)
     cfg.SetBool("Screen.UseVulkan", state != 0);
     setEnabled();
     // Presentation owns different window resources, including with Vulkan 3D.
+    emit updateVideoSettings(true);
+}
+
+void VideoSettingsDialog::on_cbGPU_currentIndexChanged(int index)
+{
+    if (index < 0) return;
+    auto& cfg = emuInstance->getGlobalConfig();
+    const auto selected = ui->cbGPU->itemData(index).toString().toStdString();
+    if (selected == cfg.GetString("Video.GPU")) return;
+    cfg.SetString("Video.GPU", selected);
+    // Recreate the display surface too, so the presenter cannot keep using
+    // a different GPU after the compute device changes.
     emit updateVideoSettings(true);
 }
 

@@ -14,7 +14,8 @@ namespace melonDS
 class VulkanRenderer final : public SoftRenderer
 {
 public:
-    explicit VulkanRenderer(NDS& nds);
+    explicit VulkanRenderer(NDS& nds, const std::string& preferred = {});
+    std::string DeviceName() const;
     static bool IsAvailable(std::string& error);
     bool SetRenderSettings(RendererSettings& settings) override;
     bool HasRenderFailure() const override;

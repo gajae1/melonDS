@@ -779,7 +779,8 @@ ScreenPanelNative::~ScreenPanelNative()
 bool ScreenPanelNative::initVulkan()
 {
     std::string error;
-    vulkan = Vulkan::Presenter::Create(reinterpret_cast<void*>(winId()), error);
+    vulkan = Vulkan::Presenter::Create(reinterpret_cast<void*>(winId()), error,
+        emuInstance->getGlobalConfig().GetString("Video.GPU"));
     if (!vulkan) {
         Platform::Log(Platform::LogLevel::Warn, "Vulkan output unavailable: %s\n", error.c_str());
         return false;

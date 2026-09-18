@@ -4,6 +4,7 @@
 #include <QGuiApplication>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
+#include <QString>
 #include "Vulkan/Device.h"
 #include "Vulkan/ComputePipeline.h"
 #include "Vulkan/EmbeddedShaders.h"
@@ -49,6 +50,30 @@ static void SubmissionFailure()
 static void Check(VkResult result)
 {
     if (result != VK_SUCCESS) throw std::runtime_error("Vulkan result " + std::to_string(result));
+}
+
+static std::string GLReferenceAdapter()
+{
+    const auto* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    std::printf("GL reference GPU: %s\n", renderer ? renderer : "(unavailable)");
+    if (renderer && *renderer)
+    {
+        const auto name = QString::fromUtf8(renderer);
+        std::string error;
+        for (const auto& adapter : Vulkan::Device::Enumerate(error))
+        {
+            const auto candidate = QString::fromStdString(adapter.name);
+            if (!candidate.isEmpty() && (candidate.contains(name, Qt::CaseInsensitive) ||
+                name.contains(candidate, Qt::CaseInsensitive)))
+            {
+                std::printf("Vulkan reference GPU: %s (explicit %s)\n", adapter.name.c_str(), adapter.id.c_str());
+                return adapter.id;
+            }
+        }
+        if (!error.empty()) std::fprintf(stderr, "Vulkan adapter discovery: %s\n", error.c_str());
+    }
+    std::puts("Vulkan reference GPU: automatic (GL adapter match unavailable)");
+    return {};
 }
 
 struct Inputs {
@@ -127,8 +152,8 @@ struct VulkanSpans {
         if(layout)d->vkDestroyPipelineLayout(device,layout,nullptr);
         for(auto set:sets)if(set)d->vkDestroyDescriptorSetLayout(device,set,nullptr);
     }
-    bool Init() {
-        std::string error;owner=melonDS::Vulkan::Device::Create(error);
+    bool Init(const std::string& preferred) {
+        std::string error;owner=melonDS::Vulkan::Device::Create(error,preferred);
         if(!owner){std::fprintf(stderr,"Vulkan compute unavailable: %s\n",error.c_str());return false;}
         device=owner->Handle();d=&owner->Functions();
         const VkDescriptorType types[]={VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -329,11 +354,12 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
     return result;
 }
 
-static void Frames(unsigned scale)
+static void Frames(unsigned scale,const std::string& preferred)
 {
     const auto& shaders=Vulkan::EmbeddedShaders(scale);
-    std::string error;auto device=Vulkan::Device::Create(error);
+    std::string error;auto device=Vulkan::Device::Create(error,preferred);
     if(!device)throw std::runtime_error(error);
+    std::printf("Vulkan/GL %ux full graph device: %s (%s)\n",scale,device->Properties().deviceName,device->Id().c_str());
     Vulkan::ComputePipeline pipeline(device,shaders,scale);
     std::vector<TextureInput> sources;
     for(unsigned kind=0;kind<3;++kind) {
@@ -445,12 +471,15 @@ int main(int argc,char** argv)
     QOffscreenSurface surface;surface.setFormat(context.format());surface.create();if(!context.makeCurrent(&surface))return 77;
     if(!gladLoadGLLoader([](const char* name)->void*{return reinterpret_cast<void*>(QOpenGLContext::currentContext()->getProcAddress(name));}))return 77;
     try {
+        // Exact differential comparisons must use the GL reference's GPU, not
+        // the product's independent prefer-discrete automatic selection.
+        const auto preferred = GLReferenceAdapter();
         const bool high = argc == 2 && std::strcmp(argv[1], "high-scales") == 0;
         const std::vector<unsigned> scales = high ? std::vector<unsigned>{4,5,8,9,16} : std::vector<unsigned>{1,2,3};
         for(unsigned scale : scales) {
             const Inputs input(scale);
             std::array<std::unique_ptr<VulkanSpans>,2> devices;
-            for(auto& vk:devices){vk=std::make_unique<VulkanSpans>();if(!vk->Init())return 77;}
+            for(auto& vk:devices){vk=std::make_unique<VulkanSpans>();if(!vk->Init(preferred))return 77;}
             for(unsigned variant=0;variant<2;++variant) {
                 const auto expected=GLSpans(input,variant);
                 const auto actual=devices[variant]->Run(input,Vulkan::EmbeddedShaders(scale)[variant]);
@@ -463,7 +492,7 @@ int main(int argc,char** argv)
                 devices[variant].reset(); // The other initialized device must remain usable.
                 std::printf("Vulkan/GL %ux %s: %zu spans, all 24 words and output guard equal PASS\n",scale,variant?"W":"Z",input.indices.size());
             }
-            Frames(scale);
+            Frames(scale,preferred);
         }
         SubmissionFailure();
     }catch(const std::exception& error){std::fprintf(stderr,"%s\n",error.what());return 4;}

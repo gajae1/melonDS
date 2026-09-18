@@ -10,7 +10,7 @@ namespace Vulkan {
 class Presenter {
 public:
     enum class Result { Presented, Skipped, Failed };
-    static std::unique_ptr<Presenter> Create(void* nativeWindow, std::string& error);
+    static std::unique_ptr<Presenter> Create(void* nativeWindow, std::string& error, const std::string& preferredId = {});
     ~Presenter();
     Result Present(const void* bgra, uint32_t width, uint32_t height, uint32_t stride, std::string& error);
 private:

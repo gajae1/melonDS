@@ -71,7 +71,8 @@ Pipeline::Variant MakeVariant(const Polygon& polygon, u32 dispCnt, bool wbuffer,
 }
 }
 
-VulkanRenderer3D::VulkanRenderer3D(melonDS::GPU3D& gpu) : Renderer3D(gpu) {}
+VulkanRenderer3D::VulkanRenderer3D(melonDS::GPU3D& gpu, const std::string& preferred)
+    : Renderer3D(gpu), PreferredDevice(preferred) {}
 VulkanRenderer3D::~VulkanRenderer3D() = default;
 
 bool VulkanRenderer3D::Init()
@@ -79,7 +80,7 @@ bool VulkanRenderer3D::Init()
     try
     {
         std::string error;
-        Device = Vulkan::Device::Create(error);
+        Device = Vulkan::Device::Create(error, PreferredDevice);
         if (!Device) throw std::runtime_error(error);
         Pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders());
         Texcache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*Pipeline});

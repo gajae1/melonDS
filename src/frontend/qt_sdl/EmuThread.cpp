@@ -1382,8 +1382,11 @@ void EmuThread::updateRenderer()
 {
     auto nds = emuInstance->nds;
     bool failed = false;
+    auto& cfg = emuInstance->getGlobalConfig();
+    const auto preferredGPU = cfg.GetString("Video.GPU");
 
-    if (videoRenderer != lastVideoRenderer)
+    if (videoRenderer != lastVideoRenderer ||
+        (videoRenderer == renderer3D_Vulkan && preferredGPU != lastVideoGPU))
     {
         switch (videoRenderer)
         {
@@ -1406,7 +1409,7 @@ void EmuThread::updateRenderer()
                 break;
             case renderer3D_Vulkan:
 #ifdef VULKANRENDERER_ENABLED
-                nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds));
+                nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds, preferredGPU));
 #else
                 nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
 #endif
@@ -1424,8 +1427,8 @@ void EmuThread::updateRenderer()
         emuInstance->osdAddMessage(0xFFA0A0, "3D renderer initialization failed; using software rendering");
     }
     lastVideoRenderer = videoRenderer;
+    lastVideoGPU = preferredGPU;
 
-    auto& cfg = emuInstance->getGlobalConfig();
     // A shared OpenGL configuration may request more than Vulkan's embedded
     // scales. Normalize only Vulkan; leave Software/OpenGL preferences alone.
     if (videoRenderer == renderer3D_Vulkan)
@@ -1509,6 +1512,11 @@ void EmuThread::publishVideoSettings(bool failed)
         videoStatus.pending = false;
         videoStatus.compiling = emuInstance->nds->GetRenderer().NeedsShaderCompile();
         videoStatus.failed = failed;
+        videoStatus.gpuName.clear();
+#ifdef VULKANRENDERER_ENABLED
+        if (const auto* renderer = dynamic_cast<const VulkanRenderer*>(&emuInstance->nds->GetRenderer()))
+            videoStatus.gpuName = QString::fromStdString(renderer->DeviceName());
+#endif
     }
     emit videoSettingsStatusChanged();
 }

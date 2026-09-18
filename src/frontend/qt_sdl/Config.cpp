@@ -147,6 +147,7 @@ DefaultList<bool> DefaultBools =
 
 DefaultList<std::string> DefaultStrings =
 {
+    {"Video.GPU",                       ""},
     {"Audio.OutputDevice",              ""},
     {"DLDI.ImagePath",                  "dldi.bin"},
     {"DSi.SD.ImagePath",                "dsisd.bin"},

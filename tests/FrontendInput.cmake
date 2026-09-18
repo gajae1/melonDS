@@ -1072,10 +1072,11 @@ endforeach()
 if (WIN32)
     add_executable(VulkanPresentation "${CMAKE_SOURCE_DIR}/tests/VulkanPresentation.cpp"
         "${CMAKE_SOURCE_DIR}/src/frontend/graphics/vulkan/Presenter.cpp")
-    target_include_directories(VulkanPresentation PRIVATE "${CMAKE_SOURCE_DIR}/src/frontend")
+    target_include_directories(VulkanPresentation PRIVATE "${CMAKE_SOURCE_DIR}/src/frontend" "${CMAKE_SOURCE_DIR}/src")
     target_link_libraries(VulkanPresentation PRIVATE ${QT_LINK_LIBS})
     add_test(NAME vulkan-native-presentation COMMAND VulkanPresentation)
-    set_tests_properties(vulkan-native-presentation PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+    # The fixture reads the composited desktop, which races parallel GPU tests.
+    set_tests_properties(vulkan-native-presentation PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
 endif()
 
 if (MELONDS_TEST_GPU AND TARGET vulkan-compute)

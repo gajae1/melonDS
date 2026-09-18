@@ -65,6 +65,7 @@ private slots:
     void on_VideoSettingsDialog_rejected();
 
     void onChange3DRenderer(int renderer);
+    void on_cbGPU_currentIndexChanged(int index);
     void on_cbGLDisplay_stateChanged(int state);
     void on_cbVulkanDisplay_stateChanged(int state);
     void on_cbVSync_stateChanged(int state);
@@ -87,6 +88,7 @@ private:
     QButtonGroup* grp3DRenderer;
 
     int oldRenderer;
+    std::string oldGPU;
     int oldGLDisplay;
     bool oldVulkanDisplay;
     int oldVSync;

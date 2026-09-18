@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Presenter.h"
+#include "Vulkan/AdapterSelection.h"
 #include <QtGui/qtguiglobal.h>
 #if defined(Q_OS_WIN) && __has_include(<vulkan/vulkan.h>)
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -104,7 +105,7 @@ struct Presenter::Impl {
         }
         if (surface && destroySurface) destroySurface(instance.vkInstance(), surface, nullptr);
     }
-    bool Init(void* handle) {
+    bool Init(void* handle, const std::string& preferredId = {}) {
         window = static_cast<HWND>(handle);
         if (!window || !IsWindow(window)) { error = "No valid native window"; return false; }
         instance.setApiVersion(QVersionNumber(1,1));
@@ -124,7 +125,8 @@ struct Presenter::Impl {
 #undef LOAD_INSTANCE
         const auto createSurface = reinterpret_cast<PFN_vkCreateWin32SurfaceKHR>(instance.getInstanceProcAddr("vkCreateWin32SurfaceKHR"));
         const auto features2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(instance.getInstanceProcAddr("vkGetPhysicalDeviceFeatures2"));
-        if (!f || !destroySurface || !surfaceSupport || !capabilities || !formats || !createSurface || !features2) {
+        const auto properties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(instance.getInstanceProcAddr("vkGetPhysicalDeviceProperties2"));
+        if (!f || !destroySurface || !surfaceSupport || !capabilities || !formats || !createSurface || !features2 || !properties2) {
             error = "Vulkan presentation functions unavailable"; return false;
         }
         VkWin32SurfaceCreateInfoKHR surfaceInfo{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
@@ -134,7 +136,14 @@ struct Presenter::Impl {
         if (!Check(f->vkEnumeratePhysicalDevices(instance.vkInstance(), &count, nullptr), "Enumerate GPUs")) return false;
         std::vector<VkPhysicalDevice> devices(count);
         if (!Check(f->vkEnumeratePhysicalDevices(instance.vkInstance(), &count, devices.data()), "Enumerate GPUs")) return false;
+        int bestRank = std::numeric_limits<int>::min();
         for (const auto candidate : devices) {
+            VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+            VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            properties.pNext = &id; properties2(candidate, &properties);
+            if (!preferredId.empty() && melonDS::Vulkan::AdapterId(id.deviceUUID) != preferredId) continue;
+            const int rank = melonDS::Vulkan::AdapterRank(int(properties.properties.deviceType));
+            if (physical && rank <= bestRank) continue;
             uint32_t n = 0;
             if (f->vkEnumerateDeviceExtensionProperties(candidate, nullptr, &n, nullptr) != VK_SUCCESS) continue;
             std::vector<VkExtensionProperties> extensions(n);
@@ -154,12 +163,16 @@ struct Presenter::Impl {
                 VkBool32 supported = false;
                 if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
                     surfaceSupport(candidate,i,surface,&supported) == VK_SUCCESS && supported) {
-                    physical = candidate; family = i; break;
+                    physical = candidate; family = i; bestRank = rank; break;
                 }
             }
-            if (physical) break;
+            if (physical && !preferredId.empty()) break;
         }
-        if (!physical) { error = "No GPU with safe swapchain presentation support"; return false; }
+        if (!physical) {
+            error = preferredId.empty() ? "No GPU with safe swapchain presentation support"
+                : "Selected GPU is unavailable or lacks safe swapchain presentation support";
+            return false;
+        }
         const float priority = 1;
         VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         queueInfo.queueFamilyIndex = family; queueInfo.queueCount = 1; queueInfo.pQueuePriorities = &priority;
@@ -346,11 +359,11 @@ struct Presenter::Impl {};
 #endif
 Presenter::Presenter() : impl(std::make_unique<Impl>()) {}
 Presenter::~Presenter() = default;
-std::unique_ptr<Presenter> Presenter::Create(void* nativeWindow,std::string& error) {
+std::unique_ptr<Presenter> Presenter::Create(void* nativeWindow,std::string& error,const std::string& preferredId) {
     error.clear();
 #if defined(Q_OS_WIN) && __has_include(<vulkan/vulkan.h>) && defined(VK_EXT_swapchain_maintenance1) && QT_CONFIG(vulkan)
     auto result=std::unique_ptr<Presenter>(new Presenter);
-    if (!result->impl->Init(nativeWindow)) { error=result->impl->error; return nullptr; }
+    if (!result->impl->Init(nativeWindow,preferredId)) { error=result->impl->error; return nullptr; }
     return result;
 #else
     error="Vulkan display is not built for this platform"; return nullptr;

@@ -167,6 +167,7 @@ public:
         bool compiling = false;
         bool failed = false;
         int vulkanSupport = -1; // Probed on the emulation thread, independent of GL.
+        QString gpuName;
     };
     VideoSettingsStatus videoSettingsStatus();
 
@@ -248,6 +249,7 @@ private:
     int autoScreenSizing;
 
     int lastVideoRenderer = -1;
+    std::string lastVideoGPU;
 
 
     bool useOpenGL = false;
