@@ -18,10 +18,13 @@ public:
     DisplayCompositor(const DisplayCompositor&) = delete;
     DisplayCompositor& operator=(const DisplayCompositor&) = delete;
     // Input is RGBA8 in GENERAL layout; output texels are packed CpuBGRA words.
-    // Synchronous readback copies only GPU-composed rows, preserving CPU capture
-    // overrides and unvisited back-buffer rows. Images remain owned internally.
+    // Direct backing is renderer-owned, cached/coherent, and exactly matches
+    // destination. Only composed row ranges are transferred; CPU capture/fill
+    // and Keep rows survive. Null backing retains the vector/staging path.
+    // Both paths complete synchronously before returning.
     void Compose(u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines,
-        const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination);
+        const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
+        const Device::Buffer* direct = nullptr);
 private:
     void Init(std::span<const u32> shader);
     void Cleanup();

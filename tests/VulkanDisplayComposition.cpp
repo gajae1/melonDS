@@ -5,10 +5,12 @@
 #include "Vulkan/ComputePipeline.h"
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 // Test-only state generation/failure injection, not a production setting/API.
 #define private public
@@ -73,6 +75,10 @@ std::shared_ptr<Vulkan::Device::Image> Upload(const std::shared_ptr<Vulkan::Devi
     device->SubmitAndWait();
     return image;
 }
+
+void DirectDifferential(const std::shared_ptr<Vulkan::Device>& device, int scale, int sourceScale,
+    const std::vector<Line>& original, const std::shared_ptr<Vulkan::Device::Image>& input,
+    std::span<const u32> oracle, size_t& compared);
 
 void Differential(const std::shared_ptr<Vulkan::Device>& device, int scale, int sourceScale, size_t& compared)
 {
@@ -162,10 +168,12 @@ void Differential(const std::shared_ptr<Vulkan::Device>& device, int scale, int 
     Equal(gpu, expected, "second screen composition");
     compared += expected.size() * 3;
     std::printf("Differential output=%dx source=%dx: %zu pixels x GPU/CPU/screen-1 PASS\n", scale, sourceScale, expected.size());
+    DirectDifferential(device, scale, sourceScale, lines, input, expected, compared);
 }
 
 struct RendererAccess : Renderer
 {
+    static u32 Back(Renderer& renderer) { return renderer.*(&RendererAccess::BackBuffer); }
     static VulkanRenderer3D& Rasterizer(Renderer& renderer)
     {
         return static_cast<VulkanRenderer3D&>(*(renderer.*(&RendererAccess::Rend3D)));
@@ -250,27 +258,39 @@ struct FailOneBegin
     static inline volk::VolkDeviceTable* table = nullptr;
     static inline PFN_vkBeginCommandBuffer original = nullptr;
     static inline bool observed = false;
-    explicit FailOneBegin(Vulkan::Device& device)
+    static inline unsigned remaining = 0;
+    explicit FailOneBegin(Vulkan::Device& device, unsigned skip = 0)
     {
         table = &const_cast<volk::VolkDeviceTable&>(device.Functions());
         original = table->vkBeginCommandBuffer;
         observed = false;
+        remaining = skip;
         table->vkBeginCommandBuffer = Fail;
     }
     ~FailOneBegin() { table->vkBeginCommandBuffer = original; }
-    static VKAPI_ATTR VkResult VKAPI_CALL Fail(VkCommandBuffer, const VkCommandBufferBeginInfo*)
+    static VKAPI_ATTR VkResult VKAPI_CALL Fail(VkCommandBuffer command, const VkCommandBufferBeginInfo* info)
     {
+        if (remaining) { --remaining; return original(command, info); }
         table->vkBeginCommandBuffer = original;
         observed = true;
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
 };
 
-std::vector<u32> IntegrationFrame(NDS& nds, bool unavailable, bool deferred, bool failBegin = false)
+std::vector<u32> IntegrationFrame(NDS& nds, bool unavailable, bool deferred, bool failBegin = false,
+    bool switchScreens = false, unsigned failSkip = 0)
 {
     auto& renderer = static_cast<VulkanRenderer&>(nds.GetRenderer());
     auto& raster = RendererAccess::Rasterizer(renderer);
     Require(bool(raster.Compositor), "GPU compositor was not activated");
+    Renderer::DisplayFrame front;
+    Require(renderer.GetDisplayFrame(front), "initial front unavailable");
+    const size_t pixels = size_t(front.width) * front.height;
+    const std::vector<u32> frontTop(static_cast<const u32*>(front.top), static_cast<const u32*>(front.top) + pixels);
+    const std::vector<u32> frontBottom(static_cast<const u32*>(front.bottom), static_cast<const u32*>(front.bottom) + pixels);
+    const u32 back = RendererAccess::Back(renderer);
+    const u32* backTop = renderer.ScaledBuffers[back][0].data();
+    const u32* backBottom = renderer.ScaledBuffers[back][1].data();
     if (unavailable && !deferred) raster.Compositor.reset();
     auto& g3 = nds.GPU.GPU3D;
     g3.RenderNumPolygons = 0; g3.RenderClearAttr1 = (31u << 16) | 0x15AD;
@@ -286,6 +306,7 @@ std::vector<u32> IntegrationFrame(NDS& nds, bool unavailable, bool deferred, boo
     for (u32 y = 0; y < 192; ++y)
     {
         nds.GPU.VCount = y;
+        if (switchScreens && y == 96) nds.GPU.ScreenSwap = !nds.GPU.ScreenSwap;
         g3.RenderXPos = (y * 13) & 511;
         g3.AbortFrame = y % 19 == 0;
         nds.GPU.MasterBrightnessA = ((y % 3) << 14) | (y % 17);
@@ -296,10 +317,17 @@ std::vector<u32> IntegrationFrame(NDS& nds, bool unavailable, bool deferred, boo
     }
     if (unavailable && deferred) raster.Compositor.reset();
     std::optional<FailOneBegin> failure;
-    if (failBegin) failure.emplace(*raster.Device);
+    if (failBegin) failure.emplace(*raster.Device, failSkip);
     // A different next 3D image must not affect rows already latched.
     g3.AbortFrame = false; g3.RenderClearAttr1 = (31u << 16) | 0x7C00;
     renderer.Start3DRendering();
+    Renderer::DisplayFrame unchanged;
+    Require(renderer.GetDisplayFrame(unchanged) && unchanged.top == front.top && unchanged.bottom == front.bottom &&
+        unchanged.generation == front.generation, "back readback changed front publication");
+    Equal({static_cast<const u32*>(unchanged.top), pixels}, frontTop, "back readback changed front top bytes");
+    Equal({static_cast<const u32*>(unchanged.bottom), pixels}, frontBottom, "back readback changed front bottom bytes");
+    Require(renderer.ScaledBuffers[back][0].data() == backTop && renderer.ScaledBuffers[back][1].data() == backBottom,
+        "compositor failure changed renderer-owned backing");
     renderer.SwapBuffers();
     const u64 total = renderer.TotalSubmissionCount() - totalBefore;
     const u64 rasterSubmits = renderer.SubmissionCount() - rasterBefore;
@@ -318,29 +346,471 @@ std::vector<u32> IntegrationFrame(NDS& nds, bool unavailable, bool deferred, boo
     Require(renderer.GetDisplayFrame(frame) && frame.kind == Renderer::DisplayFrame::Kind::CpuBGRA,
         "CpuBGRA contract lost");
     Require(frame.width == 768 && frame.height == 576, "integration extent changed");
+    Require(frame.top == backTop && frame.bottom == backBottom && frame.generation > front.generation,
+        "swap did not publish the completed back slot");
+    Require(renderer.GetDisplayFrame(unchanged) && unchanged.top == frame.top && unchanged.bottom == frame.bottom &&
+        unchanged.generation == frame.generation, "paused/repeated frame query changed publication");
     const auto* top = static_cast<const u32*>(frame.top);
     const auto* bottom = static_cast<const u32*>(frame.bottom);
     std::vector<u32> output(top, top + size_t(frame.width) * frame.height);
     output.insert(output.end(), bottom, bottom + size_t(frame.width) * frame.height);
     return output;
 }
-std::unique_ptr<NDS> Console()
+// Real Vulkan failures, confined to the first display-backing attempt(s).
+// Record/free forwarding checks that partially allocated backing is released.
+struct FailDisplayMemory
+{
+    enum Mode { Allocation, Mapping, MemoryType };
+    static inline FailDisplayMemory* active = nullptr;
+    volk::VolkDeviceTable& f;
+    PFN_vkAllocateMemory allocate;
+    PFN_vkFreeMemory free;
+    PFN_vkMapMemory map;
+    PFN_vkGetBufferMemoryRequirements requirements;
+    Mode mode;
+    unsigned nth, attempts = 0, freed = 0;
+    bool injected = false;
+    std::vector<VkDeviceMemory> allocated;
+    FailDisplayMemory(Vulkan::Device& device, Mode mode, unsigned nth)
+        : f(const_cast<volk::VolkDeviceTable&>(device.Functions())), allocate(f.vkAllocateMemory),
+          free(f.vkFreeMemory), map(f.vkMapMemory), requirements(f.vkGetBufferMemoryRequirements), mode(mode), nth(nth)
+    {
+        allocated.reserve(4);
+        active = this;
+        f.vkAllocateMemory = Allocate; f.vkFreeMemory = Free;
+        f.vkMapMemory = Map; f.vkGetBufferMemoryRequirements = Requirements;
+    }
+    ~FailDisplayMemory()
+    {
+        f.vkAllocateMemory = allocate; f.vkFreeMemory = free;
+        f.vkMapMemory = map; f.vkGetBufferMemoryRequirements = requirements;
+        active = nullptr;
+    }
+    static bool Fail(Mode mode)
+    {
+        if (!active->injected && active->mode == mode && ++active->attempts == active->nth)
+            return active->injected = true;
+        return false;
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Allocate(VkDevice device, const VkMemoryAllocateInfo* info,
+        const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory)
+    {
+        if (Fail(Allocation)) return VK_ERROR_OUT_OF_HOST_MEMORY;
+        const auto result = active->allocate(device, info, callbacks, memory);
+        if (!active->injected && result == VK_SUCCESS) active->allocated.push_back(*memory);
+        return result;
+    }
+    static VKAPI_ATTR void VKAPI_CALL Free(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* callbacks)
+    {
+        if (std::find(active->allocated.begin(), active->allocated.end(), memory) != active->allocated.end()) ++active->freed;
+        active->free(device, memory, callbacks);
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Map(VkDevice device, VkDeviceMemory memory, VkDeviceSize offset,
+        VkDeviceSize size, VkMemoryMapFlags flags, void** data)
+    {
+        if (Fail(Mapping)) return VK_ERROR_MEMORY_MAP_FAILED;
+        return active->map(device, memory, offset, size, flags, data);
+    }
+    static VKAPI_ATTR void VKAPI_CALL Requirements(VkDevice device, VkBuffer buffer, VkMemoryRequirements* requirements)
+    {
+        active->requirements(device, buffer, requirements);
+        if (Fail(MemoryType)) requirements->memoryTypeBits = 0;
+    }
+};
+std::unique_ptr<NDS> Console(int scale = 3, bool forceVector = false)
 {
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args)); nds->Reset();
     nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds));
     Require(dynamic_cast<VulkanRenderer*>(&nds->GetRenderer()), "Vulkan initialization unavailable");
-    RendererSettings settings{3, false, false, false};
-    Require(nds->GetRenderer().SetRenderSettings(settings), "3x settings rejected");
+    std::optional<FailDisplayMemory> failure;
+    if (forceVector && scale > 1)
+        failure.emplace(*RendererAccess::Rasterizer(nds->GetRenderer()).Device, FailDisplayMemory::Allocation, 1);
+    RendererSettings settings{scale, false, false, false};
+    Require(nds->GetRenderer().SetRenderSettings(settings), "integration settings rejected");
+    if (failure) Require(failure->injected, "forced-vector benchmark did not exercise allocation fallback");
     nds->ARM9Write16(0x04000304, 0x020F);
     nds->ARM9Write32(0x04000000, 0x00010108);
     return nds;
+}
+
+void AllocationFallback()
+{
+    auto reference = Console();
+    const auto expected = IntegrationFrame(*reference, false, false);
+    for (const auto [mode, nth] : {std::pair{FailDisplayMemory::Allocation, 1u},
+        std::pair{FailDisplayMemory::Allocation, 3u}, std::pair{FailDisplayMemory::Mapping, 3u},
+        std::pair{FailDisplayMemory::MemoryType, 1u}})
+    {
+        auto nds = Console(1);
+        auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
+        auto& raster = RendererAccess::Rasterizer(renderer);
+        {
+            FailDisplayMemory failure(*raster.Device, mode, nth);
+            RendererSettings settings{3, false, false, false};
+            Require(renderer.SetRenderSettings(settings), "display allocation failure rejected the vector fallback");
+            Require(failure.injected && failure.freed == failure.allocated.size(), "partial display backing leaked");
+            for (unsigned slot = 0; slot < 2; ++slot)
+            for (unsigned screen = 0; screen < 2; ++screen)
+                Require(!renderer.ScaledMemory[slot][screen] &&
+                    renderer.ScaledBuffers[slot][screen].data() == renderer.ScaledStorage[slot][screen].data() &&
+                    renderer.ScaledStorage[slot][screen].size() == size_t(768) * 576,
+                    "allocation failure did not preserve all-vector backing");
+            std::printf("Backing failure mode=%u attempt=%u: prior_allocations=%zu freed=%u PASS\n",
+                unsigned(mode), nth, failure.allocated.size(), failure.freed);
+        }
+        Equal(IntegrationFrame(*nds, false, false), expected, "vector/staging allocation fallback changed output");
+        Require(bool(raster.Compositor->readback), "vector fallback did not use the legacy staging path");
+    }
+    auto mixed = Console(); auto late = Console();
+    const auto mixedExpected = IntegrationFrame(*mixed, false, false, false, true);
+    Equal(IntegrationFrame(*late, false, false, true, true, 1), mixedExpected,
+        "failure after first screen transfer changed CPU replay/backing");
+    std::puts("Allocation/map/type fallback and late second-screen failure: byte-identical PASS");
+}
+
+void BackingLifecycle()
+{
+    auto nds = Console();
+    auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
+    IntegrationFrame(*nds, false, false);
+    using Snapshots = std::array<std::array<std::vector<u32>, 2>, 2>;
+    using WeakBacking = std::array<std::array<std::weak_ptr<Vulkan::Device::Buffer>, 2>, 2>;
+    Snapshots native;
+    // Distinguish both native slots and all subpixels; resize must retain the
+    // appropriate old slot, not copy the front screen into all four buffers.
+    for (unsigned pass = 0; pass < 2; ++pass)
+    {
+        void* top = nullptr; void* bottom = nullptr;
+        Require(renderer.GetFramebuffers(&top, &bottom), "native lifecycle buffers missing");
+        const u32 slot = RendererAccess::Back(renderer) ^ 1;
+        u32* screens[] = {static_cast<u32*>(top), static_cast<u32*>(bottom)};
+        for (unsigned screen = 0; screen < 2; ++screen)
+        {
+            for (size_t i = 0; i < 256 * 192; ++i)
+                screens[screen][i] = 0xFF005500 ^ u32(i * 19 + slot * 127 + screen * 31);
+            native[slot][screen].assign(screens[screen], screens[screen] + 256 * 192);
+        }
+        renderer.SwapBuffers();
+    }
+    for (unsigned slot = 0; slot < 2; ++slot)
+    for (unsigned screen = 0; screen < 2; ++screen)
+        for (size_t i = 0; i < renderer.ScaledBuffers[slot][screen].size(); ++i)
+            renderer.ScaledBuffers[slot][screen][i] = 0xFF123400 ^ u32(i * 23 + slot * 113 + screen * 29);
+    int oldScale = 3;
+    size_t compared = 0;
+    for (int scale : {16, 1, 16, 3})
+    {
+        Renderer::DisplayFrame before, after;
+        Require(renderer.GetDisplayFrame(before), "pre-resize display missing");
+        Snapshots old = native;
+        WeakBacking retired;
+        for (unsigned slot = 0; slot < 2; ++slot)
+        for (unsigned screen = 0; screen < 2; ++screen)
+        {
+            retired[slot][screen] = renderer.ScaledMemory[slot][screen];
+            if (oldScale > 1)
+                old[slot][screen].assign(renderer.ScaledBuffers[slot][screen].begin(), renderer.ScaledBuffers[slot][screen].end());
+        }
+        RendererSettings settings{scale, false, false, false};
+        Require(renderer.SetRenderSettings(settings) && renderer.GetDisplayFrame(after), "paused resize failed");
+        Require(after.width == u32(256 * scale) && after.height == u32(192 * scale) && after.generation > before.generation,
+            "paused resize did not invalidate extent/generation");
+        for (unsigned slot = 0; slot < 2; ++slot)
+        for (unsigned screen = 0; screen < 2; ++screen)
+        {
+            Require(retired[slot][screen].expired(), "resize retained retired mapped backing");
+            if (scale == 1)
+            {
+                Require(!renderer.ScaledMemory[slot][screen] && renderer.ScaledBuffers[slot][screen].empty(),
+                    "1x retained scaled storage");
+                continue;
+            }
+            const auto& memory = renderer.ScaledMemory[slot][screen];
+            constexpr auto required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            Require(memory && (memory->MemoryProperties() & required) == required && renderer.ScaledStorage[slot][screen].empty(),
+                "direct backing selected unsuitable CPU memory or kept redundant vectors");
+            const auto output = renderer.ScaledBuffers[slot][screen];
+            for (int y = 0; y < 192 * scale; ++y)
+            for (int x = 0; x < 256 * scale; ++x)
+                Require(output[size_t(y) * 256 * scale + x] ==
+                    old[slot][screen][size_t(y * oldScale / scale) * 256 * oldScale + x * oldScale / scale],
+                    "paused resize changed slot-specific subpixels");
+            compared += output.size();
+        }
+        if (scale == 1)
+        {
+            const u32 front = RendererAccess::Back(renderer) ^ 1;
+            Equal({static_cast<const u32*>(after.top), 256 * 192}, native[front][0], "1x changed native top");
+            Equal({static_cast<const u32*>(after.bottom), 256 * 192}, native[front][1], "1x changed native bottom");
+        }
+        const auto pointers = renderer.ScaledBuffers;
+        Require(renderer.SetRenderSettings(settings), "same-scale settings rejected");
+        for (unsigned slot = 0; slot < 2; ++slot)
+        for (unsigned screen = 0; screen < 2; ++screen)
+            Require(renderer.ScaledBuffers[slot][screen].data() == pointers[slot][screen].data(),
+                "same-scale settings replaced backing");
+        oldScale = scale;
+    }
+    std::printf("Backing paused resize 3->16->1->16->3: %zu resampled pixels; memory_flags=0x%x PASS\n",
+        compared, renderer.ScaledMemory[0][0]->MemoryProperties());
+    for (bool reset : {false, true})
+    {
+        for (auto& slot : renderer.ScaledBuffers)
+            for (auto screen : slot) std::fill(screen.begin(), screen.end(), 0xFFA55331);
+        if (reset) renderer.Reset(); else renderer.Stop();
+        for (auto& slot : renderer.ScaledBuffers)
+            for (auto screen : slot)
+                Require(std::all_of(screen.begin(), screen.end(), [](u32 pixel) { return pixel == 0; }),
+                    "reset/stop left mapped pixels stale");
+    }
+    WeakBacking retired;
+    for (unsigned slot = 0; slot < 2; ++slot)
+        for (unsigned screen = 0; screen < 2; ++screen) retired[slot][screen] = renderer.ScaledMemory[slot][screen];
+    std::weak_ptr<Vulkan::Device> device = RendererAccess::Rasterizer(renderer).Device;
+    Renderer::DisplayFrame before, after;
+    Require(renderer.GetDisplayFrame(before), "pre-replacement frame missing");
+    nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
+    Require(nds->GetRenderer().GetDisplayFrame(after) && after.kind == Renderer::DisplayFrame::Kind::CpuBGRA &&
+        after.width == 256 && after.height == 192 && after.generation > before.generation,
+        "renderer replacement broke CPU publication");
+    for (const auto& slot : retired)
+        for (const auto& memory : slot) Require(memory.expired(), "renderer replacement leaked mapped backing");
+    Require(device.expired(), "renderer replacement left direct-backing device alive");
+    std::puts("Mapped backing reset/stop/replacement ownership and immediate CPU publication PASS");
+}
+
+// Observe real transfers without replacing their work or changing diagnostics.
+struct CopyProbe
+{
+    static inline CopyProbe* active = nullptr;
+    volk::VolkDeviceTable& f;
+    PFN_vkCmdCopyImageToBuffer original;
+    u64 bytes = 0;
+    VkBuffer target{};
+    std::vector<VkBufferImageCopy> regions;
+    explicit CopyProbe(Vulkan::Device& device)
+        : f(const_cast<volk::VolkDeviceTable&>(device.Functions())), original(f.vkCmdCopyImageToBuffer)
+    {
+        regions.reserve(192);
+        active = this;
+        f.vkCmdCopyImageToBuffer = Copy;
+    }
+    ~CopyProbe() { f.vkCmdCopyImageToBuffer = original; active = nullptr; }
+    static VKAPI_ATTR void VKAPI_CALL Copy(VkCommandBuffer command, VkImage image, VkImageLayout layout,
+        VkBuffer buffer, uint32_t count, const VkBufferImageCopy* copies)
+    {
+        active->target = buffer;
+        active->regions.assign(copies, copies + count);
+        for (u32 i = 0; i < count; ++i)
+            active->bytes += u64(copies[i].imageExtent.width) * copies[i].imageExtent.height * copies[i].imageExtent.depth * 4;
+        active->original(command, image, layout, buffer, count, copies);
+    }
+};
+void DirectDifferential(const std::shared_ptr<Vulkan::Device>& device, int scale, int sourceScale,
+    const std::vector<Line>& original, const std::shared_ptr<Vulkan::Device::Image>& input,
+    std::span<const u32> oracle, size_t& compared)
+{
+    Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale);
+    std::array<std::array<std::shared_ptr<Vulkan::Device::Buffer>, 2>, 2> backing;
+    const size_t row = size_t(256) * scale * scale;
+    for (auto& slot : backing)
+        for (auto& screen : slot)
+            screen = device->CreateBuffer(oracle.size_bytes(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                true, 0, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    for (unsigned slot = 0; slot < 2; ++slot)
+    for (unsigned screen = 0; screen < 2; ++screen)
+    {
+        const auto& memory = backing[slot][screen];
+        std::span<u32> output{static_cast<u32*>(memory->Data()), oracle.size()};
+        std::vector<u32> expected(oracle.begin(), oracle.end());
+        auto lines = original;
+        const u32 sentinel = 0xA537C2E1 ^ (slot << 20) ^ (screen << 24);
+        std::fill(output.begin(), output.end(), sentinel);
+        for (u32 y = 0; y < 192; ++y)
+        {
+            const bool cpuFill = slot == 0 && (y % 8 == 2 || y % 8 == 3);
+            if (cpuFill || (slot == 0 && y % 8 == 7) || (slot == 1 && y % 2 && y != 191))
+                lines[y].mode = Line::Keep;
+            else if (slot == 0 && y % 8 == 5) lines[y].mode = Line::CaptureOverride;
+            if (cpuFill || lines[y].mode == Line::CaptureOverride)
+                for (size_t x = 0; x < row; ++x)
+                    output[y * row + x] = (cpuFill ? 0xFF125600 : 0xFF983400) ^ u32(x + y * 131 + screen);
+            if (lines[y].mode == Line::Keep || lines[y].mode == Line::CaptureOverride)
+                std::copy_n(output.data() + y * row, row, expected.data() + y * row);
+        }
+        CopyProbe probe(*device);
+        compositor.Compose(screen, lines, input, sourceScale, output, memory.get());
+        Equal(output, expected, "direct backing != production oracle/preserved CPU rows");
+        Require(probe.target == memory->Handle() && !compositor.readback,
+            "direct copy did not target renderer-compatible backing without staging");
+        std::array<unsigned, 192> visits{};
+        for (const auto& copy : probe.regions)
+        {
+            Require(copy.imageOffset.x == 0 && copy.imageOffset.z == 0 && copy.imageOffset.y >= 0 &&
+                copy.imageOffset.y % scale == 0 && copy.imageExtent.width == u32(256 * scale) &&
+                copy.imageExtent.height % scale == 0 && copy.imageExtent.depth == 1 &&
+                copy.imageSubresource.layerCount == 1 && copy.bufferRowLength == 0 && copy.bufferImageHeight == 0,
+                "direct transfer region has wrong addressing");
+            const u32 first = copy.imageOffset.y / scale, end = first + copy.imageExtent.height / scale;
+            Require(first < end && end <= 192 && copy.bufferOffset == first * row * sizeof(u32),
+                "direct transfer range exceeds backing or has wrong offset");
+            for (u32 y = first; y < end; ++y) ++visits[y];
+            Require(first == 0 || lines[first - 1].mode == Line::Keep || lines[first - 1].mode == Line::CaptureOverride,
+                "contiguous composed rows were not coalesced");
+        }
+        unsigned composed = 0;
+        for (u32 y = 0; y < 192; ++y)
+        {
+            const bool writes = lines[y].mode != Line::Keep && lines[y].mode != Line::CaptureOverride;
+            Require(visits[y] == unsigned(writes), "direct transfer overwrote or missed a row");
+            composed += writes;
+        }
+        Require(probe.bytes == composed * row * sizeof(u32), "direct transfer byte accounting mismatch");
+        compared += oracle.size();
+        std::printf("Direct output=%dx source=%dx slot=%u screen=%u: ranges=%zu copied_bytes=%llu preserved_bytes=%llu PASS\n",
+            scale, sourceScale, slot, screen, probe.regions.size(), static_cast<unsigned long long>(probe.bytes),
+            static_cast<unsigned long long>(oracle.size_bytes() - probe.bytes));
+    }
+    auto memory = backing[0][0];
+    std::span<u32> output{static_cast<u32*>(memory->Data()), oracle.size()};
+    std::vector<u32> before(output.begin(), output.end());
+    std::vector<Line> keep(192);
+    for (auto& line : keep) line.mode = Line::Keep;
+    CopyProbe probe(*device);
+    compositor.Compose(0, keep, input, sourceScale, output, memory.get());
+    Equal(output, before, "all-Keep changed direct backing");
+    Require(probe.bytes == 0, "all-Keep issued a transfer");
+    bool rejected = false;
+    try { compositor.Compose(0, keep, input, sourceScale, before, memory.get()); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    Require(rejected, "mismatched mapped destination accepted");
+    compared += oracle.size();
+}
+using Clock = std::chrono::steady_clock;
+double Milliseconds(Clock::time_point start) { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
+double Quantile(std::vector<double> samples, double fraction)
+{
+    std::sort(samples.begin(), samples.end());
+    return samples[size_t((samples.size() - 1) * fraction)];
+}
+u64 Digest(std::span<const u32> pixels)
+{
+    u64 result = 1469598103934665603ull;
+    for (u32 pixel : pixels) { result ^= pixel; result *= 1099511628211ull; }
+    return result;
+}
+void BenchmarkCompose(const std::shared_ptr<Vulkan::Device>& device, int scale, int stride, bool directPath)
+{
+    const size_t row = size_t(256) * scale * scale, count = row * 192;
+    std::vector<u32> rgba(count, 0xFF6C98DC), rgb6(count, 0x1F1B2637);
+    auto input = Upload(device, rgba, scale);
+    Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale);
+    std::vector<Line> lines(192);
+    std::vector<u32> storage(count, 0xA537C2E1), expected(storage);
+    auto memory = directPath ? device->CreateBuffer(count * sizeof(u32), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        true, 0, VK_MEMORY_PROPERTY_HOST_CACHED_BIT) : nullptr;
+    std::span<u32> output = memory ? std::span<u32>{static_cast<u32*>(memory->Data()), count} : std::span<u32>(storage);
+    std::copy(expected.begin(), expected.end(), output.begin());
+    unsigned composed = 0;
+    for (u32 y = 0; y < 192; ++y)
+    {
+        auto& line = lines[y];
+        line.mode = y % stride == 0 ? Line::Composite3D : (y % 2 ? Line::CaptureOverride : Line::Keep);
+        line.sourceLine = y;
+        for (auto& pixel : line.pixels) { pixel.top = 0x40000000; pixel.second = 0x013F0000; pixel.window = 0x3F; }
+        composed += line.mode == Line::Composite3D;
+    }
+    Vulkan::ComposeDisplayCPU(lines, rgb6, scale, scale, expected);
+    CopyProbe probe(*device);
+    std::vector<double> samples;
+    for (int i = -5; i < 31; ++i)
+    {
+        const auto start = Clock::now();
+        compositor.Compose(0, lines, input, scale, output, memory.get());
+        const double elapsed = Milliseconds(start);
+        if (i >= 0) samples.push_back(elapsed);
+    }
+    Equal(output, expected, "benchmark composition output");
+    Require(!directPath || !compositor.readback, "direct benchmark allocated staging");
+    std::printf("BENCH compose path=%s scale=%d stride=%d samples=%zu median_ms=%.6f p95_ms=%.6f host_copy_bytes=%llu transfer_bytes=%llu digest=%016llx\n",
+        directPath ? "direct" : "staging", scale, stride, samples.size(), Quantile(samples, .5), Quantile(samples, .95),
+        static_cast<unsigned long long>(directPath ? 0 : composed * row * 4), static_cast<unsigned long long>(probe.bytes / 36),
+        static_cast<unsigned long long>(Digest(output)));
+}
+void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
+{
+    auto nds = Console(scale, vectorPath);
+    auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
+    auto& raster = RendererAccess::Rasterizer(renderer);
+    nds->ARM9Write32(0x02000000, 0xEAFFFFFE);
+    nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
+    nds->ARM9.JumpTo(0x02000000); nds->ARM7.JumpTo(0x02000200);
+    nds->ARM9Write32(0x04000350, (31u << 16) | 0x3E0);
+    nds->ARM9Write32(0x04000354, 0x7FFF);
+    if (workload == 1) nds->ARM9Write32(0x04000000, 0x00010000);
+    if (workload == 2)
+    {
+        nds->ARM9Write8(0x04000241, 0x80);
+        nds->ARM9Write32(0x04000000, 0x00060000);
+    }
+    nds->Start();
+    std::vector<double> samples;
+    u64 totalBefore = 0, rasterBefore = 0;
+    Renderer::DisplayFrame frame;
+    for (int i = -10; i < 60; ++i)
+    {
+        nds->GPU.GPU3D.RenderFrameIdentical = false;
+        raster.FrameDirty = true;
+        if (workload == 2) nds->ARM9Write32(0x04000064, 0x81310000);
+        if (i == 0) { totalBefore = renderer.TotalSubmissionCount(); rasterBefore = renderer.SubmissionCount(); }
+        const auto start = Clock::now();
+        Require(nds->RunFrame() > 0, "generated RunFrame did not run");
+        const double elapsed = Milliseconds(start);
+        Require(renderer.GetDisplayFrame(frame) && frame.kind == Renderer::DisplayFrame::Kind::CpuBGRA &&
+            !renderer.HasRenderFailure(), "generated RunFrame publication failed");
+        // Immediate CPU access is outside timing, never a deferred completion call.
+        Require(static_cast<const u32*>(frame.top) != nullptr && static_cast<const u32*>(frame.bottom) != nullptr,
+            "generated frame is not immediately CPU-readable");
+        if (i >= 0) samples.push_back(elapsed);
+    }
+    const size_t pixels = size_t(frame.width) * frame.height;
+    const u64 digest = Digest({static_cast<const u32*>(frame.top), pixels}) ^ Digest({static_cast<const u32*>(frame.bottom), pixels});
+    std::printf("BENCH RunFrame path=%s scale=%d workload=%s samples=%zu median_ms=%.6f p95_ms=%.6f raster_submits=%llu total_submits=%llu digest=%016llx\n",
+        vectorPath ? "vector" : "direct", scale, workload == 0 ? "3D" : workload == 1 ? "2D-only" : "capture-heavy", samples.size(),
+        Quantile(samples, .5), Quantile(samples, .95),
+        static_cast<unsigned long long>(renderer.SubmissionCount() - rasterBefore),
+        static_cast<unsigned long long>(renderer.TotalSubmissionCount() - totalBefore), static_cast<unsigned long long>(digest));
 }
 }
 int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::strcmp(argv[1], "direct") == 0)
+        {
+            auto nds = Console();
+            IntegrationFrame(*nds, false, false);
+            Require(!RendererAccess::Rasterizer(nds->GetRenderer()).Compositor->readback,
+                "renderer composition still allocates intermediate display staging");
+            AllocationFallback();
+            BackingLifecycle();
+            return 0;
+        }
+        if (argc > 1 && (std::strcmp(argv[1], "benchmark") == 0 || std::strcmp(argv[1], "benchmark-staging") == 0))
+        {
+            const bool directPath = std::strcmp(argv[1], "benchmark") == 0;
+            std::string error;
+            auto device = Vulkan::Device::Create(error);
+            if (!device) throw std::runtime_error(error);
+            std::printf("BENCH device=%s warmup_compose=5 warmup_RunFrame=10\n", device->Properties().deviceName);
+            BenchmarkCompose(device, 3, 1, directPath);
+            for (int stride : {1, 4, 16}) BenchmarkCompose(device, 16, stride, directPath);
+            for (int scale : {1, 3, 16}) BenchmarkRunFrame(scale, 0, !directPath);
+            BenchmarkRunFrame(16, 1, !directPath); BenchmarkRunFrame(16, 2, !directPath);
+            return 0;
+        }
         if (argc > 1 && std::strcmp(argv[1], "fallback") == 0)
         {
             auto gpu = Console(); auto cpu = Console(); auto deferred = Console();

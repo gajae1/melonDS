@@ -21,6 +21,9 @@ public:
         VkBuffer Handle() const { return buffer; }
         VkDeviceSize Size() const { return size; }
         void* Data() const { return mapped; }
+        VkMemoryPropertyFlags MemoryProperties() const { return properties; }
+        VkBufferUsageFlags Usage() const { return usage; }
+        bool BelongsTo(const Device& device) const { return owner.get() == &device; }
     private:
         friend class Device;
         explicit Buffer(std::shared_ptr<Device> owner) : owner(std::move(owner)) {}
@@ -28,6 +31,8 @@ public:
         VkBuffer buffer{};
         VkDeviceMemory memory{};
         VkDeviceSize size{};
+        VkMemoryPropertyFlags properties{};
+        VkBufferUsageFlags usage{};
         void* mapped{};
     };
     class Image {
@@ -56,8 +61,10 @@ public:
     VkDevice Handle() const { return device; }
     const volk::VolkDeviceTable& Functions() const { return functions; }
     const VkPhysicalDeviceProperties& Properties() const { return properties; }
+    // additionalRequired is strict, including on allocation retry. Display
+    // backing requires HOST_CACHED rather than accepting an uncached fallback.
     std::shared_ptr<Buffer> CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible,
-        VkMemoryPropertyFlags preferred = 0);
+        VkMemoryPropertyFlags preferred = 0, VkMemoryPropertyFlags additionalRequired = 0);
     std::shared_ptr<Image> CreateImage(uint32_t width,uint32_t height,uint32_t layers,
         VkFormat format,VkImageUsageFlags usage,bool arrayView=false);
     // Buffers may be reused after successful SubmitAndWait. A submission failure

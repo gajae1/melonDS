@@ -176,16 +176,17 @@ uint32_t Device::MemoryType(uint32_t bits,VkMemoryPropertyFlags required,VkMemor
     return SelectMemoryType(memoryProperties,bits,required,preferred);
 }
 
-std::shared_ptr<Device::Buffer> Device::CreateBuffer(VkDeviceSize size,VkBufferUsageFlags usage,bool hostVisible,VkMemoryPropertyFlags preferred)
+std::shared_ptr<Device::Buffer> Device::CreateBuffer(VkDeviceSize size,VkBufferUsageFlags usage,bool hostVisible,
+    VkMemoryPropertyFlags preferred,VkMemoryPropertyFlags additionalRequired)
 {
     if(!size)throw std::invalid_argument("Zero-sized Vulkan buffer");
-    auto buffer=std::shared_ptr<Buffer>(new Buffer(shared_from_this()));buffer->size=size;
+    auto buffer=std::shared_ptr<Buffer>(new Buffer(shared_from_this()));buffer->size=size;buffer->usage=usage;
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};info.size=size;info.usage=usage;
     Check(functions.vkCreateBuffer(device,&info,nullptr,&buffer->buffer),"Create compute buffer");
     VkMemoryRequirements req{};functions.vkGetBufferMemoryRequirements(device,buffer->buffer,&req);
     VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};allocation.allocationSize=req.size;
-    const VkMemoryPropertyFlags required=hostVisible?
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT:VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    const VkMemoryPropertyFlags required=(hostVisible?
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT:VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)|additionalRequired;
     allocation.memoryTypeIndex=MemoryType(req.memoryTypeBits,required,preferred);
     VkDeviceMemory allocated{};
     auto result=functions.vkAllocateMemory(device,&allocation,nullptr,&allocated);
@@ -199,6 +200,7 @@ std::shared_ptr<Device::Buffer> Device::CreateBuffer(VkDeviceSize size,VkBufferU
     }
     Check(result,"Allocate compute buffer memory");
     buffer->memory=allocated;
+    buffer->properties=memoryProperties.memoryTypes[allocation.memoryTypeIndex].propertyFlags;
     Check(functions.vkBindBufferMemory(device,buffer->buffer,buffer->memory,0),"Bind compute buffer");
     if(hostVisible)Check(functions.vkMapMemory(device,buffer->memory,0,size,0,&buffer->mapped),"Map compute buffer");
     return buffer;

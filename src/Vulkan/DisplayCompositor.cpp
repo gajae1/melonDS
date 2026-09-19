@@ -122,8 +122,6 @@ void DisplayCompositor::Cleanup()
 void DisplayCompositor::Init(std::span<const u32> shader)
 {
     contexts = owner->CreateBuffer(sizeof(Line) * 192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-    readback = owner->CreateBuffer(size_t(256) * 192 * scale * scale * sizeof(u32),
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     for (auto& image : outputs)
         image = owner->CreateImage(256 * scale, 192 * scale, 1, VK_FORMAT_R32_UINT,
             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
@@ -180,9 +178,21 @@ void DisplayCompositor::Init(std::span<const u32> shader)
     owner->SubmitAndWait();
 }
 void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
-    const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination)
+    const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
+    const Device::Buffer* direct)
 {
     CheckExtents(lines, sourceScale, scale, destination.size());
+    constexpr VkMemoryPropertyFlags directProperties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    if (direct && (!direct->BelongsTo(*owner) || direct->Size() != destination.size_bytes() ||
+        direct->Data() != destination.data() || !(direct->Usage() & VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
+        (direct->MemoryProperties() & directProperties) != directProperties))
+        throw std::invalid_argument("Invalid direct display backing");
+    // Direct callers never allocate the intermediate staging image-sized buffer.
+    // Legacy callers keep the original full-image transfer and selective memcpy.
+    if (!direct && !readback)
+        readback = owner->CreateBuffer(destination.size_bytes(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            true, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     if (screen >= outputs.size() || (image3D && !image3D->BelongsTo(*owner)))
         throw std::invalid_argument("Invalid display composition image");
     const auto& input = image3D ? image3D : blank3D;
@@ -215,16 +225,49 @@ void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
     f.vkCmdDispatch(command, 32 * scale, 24 * scale, 1);
     ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy{};
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {256 * scale, 192 * scale, 1};
-    f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback->Handle(), 1, &copy);
+    if (direct)
+    {
+        VkBufferMemoryBarrier target{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        target.srcAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
+        target.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        target.srcQueueFamilyIndex = target.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        target.buffer = direct->Handle(); target.size = direct->Size();
+        f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 1, &target, 0, nullptr);
+        std::array<VkBufferImageCopy, 192> copies{};
+        u32 count = 0;
+        for (u32 y = 0; y < 192;)
+        {
+            if (Preserved(lines[y])) { ++y; continue; }
+            const u32 first = y++;
+            while (y < 192 && !Preserved(lines[y])) ++y;
+            auto& copy = copies[count++];
+            copy.bufferOffset = VkDeviceSize(first) * 256 * scale * scale * sizeof(u32);
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.imageOffset.y = static_cast<int32_t>(first * scale);
+            copy.imageExtent = {256 * scale, (y - first) * scale, 1};
+        }
+        if (count)
+            f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                direct->Handle(), count, copies.data());
+    }
+    else
+    {
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {256 * scale, 192 * scale, 1};
+        f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback->Handle(), 1, &copy);
+    }
     ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT);
     VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    download.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; download.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    download.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    download.dstAccessMask = VK_ACCESS_HOST_READ_BIT | (direct ? VK_ACCESS_HOST_WRITE_BIT : 0);
     f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
         0, 1, &download, 0, nullptr, 0, nullptr);
     owner->SubmitAndWait();
+    // Cached coherent backing needs no invalidate; GPU completion and the host
+    // visibility barrier still precede both reads and future CPU fills.
+    if (direct) return;
     const size_t rowPixels = size_t(256) * scale * scale;
     for (u32 y = 0; y < 192; ++y)
         if (!Preserved(lines[y]))

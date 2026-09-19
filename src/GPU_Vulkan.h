@@ -4,6 +4,8 @@
 #include "GPU_Soft.h"
 #include <string>
 #include "GPU3D_ComputeShader.h"
+#include "Vulkan/Device.h"
+#include <span>
 #include <array>
 #include <vector>
 
@@ -35,8 +37,14 @@ public:
 private:
     friend class VulkanRenderer3D;
     bool CaptureTexturePixels(u32 texparam, u32 scale, std::vector<u32>& pixels) const;
-    using DisplayBuffers = std::array<std::array<std::vector<u32>, 2>, 2>;
+    using DisplayBuffers = std::array<std::array<std::span<u32>, 2>, 2>;
+    using DisplayStorage = std::array<std::array<std::vector<u32>, 2>, 2>;
+    using DisplayMemory = std::array<std::array<std::shared_ptr<Vulkan::Device::Buffer>, 2>, 2>;
+    // Views keep CPU consumers unchanged. Ownership is independent of the
+    // optional compositor, including its reset-before-CPU-replay failure path.
     DisplayBuffers ScaledBuffers;
+    DisplayStorage ScaledStorage;
+    DisplayMemory ScaledMemory;
     int DisplayScale = 1;
     using CompositionLine = SoftRenderer2D::ScaledLineContext;
     std::array<std::vector<CompositionLine>, 2> CompositionLines;

@@ -42,17 +42,42 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
     if (scale < 1 || scale > ComputeShader::VulkanMaxScale) return false;
     try
     {
+        auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
         DisplayBuffers next;
+        DisplayStorage nextStorage;
+        DisplayMemory nextMemory;
         if (scale != DisplayScale && scale > 1)
         {
             const int width = 256 * scale, height = 192 * scale;
             const int oldWidth = 256 * DisplayScale;
+            const size_t pixels = size_t(width) * height;
+            try
+            {
+                if (rasterizer.Device)
+                    for (auto& buffer : nextMemory)
+                        for (auto& screen : buffer)
+                            screen = rasterizer.Device->CreateBuffer(pixels * sizeof(u32),
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, 0, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            }
+            catch (const std::exception& error)
+            {
+                // Never force uncached mapped storage onto CPU-fill/capture
+                // paths. A partial allocation also falls back as one unit.
+                nextMemory = {};
+                Platform::Log(Platform::LogLevel::Warn, "Vulkan direct display backing unavailable: %s\n", error.what());
+            }
             for (int buffer = 0; buffer < 2; ++buffer)
             for (int screen = 0; screen < 2; ++screen)
             {
                 const u32* old = DisplayScale > 1 ? ScaledBuffers[buffer][screen].data() : Framebuffer[buffer][screen];
                 auto& output = next[buffer][screen];
-                output.resize(size_t(width) * height);
+                if (nextMemory[buffer][screen])
+                    output = {static_cast<u32*>(nextMemory[buffer][screen]->Data()), pixels};
+                else
+                {
+                    nextStorage[buffer][screen].resize(pixels);
+                    output = nextStorage[buffer][screen];
+                }
                 for (int y = 0; y < height; ++y)
                 for (int x = 0; x < width; ++x)
                     output[size_t(y) * width + x] = old[size_t(y * DisplayScale / scale) * oldWidth + x * DisplayScale / scale];
@@ -62,10 +87,11 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
         if (scale != DisplayScale)
         {
             ScaledBuffers.swap(next);
+            ScaledStorage.swap(nextStorage);
+            ScaledMemory.swap(nextMemory);
             DisplayScale = scale;
             ScaledDisplay = scale > 1;
         }
-        auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
         if (rasterizer.Compositor)
         {
             try
@@ -196,7 +222,7 @@ void VulkanRenderer::FinishDisplayComposition() noexcept
             for (u32 screen = 0; screen < 2; ++screen)
                 if (pending(CompositionLines[screen]))
                     rasterizer.Compositor->Compose(screen, CompositionLines[screen], rasterizer.RenderedImage,
-                        rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen]);
+                        rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen], ScaledMemory[BackBuffer][screen].get());
         }
         catch (const std::exception& error)
         {
