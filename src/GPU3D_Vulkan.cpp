@@ -98,6 +98,7 @@ bool VulkanRenderer3D::Init()
         Device = Vulkan::Device::Create(error, PreferredDevice);
         if (!Device) throw std::runtime_error(error);
         Pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders());
+        Pipeline->SetUploadBatching(true);
         Texcache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*Pipeline});
         Platform::Log(Platform::LogLevel::Info, "Vulkan 3D: %s (256x192 compute)\n", Device->Properties().deviceName);
         return true;
@@ -122,6 +123,7 @@ bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
         if (scale != ScaleFactor)
         {
             auto pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders(scale), scale);
+            pipeline->SetUploadBatching(true);
             auto cache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*pipeline});
             // Commit the pair only after successful initialization. Local destruction
             // releases the old cache before the pipeline its TextureLoader references.
@@ -211,6 +213,10 @@ void VulkanRenderer3D::DrawFrame()
             }
         }
     }
+    // Preserve the pre-Update capture boundary: a wrapping native texture
+    // may SyncAllVRAMCaptures and invalidate the display sidecars below.
+    // All captured snapshots complete together before that synchronization.
+    Pipeline->FlushUploads();
     u8 dirty;
     const bool texturesChanged = Texcache->Update(dirty);
     ClearBitmapDirty |= dirty;

@@ -51,6 +51,11 @@ public:
     std::shared_ptr<const Texture> CreateTexture(uint32_t width, uint32_t height, uint32_t layers);
     void UploadTextureLayer(const Texture& texture, uint32_t layer, std::span<const uint32_t> pixels);
     void UploadClearBitmap(std::span<const uint32_t> colors, std::span<const uint32_t> depths);
+    // Opt-in: snapshot upload bytes now, submit together at FlushUploads or
+    // RenderView. No command buffer is left recording between upload calls.
+    // The default remains synchronous for other pipeline users.
+    void SetUploadBatching(bool enabled);
+    void FlushUploads();
     uint32_t WorkCapacity() const { return Resources.BatchWork; }
     uint32_t SpanCapacity() const { return Resources.MaxSpans; }
     uint32_t TileSize() const { return Resources.config.TileSize; }
@@ -64,9 +69,16 @@ private:
     void WriteTextureSet(VkDescriptorSet set,const Variant& variant);
     void UploadImage(const std::shared_ptr<Device::Image>& image,uint32_t width,uint32_t height,
         uint32_t layers,std::span<const uint32_t> pixels,VkImageLayout oldLayout,uint32_t firstLayer=0);
-    void RecordImageUpload(VkCommandBuffer command,const std::shared_ptr<Device::Image>& image,
-        uint32_t width,uint32_t height,uint32_t layers,VkImageLayout oldLayout,
-        uint32_t firstLayer,VkDeviceSize offset);
+    struct ImageUpload {
+        std::shared_ptr<Device::Image> image;
+        uint32_t width,height,layers,firstLayer;
+        VkImageLayout oldLayout;
+        VkDeviceSize offset;
+        bool clear;
+    };
+    void ReserveUpload(VkDeviceSize bytes,size_t images);
+    void SubmitUploadsIfNeeded();
+    void RecordImageUpload(VkCommandBuffer command,const ImageUpload& upload);
     void Barrier(VkCommandBuffer command);
     std::shared_ptr<Device> owner;
     const volk::VolkDeviceTable& f;
@@ -84,8 +96,16 @@ private:
     // Mapped host-coherent memory need not be CPU-cached. Copy once with memcpy,
     // then let color conversion/native sampling read this reusable allocation.
     std::vector<uint32_t> hostReadback;
-    // Reused only after the synchronous upload fence has completed.
+    // Disjoint coherent ranges and retained images survive through the existing
+    // submission fence. Growth is safe before recording; reuse requires a wait.
+    // Bound each chunk, except for one individually larger upload.
+    static constexpr VkDeviceSize UploadBatchBytes=16u*1024u*1024u;
+    static constexpr size_t UploadBatchImages=256;
     std::shared_ptr<Device::Buffer> uploadStaging;
+    std::vector<ImageUpload> pendingUploads;
+    VkDeviceSize uploadUsed=0;
+    bool deferredUploads=false;
+    bool clearBitmapPending=false;
     std::shared_ptr<Device::Image> output,clearColor,clearDepth;
     std::shared_ptr<const Texture> dummyTexture,dummyCapture;
     VkBufferView indicesView{};

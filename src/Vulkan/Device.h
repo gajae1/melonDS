@@ -64,6 +64,8 @@ public:
     // retires this device; create a new device instead of resetting pending work.
     VkCommandBuffer Begin();
     void SubmitAndWait();
+    // Rendering-thread diagnostic: successful queue submissions, including uploads.
+    uint64_t SubmissionCount() const { return submissionCount; }
     static void Check(VkResult result, const char* operation);
     // Device-owned, transient compiler cache. Optional OOM keeps uncached rendering.
     // Like command recording, initialization belongs to the rendering thread.
@@ -91,5 +93,6 @@ private:
     bool pipelineCacheInitialized=false;
     bool recording=false;
     bool failed=false;
+    uint64_t submissionCount=0;
 };
 }

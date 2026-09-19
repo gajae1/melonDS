@@ -127,31 +127,82 @@ void ComputePipeline::Init(const Shaders& shaders)
     dummyCapture=UploadTexture(1,1,1,{&zero,1},true);
 }
 
+void ComputePipeline::SetUploadBatching(bool enabled)
+{
+    FlushUploads();
+    deferredUploads=enabled;
+}
+
+void ComputePipeline::ReserveUpload(VkDeviceSize bytes,size_t images)
+{
+    if(bytes>UploadBatchBytes || uploadUsed>UploadBatchBytes-bytes ||
+        pendingUploads.size()+images>UploadBatchImages) FlushUploads();
+    const size_t count=pendingUploads.size()+images;
+    if(pendingUploads.capacity()<count)
+        pendingUploads.reserve(std::max(count,std::min(UploadBatchImages,pendingUploads.capacity()*2)));
+    const VkDeviceSize required=uploadUsed+bytes;
+    if(bytes && (!uploadStaging || uploadStaging->Size()<required)) {
+        const VkDeviceSize grown=uploadStaging?std::min(UploadBatchBytes,uploadStaging->Size()*2):0;
+        auto staging=owner->CreateBuffer(std::max(required,grown),VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);
+        // No commands reference staging until FlushUploads records them. Keep
+        // the old allocation/data if growth fails, including optional captures.
+        if(uploadUsed)std::memcpy(staging->Data(),uploadStaging->Data(),uploadUsed);
+        uploadStaging=std::move(staging);
+    }
+}
+
+void ComputePipeline::SubmitUploadsIfNeeded()
+{
+    if(!deferredUploads || uploadUsed>=UploadBatchBytes) FlushUploads();
+}
+
+void ComputePipeline::FlushUploads()
+{
+    if(pendingUploads.empty())return;
+    const auto command=owner->Begin();
+    for(const auto& upload:pendingUploads)RecordImageUpload(command,upload);
+    // The Device drains on submission failure before throwing. Retain both
+    // staging and images until this fence succeeds (or pipeline teardown).
+    owner->SubmitAndWait();
+    if(clearBitmapPending)clearBitmapReady=true;
+    clearBitmapPending=false;
+    pendingUploads.clear();
+    uploadUsed=0;
+}
+
 void ComputePipeline::UploadImage(const std::shared_ptr<Device::Image>& image,uint32_t width,uint32_t height,
     uint32_t layers,std::span<const uint32_t> pixels,VkImageLayout oldLayout,uint32_t firstLayer)
 {
-    // Keep the old buffer if growth fails. SubmitAndWait below completes every
-    // transfer before a subsequent host write can reuse this coherent mapping.
-    if (!uploadStaging || uploadStaging->Size() < pixels.size_bytes())
-        uploadStaging = owner->CreateBuffer(pixels.size_bytes(),VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);
-    const auto& staging = uploadStaging;
-    std::memcpy(staging->Data(),pixels.data(),pixels.size_bytes());
-    const auto command=owner->Begin();
-    RecordImageUpload(command,image,width,height,layers,oldLayout,firstLayer,0);
-    owner->SubmitAndWait();
+    ReserveUpload(pixels.size_bytes(),1);
+    std::memcpy(static_cast<unsigned char*>(uploadStaging->Data())+uploadUsed,pixels.data(),pixels.size_bytes());
+    pendingUploads.push_back({image,width,height,layers,firstLayer,oldLayout,uploadUsed,false});
+    uploadUsed+=pixels.size_bytes();
+    SubmitUploadsIfNeeded();
 }
 
-void ComputePipeline::RecordImageUpload(VkCommandBuffer command,const std::shared_ptr<Device::Image>& image,
-    uint32_t width,uint32_t height,uint32_t layers,VkImageLayout oldLayout,uint32_t firstLayer,VkDeviceSize offset)
+void ComputePipeline::RecordImageUpload(VkCommandBuffer command,const ImageUpload& upload)
 {
-    const bool fresh=oldLayout==VK_IMAGE_LAYOUT_UNDEFINED;
-    ImageBarrier(f,command,image->Handle(),oldLayout,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        fresh?VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT:VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,fresh?0:VK_ACCESS_SHADER_READ_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,layers,firstLayer);
-    VkBufferImageCopy copy{};copy.bufferOffset=offset;copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,firstLayer,layers};copy.imageExtent={width,height,1};
-    f.vkCmdCopyBufferToImage(command,uploadStaging->Handle(),image->Handle(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
-    ImageBarrier(f,command,image->Handle(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,layers,firstLayer);
+    const auto image=upload.image->Handle();
+    const bool fresh=upload.oldLayout==VK_IMAGE_LAYOUT_UNDEFINED;
+    // Include earlier transfers: an array clear or another write to this layer
+    // can now precede this copy in the SAME submission, without a CPU wait.
+    ImageBarrier(f,command,image,upload.oldLayout,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        fresh?VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT:VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,fresh?0:VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_TRANSFER_WRITE_BIT,upload.layers,upload.firstLayer);
+    if(upload.clear) {
+        VkClearColorValue zero{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,upload.firstLayer,upload.layers};
+        f.vkCmdClearColorImage(command,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&zero,1,&range);
+    } else {
+        VkBufferImageCopy copy{};copy.bufferOffset=upload.offset;
+        copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,upload.firstLayer,upload.layers};
+        copy.imageExtent={upload.width,upload.height,1};
+        f.vkCmdCopyBufferToImage(command,uploadStaging->Handle(),image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
+    }
+    ImageBarrier(f,command,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT,upload.layers,upload.firstLayer);
 }
 
 std::shared_ptr<const ComputePipeline::Texture> ComputePipeline::UploadTexture(uint32_t width,uint32_t height,
@@ -174,15 +225,9 @@ std::shared_ptr<const ComputePipeline::Texture> ComputePipeline::CreateTexture(u
         throw std::invalid_argument("Invalid texture cache dimensions");
     auto image=owner->CreateImage(width,height,layers,VK_FORMAT_R8G8B8A8_UINT,
         VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,true);
-    const auto command=owner->Begin();
-    ImageBarrier(f,command,image->Handle(),VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,VK_ACCESS_TRANSFER_WRITE_BIT,layers);
-    VkClearColorValue zero{};
-    VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,layers};
-    f.vkCmdClearColorImage(command,image->Handle(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&zero,1,&range);
-    ImageBarrier(f,command,image->Handle(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,layers);
-    owner->SubmitAndWait();
+    ReserveUpload(0,1);
+    pendingUploads.push_back({image,width,height,layers,0,VK_IMAGE_LAYOUT_UNDEFINED,0,true});
+    SubmitUploadsIfNeeded();
     return std::make_shared<Texture>(Texture{std::move(image),width,height,layers,false});
 }
 
@@ -198,17 +243,18 @@ void ComputePipeline::UploadClearBitmap(std::span<const uint32_t> colors,std::sp
 {
     if(colors.size()!=256*256||depths.size()!=256*256)throw std::invalid_argument("Invalid clear bitmap dimensions");
     const size_t bytes=colors.size_bytes();
-    if (!uploadStaging || uploadStaging->Size()<2*bytes)
-        uploadStaging=owner->CreateBuffer(2*bytes,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);
-    auto* staging=static_cast<unsigned char*>(uploadStaging->Data());
+    // Reserve both images atomically; an allocation failure must not queue
+    // just one half of a new clear bitmap.
+    ReserveUpload(2*bytes,2);
+    auto* staging=static_cast<unsigned char*>(uploadStaging->Data())+uploadUsed;
     std::memcpy(staging,colors.data(),bytes);
     std::memcpy(staging+bytes,depths.data(),bytes);
-    const auto command=owner->Begin();
+    pendingUploads.push_back({clearColor,256,256,1,0,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,uploadUsed,false});
+    pendingUploads.push_back({clearDepth,256,256,1,0,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,uploadUsed+bytes,false});
+    uploadUsed+=2*bytes;
     clearBitmapReady=false;
-    RecordImageUpload(command,clearColor,256,256,1,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,0,0);
-    RecordImageUpload(command,clearDepth,256,256,1,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,0,bytes);
-    owner->SubmitAndWait();
-    clearBitmapReady=true;
+    clearBitmapPending=true;
+    SubmitUploadsIfNeeded();
 }
 
 void ComputePipeline::WriteTextureSet(VkDescriptorSet set,const Variant& variant)
@@ -350,6 +396,7 @@ std::vector<uint32_t> ComputePipeline::Render(std::span<const Batch> batches)
 std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> batches)
 {
     if(batches.empty())throw std::invalid_argument("Compute frame needs a clear batch");
+    FlushUploads(); // Complete copies before validation/dispatch can consume images.
     size_t variantCount=0,polygonCount=0;
     for(const auto& batch:batches) {
         Validate(batch);

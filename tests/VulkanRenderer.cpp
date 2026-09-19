@@ -2,6 +2,8 @@
 // Production Vulkan 3D -> native compositor/capture/guest memory. No ROM/BIOS.
 #include "NDS.h"
 #include "GPU_Vulkan.h"
+#include "Vulkan/ComputePipeline.h"
+#include "Vulkan/EmbeddedShaders.h"
 #include "Savestate.h"
 #include <algorithm>
 #include <array>
@@ -1550,6 +1552,173 @@ void CapturedTexture(int scale)
     Require(!nativeErrors && !displayErrors, "captured 3D texture fixed-coordinate/color or native/fallback assertions failed");
 }
 
+// The same ROM-free input is also a bounded before/after submission probe.
+// Initialization is excluded; output is checked against the software renderer,
+// not against the batching implementation or a timing threshold.
+void UploadBatching(int scale, bool enforceBatching)
+{
+    constexpr unsigned textureCount = 32;
+    auto vk = Console(true, scale), soft = Console(false);
+    auto& renderer = static_cast<VulkanRenderer&>(vk->GetRenderer());
+    const auto writeTextures = [&](NDS& nds, unsigned generation) {
+        nds.ARM9Write8(0x04000240, 0x80);
+        for (unsigned i = 0; i < textureCount; ++i)
+        {
+            const u16 color = 0x8000 | ((i + generation) & 31) |
+                (((i * 3 + generation) & 31) << 5) | (((i * 7 + generation) & 31) << 10);
+            for (unsigned p = 0; p < 64; ++p)
+                nds.ARM9Write16(0x06800000 + i * 128 + p * 2, color);
+        }
+        nds.ARM9Write8(0x04000240, 0x83);
+        // Keep the clear bitmap dirty too, so its two images join the textures.
+        nds.ARM9Write8(0x04000242, 0x80);
+        nds.ARM9Write8(0x04000243, 0x80);
+        for (unsigned p = 0; p < 256 * 256; ++p)
+        {
+            nds.ARM9Write16(0x06840000 + p * 2, 0x8000 | ((generation & 31) << 5));
+            nds.ARM9Write16(0x06860000 + p * 2, 0x7FFF);
+        }
+        nds.ARM9Write8(0x04000242, 0x93);
+        nds.ARM9Write8(0x04000243, 0x9B);
+    };
+    for (auto* nds : {vk.get(), soft.get()})
+    {
+        writeTextures(*nds, 0);
+        for (unsigned i = 0; i < textureCount; ++i)
+            CaptureTextureQuad(*nds, i, (7u << 26) | (i * 16),
+                16 + (i % 8) * 28, 24 + (i / 8) * 32, 24, 24, 0, 0, 0, 0);
+        nds->GPU.GPU3D.RenderDispCnt |= 1u << 14;
+    }
+    std::printf("Upload probe device=%s scale=%d textures=%u\n",
+        renderer.DeviceName().c_str(), scale, textureCount);
+    u64 total = 0;
+    for (unsigned frame = 0; frame < 20; ++frame)
+    {
+        // Cold, warm, sixteen changed frames, same-byte remapping, then idle.
+        // Remapping still dirties the clear bitmap even when texture hashes match.
+        const unsigned generation = frame < 2 ? 0 : std::min(frame - 1, 16u);
+        if (frame >= 2 && frame <= 18)
+            for (auto* nds : {vk.get(), soft.get()}) writeTextures(*nds, generation);
+        for (auto* nds : {vk.get(), soft.get()}) nds->GPU.GPU3D.RenderFrameIdentical = frame >= 2;
+        const u64 before = renderer.SubmissionCount();
+        Screen(*vk);
+        const auto actual = Screen(*vk, false); // Settle the display-enable latch.
+        const u64 submits = renderer.SubmissionCount() - before;
+        Screen(*soft);
+        Require(actual == Screen(*soft, false), "upload batch changed native texture/clear pixels");
+        u64 hash = 14695981039346656037ull;
+        for (u32 pixel : actual)
+            for (unsigned shift : {0u, 8u, 16u, 24u})
+                hash = (hash ^ ((pixel >> shift) & 255)) * 1099511628211ull;
+        total += submits;
+        std::printf("Upload probe frame=%u scale=%d submits=%llu native-fnv64=%016llx pixels=%zu\n",
+            frame, scale, static_cast<unsigned long long>(submits),
+            static_cast<unsigned long long>(hash), actual.size());
+        if (enforceBatching)
+        {
+            Require(submits <= 2, "texture/clear uploads were submitted per image instead of per phase");
+            if (frame == 1) Require(submits == 1, "warm texture cache submitted redundant uploads");
+            if (frame == 18) Require(submits == 2, "same-byte remapping changed clear refresh/cache semantics");
+            if (frame == 19) Require(submits == 0, "unchanged cached frame submitted redundant work");
+        }
+    }
+    std::printf("Upload probe summary scale=%d frames=20 submits=%llu native-pixels=%u PASS\n",
+        scale, static_cast<unsigned long long>(total), 20u * 256u * 192u);
+}
+
+void UploadLifetime()
+{
+    using Pipeline = Vulkan::ComputePipeline;
+    std::string error;
+    auto device = Vulkan::Device::Create(error);
+    Require(bool(device), error.c_str());
+    Pipeline reference(device, Vulkan::EmbeddedShaders()), batched(device, Vulkan::EmbeddedShaders());
+    batched.SetUploadBatching(true);
+    auto nds = Console(false);
+    Scene(*nds, 7, false, false);
+    std::array<ComputeData::RenderPolygon, 1> polygons;
+    std::array<ComputeData::SpanSetupY, 12> edges;
+    std::array<ComputeData::SetupIndices, 192> indices;
+    int edgeCount = 0, indexCount = 0;
+    ComputeData::PreparePolygon(&nds->GPU.GPU3D.PolygonRAM[0], 0, polygons[0], edges,
+        edgeCount, indices, indexCount, 1, false);
+    std::array<Pipeline::Variant, 1> variants;
+    variants[0].shader = 13;
+    Pipeline::Batch batch{polygons, std::span(edges).first(edgeCount),
+        std::span(indices).first(indexCount), variants, ComputeData::PrepareMeta(nds->GPU.GPU3D, 1, 1)};
+    const auto compare = [&](const auto& expectedTexture, const auto& actualTexture, unsigned layer) {
+        polygons[0].TextureLayer = float(layer);
+        variants[0].texture = expectedTexture;
+        const auto expected = reference.Render(batch);
+        variants[0].texture = actualTexture;
+        Require(batched.Render(batch) == expected, "deferred staging/layer contents differ from synchronous uploads");
+    };
+    std::array<u32, 64> pixels;
+    const std::array<u32, 4> colors{0x1F00003F, 0x1F003F00, 0x1F3F0000, 0x1F3F3F3F};
+    const u64 synchronousBefore = device->SubmissionCount();
+    auto expected = reference.CreateTexture(8, 8, 4);
+    Require(device->SubmissionCount() == synchronousBefore + 1, "default texture creation stopped being synchronous");
+    for (unsigned i = 0; i < colors.size(); ++i)
+    {
+        pixels.fill(colors[i]);
+        reference.UploadTextureLayer(*expected, i % 3, pixels);
+    }
+    const u64 before = device->SubmissionCount();
+    auto actual = batched.CreateTexture(8, 8, 4);
+    for (unsigned i = 0; i < colors.size(); ++i)
+    {
+        pixels.fill(colors[i]);
+        batched.UploadTextureLayer(*actual, i % 3, pixels);
+    }
+    // Grow staging after accepting smaller ranges; immediately release the
+    // caller's image and overwrite its input, as a temporary capture can do.
+    std::vector<u32> temporaryPixels(64 * 64, 0xFFFFFFFF);
+    auto temporary = batched.UploadTexture(64, 64, 1, temporaryPixels, true);
+    std::weak_ptr<Vulkan::Device::Image> retained = temporary->image;
+    temporary.reset();
+    std::fill(temporaryPixels.begin(), temporaryPixels.end(), 0);
+    pixels.fill(0);
+    Require(!retained.expired(), "queued upload released its destination before the fence");
+    Require(device->SubmissionCount() == before, "deferred uploads submitted before their boundary");
+    // Another owner may use the shared Device while only upload metadata is queued.
+    device->Begin(); device->SubmitAndWait();
+    batched.FlushUploads();
+    Require(device->SubmissionCount() == before + 2 && retained.expired(),
+        "upload flush did not submit once/release completed images");
+    batched.FlushUploads();
+    Require(device->SubmissionCount() == before + 2, "empty upload flush submitted work");
+    for (unsigned layer = 0; layer < 4; ++layer) compare(expected, actual, layer);
+
+    auto expectedLarge = reference.CreateTexture(512, 512, 1);
+    auto actualLarge = batched.CreateTexture(512, 512, 1);
+    std::vector<u32> large(512 * 512);
+    const u64 largeBefore = device->SubmissionCount();
+    for (unsigned i = 0; i < 20; ++i)
+    {
+        std::fill(large.begin(), large.end(), colors[i % colors.size()]);
+        batched.UploadTextureLayer(*actualLarge, 0, large);
+    }
+    batched.FlushUploads();
+    const u64 largeSubmits = device->SubmissionCount() - largeBefore;
+    Require(largeSubmits <= 4, "20 MiB upload stream reverted to per-image submissions");
+    reference.UploadTextureLayer(*expectedLarge, 0, large);
+    compare(expectedLarge, actualLarge, 0);
+
+    const u64 manyBefore = device->SubmissionCount();
+    for (unsigned i = 0; i < 300; ++i)
+    {
+        pixels.fill(colors[i % colors.size()]);
+        batched.UploadTextureLayer(*actual, 0, pixels);
+    }
+    batched.SetUploadBatching(false); // Disabling batching must complete pending copies.
+    const u64 manySubmits = device->SubmissionCount() - manyBefore;
+    Require(manySubmits <= 4, "small upload stream reverted to per-image submissions");
+    reference.UploadTextureLayer(*expected, 0, pixels);
+    compare(expected, actual, 0);
+    std::printf("Upload lifetime: retained images, staging growth, repeated layers, zeroed unused layer, shared device, empty flush PASS; 20MiB-submits=%llu 300-layer-submits=%llu\n",
+        static_cast<unsigned long long>(largeSubmits), static_cast<unsigned long long>(manySubmits));
+}
+
 void Batches(int scale)
 {
     auto vk = Console(true, scale), soft = Console(false);
@@ -1680,6 +1849,13 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
+        if (argc == 2 && std::strcmp(argv[1], "upload-lifetime") == 0) { UploadLifetime(); return 0; }
+        if (argc == 3 && (std::strcmp(argv[1], "upload-batching") == 0 ||
+            std::strcmp(argv[1], "upload-measure") == 0)) {
+            const int scale = std::atoi(argv[2]);
+            Require(scale == 1 || scale == 3, "invalid upload probe scale");
+            UploadBatching(scale, std::strcmp(argv[1], "upload-batching") == 0); return 0;
+        }
         if (argc == 3 && std::strcmp(argv[1], "captured-texture") == 0) {
             const int scale = std::atoi(argv[2]);
             Require(scale == 1 || scale == 3 || scale == 5, "invalid capture texture scale");

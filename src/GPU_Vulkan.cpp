@@ -24,6 +24,11 @@ std::string VulkanRenderer::DeviceName() const
     return static_cast<const VulkanRenderer3D&>(*Rend3D).DeviceName();
 }
 
+u64 VulkanRenderer::SubmissionCount() const
+{
+    return static_cast<const VulkanRenderer3D&>(*Rend3D).SubmissionCount();
+}
+
 bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
 {
     const int scale = settings.ScaleFactor;

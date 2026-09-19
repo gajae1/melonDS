@@ -16,6 +16,8 @@ class VulkanRenderer final : public SoftRenderer
 public:
     explicit VulkanRenderer(NDS& nds, const std::string& preferred = {});
     std::string DeviceName() const;
+    // Rendering-thread diagnostic; includes upload and render submissions.
+    u64 SubmissionCount() const;
     static bool IsAvailable(std::string& error);
     bool SetRenderSettings(RendererSettings& settings) override;
     bool HasRenderFailure() const override;

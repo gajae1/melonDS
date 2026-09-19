@@ -255,6 +255,7 @@ void Device::SubmitAndWait()
         Check(functions.vkResetFences(device,1,&fence),"Reset compute fence");
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&command;
         Check(functions.vkQueueSubmit(queue,1,&submit,fence),"Submit compute commands");
+        ++submissionCount;
         Check(functions.vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX),"Wait for compute commands");
     }catch(...) {
         failed=true;

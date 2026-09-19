@@ -23,6 +23,7 @@ public:
     u32* GetLine(int line) override;
     void GetScaledLine(int line, int subline, int scale, u32* dst) const;
     bool HasFailed() const { return Failed; }
+    u64 SubmissionCount() const { return Device ? Device->SubmissionCount() : 0; }
     void ClearPipelineCache() { if (Device) Device->ClearPipelineCache(); }
 
 private:
