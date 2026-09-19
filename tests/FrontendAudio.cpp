@@ -48,6 +48,8 @@ struct SampleSource
     void ResetOutputHistory() { ++historyResets; queuedFrames = 0; }
     void SetOutputSampleRate(double) { ++rateChanges; }
     int GetOutputSize() const { return queuedFrames; }
+    // Mirrors SPU's default 2048-entry ring minus the kept-empty slot.
+    int GetOutputCapacity() const { return 2047; }
     int ReadOutput(s16* output, int frames)
     {
         const int count = std::min(available, frames);

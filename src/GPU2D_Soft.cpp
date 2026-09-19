@@ -145,11 +145,48 @@ void SoftRenderer2D::ComposeScaledLine(u32* dst, const u32* pixels3D, int scale)
     const u32 control = GPU2D.BlendCnt;
     const u32 eva = GPU2D.EVA, evb = GPU2D.EVB, evy = GPU2D.EVY;
     for (int x = 0; x < 256; ++x)
-    for (int sub = 0; sub < scale; ++sub)
     {
-        u32 top = BGOBJLine[x], second = BGOBJLine[x + 256];
-        Resolve3DPixel(x, pixels3D[x * scale + sub], top, second);
-        dst[x * scale + sub] = CompositePixel<effect>(top, second, control, eva, evb, evy, WindowMask[x]);
+        const u32 top0 = BGOBJLine[x], second0 = BGOBJLine[x + 256];
+        u32* out = dst + size_t(x) * scale;
+        const u32* src = pixels3D + size_t(x) * scale;
+        if (((top0 >> 24) & 0xC0) != 0x40 && ((second0 >> 24) & 0xC0) != 0x40)
+        {
+            // Resolve3DPixel only rewrites placeholder slots; without one the
+            // composite cannot see the 3D buffer and is uniform per subpixel.
+            std::fill_n(out, scale,
+                CompositePixel<effect>(top0, second0, control, eva, evb, evy, WindowMask[x]));
+            continue;
+        }
+        // Every transparent subpixel resolves to the same per-pixel outcome.
+        u32 topT = top0, secondT = second0;
+        Resolve3DPixel(x, 0, topT, secondT);
+        const u32 transparent =
+            CompositePixel<effect>(topT, secondT, control, eva, evb, evy, WindowMask[x]);
+        u32 lastColor = 0, lastResult = 0;
+        for (int sub = 0; sub < scale; ++sub)
+        {
+            const u32 color = src[sub];
+            u32 result;
+            if (!(color >> 24))
+            {
+                result = transparent;
+            }
+            // Opaque subpixels still resolve individually; a repeated color
+            // (flat fills, texel interiors) reuses the previous composite.
+            else if (color == lastColor)
+            {
+                result = lastResult;
+            }
+            else
+            {
+                u32 top = top0, second = second0;
+                Resolve3DPixel(x, color, top, second);
+                result = CompositePixel<effect>(top, second, control, eva, evb, evy, WindowMask[x]);
+                lastColor = color;
+                lastResult = result;
+            }
+            out[sub] = result;
+        }
     }
 }
 

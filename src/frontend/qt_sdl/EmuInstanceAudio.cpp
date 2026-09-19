@@ -471,7 +471,14 @@ void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
         // callback can be delivered in a larger backend burst; waiting for
         // less than one callback then stalls production until that burst has
         // already exhausted the queue. Bound lead by a producer frame instead.
-        const int maxQueued = std::max(audioBufSize, frameSamples);
+        // The device drains continuously while a produced frame refills the
+        // queue. Keep one frame of production delay plus one device period of
+        // queued slack so a late frame cannot starve the next callback; never
+        // so much that the next produced frame overflows the ring and drops
+        // samples, which would be a different kind of underrun.
+        const int capacity = nds->SPU.GetOutputCapacity();
+        const int maxQueued = std::clamp(frameSamples + audioBufSize,
+            frameSamples, std::max(frameSamples, capacity - frameSamples));
         // Register before locking: an already requested stop can invoke this
         // callback synchronously. Destroy it only after releasing the mutex.
         std::stop_callback wakeOnStop(stopToken, [this] {

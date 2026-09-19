@@ -278,6 +278,9 @@ public:
     void InitOutput();
     int GetOutputSize() const;
     u64 GetOutputDroppedFrames() const;
+    // Host pacing bound in frames: one slot stays empty to keep the ring's
+    // full/empty states distinct, so usable capacity is one less than the size.
+    int GetOutputCapacity() const { return static_cast<int>(OutputBufferSize) - 1; }
     void Sync(bool wait);
     int ReadOutput(s16* data, int samples);
     void SetOutputSampleRate(double rate);
