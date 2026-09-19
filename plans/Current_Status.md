@@ -1,13 +1,13 @@
-# 현재 개발 상태 — 1.1.140
+# 현재 개발 상태 — 1.1.141
 
 2026-09-20. 메인 작업/빌드 경로는 `F:/melonDS`, `build/windows-dev`다.
-현재 변경의 범위·실제 검증은 [1.1.140 기록](releases/1.1.140.md)을 따른다.
+현재 변경의 범위·실제 검증은 [1.1.141 기록](releases/1.1.141.md)을 따른다.
 1.1.136 Windows 패키지 provenance는 2026-09-18 자체 manifest 기준으로 재확인했다. 패키지 바이너리 행동 검증은 이 세션에서 재실행하지 않았다.
 
 | 영역 | 현재 구현 | 남은 경계 |
 |---|---|---|
 | 표시 수명 | 1.1.134의 paint 버퍼 재조회와 실패 fallback 잠금 유지 | 사용자 crash의 직접 대조, 장기/다중 창/실제 device loss |
-| Vulkan 확대 | 1~16배 직접 3D·LCDC 표시, bitmap BG2/BG3 및 일반·반전·affine direct-color bitmap OBJ의 캡처 디테일, Vulkan 렌더러·표시 GPU 어댑터 선택과 활성 GPU 상태 표시 | 모자이크 OBJ 향상, 3D texture 재사용, 색인 bitmap 향상; 변환 OBJ 검증은 양 engine 1·3·5배율; 실기 다중 GPU·핫플러그 미검증 |
+| Vulkan 확대 | 1~16배 직접 3D·LCDC 표시, bitmap BG2/BG3 및 일반·반전·affine direct-color bitmap OBJ의 캡처 디테일, 스프라이트 모자이크 행의 캡처 디테일(1.1.141), Vulkan 렌더러·표시 GPU 어댑터 선택과 활성 GPU 상태 표시 | 3D texture 재사용, 색인 bitmap 향상; 변환 OBJ 검증은 양 engine 1·3·5배율, 모자이크는 affine identity·Y 반전까지; 실기 다중 GPU·핫플러그 미검증 |
 | GL compute 이식성 | texture uniform 호출을 texture 래스터라이저 프로그램으로 한정해 strict 드라이버(AMD Windows GL 포함)에서 설정 적용 중단 수정 | 다른 GL 구현·드라이버 버전 전수 검증은 별도 |
 | 비트맵 합성 | 양 engine의 layer 후보·창·우선순위·효과·affine, native VRAM 기록 분리; 1.1.140 확대 3D 합성의 서브픽셀 공통 작업 제거 | 전체 GPU 2D/capture가 아니며 CPU 고배율 비용 일부가 남음 |
 | native 보존 | CPU/DMA용 캡처 기록, provenance 무효화·중복 mapping fallback | 실기 oracle와 모든 게임 경계의 수락은 별도 |
@@ -21,7 +21,7 @@
 ## 다음 단계
 
 1. 비트맵 합성 최적화는 추출 CPU 하네스의 양 engine·일반 affine 출력 바이트 대조를 통과했다. 1.1.140은 확대 3D 합성의 서브픽셀 공통 작업을 제거했다(72조건 oracle bitwise 일치). 실제 GPU 캡처 수명 대조와 engine B·일반 affine 성능은 남아 있다. 추가 span 묶음은 측정 후 결정한다.
-2. 일반·반전·affine bitmap OBJ의 캡처 재사용을 구현했다. 모자이크 향상과 고배율 성능은 다음 범위다. 모자이크 행·무효 provenance·중복 mapping·배율 불일치는 native fallback을 유지한다.
+2. 일반·반전·affine bitmap OBJ의 캡처 재사용을 구현했고, 1.1.141은 모자이크 행의 캡처 디테일을 native 래치 재사용으로 복원했다. 고배율 성능은 다음 범위다. 무효 provenance·중복 mapping·배율 불일치는 native fallback을 유지한다.
 3. 3D texture 재사용의 표시용 샘플과 native guest 결과를 분리한다. 정확성 판정을 위해 향상 경로를 정답으로 삼지 않는다.
 4. GPU 2D·직접 표시와 texture 업로드 묶음을 작은 단계로 진행하고 scanline/FIFO/capture 가시성·복구 수명을 보존한다.
 5. 실제 게임의 3D→2D→capture→표시 중 첫 차이와 CPU/GPU 비용을 각각 측정한다. Classic도 실기 전체의 정답으로 고정하지 않는다.
