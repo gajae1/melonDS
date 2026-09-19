@@ -25,6 +25,8 @@ public:
         // 0 clamp, 1 repeat, 2 mirrored repeat, as in the DS texture parameters.
         uint32_t wrapU=0, wrapV=0;
         float captureYOffset=0;
+        // Capture images retain scale*scale samples per native DS texel.
+        uint32_t captureScale=1;
     };
     struct Batch {
         std::span<const ComputeData::RenderPolygon> polygons;

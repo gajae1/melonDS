@@ -10,7 +10,7 @@
 namespace melonDS
 {
 VulkanRenderer::VulkanRenderer(NDS& nds, const std::string& preferred)
-    : SoftRenderer(nds, std::make_unique<VulkanRenderer3D>(nds.GPU.GPU3D, preferred))
+    : SoftRenderer(nds, std::make_unique<VulkanRenderer3D>(*this, nds.GPU.GPU3D, preferred))
 {
 }
 

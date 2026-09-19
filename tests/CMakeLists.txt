@@ -333,6 +333,10 @@ if (MELONDS_TEST_GPU AND TARGET vulkan-compute)
     add_test(NAME gpu-vulkan-capture-bitmap-bg COMMAND VulkanRendererIntegration captured-bitmap-bg)
     set_tests_properties(gpu-vulkan-capture-bitmap-bg PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     foreach(scale IN ITEMS 1 3 5)
+        add_test(NAME gpu-vulkan-capture-texture-${scale}x
+            COMMAND VulkanRendererIntegration captured-texture ${scale})
+        set_tests_properties(gpu-vulkan-capture-texture-${scale}x
+            PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
         foreach(engine RANGE 0 1)
             add_test(NAME gpu-vulkan-capture-bitmap-obj-${scale}x-${engine}
                 COMMAND VulkanRendererIntegration captured-bitmap-obj ${scale} ${engine})

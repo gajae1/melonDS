@@ -253,6 +253,10 @@ void ComputePipeline::Validate(const Batch& batch) const
         if(shader<5||shader>20||!pipelines[shader])throw std::invalid_argument("Invalid compute raster shader");
         if(((shader-5)&1)!=unsigned(batch.wbuffer))throw std::invalid_argument("Inconsistent compute depth mode");
         if(variant.wrapU>2||variant.wrapV>2)throw std::invalid_argument("Invalid texture wrap mode");
+        if(!variant.captureScale||variant.captureScale>ComputeShader::VulkanMaxScale||
+            (variant.captureScale!=1&&(!variant.texture||!variant.texture->capture||
+                variant.texture->width%variant.captureScale||variant.texture->height%variant.captureScale)))
+            throw std::invalid_argument("Invalid capture texture scale");
         if(shader>=11&&shader<=18&&!variant.texture)throw std::invalid_argument("Missing compute texture");
         if(variant.texture&&(!variant.texture->image||!variant.texture->image->BelongsTo(*owner)))
             throw std::invalid_argument("Texture belongs to another compute device");
@@ -318,8 +322,9 @@ void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,boo
             } push{variant,0,0,0,0,state.captureYOffset};
             static_assert(sizeof(Push)==24);
             if(state.texture) {
-                push.invWidth=1.f/state.texture->width;push.invHeight=1.f/state.texture->height;
-                if(state.texture->capture)push.capture=state.texture->width==128?1:2;
+                const uint32_t scale=state.texture->capture?state.captureScale:1;
+                push.invWidth=float(scale)/state.texture->width;push.invHeight=float(scale)/state.texture->height;
+                if(state.texture->capture)push.capture=state.texture->width/scale==128?1:2;
             }
             f.vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
             f.vkCmdDispatchIndirect(command, buffers[7]->Handle(), variant*16);

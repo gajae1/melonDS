@@ -9,6 +9,56 @@
 
 namespace melonDS
 {
+bool VulkanRenderer::CaptureTexturePixels(u32 texparam, u32 scale, std::vector<u32>& pixels) const
+{
+    if (scale <= 1 || scale != u32(DisplayScale)) return false;
+    int info[16];
+    GPU.GetCaptureInfo_Texture(info);
+    const int block = GetTextureCaptureBlock(texparam, info);
+    if (block < 0) return false;
+    const u32 width = TextureWidth(texparam), height = TextureHeight(texparam);
+    const u32 address = (texparam & 0xFFFF) * 8, count = width * height;
+    // The shared GL helper finds a candidate, not full-range provenance.
+    // Require every covered page to belong to this one capture; overlapping
+    // bank mappings and ordinary VRAM pages are reported as -1 by the GPU.
+    const u32 end = (address + count * 2 + 0x7FFF) >> 15;
+    for (u32 page = address >> 15; page < end; ++page)
+        if (info[page] != block) return false;
+    const auto& capture = DisplayCaptures[block];
+    if (capture.pixels.empty() || capture.scale != scale) return false;
+    const u32 offset = ((address & 0x1FFFF) / 2 - capture.start * 16384) & 0xFFFF;
+    if (offset + count > capture.width * capture.height) return false;
+    for (u32 row = offset / capture.width; row <= (offset + count - 1) / capture.width; ++row)
+        if (!capture.valid[row]) return false;
+
+    // Crop the exact DS texture domain, including non-row-aligned addresses
+    // and 128/256 pitch reinterpretation. Sampler clamp/repeat/mirror then
+    // operate on the texture, not on a whole capture bank or an offset image.
+    pixels.resize(size_t(width) * height * scale * scale);
+    const auto unorm = [](u32 channel) {
+        const u32 rgb6 = channel ? channel * 2 + 1 : 0;
+        // The shared capture shader truncates UNORM * 63. Round upward here
+        // to recover the native bitmap decoder's exact nonzero RGB5->RGB6.
+        return (rgb6 * 255 + 62) / 63;
+    };
+    for (u32 y = 0; y < height; ++y)
+    for (u32 sy = 0; sy < scale; ++sy)
+    for (u32 x = 0; x < width; ++x)
+    {
+        const u32 word = offset + y * width + x;
+        const auto* source = capture.pixels.data() +
+            (size_t(word / capture.width * scale + sy) * capture.width + word % capture.width) * scale;
+        auto* dest = pixels.data() + (size_t(y * scale + sy) * width + x) * scale;
+        for (u32 sx = 0; sx < scale; ++sx)
+        {
+            const u16 color = source[sx];
+            dest[sx] = unorm(color & 31) | (unorm((color >> 5) & 31) << 8) |
+                (unorm((color >> 10) & 31) << 16) | ((color & 0x8000) ? 0xFF000000 : 0);
+        }
+    }
+    return true;
+}
+
 u32 VulkanRenderer::CaptureBackgroundScale(u32 engine) const
 {
     return CaptureMappedScale(engine ? GPU.VRAMMap_BBG : GPU.VRAMMap_ABG, engine ? 8 : 32);

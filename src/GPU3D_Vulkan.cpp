@@ -1,6 +1,7 @@
 // Copyright 2016-2026 melonDS team
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "GPU3D_Vulkan.h"
+#include "GPU_Vulkan.h"
 #include "Vulkan/EmbeddedShaders.h"
 #include "Platform.h"
 #include <algorithm>
@@ -18,7 +19,21 @@ struct PreparedBatch
     std::vector<ComputeData::SpanSetupY> Edges;
     std::vector<ComputeData::SetupIndices> Indices;
     std::vector<Pipeline::Variant> Variants;
+    std::vector<ComputeData::RenderPolygon> DisplayPolygons;
+    std::vector<Pipeline::Variant> DisplayVariants;
 };
+
+u32 AddVariant(std::vector<Pipeline::Variant>& variants, const Pipeline::Variant& variant)
+{
+    const auto found = std::find_if(variants.begin(), variants.end(), [&](const auto& previous) {
+        return previous.shader == variant.shader && previous.texture == variant.texture &&
+            previous.wrapU == variant.wrapU && previous.wrapV == variant.wrapV &&
+            previous.captureYOffset == variant.captureYOffset && previous.captureScale == variant.captureScale;
+    });
+    const u32 index = found - variants.begin();
+    if (found == variants.end()) variants.push_back(variant);
+    return index;
+}
 
 // Match the pipeline's scaled full-width work bound and indirect-dispatch limit.
 // Whole polygons in order preserve depth, translucent IDs and shadow stencil.
@@ -61,8 +76,8 @@ Pipeline::Variant MakeVariant(const Polygon& polygon, u32 dispCnt, bool wbuffer,
     if (useTexture)
     {
         u32* lastVariant;
-        // Captures are already in native VRAM through SoftRenderer::DoCapture.
-        // Decode them with the same bitmap path as CPU-written textures.
+        // Always retain the native decode for guest-visible output. Captured
+        // display samples are substituted only in the separate display batch.
         cache.GetTexture(polygon.TexParam, polygon.TexPalette, variant.texture, layer, lastVariant);
         variant.wrapU = (polygon.TexParam & (1 << 16)) ? ((polygon.TexParam & (1 << 18)) ? 2 : 1) : 0;
         variant.wrapV = (polygon.TexParam & (1 << 17)) ? ((polygon.TexParam & (1 << 19)) ? 2 : 1) : 0;
@@ -71,8 +86,8 @@ Pipeline::Variant MakeVariant(const Polygon& polygon, u32 dispCnt, bool wbuffer,
 }
 }
 
-VulkanRenderer3D::VulkanRenderer3D(melonDS::GPU3D& gpu, const std::string& preferred)
-    : Renderer3D(gpu), PreferredDevice(preferred) {}
+VulkanRenderer3D::VulkanRenderer3D(VulkanRenderer& parent, melonDS::GPU3D& gpu, const std::string& preferred)
+    : Renderer3D(gpu), Parent(parent), PreferredDevice(preferred) {}
 VulkanRenderer3D::~VulkanRenderer3D() = default;
 
 bool VulkanRenderer3D::Init()
@@ -135,6 +150,7 @@ void VulkanRenderer3D::Reset()
     RenderedScale = 1;
     ClearBitmapDirty = 3;
     FrameDirty = true;
+    HadCaptureTextures = false;
 }
 
 void VulkanRenderer3D::RestartFrame()
@@ -164,10 +180,42 @@ void VulkanRenderer3D::RenderFrame()
 
 void VulkanRenderer3D::DrawFrame()
 {
+    std::unordered_map<u32, std::shared_ptr<const Pipeline::Texture>> captures;
+    bool hasCaptures = false;
+    if (ScaleFactor > 1 && (GPU3D.RenderDispCnt & 1))
+    {
+        std::vector<u32> pixels;
+        for (u32 i = 0; i < GPU3D.RenderNumPolygons; ++i)
+        {
+            const auto& polygon = *GPU3D.RenderPolygonRAM[i];
+            if (polygon.Degenerate || polygon.YTop >= 192 || polygon.IsShadowMask ||
+                ((polygon.TexParam >> 26) & 7) != 7) continue;
+            const u32 key = polygon.TexParam & ~0xC00F0000u;
+            auto [entry, inserted] = captures.try_emplace(key);
+            if (!inserted) continue;
+            try
+            {
+                // Snapshot before Update: a DIFFERENT wrapping texture can
+                // SyncAllVRAMCaptures and retire the parent's sidecar. Keep
+                // that native ordering without losing this texture's detail.
+                if (!Parent.CaptureTexturePixels(key, ScaleFactor, pixels)) continue;
+                entry->second = Pipeline->UploadTexture(TextureWidth(key) * ScaleFactor,
+                    TextureHeight(key) * ScaleFactor, 1, pixels, true);
+                hasCaptures = true;
+            }
+            catch (const std::exception& error)
+            {
+                // Optional display storage must not retire the native backend.
+                // Failed/invalid entries also prevent duplicate attempts this frame.
+                Platform::Log(Platform::LogLevel::Warn, "Vulkan capture texture unavailable: %s\n", error.what());
+            }
+        }
+    }
     u8 dirty;
     const bool texturesChanged = Texcache->Update(dirty);
     ClearBitmapDirty |= dirty;
-    if (!texturesChanged && GPU3D.RenderFrameIdentical && !FrameDirty) return;
+    // Native bytes can be identical while subpixels change or are invalidated.
+    if (!texturesChanged && GPU3D.RenderFrameIdentical && !FrameDirty && !hasCaptures && !HadCaptureTextures) return;
     if ((GPU3D.RenderDispCnt & (1 << 14)) && ClearBitmapDirty)
     {
         ComputeData::DecodeClearBitmap(GPU.VRAMFlat_Texture, ClearColor.data(), ClearDepth.data(), ClearBitmapDirty);
@@ -190,6 +238,7 @@ void VulkanRenderer3D::DrawFrame()
         const u32 count = BatchSize(polygons.subspan(first), ScaleFactor, HiresCoordinates, Pipeline->WorkCapacity(), Pipeline->SpanCapacity(), Pipeline->TileSize());
         auto& batch = prepared.emplace_back();
         batch.Polygons.resize(count);
+        if (hasCaptures) batch.DisplayPolygons.resize(count);
         batch.Edges.resize(count * 12);
         batch.Indices.resize(count * 192 * ScaleFactor);
         int numEdges = 0, numIndices = 0;
@@ -201,13 +250,21 @@ void VulkanRenderer3D::DrawFrame()
                 batch.Indices, numIndices, ScaleFactor, HiresCoordinates);
             u32 layer;
             auto variant = MakeVariant(*source, GPU3D.RenderDispCnt, wbuffer, *Texcache, layer);
-            const auto found = std::find_if(batch.Variants.begin(), batch.Variants.end(), [&](const auto& previous) {
-                return previous.shader == variant.shader && previous.texture == variant.texture &&
-                    previous.wrapU == variant.wrapU && previous.wrapV == variant.wrapV;
-            });
-            polygon.Variant = found - batch.Variants.begin();
-            if (found == batch.Variants.end()) batch.Variants.push_back(std::move(variant));
+            polygon.Variant = AddVariant(batch.Variants, variant);
             polygon.TextureLayer = float(layer);
+            if (hasCaptures)
+            {
+                auto& display = batch.DisplayPolygons[i];
+                display = polygon;
+                const auto captured = captures.find(source->TexParam & ~0xC00F0000u);
+                if (variant.texture && captured != captures.end() && captured->second)
+                {
+                    variant.texture = captured->second;
+                    variant.captureScale = ScaleFactor;
+                    display.TextureLayer = 0;
+                }
+                display.Variant = AddVariant(batch.DisplayVariants, variant);
+            }
         }
         batch.Edges.resize(numEdges);
         batch.Indices.resize(numIndices);
@@ -219,18 +276,7 @@ void VulkanRenderer3D::DrawFrame()
         batches.push_back({batch.Polygons, batch.Edges, batch.Indices, batch.Variants,
             ComputeData::PrepareMeta(GPU3D, batch.Polygons.size(), batch.Variants.size()), wbuffer});
     // Consume the completed readback view before any subsequent render reuses it.
-    const auto pixels = Pipeline->RenderView(batches);
-    // Retain all scaled samples for display. The native origin samples below
-    // remain the source of guest capture, independent of host presentation.
-    if (ScaleFactor > 1)
-    {
-        ScaledColorBuffer.resize(pixels.size());
-        std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
-            return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
-        });
-    }
-    else ScaledColorBuffer.clear();
-    RenderedScale = ScaleFactor;
+    auto pixels = Pipeline->RenderView(batches);
     // Sample native pixel origins without filtering RGB6/A5 or inventing
     // capture alpha. At 1x this is exactly the previous byte conversion.
     // Scaled edge coverage follows the shared compute rasterizer, not a
@@ -242,6 +288,29 @@ void VulkanRenderer3D::DrawFrame()
         const u32 pixel = pixels[(y * ScaleFactor) * width + x * ScaleFactor];
         ColorBuffer[y * 256 + x] = ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
     }
+    // Never derive guest pixels from captured subpixel UVs: even a native
+    // screen origin can address a fractional texel. The native result above
+    // must be consumed before RenderView reuses its readback allocation.
+    if (hasCaptures)
+    {
+        for (size_t i = 0; i < batches.size(); ++i)
+        {
+            batches[i].polygons = prepared[i].DisplayPolygons;
+            batches[i].variants = prepared[i].DisplayVariants;
+            batches[i].meta.NumVariants = prepared[i].DisplayVariants.size();
+        }
+        pixels = Pipeline->RenderView(batches);
+    }
+    if (ScaleFactor > 1)
+    {
+        ScaledColorBuffer.resize(pixels.size());
+        std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
+            return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
+        });
+    }
+    else ScaledColorBuffer.clear();
+    RenderedScale = ScaleFactor;
+    HadCaptureTextures = hasCaptures;
     FrameDirty = false;
 }
 

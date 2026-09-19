@@ -8,10 +8,11 @@
 
 namespace melonDS
 {
+class VulkanRenderer;
 class VulkanRenderer3D final : public Renderer3D
 {
 public:
-    explicit VulkanRenderer3D(melonDS::GPU3D& gpu, const std::string& preferred = {});
+    VulkanRenderer3D(VulkanRenderer& parent, melonDS::GPU3D& gpu, const std::string& preferred = {});
     std::string DeviceName() const { return Device ? Device->Properties().deviceName : ""; }
     ~VulkanRenderer3D() override;
     bool Init() override;
@@ -25,6 +26,7 @@ public:
     void ClearPipelineCache() { if (Device) Device->ClearPipelineCache(); }
 
 private:
+    VulkanRenderer& Parent;
     std::string PreferredDevice;
     void DrawFrame();
     std::shared_ptr<Vulkan::Device> Device;
@@ -39,6 +41,7 @@ private:
     int ScaleFactor = 1;
     bool HiresCoordinates = false;
     bool FrameDirty = true;
+    bool HadCaptureTextures = false;
     bool Failed = false;
 };
 }

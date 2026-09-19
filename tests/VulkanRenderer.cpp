@@ -1281,6 +1281,275 @@ void Capture(int scale)
     std::puts("Vulkan 3D -> capture -> guest LDRH -> texture -> capture PASS");
 }
 
+// Integer rectangles and explicit 12.4 UVs make the capture probes independent
+// of either renderer's capture sampler. The companion console disables only
+// display provenance, retaining identical guest bytes and the native pipeline.
+void CaptureTextureQuad(NDS& nds, unsigned index, u32 param, int x, int y,
+    int width, int height, int u0, int v0, int u1, int v1)
+{
+    auto& gpu = nds.GPU.GPU3D;
+    if (!index) Scene(nds, 7, false, false);
+    auto& polygon = gpu.PolygonRAM[index];
+    if (index) polygon = gpu.PolygonRAM[0];
+    polygon.TexParam = param;
+    polygon.YTop = y; polygon.YBottom = y + height;
+    const int positions[][2] = {{x,y}, {x+width,y}, {x+width,y+height}, {x,y+height}};
+    const int uv[][2] = {{u0,v0}, {u1,v0}, {u1,v1}, {u0,v1}};
+    for (unsigned v = 0; v < 4; ++v)
+    {
+        auto& vertex = gpu.VertexRAM[index * 4 + v];
+        if (index) vertex = gpu.VertexRAM[v];
+        polygon.Vertices[v] = &vertex;
+        for (unsigned axis = 0; axis < 2; ++axis)
+        {
+            vertex.FinalPosition[axis] = positions[v][axis];
+            vertex.HiresPosition[axis] = positions[v][axis] * 16;
+            vertex.TexCoords[axis] = uv[v][axis];
+        }
+    }
+    gpu.RenderPolygonRAM[index] = &polygon;
+    gpu.RenderNumPolygons = index + 1;
+    gpu.RenderClearAttr1 = 0;
+    nds.ARM9Write16(0x05000000, 0);
+    nds.ARM9Write32(0x04000000, 0x00010108);
+}
+
+void CapturedTexture(int scale)
+{
+    struct Probe { int x, y, sx, sy; u32 color; };
+    unsigned cases = 0, probes = 0;
+    size_t nativeErrors = 0, displayErrors = 0, fallbackPixels = 0;
+    for (const unsigned captureSize : {3u, 0u})
+    {
+        const unsigned start = captureSize ? 0 : 2;
+        const unsigned textureWidth = captureSize ? 256 : 128;
+        const u32 base = start * 32768;
+        const u32 param = (7u << 26) | ((captureSize ? 5u : 4u) << 20) | (4u << 23) | (base / 8);
+        auto vk = Console(true, scale), reference = Console(true, scale);
+        const std::array<NDS*, 2> consoles{vk.get(), reference.get()};
+        std::vector<u8> guest;
+        for (auto* nds : consoles)
+        {
+            nds->ARM9Write8(0x04000241, 0x80);
+            nds->Start(); nds->RunFrame();
+            RendererSettings settings{scale, false, true, false};
+            Require(nds->GetRenderer().SetRenderSettings(settings), "capture texture settings failed");
+        }
+        const auto capture = [&](bool partial = false) {
+            for (auto* nds : consoles)
+            {
+                nds->ARM9Write8(0x04000241, 0x80);
+                auto& polygon = Scene(*nds, 0, false, false);
+                for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
+                {
+                    vertex->HiresPosition[0] += 8;
+                    vertex->HiresPosition[1] += 8;
+                }
+                nds->GPU.GPU3D.RenderClearAttr1 = 0;
+                nds->GetRenderer().Start3DRendering();
+                const u32 control = 0x81010000 | (captureSize << 20) | (start << 18);
+                if (!partial)
+                {
+                    nds->ARM9Write32(0x04000064, control);
+                    nds->RunFrame();
+                }
+                else
+                {
+                    // Recreate an allocated but only partially produced sidecar.
+                    // Actual DrawScanline/DoCapture supplies the first 64 rows;
+                    // no test-only injection into renderer storage is involved.
+                    nds->GetRenderer().InvalidateDisplayCapture(1, start);
+                    nds->GetRenderer().AllocCapture(1, start, captureSize);
+                    nds->GPU.CaptureCnt = control;
+                    nds->GPU.CaptureEnable = true;
+                    for (u32 y = 0; y < 64; ++y)
+                    {
+                        nds->GPU.VCount = y;
+                        nds->GetRenderer().DrawScanline(y);
+                    }
+                    nds->GPU.CaptureEnable = false;
+                }
+                Require(!nds->GetRenderer().HasRenderFailure(), "capture texture producer failed");
+                nds->ARM9Write8(0x04000241, 0x83);
+            }
+            reference->GetRenderer().InvalidateDisplayCapture(1, start);
+            guest.assign(vk->GPU.VRAM[1], vk->GPU.VRAM[1] + 131072);
+            Require(std::equal(guest.begin(), guest.end(), reference->GPU.VRAM[1]),
+                "capture texture producer consoles disagree");
+            int info[16]; vk->GPU.GetCaptureInfo_Texture(info);
+            Require(info[base >> 15] == int(4 + start), "fixture lost texture capture provenance");
+        };
+        capture();
+        const auto quad = [&](u32 texture, int u, int v, unsigned index = 0) {
+            for (auto* nds : consoles)
+                CaptureTextureQuad(*nds, index, texture, 16 + index * 40, 64, 32, 32, u, v, u, v);
+        };
+        const auto check = [&](const char* name, std::initializer_list<Probe> expected,
+            bool fallback = false, int currentScale = 0) {
+            if (!currentScale) currentScale = scale;
+            std::array<std::vector<u32>, 2> native, display;
+            for (unsigned i = 0; i < consoles.size(); ++i)
+            {
+                auto& nds = *consoles[i];
+                Screen(nds);
+                native[i] = Screen(nds, false);
+                void *top, *bottom; int width, height;
+                Require(nds.GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height) &&
+                    width == 256 * currentScale && height == 192 * currentScale, "capture texture display extent");
+                const auto* pixels = static_cast<const u32*>(nds.GPU.ScreenSwap ? top : bottom);
+                display[i].assign(pixels, pixels + size_t(width) * height);
+                Require(std::equal(guest.begin(), guest.end(), nds.GPU.VRAM[1]),
+                    "3D display modified source guest capture bytes");
+            }
+            size_t nativeDiff = 0, displayDiff = 0;
+            u64 hash = 14695981039346656037ull;
+            for (size_t i = 0; i < native[0].size(); ++i)
+            {
+                nativeDiff += native[0][i] != native[1][i];
+                for (unsigned shift : {0u, 8u, 16u, 24u})
+                    hash = (hash ^ ((native[0][i] >> shift) & 255)) * 1099511628211ull;
+            }
+            if (fallback || currentScale == 1)
+            {
+                for (size_t i = 0; i < display[0].size(); ++i)
+                    displayDiff += display[0][i] != display[1][i];
+                fallbackPixels += display[0].size();
+            }
+            for (const auto& p : expected)
+            {
+                const u32 actual = display[0][size_t(p.y * currentScale + p.sy) * 256 * currentScale +
+                    p.x * currentScale + p.sx];
+                if (actual != p.color)
+                {
+                    if (displayErrors + displayDiff < 20)
+                        std::fprintf(stderr, "3D capture %s size=%u scale=%d xy=(%d,%d)+(%d,%d) expected=%08x actual=%08x\n",
+                            name, captureSize, currentScale, p.x, p.y, p.sx, p.sy, p.color, actual);
+                    ++displayDiff;
+                }
+                ++probes;
+            }
+            ++cases; nativeErrors += nativeDiff; displayErrors += displayDiff;
+            std::printf("3D capture %s size=%u scale=%d probes=%zu native-errors=%zu display-errors=%zu native-fnv64=%016llx guest-bytes=131072 unchanged=1\n",
+                name, captureSize, currentScale, expected.size(), nativeDiff, displayDiff,
+                static_cast<unsigned long long>(hash));
+        };
+        const u32 edgeNative = scale == 1 ? 0xFFFF0000u : 0xFF000000u;
+        quad(param, 32 * 16, 40 * 16);
+        quad(param, 32 * 16 + 8, 40 * 16, 1);
+        quad(param, 40 * 16, 24 * 16, 2);
+        quad(param, 40 * 16, 24 * 16 + 8, 3);
+        quad(param, 40 * 16, 40 * 16, 4);
+        check("fixed-uv-alpha", {{24,72,0,0,edgeNative}, {64,72,0,0,0xFFFF0000},
+            {104,72,0,0,edgeNative}, {144,72,0,0,0xFFFF0000}, {184,72,0,0,0xFFFF0000}});
+
+        for (auto* nds : consoles)
+            CaptureTextureQuad(*nds, 0, param, 16, 16, 96, 96, 0, 0, 96 * 16, 96 * 16);
+        check("interpolated-uv", {{48,64,0,0,edgeNative}, {48,64,scale-1,0,0xFFFF0000},
+            {64,40,0,0,edgeNative}, {64,40,0,scale-1,0xFFFF0000}, {80,80,0,0,0xFFFF0000}});
+
+        quad(param + 1, 28 * 16 + 8, 40 * 16); // Four-texel, non-row-aligned offset.
+        // The last four texels of a 128x128 capture are outside its provenance.
+        check("unaligned-subrange", {{24,72,0,0,captureSize ? 0xFFFF0000u : edgeNative}}, !captureSize);
+        const u32 shortParam = (param & ~(7u << 23)) | (3u << 23);
+        quad(shortParam + textureWidth * 16 * 2 / 8, 32 * 16 + 8, 24 * 16);
+        check("short-height-row-offset", {{24,72,0,0,0xFFFF0000}});
+
+        for (const unsigned wrap : {1u, 2u})
+        {
+            const int u = wrap == 1 ? int(textureWidth + 32) * 16 + 8 : int(2 * textureWidth - 32) * 16 - 8;
+            quad(param | (1u << 16) | (wrap == 2 ? 1u << 18 : 0), u, 40 * 16);
+            quad(shortParam | (1u << 17), 40 * 16, (64 + 24) * 16 + 8, 1);
+            check(wrap == 1 ? "repeat-uv" : "mirror-u-repeat-v",
+                {{24,72,0,0,0xFFFF0000}, {64,72,0,0,0xFFFF0000}});
+        }
+        quad(param | (1u << 16), (32 - int(textureWidth)) * 16 + 8, 40 * 16);
+        check("negative-repeat", {{24,72,0,0,0xFFFF0000}});
+
+        quad((param & ~(7u << 26)) | (4u << 26), 32 * 16 + 8, 40 * 16);
+        check("indexed-native-fallback", {}, true);
+        quad((param & ~(7u << 23)) | (5u << 23), 32 * 16 + 8, 40 * 16);
+        quad(param, 32 * 16 + 8, 40 * 16, 1);
+        check("partial-range-and-valid-neighbor", {{24,72,0,0,edgeNative}, {64,72,0,0,0xFFFF0000}});
+
+        for (auto* nds : consoles) nds->ARM9Write8(0x04000240, 0x83); // A OR B, not just B.
+        quad(param, 32 * 16 + 8, 40 * 16);
+        check("multi-bank-or", {}, true);
+        for (auto* nds : consoles) nds->ARM9Write8(0x04000240, 0);
+        quad(param, 32 * 16 + 8, 40 * 16);
+        check("mapping-restored", {{24,72,0,0,0xFFFF0000}});
+
+        if (scale > 1)
+        {
+            const int otherScale = 2;
+            for (auto* nds : consoles)
+            {
+                RendererSettings settings{otherScale, false, true, false};
+                Require(nds->GetRenderer().SetRenderSettings(settings), "capture texture scale transition failed");
+                nds->GPU.GPU3D.RenderFrameIdentical = true;
+            }
+            check("scale-mismatch", {}, true, otherScale);
+            for (auto* nds : consoles)
+            {
+                RendererSettings settings{scale, false, true, false};
+                Require(nds->GetRenderer().SetRenderSettings(settings), "capture texture scale restoration failed");
+            }
+            check("scale-restored", {{24,72,0,0,0xFFFF0000}});
+        }
+
+        // Capture the textured result through the actual scanline/guest path.
+        // A fractional UV exposes red only in the enhanced display at 3x/5x.
+        for (auto* nds : consoles)
+        {
+            nds->ARM9Write8(0x04000243, 0x80);
+            nds->ARM9Write16(0x04000060, 1);
+            nds->GetRenderer().Start3DRendering();
+            nds->ARM9Write32(0x04000064, 0x81330000);
+            nds->RunFrame();
+        }
+        Require(std::equal(vk->GPU.VRAM[3], vk->GPU.VRAM[3] + 131072, reference->GPU.VRAM[3]),
+            "enhanced 3D texture sampling leaked into guest recapture");
+        Require(vk->ARM9Read16(0x06860000 + (72 * 256 + 24) * 2) == (scale == 1 ? 0x801F : 0),
+            "guest recapture used a display-only fractional texture sample");
+        std::printf("3D capture guest-roundtrip size=%u scale=%d compared-bytes=131072 PASS\n", captureSize, scale);
+
+        capture(true);
+        quad(param, 32 * 16 + 8, 40 * 16);
+        quad(shortParam, 32 * 16 + 8, 40 * 16, 1);
+        check("invalid-row-and-valid-neighbor", {{24,72,0,0,edgeNative}, {64,72,0,0,0xFFFF0000}});
+        quad(shortParam, 32 * 16 + 8, 40 * 16);
+        check("valid-row-before-invalidation", {{24,72,0,0,0xFFFF0000}});
+        vk->GetRenderer().InvalidateDisplayCapture(1, start);
+        for (auto* nds : consoles) nds->GPU.GPU3D.RenderFrameIdentical = true;
+        check("missing-sidecar-identical-frame", {}, true);
+        vk->GetRenderer().AllocCapture(1, start, captureSize);
+        check("allocated-but-invalid-rows", {}, true);
+
+        capture();
+        quad(param, 32 * 16 + 8, 40 * 16);
+        check("before-cpu-invalidation", {{24,72,0,0,0xFFFF0000}});
+        for (auto* nds : consoles)
+        {
+            nds->ARM9Write8(0x04000241, 0x80);
+            nds->ARM9Write16(0x06820000 + base, 0); // Same bytes, now CPU provenance.
+            nds->ARM9Write8(0x04000241, 0x83);
+            nds->GPU.GPU3D.RenderFrameIdentical = true;
+        }
+        check("cpu-invalidated-identical-frame", {}, true);
+
+        capture();
+        // A wrapping texture triggers Texcache::Update's existing SyncAll
+        // ordering. It must fall back without disabling its valid neighbor.
+        for (auto* nds : consoles) nds->ARM9Write8(0x04000240, 0x9B);
+        quad((param & ~0xFFFFu) | 0xFFFFu, 0, 0);
+        quad(param, 32 * 16 + 8, 40 * 16, 1);
+        check("wrapping-and-valid-neighbor", {{24,72,0,0,0xFF000000}, {64,72,0,0,0xFFFF0000}});
+        check("post-sync-stale-sidecar", {}, true);
+    }
+    std::printf("3D capture summary scale=%d cases=%u probes=%u native-pixels=%zu native-errors=%zu display-errors=%zu fallback-pixels=%zu\n",
+        scale, cases, probes, size_t(cases) * 49152, nativeErrors, displayErrors, fallbackPixels);
+    Require(!nativeErrors && !displayErrors, "captured 3D texture fixed-coordinate/color or native/fallback assertions failed");
+}
+
 void Batches(int scale)
 {
     auto vk = Console(true, scale), soft = Console(false);
@@ -1411,6 +1680,11 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
+        if (argc == 3 && std::strcmp(argv[1], "captured-texture") == 0) {
+            const int scale = std::atoi(argv[2]);
+            Require(scale == 1 || scale == 3 || scale == 5, "invalid capture texture scale");
+            CapturedTexture(scale); return 0;
+        }
         if (argc == 2 && std::strcmp(argv[1], "captured-obj-boundary") == 0) {
             CapturedBitmapOBJ(5, 0, true); CapturedBitmapOBJ(5, 1, true); return 0;
         }

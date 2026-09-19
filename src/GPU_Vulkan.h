@@ -28,6 +28,8 @@ public:
     bool GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height) override;
 
 private:
+    friend class VulkanRenderer3D;
+    bool CaptureTexturePixels(u32 texparam, u32 scale, std::vector<u32>& pixels) const;
     using DisplayBuffers = std::array<std::array<std::vector<u32>, 2>, 2>;
     DisplayBuffers ScaledBuffers;
     int DisplayScale = 1;
