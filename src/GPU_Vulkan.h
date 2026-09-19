@@ -16,8 +16,10 @@ class VulkanRenderer final : public SoftRenderer
 public:
     explicit VulkanRenderer(NDS& nds, const std::string& preferred = {});
     std::string DeviceName() const;
-    // Rendering-thread diagnostic; includes upload and render submissions.
+    // Rendering-thread 3D upload/render diagnostic, retaining its original
+    // scope. Total includes the new final-display submissions on the same device.
     u64 SubmissionCount() const;
+    u64 TotalSubmissionCount() const;
     static bool IsAvailable(std::string& error);
     bool SetRenderSettings(RendererSettings& settings) override;
     bool HasRenderFailure() const override;
@@ -25,6 +27,7 @@ public:
     void Reset() override;
     void Stop() override;
     void DrawScanline(u32 line) override;
+    void SwapBuffers() override;
     void AllocCapture(u32 bank, u32 start, u32 size) override;
     void InvalidateDisplayCapture(u32 bank, u32 start) override { DisplayCaptures[bank * 4 + start] = {}; }
     bool GetDisplayFrame(DisplayFrame& frame) override;
@@ -35,6 +38,11 @@ private:
     using DisplayBuffers = std::array<std::array<std::vector<u32>, 2>, 2>;
     DisplayBuffers ScaledBuffers;
     int DisplayScale = 1;
+    using CompositionLine = SoftRenderer2D::ScaledLineContext;
+    std::array<std::vector<CompositionLine>, 2> CompositionLines;
+    bool CompositionPending = false;
+    void FinishDisplayComposition() noexcept;
+    void DiscardDisplayComposition();
     struct DisplayCapture
     {
         u32 width = 0, height = 0, scale = 1, start = 0;

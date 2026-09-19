@@ -36,6 +36,19 @@ public:
 
     void DrawScanline(u32 line) override;
     void DrawSprites(u32 line) override;
+    // Additive snapshot of the native stack. No guest/capture state is changed.
+    // Scalar fields deliberately match the Vulkan std430 layout (no bool/u8 ABI).
+    struct ScaledLineContext
+    {
+        struct Pixel { u32 top, second, belowTop, belowSecond, window; };
+        std::array<Pixel, 256> pixels{};
+        u32 blendCnt = 0, eva = 0, evb = 0, evy = 0, masterBrightness = 0;
+        enum Mode : u32 { Keep, Composite3D, Flat, ForcedBlank, Off, CaptureOverride };
+        Mode mode = Keep;
+        u32 sourceLine = 0, xpos = 0, abort = 0;
+    };
+    // Capture detail must be consumed at its existing scanline boundary instead.
+    bool ExportScaledContext(ScaledLineContext& context, u16 brightness) const;
     // Reuse the native layer stack with a different 3D sample per host pixel.
     void ComposeScaledLine(u32* dst, const u32* pixels3D, int scale, int subline = 0) const;
     bool HasScaledLayers() const { return Scaled3DActive || CaptureLayersActive; }

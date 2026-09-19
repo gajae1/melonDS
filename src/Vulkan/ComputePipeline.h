@@ -45,7 +45,13 @@ public:
     // Completed readback in cached CPU memory. Valid until the next render attempt
     // or pipeline destruction; consume before submitting another frame.
     // Call Render when an independently owned snapshot is needed instead.
-    std::span<const uint32_t> RenderView(std::span<const Batch> batches);
+    enum class Readback { Full, Native, None };
+    std::span<const uint32_t> RenderView(std::span<const Batch> batches, Readback mode=Readback::Full);
+    // Optional origin extraction shares the render submission. Failure to enable
+    // it leaves the existing full-readback graph usable.
+    void EnableNativeReadback(std::span<const uint32_t> shader);
+    std::span<const uint32_t> ReadbackView();
+    const std::shared_ptr<Device::Image>& OutputImage() const { return output; }
     std::shared_ptr<const Texture> UploadTexture(uint32_t width, uint32_t height,
         uint32_t layers, std::span<const uint32_t> pixels, bool capture=false);
     std::shared_ptr<const Texture> CreateTexture(uint32_t width, uint32_t height, uint32_t layers);
@@ -62,6 +68,8 @@ public:
 private:
     void Init(const Shaders& shaders);
     void Cleanup();
+    void CleanupNativeReadback();
+    void RecordFullReadback(VkCommandBuffer command);
     void Bind(VkCommandBuffer command,unsigned shader,VkDescriptorSet storage,VkDescriptorSet image,
         VkDescriptorSet textures=VK_NULL_HANDLE);
     void Validate(const Batch& batch) const;
@@ -96,6 +104,14 @@ private:
     // Mapped host-coherent memory need not be CPU-cached. Copy once with memcpy,
     // then let color conversion/native sampling read this reusable allocation.
     std::vector<uint32_t> hostReadback;
+    bool fullReadbackValid=false;
+    VkPipeline nativePipeline{};
+    VkPipelineLayout nativeLayout{};
+    VkDescriptorSetLayout nativeBindings{};
+    VkDescriptorPool nativePool{};
+    VkDescriptorSet nativeSet{};
+    std::shared_ptr<Device::Buffer> nativeReadback;
+    std::vector<uint32_t> nativeHostReadback;
     // Disjoint coherent ranges and retained images survive through the existing
     // submission fence. Growth is safe before recording; reuse requires a wait.
     // Bound each chunk, except for one individually larger upload.

@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+struct Pixel { uint top, second, belowTop, belowSecond, window; };
+struct Line {
+    Pixel pixels[256];
+    uint blendCnt, eva, evb, evy, masterBrightness;
+    uint mode, sourceLine, xpos, abort;
+};
+layout(std430, set = 0, binding = 0) readonly buffer Contexts { Line lines[]; };
+layout(rgba8, set = 0, binding = 1) uniform readonly image2D Image3D;
+layout(r32ui, set = 0, binding = 2) uniform writeonly uimage2D Output;
+layout(push_constant) uniform Settings { uint scale, sourceScale; } settings;
+
+// Keep the original unsigned component masks/overflow and rounding biases,
+// including out-of-range register states accepted by the CPU implementation.
+uint blend4(uint a, uint b, uint eva, uint evb)
+{
+    uint r = (((a & 0x3fu) * eva) + ((b & 0x3fu) * evb) + 8u) >> 4;
+    uint g = ((((a & 0x3f00u) * eva) + ((b & 0x3f00u) * evb) + 0x800u) >> 4) & 0x7f00u;
+    uint bl = ((((a & 0x3f0000u) * eva) + ((b & 0x3f0000u) * evb) + 0x80000u) >> 4) & 0x7f0000u;
+    return min(r, 0x3fu) | min(g, 0x3f00u) | min(bl, 0x3f0000u) | 0xff000000u;
+}
+uint blend5(uint a, uint b)
+{
+    uint eva = ((a >> 24) & 31u) + 1u;
+    if (eva == 32u) return a;
+    uint evb = 32u - eva;
+    uint r = (((a & 0x3fu) * eva) + ((b & 0x3fu) * evb) + 16u) >> 5;
+    uint g = ((((a & 0x3f00u) * eva) + ((b & 0x3f00u) * evb) + 0x1000u) >> 5) & 0x7f00u;
+    uint bl = ((((a & 0x3f0000u) * eva) + ((b & 0x3f0000u) * evb) + 0x100000u) >> 5) & 0x7f0000u;
+    return min(r, 0x3fu) | min(g, 0x3f00u) | min(bl, 0x3f0000u) | 0xff000000u;
+}
+uint brightness(uint value, uint factor, uint bias, bool up)
+{
+    uint rb = value & 0x3f003fu, g = value & 0x3f00u;
+    if (up) {
+        rb += (((((0x3f003fu - rb) * factor) + bias * 0x10001u) >> 4) & 0x3f003fu);
+        g += (((((0x3f00u - g) * factor) + bias * 0x100u) >> 4) & 0x3f00u);
+    } else {
+        rb -= ((((rb * factor) + bias * 0x10001u) >> 4) & 0x3f003fu);
+        g -= ((((g * factor) + bias * 0x100u) >> 4) & 0x3f00u);
+    }
+    return rb | g | 0xff000000u;
+}
+uint composite(uint a, uint b, uint control, uint eva, uint evb, uint evy, uint window)
+{
+    uint effect = (control >> 6) & 3u, flag = a >> 24;
+    if (effect == 1u && (flag & 0xc0u) == 0u &&
+        ((control & flag) == 0u || (window & 0x20u) == 0u)) return a;
+    if (effect == 1u || (flag & 0xc0u) != 0u) {
+        uint flag2 = b >> 24;
+        uint target2 = (flag2 & 0x80u) != 0u ? 0x1000u :
+            (flag2 & 0x40u) != 0u ? 0x100u : flag2 << 8;
+        if ((control & target2) != 0u) {
+            if ((flag & 0xc0u) == 0x40u) return blend5(a, b);
+            if ((flag & 0xc0u) == 0xc0u) return blend4(a, b, flag & 31u, 16u - (flag & 31u));
+            return blend4(a, b, eva, evb);
+        }
+    }
+    if (effect >= 2u) {
+        if ((flag & 0x80u) != 0u) flag = 0x10u;
+        else if ((flag & 0x40u) != 0u) flag = 1u;
+        if ((control & flag) != 0u && (window & 0x20u) != 0u)
+            return brightness(a, evy, effect == 2u ? 8u : 7u, effect == 2u);
+    }
+    return a;
+}
+void main()
+{
+    uvec2 xy = gl_GlobalInvocationID.xy;
+    if (xy.x >= 256u * settings.scale || xy.y >= 192u * settings.scale) return;
+    uint y = xy.y / settings.scale;
+    uint mode = lines[y].mode;
+    if (mode == 0u || mode == 5u) return; // unvisited / CPU capture override
+    Pixel p = lines[y].pixels[xy.x / settings.scale];
+    uint color = p.top;
+    if (mode == 1u) {
+        uint sample3D = 0u;
+        uint sx = (xy.x * settings.sourceScale / settings.scale +
+            (lines[y].xpos & 511u) * settings.sourceScale) % (512u * settings.sourceScale);
+        if (lines[y].abort == 0u && lines[y].sourceLine < 192u && sx < 256u * settings.sourceScale) {
+            uint sy = (lines[y].sourceLine * settings.scale + xy.y % settings.scale) * settings.sourceScale / settings.scale;
+            uvec4 rgba = uvec4(imageLoad(Image3D, ivec2(sx, sy)) * 255.0 + 0.5);
+            sample3D = (rgba.r >> 2) | ((rgba.g >> 2) << 8) | ((rgba.b >> 2) << 16) | ((rgba.a >> 3) << 24);
+        }
+        if (((p.top >> 24) & 0xc0u) == 0x40u) {
+            if ((sample3D >> 24) != 0u) p.top = sample3D | 0x40000000u;
+            else { p.top = p.belowTop; p.second = p.belowSecond; }
+        } else if (((p.second >> 24) & 0xc0u) == 0x40u)
+            p.second = (sample3D >> 24) != 0u ? sample3D | 0x40000000u : p.belowTop;
+        color = composite(p.top, p.second, lines[y].blendCnt, lines[y].eva,
+            lines[y].evb, lines[y].evy, p.window);
+        uint master = lines[y].masterBrightness;
+        uint factor = min(master & 31u, 16u);
+        if ((master >> 14) == 1u) color = brightness(color, factor, 0u, true);
+        else if ((master >> 14) == 2u) color = brightness(color, factor, 15u, false);
+        uint rgb = ((color << 18) & 0xfc0000u) | ((color << 2) & 0xfc00u) | ((color >> 14) & 0xfcu);
+        color = rgb | ((rgb & 0xc0c0c0u) >> 6) | 0xff000000u;
+    }
+    imageStore(Output, ivec2(xy), uvec4(color, 0, 0, 0));
+}

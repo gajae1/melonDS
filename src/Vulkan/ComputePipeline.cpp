@@ -29,6 +29,7 @@ ComputePipeline::~ComputePipeline(){Cleanup();}
 void ComputePipeline::Cleanup()
 {
     f.vkDeviceWaitIdle(device);
+    CleanupNativeReadback();
     for(auto pipeline:pipelines)if(pipeline)f.vkDestroyPipeline(device,pipeline,nullptr);
     if(layout)f.vkDestroyPipelineLayout(device,layout,nullptr);
     if(pool)f.vkDestroyDescriptorPool(device,pool,nullptr);
@@ -37,6 +38,61 @@ void ComputePipeline::Cleanup()
     if(indicesView)f.vkDestroyBufferView(device,indicesView,nullptr);
     if(sampler)f.vkDestroySampler(device,sampler,nullptr);
     for(auto value:textureSamplers)if(value)f.vkDestroySampler(device,value,nullptr);
+}
+
+void ComputePipeline::CleanupNativeReadback()
+{
+    if(nativePipeline)f.vkDestroyPipeline(device,nativePipeline,nullptr);
+    if(nativeLayout)f.vkDestroyPipelineLayout(device,nativeLayout,nullptr);
+    if(nativePool)f.vkDestroyDescriptorPool(device,nativePool,nullptr);
+    if(nativeBindings)f.vkDestroyDescriptorSetLayout(device,nativeBindings,nullptr);
+    nativePipeline=VK_NULL_HANDLE;nativeLayout=VK_NULL_HANDLE;
+    nativePool=VK_NULL_HANDLE;nativeBindings=VK_NULL_HANDLE;nativeSet=VK_NULL_HANDLE;
+    nativeReadback.reset();nativeHostReadback.clear();
+}
+
+void ComputePipeline::EnableNativeReadback(std::span<const uint32_t> shader)
+{
+    if(nativePipeline)return;
+    if(shader.empty())throw std::invalid_argument("Missing native readback shader");
+    try {
+        nativeHostReadback.resize(256*192);
+        nativeReadback=owner->CreateBuffer(256*192*sizeof(uint32_t),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            true,VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        const VkDescriptorSetLayoutBinding entries[]={
+            {0,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+            {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
+        VkDescriptorSetLayoutCreateInfo bindingsInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        bindingsInfo.bindingCount=2;bindingsInfo.pBindings=entries;
+        Device::Check(f.vkCreateDescriptorSetLayout(device,&bindingsInfo,nullptr,&nativeBindings),"Create native readback bindings");
+        VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        layoutInfo.setLayoutCount=1;layoutInfo.pSetLayouts=&nativeBindings;
+        Device::Check(f.vkCreatePipelineLayout(device,&layoutInfo,nullptr,&nativeLayout),"Create native readback layout");
+        const auto cache=owner->GetPipelineCache();
+        VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        moduleInfo.codeSize=shader.size_bytes();moduleInfo.pCode=shader.data();VkShaderModule module{};
+        Device::Check(f.vkCreateShaderModule(device,&moduleInfo,nullptr,&module),"Create native readback shader");
+        VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipelineInfo.layout=nativeLayout;
+        pipelineInfo.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_COMPUTE_BIT,module,"main",nullptr};
+        const auto result=f.vkCreateComputePipelines(device,cache,1,&pipelineInfo,nullptr,&nativePipeline);
+        f.vkDestroyShaderModule(device,module,nullptr);Device::Check(result,"Create native readback pipeline");
+        owner->TrimPipelineCache();
+        const VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1}};
+        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.maxSets=1;poolInfo.poolSizeCount=2;poolInfo.pPoolSizes=sizes;
+        Device::Check(f.vkCreateDescriptorPool(device,&poolInfo,nullptr,&nativePool),"Create native readback pool");
+        VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocation.descriptorPool=nativePool;allocation.descriptorSetCount=1;allocation.pSetLayouts=&nativeBindings;
+        Device::Check(f.vkAllocateDescriptorSets(device,&allocation,&nativeSet),"Allocate native readback descriptors");
+        VkDescriptorImageInfo imageInfo{VK_NULL_HANDLE,output->View(),VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorBufferInfo bufferInfo{nativeReadback->Handle(),0,nativeReadback->Size()};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet=nativeSet;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;write.pImageInfo=&imageInfo;
+        f.vkUpdateDescriptorSets(device,1,&write,0,nullptr);
+        write.dstBinding=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pImageInfo=nullptr;write.pBufferInfo=&bufferInfo;
+        f.vkUpdateDescriptorSets(device,1,&write,0,nullptr);
+    } catch(...) { CleanupNativeReadback();throw; }
 }
 
 void ComputePipeline::Init(const Shaders& shaders)
@@ -393,9 +449,10 @@ std::vector<uint32_t> ComputePipeline::Render(std::span<const Batch> batches)
     return {pixels.begin(), pixels.end()};
 }
 
-std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> batches)
+std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> batches,Readback mode)
 {
     if(batches.empty())throw std::invalid_argument("Compute frame needs a clear batch");
+    if(mode==Readback::Native&&!nativePipeline)throw std::logic_error("Native readback unavailable");
     FlushUploads(); // Complete copies before validation/dispatch can consume images.
     size_t variantCount=0,polygonCount=0;
     for(const auto& batch:batches) {
@@ -432,16 +489,61 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
         RecordBatch(command,batch,first,std::span<const VkDescriptorSet>(textures).subspan(offset,batch.variants.size()));
         first=false;offset+=batch.variants.size();
     }
+    fullReadbackValid=false;
+    ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_GENERAL,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_READ_BIT,VK_ACCESS_SHADER_WRITE_BIT);
     const auto dispCnt=batches.back().meta.DispCnt;
     const unsigned effect=((dispCnt>>5)&1)|((dispCnt>>6)&2)|((dispCnt>>2)&4);
     Bind(command,24+effect,rasterSet,outputSet);f.vkCmdDispatch(command,Resources.config.ScreenWidth/32,Resources.config.ScreenHeight,1);
-    ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={uint32_t(Resources.config.ScreenWidth),uint32_t(Resources.config.ScreenHeight),1};f.vkCmdCopyImageToBuffer(command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback->Handle(),1,&copy);
-    ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_READ_BIT,VK_ACCESS_SHADER_WRITE_BIT);
-    VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};download.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-    f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
+    if(mode==Readback::Full)RecordFullReadback(command);
+    else {
+        ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT);
+        if(mode==Readback::Native) {
+            f.vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,nativePipeline);
+            f.vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,nativeLayout,0,1,&nativeSet,0,nullptr);
+            f.vkCmdDispatch(command,32,24,1);
+            VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            download.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+            f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
+        }
+    }
     owner->SubmitAndWait();
-    std::memcpy(hostReadback.data(), readback->Data(), Resources.Pixels * sizeof(uint32_t));
+    if(mode==Readback::None)return {};
+    if(mode==Readback::Native) {
+        std::memcpy(nativeHostReadback.data(),nativeReadback->Data(),nativeHostReadback.size()*sizeof(uint32_t));
+        return nativeHostReadback;
+    }
+    std::memcpy(hostReadback.data(),readback->Data(),Resources.Pixels*sizeof(uint32_t));
+    fullReadbackValid=true;
+    return hostReadback;
+}
+
+void ComputePipeline::RecordFullReadback(VkCommandBuffer command)
+{
+    ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_SHADER_READ_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+    copy.imageExtent={uint32_t(Resources.config.ScreenWidth),uint32_t(Resources.config.ScreenHeight),1};
+    f.vkCmdCopyImageToBuffer(command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback->Handle(),1,&copy);
+    ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_READ_BIT,
+        VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
+    VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    download.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+    f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
+}
+
+std::span<const uint32_t> ComputePipeline::ReadbackView()
+{
+    if(fullReadbackValid)return hostReadback;
+    const auto command=owner->Begin();
+    RecordFullReadback(command);
+    owner->SubmitAndWait();
+    std::memcpy(hostReadback.data(),readback->Data(),Resources.Pixels*sizeof(uint32_t));
+    fullReadbackValid=true;
     return hostReadback;
 }
 }

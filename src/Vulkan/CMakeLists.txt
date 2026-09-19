@@ -53,7 +53,28 @@ add_custom_command(OUTPUT "${embedded_shaders}"
     COMMAND "${CMAKE_COMMAND}" "-DSHADER_DIR=${vulkan_shader_dir}" "-DOUTPUT_FILE=${embedded_shaders}" "-DMAX_SCALE=${vulkan_max_scale}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedShaders.cmake"
     DEPENDS ${vulkan_spirv_files} EmbedShaders.cmake VERBATIM)
-add_library(vulkan-compute STATIC Device.cpp Loader.cpp ComputePipeline.cpp "${embedded_shaders}")
+set(display_spirv_files)
+foreach(name IN ITEMS DisplayCompose NativeReadback)
+    set(spirv "${vulkan_shader_dir}/${name}.spv")
+    set(validate_command)
+    if (MELONDS_SPIRV_VAL)
+        set(validate_command COMMAND "${MELONDS_SPIRV_VAL}" --target-env vulkan1.1 "${spirv}")
+    endif()
+    add_custom_command(OUTPUT "${spirv}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${vulkan_shader_dir}"
+        COMMAND "${MELONDS_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
+            "${CMAKE_CURRENT_SOURCE_DIR}/${name}.comp" -o "${spirv}"
+        ${validate_command}
+        DEPENDS "${name}.comp" VERBATIM)
+    list(APPEND display_spirv_files "${spirv}")
+endforeach()
+set(embedded_display_shaders "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedDisplayShaders.cpp")
+add_custom_command(OUTPUT "${embedded_display_shaders}"
+    COMMAND "${CMAKE_COMMAND}" "-DSHADER_DIR=${vulkan_shader_dir}" "-DOUTPUT_FILE=${embedded_display_shaders}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedDisplayShaders.cmake"
+    DEPENDS ${display_spirv_files} EmbedDisplayShaders.cmake VERBATIM)
+add_library(vulkan-compute STATIC Device.cpp Loader.cpp ComputePipeline.cpp DisplayCompositor.cpp
+    "${embedded_shaders}" "${embedded_display_shaders}")
 target_include_directories(vulkan-compute PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.."
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(vulkan-compute SYSTEM PUBLIC "${MELONDS_VULKAN_HEADERS}" "${MELONDS_VOLK_HEADERS}"

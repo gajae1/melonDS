@@ -3,6 +3,7 @@
 #pragma once
 #include "GPU3D.h"
 #include "Vulkan/TextureCache.h"
+#include "Vulkan/DisplayCompositor.h"
 #include <array>
 #include <memory>
 
@@ -23,18 +24,27 @@ public:
     u32* GetLine(int line) override;
     void GetScaledLine(int line, int subline, int scale, u32* dst) const;
     bool HasFailed() const { return Failed; }
-    u64 SubmissionCount() const { return Device ? Device->SubmissionCount() : 0; }
+    // Preserve the original 3D upload/render diagnostic now that 2D shares
+    // this device. TotalSubmissionCount also includes final-display work.
+    u64 SubmissionCount() const { return TotalSubmissionCount() - DisplaySubmissions; }
+    u64 TotalSubmissionCount() const { return Device ? Device->SubmissionCount() : 0; }
     void ClearPipelineCache() { if (Device) Device->ClearPipelineCache(); }
 
 private:
+    friend class VulkanRenderer;
     VulkanRenderer& Parent;
+    std::span<const u32> GetScaledPixels() const;
+    std::unique_ptr<Vulkan::DisplayCompositor> Compositor;
+    // Retain the actual previous image through a settings change. Before its
+    // pipeline is replaced, lazy CPU samples are materialized for capture/fallback.
+    std::shared_ptr<Vulkan::Device::Image> RenderedImage;
     std::string PreferredDevice;
     void DrawFrame();
     std::shared_ptr<Vulkan::Device> Device;
     std::unique_ptr<Vulkan::ComputePipeline> Pipeline;
     std::unique_ptr<Vulkan::TextureCache> Texcache;
     std::array<u32, 256 * 192> ColorBuffer{};
-    std::vector<u32> ScaledColorBuffer;
+    mutable std::vector<u32> ScaledColorBuffer;
     int RenderedScale = 1;
     std::array<u32, 256> ScrolledLine{};
     std::array<u32, 256 * 256> ClearColor{}, ClearDepth{};
@@ -43,6 +53,7 @@ private:
     bool HiresCoordinates = false;
     bool FrameDirty = true;
     bool HadCaptureTextures = false;
-    bool Failed = false;
+    mutable bool Failed = false;
+    u64 DisplaySubmissions = 0;
 };
 }

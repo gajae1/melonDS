@@ -97,6 +97,7 @@ bool VulkanRenderer3D::Init()
         std::string error;
         Device = Vulkan::Device::Create(error, PreferredDevice);
         if (!Device) throw std::runtime_error(error);
+        DisplaySubmissions = 0;
         Pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders());
         Pipeline->SetUploadBatching(true);
         Texcache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*Pipeline});
@@ -122,6 +123,9 @@ bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
     {
         if (scale != ScaleFactor)
         {
+            // A paused resize keeps the prior display image/sample grid alive.
+            // Its old pipeline owns the full-readback staging, so snapshot before replacement.
+            GetScaledPixels();
             auto pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders(scale), scale);
             pipeline->SetUploadBatching(true);
             auto cache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*pipeline});
@@ -131,6 +135,23 @@ bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
             Pipeline.swap(pipeline);
             ScaleFactor = scale;
             ClearBitmapDirty = 3;
+            Compositor.reset();
+            if (scale > 1)
+            {
+                const u64 displayBefore = TotalSubmissionCount();
+                try
+                {
+                    Pipeline->EnableNativeReadback(Vulkan::EmbeddedNativeReadback());
+                    Compositor = std::make_unique<Vulkan::DisplayCompositor>(Device,
+                        Vulkan::EmbeddedDisplayCompose(), scale);
+                }
+                catch (const std::exception& error)
+                {
+                    // Optional display resources do not invalidate the native backend.
+                    Platform::Log(Platform::LogLevel::Warn, "Vulkan GPU composition unavailable: %s\n", error.what());
+                }
+                DisplaySubmissions += TotalSubmissionCount() - displayBefore;
+            }
         }
         HiresCoordinates = hires;
         FrameDirty = true;
@@ -149,6 +170,7 @@ void VulkanRenderer3D::Reset()
     if (Texcache) Texcache->Reset();
     ColorBuffer.fill(0);
     ScaledColorBuffer.clear();
+    RenderedImage.reset();
     RenderedScale = 1;
     ClearBitmapDirty = 3;
     FrameDirty = true;
@@ -175,6 +197,7 @@ void VulkanRenderer3D::RenderFrame()
         Failed = true;
         ColorBuffer.fill(0);
         ScaledColorBuffer.clear();
+        RenderedImage.reset();
         RenderedScale = 1;
         Platform::Log(Platform::LogLevel::Error, "Vulkan 3D frame failed: %s\n", error.what());
     }
@@ -182,6 +205,10 @@ void VulkanRenderer3D::RenderFrame()
 
 void VulkanRenderer3D::DrawFrame()
 {
+    // The next 3D frame starts at VCount 215, before the display buffer swap.
+    // Finish consumers of the old image BEFORE any render can reuse it.
+    Parent.FinishDisplayComposition();
+    if (Failed) return;
     std::unordered_map<u32, std::shared_ptr<const Pipeline::Texture>> captures;
     bool hasCaptures = false;
     if (ScaleFactor > 1 && (GPU3D.RenderDispCnt & 1))
@@ -282,7 +309,8 @@ void VulkanRenderer3D::DrawFrame()
         batches.push_back({batch.Polygons, batch.Edges, batch.Indices, batch.Variants,
             ComputeData::PrepareMeta(GPU3D, batch.Polygons.size(), batch.Variants.size()), wbuffer});
     // Consume the completed readback view before any subsequent render reuses it.
-    auto pixels = Pipeline->RenderView(batches);
+    const bool gpuComposition = bool(Compositor);
+    auto pixels = Pipeline->RenderView(batches, gpuComposition ? Pipeline::Readback::Native : Pipeline::Readback::Full);
     // Sample native pixel origins without filtering RGB6/A5 or inventing
     // capture alpha. At 1x this is exactly the previous byte conversion.
     // Scaled edge coverage follows the shared compute rasterizer, not a
@@ -291,7 +319,7 @@ void VulkanRenderer3D::DrawFrame()
     for (u32 y = 0; y < 192; ++y)
     for (u32 x = 0; x < 256; ++x)
     {
-        const u32 pixel = pixels[(y * ScaleFactor) * width + x * ScaleFactor];
+        const u32 pixel = pixels[gpuComposition ? y * 256 + x : (y * ScaleFactor) * width + x * ScaleFactor];
         ColorBuffer[y * 256 + x] = ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
     }
     // Never derive guest pixels from captured subpixel UVs: even a native
@@ -305,9 +333,9 @@ void VulkanRenderer3D::DrawFrame()
             batches[i].variants = prepared[i].DisplayVariants;
             batches[i].meta.NumVariants = prepared[i].DisplayVariants.size();
         }
-        pixels = Pipeline->RenderView(batches);
+        pixels = Pipeline->RenderView(batches, gpuComposition ? Pipeline::Readback::None : Pipeline::Readback::Full);
     }
-    if (ScaleFactor > 1)
+    if (ScaleFactor > 1 && !gpuComposition)
     {
         ScaledColorBuffer.resize(pixels.size());
         std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
@@ -315,9 +343,27 @@ void VulkanRenderer3D::DrawFrame()
         });
     }
     else ScaledColorBuffer.clear();
+    RenderedImage = Pipeline->OutputImage();
     RenderedScale = ScaleFactor;
     HadCaptureTextures = hasCaptures;
     FrameDirty = false;
+}
+
+std::span<const u32> VulkanRenderer3D::GetScaledPixels() const
+{
+    if (RenderedScale > 1 && RenderedImage && ScaledColorBuffer.empty())
+    {
+        if (RenderedImage != Pipeline->OutputImage())
+            throw std::logic_error("Retained Vulkan image has no CPU snapshot");
+        // Only enhanced capture or CPU fallback consumes this full image. The
+        // ordinary display path keeps it on-device and reads just native origins.
+        const auto pixels = Pipeline->ReadbackView();
+        ScaledColorBuffer.resize(pixels.size());
+        std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
+            return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
+        });
+    }
+    return ScaledColorBuffer.empty() ? std::span<const u32>(ColorBuffer) : std::span<const u32>(ScaledColorBuffer);
 }
 
 void VulkanRenderer3D::GetScaledLine(int line, int subline, int scale, u32* dst) const
@@ -325,6 +371,14 @@ void VulkanRenderer3D::GetScaledLine(int line, int subline, int scale, u32* dst)
     if (GPU3D.AbortFrame || line < 0 || line >= 192)
     {
         std::fill_n(dst, 256 * scale, 0);
+        return;
+    }
+    try { GetScaledPixels(); }
+    catch (const std::exception& error)
+    {
+        Failed = true;
+        std::fill_n(dst, 256 * scale, 0);
+        Platform::Log(Platform::LogLevel::Error, "Vulkan capture readback failed: %s\n", error.what());
         return;
     }
     // A settings change retains the previous frame until RenderFrame runs.

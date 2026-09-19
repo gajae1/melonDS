@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(rgba8, set = 0, binding = 0) uniform readonly image2D Image3D;
+layout(std430, set = 0, binding = 1) writeonly buffer NativePixels { uint pixels[]; };
+void main()
+{
+    uvec2 xy = gl_GlobalInvocationID.xy;
+    if (xy.x >= 256u || xy.y >= 192u) return;
+    // Native origins, NOT nearest blit centres: capture/guest bytes stay exact.
+    ivec2 scale = imageSize(Image3D) / ivec2(256, 192);
+    uvec4 rgba = uvec4(imageLoad(Image3D, ivec2(xy) * scale) * 255.0 + 0.5);
+    pixels[xy.y * 256u + xy.x] = rgba.r | (rgba.g << 8) | (rgba.b << 16) | (rgba.a << 24);
+}

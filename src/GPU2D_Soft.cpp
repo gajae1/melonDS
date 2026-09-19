@@ -51,6 +51,21 @@ void SoftRenderer2D::Reset()
     CaptureOBJProvenance = {};
 }
 
+bool SoftRenderer2D::ExportScaledContext(ScaledLineContext& context, u16 brightness) const
+{
+    if (!Scaled3DActive || CaptureLayersActive) return false;
+    for (u32 x = 0; x < 256; ++x)
+        context.pixels[x] = {BGOBJLine[x], BGOBJLine[x + 256],
+            Below3D[x], Below3D[x + 256], WindowMask[x]};
+    context.blendCnt = GPU2D.BlendCnt;
+    context.eva = GPU2D.EVA;
+    context.evb = GPU2D.EVB;
+    context.evy = GPU2D.EVY;
+    context.masterBrightness = brightness;
+    context.mode = ScaledLineContext::Composite3D;
+    return true;
+}
+
 // Keep RGB6 components in separate 16-bit lanes for the weighted sum. The
 // largest normal sum is 63 * (16 + 16) + 8, so no carry crosses a lane.
 static u32 ColorBlend4Packed(u32 val1, u32 val2, u32 eva, u32 evb)
