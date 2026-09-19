@@ -13,6 +13,7 @@
 #include <utility>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <stdexcept>
 #include <span>
 #include <vector>
@@ -748,10 +749,189 @@ void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
     nds->ARM9Write16(oam + 6, 0x100); nds->ARM9Write16(oam + 14, 0);
     nds->ARM9Write16(oam + 22, 0); nds->ARM9Write16(oam + 30, 0x100);
     nds->ARM9Write32(reg, 0x00011020);
-    // Mosaic is still a native-only line, not an implemented enhancement.
-    nds->ARM9Write16(oam, 0x1C00); nds->ARM9Write16(reg + 0x4C, 0x3300);
-    checkFrame(scale); requireNativeDisplay(scale);
+    // Fixed source coordinates below encode the latch boundaries, not a
+    // second implementation of ApplySpriteMosaicX. Expected colors come from
+    // guest RGB555 at native origins and the analytic red rectangle elsewhere.
+    // Use the production frame loop: Screen() draws sprites after pre-draw
+    // register updates, whereas the hardware pipeline prepares the NEXT line.
+    struct MosaicProbe
+    {
+        int x, y, sourceX = 0, sourceY = 0;
+        u32 solid = 0;
+        int stepX = 1, stepY = 1;
+    };
+    unsigned mosaicCases = 0, mosaicProbes = 0;
+    size_t mosaicNativeErrors = 0, mosaicDisplayErrors = 0;
+    const auto object = [&](u32 index, u16 attr0, u16 attr1, u16 attr2) {
+        nds->ARM9Write16(oam + index * 8, attr0);
+        nds->ARM9Write16(oam + index * 8 + 2, attr1);
+        nds->ARM9Write16(oam + index * 8 + 4, attr2);
+    };
+    const auto checkMosaic = [&](const char* name, std::initializer_list<MosaicProbe> probes) {
+        nds->RunFrame(); nds->RunFrame();
+        DisplayOrigins(*nds, scale);
+        Require(std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]),
+            "mosaic display changed guest capture bytes");
+        Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+            "mosaic display unavailable");
+        Require(nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom),
+            "mosaic native framebuffer unavailable");
+        actual = static_cast<const u32*>(selected ? top : bottom);
+        native = static_cast<const u32*>(selected ? nativeTop : nativeBottom);
+        size_t nativeErrors = 0, displayErrors = 0;
+        for (const auto p : probes)
+        {
+            const u32 origin = p.solid ? p.solid : guestColor((p.sourceY * 256 + p.sourceX) * 2);
+            if (native[p.y * 256 + p.x] != origin)
+            {
+                if (!nativeErrors) std::fprintf(stderr,
+                    "Mosaic %s engine=%u scale=%d native=(%d,%d) expected=%08x actual=%08x\n",
+                    name, engine, scale, p.x, p.y, origin, native[p.y * 256 + p.x]);
+                ++nativeErrors;
+            }
+            for (int sy = 0; sy < scale; ++sy)
+            for (int sx = 0; sx < scale; ++sx)
+            {
+                const u32 expected = p.solid || p.sourceY >= 192 || !(sx || sy) ? origin :
+                    capturedColor(p.sourceX * scale + p.stepX * sx, p.sourceY * scale + p.stepY * sy);
+                const u32 observed = actual[size_t(p.y * scale + sy) * width + p.x * scale + sx];
+                if (observed != expected)
+                {
+                    if (!displayErrors) std::fprintf(stderr,
+                        "Mosaic %s engine=%u scale=%d dst=(%d,%d)+(%d,%d) expected=%08x actual=%08x\n",
+                        name, engine, scale, p.x, p.y, sx, sy, expected, observed);
+                    ++displayErrors;
+                }
+            }
+        }
+        // Log all native pixels, not only the probes, for before/after evidence.
+        u64 nativeHash = 14695981039346656037ull;
+        for (size_t i = 0; i < 256 * 192; ++i)
+            for (unsigned shift = 0; shift < 32; shift += 8)
+                nativeHash = (nativeHash ^ ((native[i] >> shift) & 255)) * 1099511628211ull;
+        std::printf("Mosaic %s engine=%u scale=%d probes=%zu native-errors=%zu display-errors=%zu native-fnv64=%016llx guest-unchanged=1\n",
+            name, engine, scale, probes.size(), nativeErrors, displayErrors,
+            static_cast<unsigned long long>(nativeHash));
+        ++cases; ++mosaicCases;
+        mosaicProbes += probes.size();
+        mosaicNativeErrors += nativeErrors; mosaicDisplayErrors += displayErrors;
+    };
+    object(0, 0x1C00, 0xC001, 0xF004); // Mosaic starts between global X latches.
+    nds->ARM9Write16(reg + 0x4C, 0x3300);
+    checkMosaic("xy-4", {{0,24,0,0,0xFF000000}, {1,23,32,20},
+        {1,24,32,24}, {2,25,32,24}, {3,27,32,24}, {4,24,35,24},
+        {7,27,35,24}, {8,28,39,28}, {64,24,95,24}, {65,24,0,0,0xFF000000}});
+    nds->ARM9Write16(reg + 0x4C, 0x0100);
+    checkMosaic("x-2", {{1,24,32,24}, {2,24,33,24}, {3,24,33,24}, {4,24,35,24}});
+    nds->ARM9Write16(reg + 0x4C, 0x0F00);
+    checkMosaic("x-16", {{1,24,32,24}, {7,24,32,24}, {15,24,32,24},
+        {16,24,47,24}, {31,24,47,24}, {32,24,63,24}});
+
+    nds->ARM9Write16(reg + 0x4C, 0x0300);
+    object(1, 0x0C00, 0xC051, 0xF004);
+    checkMosaic("mixed-mosaic-first", {{1,24,32,24}, {3,24,32,24},
+        {81,24,32,24}, {82,24,33,24}, {83,24,34,24}, {84,24,35,24}});
+    object(0, 0x0C00, 0xC051, 0xF004);
+    object(1, 0x1C00, 0xC001, 0xF004);
+    checkMosaic("mixed-mosaic-last", {{1,24,32,24}, {3,24,32,24},
+        {81,24,32,24}, {82,24,33,24}, {83,24,34,24}, {84,24,35,24}});
+
+    // The solid 8bpp tile borrows opaque red capture bytes (indices 31/128).
+    // A native-only winner must not inherit a losing capture's subpixels.
+    nds->ARM9Write16(0x05000200 + engine * 0x400 + 31 * 2, 0x7C00);
+    nds->ARM9Write16(0x05000200 + engine * 0x400 + 128 * 2, 0x7C00);
+    object(0, 0x1C00, 0xC001, 0xF804); // BG-relative priority 2.
+    object(1, 0x3018, 2, 0x0184); // Mosaic palette OBJ, priority 0, x=2..9.
+    checkMosaic("priority-latch", {{1,24,32,24}, {2,24,0,0,0xFF0000FB},
+        {3,24,0,0,0xFF0000FB}, {8,24,0,0,0xFF0000FB},
+        {9,24,0,0,0xFF0000FB}, {10,24,0,0,0xFF0000FB},
+        {11,24,0,0,0xFF0000FB}, {12,24,43,24}});
+    object(1, 0x2018, 3, 0x0184); // Non-mosaic at x=3..10: both transitions.
+    checkMosaic("mosaic-transitions", {{1,24,32,24}, {2,24,32,24},
+        {3,24,0,0,0xFF0000FB}, {4,24,0,0,0xFF0000FB},
+        {10,24,0,0,0xFF0000FB}, {11,24,42,24}, {12,24,43,24}});
+    object(1, 0x1C18, 2, 0xF304); // Uncaptured blue row 192, also priority 0.
+    checkMosaic("missing-row-latch", {{1,24,32,24}, {2,24,32,192},
+        {3,24,32,192}, {8,24,38,192}, {10,24,38,192},
+        {11,24,38,192}, {12,24,43,24}});
+
+    // At x=1 the high-priority capture is natively transparent but has red
+    // subpixels. The native palette winner (or later transparent metadata)
+    // has NO capture provenance: red must not leak into its latched block.
+    object(0, 0x1C00, 0xC001, 0xF004);
+    object(1, 0x3018, 1, 0x0584);
+    object(2, 0x0C00, 0xC051, 0xF004);
+    checkMosaic("native-winner-last", {{1,24,0,0,scale == 1 ? 0xFFFB0000u : 0xFF0000FBu},
+        {2,24,33,24}, {81,24,32,24}});
+    object(0, 0x3018, 1, 0x0584);
+    object(1, 0x1C00, 0xC001, 0xF004);
+    checkMosaic("native-winner-first", {{1,24,0,0,scale == 1 ? 0xFFFB0000u : 0xFF0000FBu},
+        {2,24,33,24}, {81,24,32,24}});
+    object(0, 0x1C00, 0xC001, 0xF004);
+    object(1, 0x3018, 1, 0x0400); // Transparent tile 0, priority 1.
+    checkMosaic("transparent-winner", {{1,24,0,0,guestColor((24 * 256 + 32) * 2)},
+        {2,24,33,24}, {81,24,32,24}});
+    object(2, 0x0200, 0, 0);
+
+    // E duplicates only the low AOBJ region: the other region on this mosaic
+    // line keeps its detail. I is mirrored over ALL of BOBJ, so engine B must
+    // fall back everywhere until that mapping is removed.
+    object(0, 0x1C00, 0xC001, 0xF004);
+    object(1, 0x0C00, 0xC051, 0xF204); // Source starts at row 128.
+    const u32 partialControl = engine ? 0x04000249 : 0x04000244;
+    nds->ARM9Write8(partialControl, 0x82);
+    const u32 duplicate = (1u << bank) | (engine ? (1u << 8) : (1u << 4));
+    Require((engine ? nds->GPU.VRAMMap_BOBJ[0] : nds->GPU.VRAMMap_AOBJ[0]) == duplicate &&
+        (engine ? nds->GPU.VRAMMap_BOBJ[4] : nds->GPU.VRAMMap_AOBJ[4]) == (engine ? duplicate : (1u << bank)),
+        "mosaic fixture duplicate/mirrored mapping mismatch");
+    checkMosaic(engine ? "mirrored-duplicate" : "partial-duplicate",
+        {{1,24,0,0,guestColor((24 * 256 + 32) * 2)},
+        {3,24,0,0,guestColor((24 * 256 + 32) * 2)}, {4,24,35,24},
+        {81,24,32,152,engine ? guestColor((152 * 256 + 32) * 2) : 0u}, {82,24,33,152}});
+    nds->ARM9Write8(partialControl, 0);
+    checkMosaic("mapping-restored", {{1,24,32,24}, {3,24,32,24}, {81,24,32,152}});
+    object(1, 0x0200, 0, 0);
+
+    object(0, 0x1C1A, 0xC001, 0xF064); // y=26, captured source begins at row 24.
+    nds->ARM9Write16(reg + 0x4C, 0x3300);
+    checkMosaic("y-top-clamp", {{1,25,0,0,0xFF000000}, {1,26,32,24},
+        {2,27,32,24}, {1,28,32,26}, {3,31,32,26}, {4,32,35,30}});
+    nds->ARM9Write16(reg + 0x4C, 0x3000); // Y mosaic with X width one.
+    checkMosaic("y-only", {{1,26,32,24}, {2,27,33,24}, {3,27,34,24},
+        {1,28,32,26}, {2,31,33,26}});
+
+    object(0, 0x1C00, 0xC001, 0xF004);
+    // At enlarged scales, this window tile has two transparent pixels in its
+    // first row, then opaque rows. Its own mosaic bit must affect neither axis.
+    object(1, 0x3819, 2, 0x0182); // Window x=2..9, y=25..32.
+    nds->ARM9Write16(reg + 0x4C, 0x3300);
+    nds->ARM9Write16(reg + 0x4A, 0x2F3F);
+    nds->ARM9Write32(reg, 0x00019020);
+    checkMosaic("obj-window", {{1,25,32,24},
+        {2,25,32,24,scale == 1 ? 0xFF000000u : 0u},
+        {4,25,0,0,0xFF000000}, {2,26,0,0,0xFF000000},
+        {9,26,0,0,0xFF000000}, {10,26,39,24},
+        {2,24,32,24}, {2,32,0,0,0xFF000000}, {2,33,32,32}});
+    object(1, 0x0200, 0, 0);
+    nds->ARM9Write32(reg, 0x00011020);
+    nds->ARM9Write16(reg + 0x4A, 0x3F);
+
+    object(0, 0x1D00, 0xC001, 0xF004); // Affine identity, existing matrix slot 0.
+    nds->ARM9Write16(reg + 0x4C, 0x0300);
+    checkMosaic("affine-identity", {{1,24,32,24}, {2,24,32,24},
+        {3,24,32,24}, {4,24,35,24}});
+    object(0, 0x1C00, 0xE001, 0xF004); // Y flip: keep the whole scale-wide block.
+    checkMosaic("y-flip-block", {{1,39,32,24,0,1,-1}, {2,39,32,24,0,1,-1},
+        {3,39,32,24,0,1,-1}, {4,39,35,24,0,1,-1}});
+    object(0, 0x1C00, 0xC0FD, 0xF004); // Clipped at the right screen boundary.
+    checkMosaic("right-edge", {{252,24,0,0,0xFF000000},
+        {253,24,32,24}, {254,24,32,24}, {255,24,32,24}});
+    std::printf("Mosaic summary engine=%u scale=%d cases=%u probes=%u native-errors=%zu display-errors=%zu\n",
+        engine, scale, mosaicCases, mosaicProbes, mosaicNativeErrors, mosaicDisplayErrors);
+    Require(!mosaicNativeErrors && !mosaicDisplayErrors, "captured OBJ mosaic fixed-coordinate/color assertions failed");
+
     // Exercise mapping/scale/invalidation fallbacks on the new affine path.
+    nds->ARM9Write16(oam + 2, 0xC000); nds->ARM9Write16(oam + 4, 0xF004);
     nds->ARM9Write16(oam, 0x0D00); nds->ARM9Write16(reg + 0x4C, 0);
 
     const u32 otherControl = engine ? 0x04000249 : 0x04000240;
@@ -773,6 +953,11 @@ void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
         RendererSettings next{different, false, true, false};
         Require(nds->GetRenderer().SetRenderSettings(next), "OBJ scale transition failed");
         checkFrame(different); requireNativeDisplay(different);
+        object(0, 0x1D00, 0xC001, 0xF004);
+        nds->ARM9Write16(reg + 0x4C, 0x3300);
+        checkFrame(different); requireNativeDisplay(different);
+        object(0, 0x0D00, 0xC000, 0xF004);
+        nds->ARM9Write16(reg + 0x4C, 0);
         next.ScaleFactor = scale;
         Require(nds->GetRenderer().SetRenderSettings(next), "OBJ scale restoration failed");
         checkFrame(scale); DisplayOrigins(*nds, scale, true);
@@ -780,6 +965,9 @@ void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
     const u32 alias = engine ? 0x06600000 : 0x06400000;
     const u16 original = nds->ARM9Read16(alias + 0x3040);
     nds->ARM9Write16(alias + 0x3040, original);
+    checkFrame(scale); requireNativeDisplay(scale);
+    object(0, 0x1D00, 0xC001, 0xF004);
+    nds->ARM9Write16(reg + 0x4C, 0x3300);
     checkFrame(scale); requireNativeDisplay(scale);
     std::printf("OBJ engine=%u scale=%d: 131072 guest bytes unchanged; %zu baseline display pixels; %u layout/alpha/priority/window/fallback/invalidation cases PASS\n",
         engine, scale, reference.size(), cases);

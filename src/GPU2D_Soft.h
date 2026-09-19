@@ -88,6 +88,10 @@ private:
     std::vector<u32> CaptureOBJLine;
     u32 CaptureOBJScale = 0;
     bool CaptureOBJActive = false;
+    bool CaptureOBJMosaic = false;
+    // Provenance of each native winner (including transparent latch metadata),
+    // not merely whether any losing candidate sampled a captured row.
+    std::array<bool, 256> CaptureOBJProvenance{};
     // Unlike an in-bounds transparent texel (-1), an out-of-bounds source
     // never participates in the native OBJ winner/mosaic state.
     static constexpr int OBJ_Outside = -2;

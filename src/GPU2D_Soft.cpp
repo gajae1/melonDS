@@ -47,6 +47,8 @@ void SoftRenderer2D::Reset()
     CaptureLayersActive = false;
     CaptureOBJScale = 0;
     CaptureOBJActive = false;
+    CaptureOBJMosaic = false;
+    CaptureOBJProvenance = {};
 }
 
 // Keep RGB6 components in separate 16-bit lanes for the weighted sum. The
@@ -1235,10 +1237,13 @@ void SoftRenderer2D::ApplySpriteMosaicX()
      */
 
     u8 mosw = GPU2D.OBJMosaicSize[0];
-    if (mosw == 0) return;
+    const bool capturedMosaic = CaptureOBJMosaic && CaptureOBJScale > 1;
+    if (mosw == 0 && !capturedMosaic) return;
 
     u8 mosx = 0;
     u32 latchcolor;
+    int latchx = 0;
+    if (capturedMosaic) CaptureOBJActive = false;
     for (int i = 0; i < 256; i++)
     {
         u32 curcolor = OBJLine[i];
@@ -1254,9 +1259,30 @@ void SoftRenderer2D::ApplySpriteMosaicX()
             latch = true;
 
         if (latch)
+        {
             latchcolor = curcolor;
+            latchx = i;
+        }
 
         OBJLine[i] = latchcolor;
+
+        if (capturedMosaic)
+        {
+            // Reuse the NATIVE latch decision for every subpixel. The source
+            // block is at or to our left and is not overwritten while latched.
+            // Never let a losing captured candidate provide provenance for a
+            // native-only winner, even on a mixed mosaic/non-mosaic line.
+            const bool captured = CaptureOBJProvenance[latchx];
+            CaptureOBJActive |= captured;
+            for (u32 sy = 0; sy < CaptureOBJScale; ++sy)
+            {
+                auto* row = CaptureOBJLine.data() + size_t(sy) * 256 * CaptureOBJScale;
+                auto* dst = row + i * CaptureOBJScale;
+                if (!captured) std::fill_n(dst, CaptureOBJScale, latchcolor);
+                else if (i != latchx)
+                    std::copy_n(row + latchx * CaptureOBJScale, CaptureOBJScale, dst);
+            }
+        }
 
         if (mosx == mosw)
             mosx = 0;
@@ -1327,6 +1353,8 @@ void SoftRenderer2D::DrawSprites(u32 line)
     memset(OBJWindow, 0, sizeof(OBJWindow));
     CaptureOBJScale = 0;
     CaptureOBJActive = false;
+    CaptureOBJMosaic = false;
+    CaptureOBJProvenance = {};
 
     if (!GPU2D.OBJEnable)
         return;
@@ -1392,10 +1420,8 @@ void SoftRenderer2D::DrawSprites(u32 line)
 
         if ((attrib[0] & (1<<12)) && (!iswin))
         {
-            // X mosaic is a post-OBJ latch operation involving all sprites.
-            // Keep the whole OBJ line native rather than mixing latch domains.
-            CaptureOBJScale = 0;
-            CaptureOBJActive = false;
+            // The display-only blocks follow the native post-OBJ X latch.
+            CaptureOBJMosaic = true;
             // adjust Y position for sprite mosaic
             // (sprite mosaic does not apply to OBJ-window sprites)
             // a ypos greater than the sprite height means we underflowed, due to OBJMosaicLine being
@@ -1427,21 +1453,26 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 cap
     else
     {
         const auto merge = [pixelattr](u32& oldpixel, int sample) {
-            if (sample == OBJ_Outside) return;
+            if (sample == OBJ_Outside) return false;
             const bool oldisopaque = !!(oldpixel & OBJ_IsOpaque);
             const bool newisopaque = (sample != -1);
             const bool priocheck = (pixelattr & OBJ_BGPrioMask) < (oldpixel & OBJ_BGPrioMask);
             if (newisopaque && (!oldisopaque || priocheck))
+            {
                 oldpixel = sample | pixelattr;
+                return true;
+            }
             else if (!newisopaque && !oldisopaque)
             {
                 oldpixel &= ~(OBJ_Mosaic | OBJ_BGPrioMask);
                 oldpixel |= (pixelattr & (OBJ_IsSprite | OBJ_Mosaic | OBJ_BGPrioMask));
+                return true;
             }
+            return false;
         };
         // Native color and OAM ordering are unchanged. The display line uses
         // the same winner rules independently, including transparent origins.
-        merge(OBJLine[xpos], color);
+        const bool nativeWinner = merge(OBJLine[xpos], color);
         // Integer identity uses the existing borrowed-row fast path. General
         // transforms need the source mapper as well as the native address.
         if (transform && color != OBJ_Outside && transform->a == 256 &&
@@ -1459,6 +1490,7 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 cap
             const bool capturedOrigin = color != OBJ_Outside && Parent.CapturedObjectRow(GPU2D.Num,
                 (t.base + (t.y / 256) * t.pitch + (t.x / 256) * 2) & t.mask, 0, CaptureOBJScale);
             CaptureOBJActive |= capturedOrigin;
+            if (nativeWinner) CaptureOBJProvenance[xpos] = capturedOrigin;
             for (u32 sy = 0; sy < CaptureOBJScale; ++sy)
             {
                 // X/Y and A/B/C/D are signed 8.8. Multiplying the native
@@ -1504,6 +1536,7 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 cap
             const u16* row = captureAddress == ~0u ? nullptr :
                 Parent.CapturedObjectRow(GPU2D.Num, captureAddress, sy, CaptureOBJScale);
             if (row) CaptureOBJActive = true;
+            if (nativeWinner && sy == 0) CaptureOBJProvenance[xpos] = row != nullptr;
             auto* dst = CaptureOBJLine.data() + (size_t(sy) * 256 + xpos) * CaptureOBJScale;
             for (u32 sx = 0; sx < CaptureOBJScale; ++sx)
             {
