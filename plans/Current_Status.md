@@ -24,7 +24,7 @@
 2. 일반·반전·affine bitmap OBJ의 캡처 재사용을 구현했고, 1.1.141은 모자이크 행의 캡처 디테일을 native 래치 재사용으로 복원했다. 고배율 성능은 다음 범위다. 무효 provenance·중복 mapping·배율 불일치는 native fallback을 유지한다.
 3. 3D texture의 캡처 재사용은 1.1.142가 format-7 direct-color·단일 capture block 범위를 표시 전용으로 분리했다. 나머지 format과 palette texture의 향상, 업로드 묶음·캐시는 후속이다. 정확성 판정을 위해 향상 경로를 정답으로 삼지 않는다.
 4. texture 업로드 묶음은 1.1.143이 프레임 phase당 한 번 제출로 줄였다(20프레임 fixture 582→37회). 1.1.144는 표시 프레임의 타입 계약을 세웠다. GPU 2D·직접 표시를 작은 단계로 진행하고 scanline/FIFO/capture 가시성·복구 수명을 보존한다.
-5. 실제 게임의 3D→2D→capture→표시 중 첫 차이와 CPU/GPU 비용을 각각 측정한다. Classic도 실기 전체의 정답으로 고정하지 않는다.
+5. 실제 게임 표시 비용을 측정했다(local-docs/realgame-display-cost-20260920/findings.md, ROMSmoke RunFrame 1200프레임×32조합). Vulkan과 compute의 표시 프레임은 같은 배율에서 바이트가 같고 차이는 비용뿐이다. Vulkan의 CPU 최종 합성이 유일한 배율 병목이다(solatorobo tail median 1x 1.21ms→16x 18.30ms, 16x는 60fps 갱신 불가). 다음 단위는 최종 프레임의 GPU 합성이다. Classic도 실기 전체의 정답으로 고정하지 않는다.
 
 기존 버전별 runtime/source 패키지 도구를 재사용한다. 새 버전 디렉터리는 구분하며 이전 사용자 빌드·ROM·저장 파일은 삭제하지 않는다.
 원125개 과제 ID와 역사적 책임 버전은 유지한다. Actions·다른 작업트리·드라이버 전역 캐시는 변경하지 않는다.
