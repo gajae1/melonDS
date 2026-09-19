@@ -967,6 +967,16 @@ Path(sys.argv[2]).write_text(body, encoding="utf-8")
             "${CMAKE_CURRENT_SOURCE_DIR}/EmuThread.cpp" "void EmuThread::updateRenderer()" "${presentation_renderer}"
         DEPENDS "${presentation_handler_script}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuThread.cpp VERBATIM)
     target_sources(GLPresentation PRIVATE "${presentation_handler}" "${presentation_renderer}")
+    foreach(backend IN ITEMS software opengl compute)
+        add_test(NAME gl-presentation-frame-lifetime-${backend} COMMAND GLPresentation frame-lifetime-${backend})
+        set_tests_properties(gl-presentation-frame-lifetime-${backend} PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
+    endforeach()
+    if (TARGET vulkan-compute)
+        add_test(NAME gl-presentation-frame-lifetime-vulkan COMMAND GLPresentation frame-lifetime-vulkan)
+        set_tests_properties(gl-presentation-frame-lifetime-vulkan PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
+    endif()
     add_test(NAME gl-presentation-scaled-display COMMAND GLPresentation scaled-display)
     set_tests_properties(gl-presentation-scaled-display PROPERTIES TIMEOUT 20 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
     target_include_directories(GLPresentation PRIVATE "${CMAKE_SOURCE_DIR}/src"
@@ -1096,7 +1106,7 @@ add_custom_command(OUTPUT "${native_frame_paint}"
         "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "void ScreenPanelNative::paintEvent(QPaintEvent* event)" "${native_frame_paint}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
 add_executable(NativeFrameLifetime "${CMAKE_SOURCE_DIR}/tests/NativeFrameLifetime.cpp" "${native_frame_paint}")
-target_include_directories(NativeFrameLifetime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(NativeFrameLifetime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(NativeFrameLifetime PRIVATE ${QT_LINK_LIBS})
 add_test(NAME native-frame-lifetime COMMAND NativeFrameLifetime)
 set_tests_properties(native-frame-lifetime PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

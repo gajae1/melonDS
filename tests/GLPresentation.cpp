@@ -309,9 +309,11 @@ class DisplayFixture final : public SoftRenderer
 public:
     explicit DisplayFixture(NDS& nds) : SoftRenderer(nds) {}
     int Width = 256, Height = 192;
+    bool Available = true;
     std::array<std::vector<u32>, 2> Frames;
     void Resize(int scale)
     {
+        InvalidateDisplayFrame();
         Width = 256 * scale; Height = 192 * scale;
         for (int screen = 0; screen < 2; ++screen)
         {
@@ -321,10 +323,13 @@ public:
                     (((x * 17 + screen * 40) & 255) << 16) | ((y & 255) << 8) | ((x ^ y) & 255);
         }
     }
-    bool GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height) override
+    bool GetDisplayFrame(DisplayFrame& frame) override
     {
-        *top = Frames[0].data(); *bottom = Frames[1].data();
-        width = Width; height = Height; return true;
+        frame = {};
+        if (!Available || Frames[0].empty() || Frames[1].empty()) return false;
+        frame = {DisplayFrame::Kind::CpuBGRA, Frames[0].data(), Frames[1].data(),
+            u32(Width), u32(Height), GetDisplayFrameGeneration(Width, Height)};
+        return true;
     }
 };
 
@@ -405,6 +410,11 @@ bool ScaledUpload(ScreenPanelGL& panel)
     std::printf("scaled allocation failure: rejected=%d retained=%d uploads=%u\n", rejected, retained, uploadsAfterFailure);
     passed &= panel.drawScreen() && matches(frame->Width, frame->Height,
         frame->Frames[0].data(), frame->Frames[1].data());
+    frame->Available = false;
+    const int swapsWithoutFrame = panel.glContext->swaps;
+    passed &= panel.drawScreen() && panel.glContext->swaps == swapsWithoutFrame + 1 &&
+        matches(frame->Width, frame->Height, frame->Frames[0].data(), frame->Frames[1].data());
+    frame->Available = true;
     panel.preservedFrame = {QImage(512, 384, QImage::Format_RGB32), QImage(512, 384, QImage::Format_RGB32)};
     panel.preservedFrame[0].fill(0xFF123456u);
     panel.preservedFrame[1].fill(0xFFABCDEFu);
@@ -419,6 +429,142 @@ bool ScaledUpload(ScreenPanelGL& panel)
     panel.emuInstance->console = nullptr;
     passed &= panel.deinitOpenGL();
     std::printf("Scaled RAM display: 1x/2x/3x upload, both screens, paused frame and return to native %s\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
+// Real producers and the extracted production presenter. Readback is only
+// after presentation, so the fixture adds no producer-side completion wait.
+bool DisplayFrameLifecycle(ScreenPanelGL& panel, const char* backend)
+{
+    using Frame = Renderer::DisplayFrame;
+    const bool software = !std::strcmp(backend, "software");
+    const bool vulkan = !std::strcmp(backend, "vulkan");
+    const bool compute = !std::strcmp(backend, "compute");
+    unsigned checks = 0, presents = 0;
+    std::vector<u64> generations;
+    const auto require = [&](bool ok, const char* message) {
+        ++checks;
+        if (!ok) throw std::runtime_error(message);
+    };
+    NDSArgs args; args.JIT = std::nullopt;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    bool passed = false;
+    try
+    {
+        nds->Reset();
+        panel.emuInstance->console = nds.get();
+        panel.emuInstance->thread.active = true;
+        require(panel.initOpenGL() && panel.glContext->MakeCurrent(), "presentation initialization failed");
+        panel.numScreens = 2;
+        for (int screen = 0; screen < 2; ++screen)
+        {
+            panel.screenKind[screen] = screen;
+            const float matrix[6] = {0.5f, 0, 0, 0.5f, float(screen * 128), 0};
+            std::copy_n(matrix, 6, panel.screenMatrix[screen]);
+        }
+        const auto install = [&](int scale) {
+            if (software) nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
+#ifdef VULKANRENDERER_ENABLED
+            else if (vulkan) nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds));
+#endif
+            else nds->SetRenderer(std::make_unique<GLRenderer>(*nds, compute));
+            require(software || vulkan || dynamic_cast<GLRenderer*>(&nds->GetRenderer()), "GL producer fell back");
+#ifdef VULKANRENDERER_ENABLED
+            require(!vulkan || dynamic_cast<VulkanRenderer*>(&nds->GetRenderer()), "Vulkan producer fell back");
+#endif
+            RendererSettings settings{scale, false, false, false};
+            require(nds->GetRenderer().SetRenderSettings(settings), "producer settings failed");
+            int current, count;
+            while (nds->GetRenderer().NeedsShaderCompile())
+                require(nds->GetRenderer().ShaderCompileStep(current, count), "producer shader compilation failed");
+        };
+        const auto query = [&](int scale) {
+            Frame frame;
+            require(nds->GetRenderer().GetDisplayFrame(frame), "display frame unavailable");
+            require(frame.kind == (software || vulkan ? Frame::Kind::CpuBGRA : Frame::Kind::GLTexture2DArray),
+                "wrong display frame kind");
+            const unsigned factor = software ? 1 : scale;
+            require(frame.top && frame.width == 256 * factor && frame.height == 192 * factor &&
+                (frame.kind != Frame::Kind::CpuBGRA || frame.bottom), "wrong display extent/payload");
+            return frame;
+        };
+        install(1);
+        nds->ARM9Write32(0x02000000, 0xEAFFFFFE);
+        nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
+        nds->ARM9.JumpTo(0x02000000); nds->ARM7.JumpTo(0x02000200);
+        nds->Start();
+        require(nds->RunFrame() != 0, "initial core frame failed");
+        nds->ARM9Write16(0x04000304, 0x020F);
+        nds->ARM9Write8(0x04000240, 0x80);
+        nds->ARM9Write32(0x04000000, 0x00020000); // Main display reads native LCDC VRAM.
+        const auto present = [&](int scale, u16 color, u32 expected) {
+            for (unsigned i = 0; i < 256 * 192; ++i) nds->ARM9Write16(0x06800000 + 2 * i, color);
+            require(nds->RunFrame() != 0, "produce failed");
+            const Frame frame = query(scale);
+            require(frame.generation == query(scale).generation, "unchanged re-query advanced generation");
+            if (!generations.empty()) require(frame.generation > generations.back(), "produced/reused frame is stale");
+            generations.push_back(frame.generation);
+            require(panel.drawScreen(), "production presentation failed");
+            ++presents;
+            GLint texture = 0, width = 0, height = 0;
+            glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &texture);
+            const GLuint expectedTexture = frame.kind == Frame::Kind::CpuBGRA ? panel.screenTexture :
+                *static_cast<const GLuint*>(frame.top);
+            require(GLuint(texture) == expectedTexture, "presenter bound the wrong frame");
+            glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_WIDTH, &width);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_HEIGHT, &height);
+            require(width == int(frame.width) && height == int(frame.height), "texture extent differs from contract");
+            const size_t count = size_t(width) * height;
+            std::vector<u32> pixels(count * 2);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels.data());
+            require(glGetError() == GL_NO_ERROR, "presented frame readback failed");
+            const auto main = pixels.begin() + (nds->GPU.ScreenSwap ? 0 : count);
+            require(std::all_of(main, main + count, [&](u32 pixel) { return pixel == expected; }),
+                "presented frame differs from native LCDC colors");
+            if (frame.kind == Frame::Kind::CpuBGRA)
+                require(std::equal(pixels.begin(), pixels.begin() + count, static_cast<const u32*>(frame.top)) &&
+                    std::equal(pixels.begin() + count, pixels.end(), static_cast<const u32*>(frame.bottom)),
+                    "CPU upload changed display bytes");
+        };
+        // LCDC RGB555 -> RGB666 -> BGRA expansion gives 251, not 255,
+        // exactly as the existing GLFrameReadback native-color oracle requires.
+        present(1, 0x801F, 0xFFFB0000);
+        present(1, 0xFC00, 0xFF0000FB);
+        present(1, 0x801F, 0xFFFB0000); // Double-buffer reuse, without retaining payloads.
+        const auto number = nds->NumFrames;
+        RendererSettings settings{3, false, false, false};
+        require(nds->GetRenderer().SetRenderSettings(settings), "paused resize failed");
+        // The real EmuThread compiles invalidated compute shaders before RunFrame.
+        int step, total;
+        while (nds->GetRenderer().NeedsShaderCompile())
+            require(nds->GetRenderer().ShaderCompileStep(step, total), "resized producer shader compilation failed");
+        const auto resized = query(3);
+        require(nds->NumFrames == number && resized.generation > generations.back(), "paused resize was not stale");
+        generations.push_back(resized.generation);
+        present(3, 0xFC00, 0xFF0000FB);
+        const auto beforeReplace = nds->NumFrames;
+        install(3);
+        const auto replaced = query(3);
+        require(nds->NumFrames == beforeReplace && replaced.generation > generations.back(), "replacement revived a view");
+        generations.push_back(replaced.generation);
+        present(3, 0x801F, 0xFFFB0000);
+        passed = true;
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s display lifecycle FAIL: %s\n", backend, error.what());
+    }
+    panel.glContext->MakeCurrent();
+    nds->SetRenderer(std::make_unique<SoftRenderer>(*nds));
+    panel.emuInstance->thread.active = false;
+    panel.emuInstance->console = nullptr;
+    nds.reset();
+    passed &= panel.deinitOpenGL();
+    std::printf("%s display lifecycle: checks=%u presents=%u generations=", backend, checks, presents);
+    for (u64 generation : generations) std::printf("%llu,", static_cast<unsigned long long>(generation));
+    std::printf(" produce/present/reuse/resize/replacement %s\n", passed ? "PASS" : "FAIL");
     return passed;
 }
 
@@ -585,7 +731,8 @@ int main(int argc, char** argv)
         bool passed = false;
         const int renderer = !std::strcmp(argv[1], "compute") ? CoreLifetime::renderer3D_OpenGLCompute : CoreLifetime::renderer3D_OpenGL;
         auto worker = std::unique_ptr<QThread>(QThread::create([&] {
-            if (!std::strcmp(argv[1], "scaled-display")) passed = ScaledUpload(panel);
+            if (!std::strncmp(argv[1], "frame-lifetime-", 15)) passed = DisplayFrameLifecycle(panel, argv[1] + 15);
+            else if (!std::strcmp(argv[1], "scaled-display")) passed = ScaledUpload(panel);
             else if (!std::strncmp(argv[1], "fail-", 5)) passed = InitFailure::Check(panel, argv[1]);
             else if (!std::strcmp(argv[1], "osd-reinit")) passed = InitFailure::OSD(panel);
             else if (!std::strcmp(argv[1], "runtime-current")) passed = RuntimeFailure(panel, true);

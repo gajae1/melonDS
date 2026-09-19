@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Actual paint method; renderer publication is replaced between draw and paint.
+#include "GPU.h"
 #include <QApplication>
 #include <QWidget>
 #include <QPainter>
@@ -33,15 +34,19 @@ struct FrameSource {
     std::vector<u32> top, bottom;
     bool available = true;
     bool nullTop = false, readWithoutLock = false;
+    using DisplayFrame = melonDS::Renderer::DisplayFrame;
+    DisplayFrame::Kind kind = DisplayFrame::Kind::CpuBGRA;
     unsigned queries = 0;
     QMutex* ownerLock = nullptr;
-    bool GetDisplayFramebuffers(void** a, void** b, int& w, int& h) {
+    bool GetDisplayFrame(DisplayFrame& frame) {
         ++queries;
         if (ownerLock && ownerLock->tryLock()) {
             readWithoutLock = true; ownerLock->unlock();
         }
-        *a = nullTop ? nullptr : top.data(); *b = bottom.data();
-        w = width; h = height; return available;
+        frame = {};
+        if (!available) return false;
+        frame = {kind, nullTop ? nullptr : top.data(), bottom.data(), u32(width), u32(height), 1};
+        return true;
     }
 };
 struct Console { FrameSource renderer; auto& GetRenderer() { return renderer; } };
@@ -113,11 +118,13 @@ int main(int argc, char** argv)
         std::fprintf(stderr,"missing RAM framebuffer did not retain the previous image\n"); return 1;
     }
     current.available = true;
-    for (unsigned failure = 0; failure < 3; ++failure) {
+    for (unsigned failure = 0; failure < 4; ++failure) {
         panel.hasBuffers = true;
         current.nullTop = failure == 0;
         current.width = failure == 1 ? 0 : 256;
         panel.instance.hasConsole = failure != 2;
+        current.kind = failure == 3 ? FrameSource::DisplayFrame::Kind::GLTexture2DArray :
+            FrameSource::DisplayFrame::Kind::CpuBGRA;
         panel.render(&target);
         if (panel.hasBuffers || panel.screen[0] != retained || panel.screen[1] != retainedBottom) {
             std::fprintf(stderr,"invalid source discarded retained images (case %u)\n", failure); return 1;
@@ -125,6 +132,7 @@ int main(int argc, char** argv)
     }
     panel.instance.hasConsole = true;
     current.nullTop = false; current.width = 256;
+    current.kind = FrameSource::DisplayFrame::Kind::CpuBGRA;
     const auto beforePreserved = current.queries;
     panel.hasBuffers = false; // Worker published a preserved paused image.
     panel.render(&target);

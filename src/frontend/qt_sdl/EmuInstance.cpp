@@ -465,16 +465,18 @@ bool EmuInstance::preserveFrame()
     // with the newly constructed renderer's as-yet empty output.
     if (!preservedFrame[0].isNull() && preservedFrameNumber == nds->NumFrames) return true;
     std::array<QImage, 2> images;
-    void* top; void* bottom;
-    int frameWidth = 256, frameHeight = 192;
-    if (nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, frameWidth, frameHeight))
+    melonDS::Renderer::DisplayFrame frame;
+    if (!nds->GetRenderer().GetDisplayFrame(frame) || !frame.top || !frame.width || !frame.height)
+        return false;
+    if (frame.kind == melonDS::Renderer::DisplayFrame::Kind::CpuBGRA)
     {
-        images[0] = QImage(static_cast<uchar*>(top), frameWidth, frameHeight, QImage::Format_RGB32).copy();
-        images[1] = QImage(static_cast<uchar*>(bottom), frameWidth, frameHeight, QImage::Format_RGB32).copy();
+        if (!frame.bottom) return false;
+        images[0] = QImage(static_cast<const uchar*>(frame.top), frame.width, frame.height, QImage::Format_RGB32).copy();
+        images[1] = QImage(static_cast<const uchar*>(frame.bottom), frame.width, frame.height, QImage::Format_RGB32).copy();
     }
-    else
+    else if (frame.kind == melonDS::Renderer::DisplayFrame::Kind::GLTexture2DArray)
     {
-        const GLuint texture = *static_cast<GLuint*>(top);
+        const GLuint texture = *static_cast<const GLuint*>(frame.top);
         glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
         GLint width = 0, height = 0;
         glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_WIDTH, &width);
@@ -503,6 +505,7 @@ bool EmuInstance::preserveFrame()
         glDeleteFramebuffers(1, &framebuffer);
         if (!valid) return false;
     }
+    else return false;
     if (images[0].isNull() || images[1].isNull()) return false;
     preservedFrame = std::move(images);
     preservedFrameNumber = nds->NumFrames;

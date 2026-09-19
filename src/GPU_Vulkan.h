@@ -27,7 +27,7 @@ public:
     void DrawScanline(u32 line) override;
     void AllocCapture(u32 bank, u32 start, u32 size) override;
     void InvalidateDisplayCapture(u32 bank, u32 start) override { DisplayCaptures[bank * 4 + start] = {}; }
-    bool GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height) override;
+    bool GetDisplayFrame(DisplayFrame& frame) override;
 
 private:
     friend class VulkanRenderer3D;

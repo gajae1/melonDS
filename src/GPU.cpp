@@ -16,6 +16,7 @@
     with melonDS. If not, see http://www.gnu.org/licenses/.
 */
 
+#include <algorithm>
 #include <bit>
 #include <string.h>
 #include "NDS.h"
@@ -71,6 +72,32 @@ enum
                 it was changed. This can be archived by checking VRAMDirty.
                 VRAMDirty need to be reset for the respective VRAM bank.
 */
+
+bool Renderer::GetDisplayFrame(DisplayFrame& frame)
+{
+    frame = {};
+    void* top = nullptr;
+    void* bottom = nullptr;
+    if (!GetFramebuffers(&top, &bottom) || !top || !bottom) return false;
+    frame = {DisplayFrame::Kind::CpuBGRA, top, bottom, 256, 192,
+        GetDisplayFrameGeneration(256, 192)};
+    return true;
+}
+
+u64 Renderer::GetDisplayFrameGeneration(u32 width, u32 height)
+{
+    const u32 number = GPU.NDS.NumFrames;
+    if (!DisplayGeneration || number != DisplayFrameNumber ||
+        width != DisplayWidth || height != DisplayHeight)
+    {
+        GPU.DisplayGenerationCounter = std::max(GPU.DisplayGenerationCounter + 1, u64(number));
+        DisplayGeneration = GPU.DisplayGenerationCounter;
+        DisplayFrameNumber = number;
+        DisplayWidth = width;
+        DisplayHeight = height;
+    }
+    return DisplayGeneration;
+}
 
 GPU::GPU(melonDS::NDS& nds) noexcept : GPU(nds, nullptr)
 {

@@ -188,9 +188,6 @@ private:
     QImage vulkanFrame;
     QMutex bufferLock;
     bool hasBuffers;
-    void* topBuffer;
-    void* bottomBuffer;
-    int bufferWidth = 256, bufferHeight = 192;
 
     QImage screen[2];
     QTransform screenTrans[kMaxScreenTransforms];

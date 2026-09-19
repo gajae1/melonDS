@@ -334,6 +334,7 @@ void GLRenderer::PostSavestate()
 
 bool GLRenderer::SetRenderSettings(RendererSettings& settings)
 {
+    InvalidateDisplayFrame();
     if (!OpenGL::CheckError("before applying render settings")) return false;
     const int scale = settings.ScaleFactor;
     // Match the supported settings range before any signed size arithmetic.
@@ -1097,6 +1098,16 @@ bool GLRenderer::GetFramebuffers(void** top, void** bottom)
     return false;
 }
 
+
+bool GLRenderer::GetDisplayFrame(DisplayFrame& frame)
+{
+    frame = {};
+    const int front = BackBuffer ^ 1;
+    if (!FPOutputTex[front] || ScreenW <= 0 || ScreenH <= 0) return false;
+    frame = {DisplayFrame::Kind::GLTexture2DArray, &FPOutputTex[front], nullptr,
+        u32(ScreenW), u32(ScreenH), GetDisplayFrameGeneration(ScreenW, ScreenH)};
+    return true;
+}
 
 bool GLRenderer::NeedsShaderCompile()
 {

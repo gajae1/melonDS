@@ -28,6 +28,11 @@ void Require(bool ok, const char* message)
     if (!ok) throw std::runtime_error(message);
 }
 
+bool GetCpuDisplayFrame(Renderer& renderer, Renderer::DisplayFrame& frame)
+{
+    return renderer.GetDisplayFrame(frame) && frame.kind == Renderer::DisplayFrame::Kind::CpuBGRA;
+}
+
 std::unique_ptr<NDS> Console(bool vulkan, int scale = 1)
 {
     NDSArgs args; args.JIT = std::nullopt;
@@ -138,9 +143,9 @@ void ScaledDisplay(int scale)
     auto nds = Console(true, scale);
     Scene(*nds, 0, false, false);
     Screen(*nds); Screen(*nds, false);
-    void* top = nullptr; void* bottom = nullptr;
-    int width = 0, height = 0;
-    Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height), "display is not RAM");
+    Renderer::DisplayFrame frame;
+    const auto& [kind, top, bottom, width, height, generation] = frame;
+    Require(GetCpuDisplayFrame(nds->GetRenderer(), frame), "display is not RAM");
     Require(width == 256 * scale && height == 192 * scale, "scaled Vulkan display extent is still native");
     const auto* pixels = static_cast<const u32*>(nds->GPU.ScreenSwap ? top : bottom);
     Require(pixels && pixels[(80 * scale) * width + 80 * scale] == 0xFFFF0000, "scaled display lost foreground");
@@ -151,11 +156,12 @@ void ScaledDisplay(int scale)
 
 unsigned DisplayOrigins(NDS& nds, int scale, bool requireDetail = false)
 {
-    void *nativeTop, *nativeBottom, *displayTop, *displayBottom;
+    void *nativeTop, *nativeBottom;
     auto& renderer = nds.GetRenderer();
     Require(renderer.GetFramebuffers(&nativeTop, &nativeBottom), "native framebuffer missing");
-    int width = 0, height = 0;
-    Require(renderer.GetDisplayFramebuffers(&displayTop, &displayBottom, width, height), "display framebuffer missing");
+    Renderer::DisplayFrame frame;
+    const auto& [kind, displayTop, displayBottom, width, height, generation] = frame;
+    Require(GetCpuDisplayFrame(renderer, frame), "display framebuffer missing");
     Require(width == 256 * scale && height == 192 * scale, "display extent mismatch");
     const u32* native[] = {static_cast<const u32*>(nativeTop), static_cast<const u32*>(nativeBottom)};
     const u32* display[] = {static_cast<const u32*>(displayTop), static_cast<const u32*>(displayBottom)};
@@ -217,8 +223,9 @@ void ScaledDisplayLifecycle(int scale)
     {
         if (reset) nds->GetRenderer().Reset();
         else nds->GetRenderer().Stop();
-        void *top, *bottom; int width, height;
-        nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height);
+        Renderer::DisplayFrame frame;
+        const auto& [kind, top, bottom, width, height, generation] = frame;
+        Require(GetCpuDisplayFrame(nds->GetRenderer(), frame), "stop/reset display unavailable");
         Require(width == 256 * scale && height == 192 * scale, "stop/reset lost display allocation");
         for (const auto* pixels : {static_cast<const u32*>(top), static_cast<const u32*>(bottom)})
             Require(std::all_of(pixels, pixels + size_t(width) * height, [](u32 p) { return p == 0; }),
@@ -288,8 +295,9 @@ void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
     // Transparent clear is black, matching the OBJ scene backdrop.
     nds->ARM9Write32(0x04000000, 0x00020000 | (bank << 18));
     Screen(*nds, false); Screen(*nds, false);
-    void *top, *bottom; int width, height;
-    Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+    Renderer::DisplayFrame frame;
+    const auto& [kind, top, bottom, width, height, generation] = frame;
+    Require(GetCpuDisplayFrame(nds->GetRenderer(), frame),
         "LCDC reference framebuffer unavailable");
     Require(width == 256 * scale && height == 192 * scale, "LCDC reference extent mismatch");
     const auto* source = static_cast<const u32*>(nds->GPU.ScreenSwap ? top : bottom);
@@ -314,7 +322,7 @@ void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
         Screen(*nds, false); Screen(*nds, false);
         void *nt, *nb;
         Require(nds->GetRenderer().GetFramebuffers(&nt, &nb), "boundary native frame missing");
-        Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+        Require(GetCpuDisplayFrame(nds->GetRenderer(), frame),
             "boundary display frame missing");
         const bool selected = engine ? !nds->GPU.ScreenSwap : nds->GPU.ScreenSwap;
         const auto* display = static_cast<const u32*>(selected ? top : bottom);
@@ -376,7 +384,7 @@ void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
     DisplayOrigins(*nds, scale);
     Require(std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]),
         "OBJ display modified guest capture VRAM");
-    Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+    Require(GetCpuDisplayFrame(nds->GetRenderer(), frame),
         "OBJ display framebuffer unavailable");
     const bool selected = engine ? !nds->GPU.ScreenSwap : nds->GPU.ScreenSwap;
     const auto* actual = static_cast<const u32*>(selected ? top : bottom);
@@ -456,7 +464,7 @@ void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
         DisplayOrigins(*nds, currentScale);
         Require(std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]),
             "OBJ variant changed guest capture bytes");
-        Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+        Require(GetCpuDisplayFrame(nds->GetRenderer(), frame),
             "OBJ variant display unavailable");
         Require(nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom),
             "OBJ variant native framebuffer unavailable");
@@ -774,7 +782,7 @@ void CapturedBitmapOBJ(int scale, unsigned engine, bool boundaryOnly = false)
         DisplayOrigins(*nds, scale);
         Require(std::equal(captured.begin(), captured.end(), nds->GPU.VRAM[bank]),
             "mosaic display changed guest capture bytes");
-        Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height),
+        Require(GetCpuDisplayFrame(nds->GetRenderer(), frame),
             "mosaic display unavailable");
         Require(nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom),
             "mosaic native framebuffer unavailable");
@@ -1010,8 +1018,9 @@ void CapturedBitmapBG(int scale, unsigned engine, bool benchmark = false)
         for (int frame = 0; frame < 16; ++frame) Screen(*nds, false);
         const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - begin).count() / 16;
-        void *top, *bottom; int width, height;
-        nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height);
+        Renderer::DisplayFrame frame;
+        const auto& [kind, top, bottom, width, height, generation] = frame;
+        Require(GetCpuDisplayFrame(nds->GetRenderer(), frame), "benchmark display unavailable");
         u64 checksum = 0;
         for (const auto* pixels : {static_cast<const u32*>(top), static_cast<const u32*>(bottom)})
         for (size_t pixel = 0; pixel < size_t(width) * height; ++pixel) checksum += pixels[pixel];
@@ -1099,8 +1108,10 @@ void CapturedBitmapBG(int scale, unsigned engine, bool benchmark = false)
         "fixture did not create overlapping background mappings");
     checkFrame();
     {
-        void *top, *bottom, *nativeTop, *nativeBottom; int width, height;
-        nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height);
+        void *nativeTop, *nativeBottom;
+        Renderer::DisplayFrame frame;
+        const auto& [kind, top, bottom, width, height, generation] = frame;
+        Require(GetCpuDisplayFrame(nds->GetRenderer(), frame), "overlap display unavailable");
         nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom);
         const unsigned selected = engine ? !nds->GPU.ScreenSwap : nds->GPU.ScreenSwap;
         const auto* display = static_cast<const u32*>(selected ? top : bottom);
@@ -1145,8 +1156,9 @@ void CapturedBitmapBG(int scale, unsigned engine, bool benchmark = false)
     const u16 original = nds->ARM9Read16(alias + 0xA040);
     nds->ARM9Write16(alias + 0xA040, original);
     checkFrame();
-    void *top, *bottom; int displayWidth, displayHeight;
-    nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, displayWidth, displayHeight);
+    Renderer::DisplayFrame frame;
+    const auto& [kind, top, bottom, displayWidth, displayHeight, generation] = frame;
+    Require(GetCpuDisplayFrame(nds->GetRenderer(), frame), "invalidated capture display unavailable");
     void *nativeTop, *nativeBottom; nds->GetRenderer().GetFramebuffers(&nativeTop, &nativeBottom);
     for (const auto& pair : {std::pair{top,nativeTop}, std::pair{bottom,nativeBottom}})
     for (int y = 0; y < displayHeight; ++y)
@@ -1162,18 +1174,20 @@ void CapturedBitmapBG(int scale, unsigned engine, bool benchmark = false)
 void CheckCacheClear(NDS& nds, const std::vector<u32>& native)
 {
     auto& renderer = static_cast<VulkanRenderer&>(nds.GetRenderer());
-    void *top, *bottom; int width, height;
-    Require(renderer.GetDisplayFramebuffers(&top, &bottom, width, height), "display view unavailable");
-    const size_t count = size_t(width) * height;
-    const std::vector<u32> beforeTop(static_cast<u32*>(top), static_cast<u32*>(top)+count);
-    const std::vector<u32> beforeBottom(static_cast<u32*>(bottom), static_cast<u32*>(bottom)+count);
+    Renderer::DisplayFrame before, after;
+    Require(GetCpuDisplayFrame(renderer, before), "display view unavailable");
+    const size_t count = size_t(before.width) * before.height;
+    const auto* topPixels = static_cast<const u32*>(before.top);
+    const auto* bottomPixels = static_cast<const u32*>(before.bottom);
+    const std::vector<u32> beforeTop(topPixels, topPixels + count);
+    const std::vector<u32> beforeBottom(bottomPixels, bottomPixels + count);
     renderer.ClearPipelineCache();
-    int afterWidth, afterHeight;
-    Require(renderer.GetDisplayFramebuffers(&top, &bottom, afterWidth, afterHeight) &&
-        width == afterWidth && height == afterHeight, "cache clear changed display extent");
-    Require(std::equal(beforeTop.begin(), beforeTop.end(), static_cast<u32*>(top)) &&
-        std::equal(beforeBottom.begin(), beforeBottom.end(), static_cast<u32*>(bottom)),
+    Require(GetCpuDisplayFrame(renderer, after) &&
+        before.width == after.width && before.height == after.height, "cache clear changed display extent");
+    Require(std::equal(beforeTop.begin(), beforeTop.end(), static_cast<const u32*>(after.top)) &&
+        std::equal(beforeBottom.begin(), beforeBottom.end(), static_cast<const u32*>(after.bottom)),
         "cache clear changed the current display pixels");
+    void *top, *bottom;
     Require(renderer.GetFramebuffers(&top, &bottom), "native view unavailable after cache clear");
     Require(std::equal(native.begin(), native.end(), static_cast<u32*>(nds.GPU.ScreenSwap ? top : bottom)),
         "cache clear changed the current native pixels");
@@ -1395,8 +1409,9 @@ void CapturedTexture(int scale)
                 auto& nds = *consoles[i];
                 Screen(nds);
                 native[i] = Screen(nds, false);
-                void *top, *bottom; int width, height;
-                Require(nds.GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height) &&
+                Renderer::DisplayFrame frame;
+                const auto& [kind, top, bottom, width, height, generation] = frame;
+                Require(GetCpuDisplayFrame(nds.GetRenderer(), frame) &&
                     width == 256 * currentScale && height == 192 * currentScale, "capture texture display extent");
                 const auto* pixels = static_cast<const u32*>(nds.GPU.ScreenSwap ? top : bottom);
                 display[i].assign(pixels, pixels + size_t(width) * height);
@@ -1771,8 +1786,9 @@ void HighScales()
             Screen(*nds);
             const auto native = Screen(*nds, false);
             Require(native == expected, "high scale changed native rectangle/capture source");
-            void* top = nullptr; void* bottom = nullptr; int width = 0, height = 0;
-            Require(nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, width, height), "high scale RAM view unavailable");
+            Renderer::DisplayFrame frame;
+            const auto& [kind, top, bottom, width, height, generation] = frame;
+            Require(GetCpuDisplayFrame(nds->GetRenderer(), frame), "high scale RAM view unavailable");
             Require(width == 256 * scale && height == 192 * scale, "high display extent mismatch");
             const u32* pixels = static_cast<const u32*>(nds->GPU.ScreenSwap ? top : bottom);
             for (unsigned y = 0; y < 192; ++y)

@@ -811,6 +811,10 @@ private:
 
     std::unique_ptr<Renderer> Rend;
 
+    friend class Renderer;
+    // Host-only identity survives renderer replacement, but is never serialized.
+    u64 DisplayGenerationCounter = 0;
+
     u16 VRAMCaptureBlockFlags[16];
 
     u16* VRAMCBF_ABG[0x20] {};
@@ -870,14 +874,39 @@ public:
     // a renderer may render to RAM buffers, or to something else (ie. OpenGL)
     // if the renderer uses RAM buffers, they should be 32-bit BGRA, 256x192 for each screen
     virtual bool GetFramebuffers(void** top, void** bottom) = 0;
-    // Host display view. RAM is tightly packed BGRA at the returned extent.
-    // Native RAM/capture consumers keep GetFramebuffers().
-    virtual bool GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height)
+    struct DisplayFrame
     {
-        width = 256; height = 192;
-        return GetFramebuffers(top, bottom);
-    }
-    virtual void SwapBuffers() { BackBuffer ^= 1; }
+        enum class Kind : u8
+        {
+            CpuBGRA,          // top/bottom: tightly packed BGRA u32 pixels
+            GLTexture2DArray, // top: pointer to a renderer-owned GLuint; bottom unused
+        };
+        Kind kind = Kind::CpuBGRA;
+        const void* top = nullptr;
+        const void* bottom = nullptr;
+        u32 width = 0, height = 0;
+        u64 generation = 0;
+    };
+
+    // Host display only; native guest/capture consumers keep GetFramebuffers().
+    // False means no frame is available this paint (frame is cleared).
+    // A view expires at the next producer frame swap, SetRenderSettings, or
+    // renderer replacement, whichever comes first. Consumers dereference only
+    // under the existing render lock and re-query rather than retain pointers.
+    // generation is a monotonic, host-only stamp advanced from NDS.NumFrames;
+    // swaps, settings/extent changes and replacement invalidate it even while
+    // paused. Compare stamps only within one NDS instance, without touching old
+    // payloads. Guest frame-count rewind never revives a retired generation.
+    // CpuBGRA is complete at return. GLTexture2DArray content is complete after
+    // the producer's frame-end submissions complete; consumers must preserve
+    // the existing shared-context ordering (this query adds no GPU wait).
+    // Producers own buffers/textures and reuse them after the next frame swap;
+    // there is no consumer release signal for these existing kinds.
+    // A future GPU-image kind must carry an acquire fence and a release signal;
+    // its producer pool may reuse an image only after release completes. That
+    // kind, device sharing and direct GPU-image presentation are not implemented.
+    virtual bool GetDisplayFrame(DisplayFrame& frame);
+    virtual void SwapBuffers() { BackBuffer ^= 1; InvalidateDisplayFrame(); }
 
     virtual bool NeedsShaderCompile() { return false; }
     // A failed asynchronous/backend operation must be reported to the frontend.
@@ -886,6 +915,9 @@ public:
     virtual bool ShaderCompileStep(int& current, int& count) { return true; }
 
 protected:
+    u64 GetDisplayFrameGeneration(u32 width, u32 height);
+    void InvalidateDisplayFrame() { DisplayGeneration = 0; }
+
     melonDS::GPU& GPU;
 
     int BackBuffer;
@@ -893,6 +925,11 @@ protected:
     std::unique_ptr<Renderer2D> Rend2D_A;
     std::unique_ptr<Renderer2D> Rend2D_B;
     std::unique_ptr<Renderer3D> Rend3D;
+
+private:
+    u64 DisplayGeneration = 0;
+    u32 DisplayFrameNumber = 0;
+    u32 DisplayWidth = 0, DisplayHeight = 0;
 };
 
 }

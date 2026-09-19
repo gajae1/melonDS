@@ -830,7 +830,9 @@ bool ScreenPanelNative::drawScreen()
         return true;
     }
     preservedFrame = {};
-    hasBuffers = nds->GetRenderer().GetDisplayFramebuffers(&topBuffer, &bottomBuffer, bufferWidth, bufferHeight);
+    melonDS::Renderer::DisplayFrame frame;
+    hasBuffers = nds->GetRenderer().GetDisplayFrame(frame) &&
+        frame.kind == melonDS::Renderer::DisplayFrame::Kind::CpuBGRA;
     bufferLock.unlock();
     return true;
 }
@@ -862,19 +864,20 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
         emuInstance->renderLock.lock();
 
         bufferLock.lock();
+        melonDS::Renderer::DisplayFrame frame;
         if (hasBuffers)
         {
-            // drawScreen may have published before a scale/renderer change.
-            // Reacquire under the same lock that protects renderer replacement;
-            // never dereference the previously published raw addresses.
+            // drawScreen may have run before a scale/renderer change.
+            // Re-query under the lock protecting renderer replacement and keep
+            // the borrowed payload only until this paint's copy is complete.
             auto* nds = emuInstance->getNDS();
-            hasBuffers = nds && nds->GetRenderer().GetDisplayFramebuffers(
-                &topBuffer, &bottomBuffer, bufferWidth, bufferHeight);
-            hasBuffers = hasBuffers && topBuffer && bottomBuffer &&
-                bufferWidth > 0 && bufferHeight > 0;
+            hasBuffers = nds && nds->GetRenderer().GetDisplayFrame(frame) &&
+                frame.kind == melonDS::Renderer::DisplayFrame::Kind::CpuBGRA &&
+                frame.top && frame.bottom && frame.width > 0 && frame.height > 0;
         }
         if (hasBuffers)
         {
+            const int bufferWidth = frame.width, bufferHeight = frame.height;
             if (screen[0].size() != QSize(bufferWidth, bufferHeight))
             {
                 QImage top(bufferWidth, bufferHeight, QImage::Format_RGB32);
@@ -886,8 +889,8 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
             {
                 std::uint64_t copy = RenderCost.Enabled ? RenderCostNowNs() : 0;
                 const size_t bytes = size_t(bufferWidth) * bufferHeight * sizeof(melonDS::u32);
-                memcpy(screen[0].scanLine(0), topBuffer, bytes);
-                memcpy(screen[1].scanLine(0), bottomBuffer, bytes);
+                memcpy(screen[0].scanLine(0), frame.top, bytes);
+                memcpy(screen[1].scanLine(0), frame.bottom, bytes);
                 RenderCost.RecordCopy(copy);
             }
         }
@@ -1270,80 +1273,80 @@ bool ScreenPanelGL::drawScreen()
         glUseProgram(screenShaderProgram);
         glUniform2f(screenShaderScreenSizeULoc, w / factor, h / factor);
 
-        void* topbuf; void* bottombuf;
-        int frameWidth = 256, frameHeight = 192;
-        bool softwareBuffers;
+        using DisplayFrame = melonDS::Renderer::DisplayFrame;
+        DisplayFrame frame;
+        bool available = true;
         if (!preservedFrame[0].isNull() && nds->NumFrames == preservedFrameNumber)
         {
-            topbuf = preservedFrame[0].bits();
-            bottombuf = preservedFrame[1].bits();
-            frameWidth = preservedFrame[0].width();
-            frameHeight = preservedFrame[0].height();
-            softwareBuffers = true;
+            frame = {DisplayFrame::Kind::CpuBGRA, preservedFrame[0].constBits(),
+                preservedFrame[1].constBits(), u32(preservedFrame[0].width()),
+                u32(preservedFrame[0].height()), 0};
         }
         else
         {
             preservedFrame = {};
-            softwareBuffers = nds->GetRenderer().GetDisplayFramebuffers(&topbuf, &bottombuf, frameWidth, frameHeight);
+            available = nds->GetRenderer().GetDisplayFrame(frame);
         }
-        if (softwareBuffers)
+        if (available && frame.top && frame.width && frame.height &&
+            ((frame.kind == DisplayFrame::Kind::CpuBGRA && frame.bottom) ||
+             frame.kind == DisplayFrame::Kind::GLTexture2DArray))
         {
-            // if we're doing a regular render, use the provided framebuffers
-            // otherwise, GetFramebuffers() will set up the required state
-
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, screenTexture);
-
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            if (frameWidth != screenTextureWidth || frameHeight != screenTextureHeight)
+            const int frameWidth = frame.width, frameHeight = frame.height;
+            if (frame.kind == DisplayFrame::Kind::CpuBGRA)
             {
-                glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, frameWidth, frameHeight, 2,
-                    0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
-                if (glGetError() != GL_NO_ERROR)
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, screenTexture);
+
+                glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+                if (frameWidth != screenTextureWidth || frameHeight != screenTextureHeight)
                 {
-                    // Do not upload using uncommitted dimensions after a failed
-                    // resize. The caller owns presentation fallback/recovery.
-                    RenderCost.Add(RenderCost.AccIssue, issue);
-                    RenderCost.Gpu.End(span);
-                    RenderCost.FrameEnd();
-                    return false;
+                    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, frameWidth, frameHeight, 2,
+                        0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+                    if (glGetError() != GL_NO_ERROR)
+                    {
+                        // Do not upload using uncommitted dimensions after a failed
+                        // resize. The caller owns presentation fallback/recovery.
+                        RenderCost.Add(RenderCost.AccIssue, issue);
+                        RenderCost.Gpu.End(span);
+                        RenderCost.FrameEnd();
+                        return false;
+                    }
+                    screenTextureWidth = frameWidth;
+                    screenTextureHeight = frameHeight;
                 }
-                screenTextureWidth = frameWidth;
-                screenTextureHeight = frameHeight;
+                std::uint64_t upl = RenderCost.UploadStart();
+                glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, frameWidth, frameHeight, 1, GL_BGRA,
+                                GL_UNSIGNED_BYTE, frame.top);
+                glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, frameWidth, frameHeight, 1, GL_BGRA,
+                                GL_UNSIGNED_BYTE, frame.bottom);
+                RenderCost.UploadEnd(upl, size_t(2) * frameWidth * frameHeight * 4);
             }
-            std::uint64_t upl = RenderCost.UploadStart();
-            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, frameWidth, frameHeight, 1, GL_BGRA,
-                            GL_UNSIGNED_BYTE, topbuf);
-            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, frameWidth, frameHeight, 1, GL_BGRA,
-                            GL_UNSIGNED_BYTE, bottombuf);
-            RenderCost.UploadEnd(upl, size_t(2) * frameWidth * frameHeight * 4);
+            else if (frame.kind == DisplayFrame::Kind::GLTexture2DArray)
+            {
+                const GLuint texid = *static_cast<const GLuint*>(frame.top);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, texid);
+            }
+
+            screenSettingsLock.lock();
+
+            GLint filter = this->filter ? GL_LINEAR : GL_NEAREST;
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, filter);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, filter);
+
+            glBindBuffer(GL_ARRAY_BUFFER, screenVertexBuffer);
+            glBindVertexArray(screenVertexArray);
+
+            for (int i = 0; i < numScreens; i++)
+            {
+                glUniformMatrix2x3fv(screenShaderTransformULoc, 1, GL_TRUE, screenMatrix[i]);
+                glDrawArrays(GL_TRIANGLES, screenKind[i] == 0 ? 0 : 2 * 3, 2 * 3);
+            }
+
+            screenSettingsLock.unlock();
         }
-        else
-        {
-            GLuint texid = *(GLuint*)topbuf;
-
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, texid);
-        }
-
-        screenSettingsLock.lock();
-
-        GLint filter = this->filter ? GL_LINEAR : GL_NEAREST;
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, filter);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, filter);
-
-        glBindBuffer(GL_ARRAY_BUFFER, screenVertexBuffer);
-        glBindVertexArray(screenVertexArray);
-
-        for (int i = 0; i < numScreens; i++)
-        {
-            glUniformMatrix2x3fv(screenShaderTransformULoc, 1, GL_TRUE, screenMatrix[i]);
-            glDrawArrays(GL_TRIANGLES, screenKind[i] == 0 ? 0 : 2 * 3, 2 * 3);
-        }
-
-        screenSettingsLock.unlock();
     }
 
     osdUpdate();

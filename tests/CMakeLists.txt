@@ -284,6 +284,13 @@ if (MELONDS_BUILD_MICROBENCHMARKS)
     endif()
 endif()
 
+if (TARGET core)
+    add_executable(NativeDisplayFrameGeneration NativeDisplayFrameGeneration.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(NativeDisplayFrameGeneration PRIVATE core Threads::Threads)
+    add_test(NAME native-display-frame-generation COMMAND NativeDisplayFrameGeneration)
+    set_tests_properties(native-display-frame-generation PROPERTIES TIMEOUT 10)
+endif()
+
 option(MELONDS_TEST_GPU "Run tests requiring a real OpenGL context" OFF)
 if (TARGET vulkan-compute)
     add_executable(VulkanAdapter VulkanAdapter.cpp)

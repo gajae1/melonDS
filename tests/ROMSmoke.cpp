@@ -292,9 +292,11 @@ int main(int argc, char** argv)
                 return 16;
             }
         }
-        void *top = nullptr, *bottom = nullptr;
-        int frameWidth = 256, frameHeight = 192;
-        nds->GetRenderer().GetDisplayFramebuffers(&top, &bottom, frameWidth, frameHeight);
+        Renderer::DisplayFrame frame;
+        if (!nds->GetRenderer().GetDisplayFrame(frame)) return 7;
+        const void* top = frame.top;
+        const void* bottom = frame.bottom;
+        const int frameWidth = frame.width, frameHeight = frame.height;
         std::vector<u32> pixels(256*384);
         const auto resolve = [](const u32* source, u32* out, int factor) {
             if (factor == 1) { std::memcpy(out, source, 256 * 192 * sizeof(u32)); return; }
@@ -309,7 +311,7 @@ int main(int argc, char** argv)
                 out[y * 256 + x] = ((a / count) << 24) | ((r / count) << 16) | ((g / count) << 8) | (b / count);
             }
         };
-        if (ramOutput) {
+        if (frame.kind == Renderer::DisplayFrame::Kind::CpuBGRA) {
             if (!top || !bottom) return 7;
             const int factor = frameWidth / 256;
             if (frameWidth % 256 || factor < 1 || frameHeight != 192 * factor) return 18;
@@ -317,8 +319,8 @@ int main(int argc, char** argv)
             resolve(static_cast<const u32*>(top), pixels.data(), factor);
             resolve(static_cast<const u32*>(bottom), pixels.data() + 256 * 192, factor);
         } else {
-            if (!top) return 7;
-            const GLuint texture = *static_cast<GLuint*>(top);
+            if (frame.kind != Renderer::DisplayFrame::Kind::GLTexture2DArray || !top) return 7;
+            const GLuint texture = *static_cast<const GLuint*>(top);
             glBindTexture(GL_TEXTURE_2D_ARRAY,texture);
             GLint texW = 0, texH = 0;
             glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY,0,GL_TEXTURE_WIDTH,&texW);

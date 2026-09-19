@@ -31,6 +31,7 @@ u64 VulkanRenderer::SubmissionCount() const
 
 bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
 {
+    InvalidateDisplayFrame();
     const int scale = settings.ScaleFactor;
     if (scale < 1 || scale > ComputeShader::VulkanMaxScale) return false;
     try
@@ -127,13 +128,15 @@ void VulkanRenderer::DrawScanline(u32 line)
     }
 }
 
-bool VulkanRenderer::GetDisplayFramebuffers(void** top, void** bottom, int& width, int& height)
+bool VulkanRenderer::GetDisplayFrame(DisplayFrame& frame)
 {
-    width = 256 * DisplayScale;
-    height = 192 * DisplayScale;
-    if (DisplayScale == 1) return GetFramebuffers(top, bottom);
-    *top = ScaledBuffers[BackBuffer ^ 1][0].data();
-    *bottom = ScaledBuffers[BackBuffer ^ 1][1].data();
+    if (DisplayScale == 1) return Renderer::GetDisplayFrame(frame);
+    frame = {};
+    const auto& buffers = ScaledBuffers[BackBuffer ^ 1];
+    if (buffers[0].empty() || buffers[1].empty()) return false;
+    const u32 width = 256 * DisplayScale, height = 192 * DisplayScale;
+    frame = {DisplayFrame::Kind::CpuBGRA, buffers[0].data(), buffers[1].data(),
+        width, height, GetDisplayFrameGeneration(width, height)};
     return true;
 }
 
