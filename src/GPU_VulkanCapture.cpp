@@ -4,6 +4,8 @@
 #include "GPU3D_Vulkan.h"
 #include "Platform.h"
 #include "RenderCost.h"
+#include "Vulkan/ComputePipeline.h"
+#include "Vulkan/EmbeddedShaders.h"
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -232,6 +234,202 @@ bool VulkanRenderer::DrawCapturedDisplay(u32 line)
     return true;
 }
 
+VulkanRenderer::CaptureBlendState::~CaptureBlendState()
+{
+    if (!Owner) return;
+    if (Pending)
+    {
+        try { Owner->WaitForSubmission(); }
+        catch (...) {}
+    }
+    const auto& f = Owner->Functions();
+    const VkDevice device = Owner->Handle();
+    if (Pipeline) f.vkDestroyPipeline(device, Pipeline, nullptr);
+    if (Layout) f.vkDestroyPipelineLayout(device, Layout, nullptr);
+    if (Pool) f.vkDestroyDescriptorPool(device, Pool, nullptr);
+    if (Bindings) f.vkDestroyDescriptorSetLayout(device, Bindings, nullptr);
+    if (Module) f.vkDestroyShaderModule(device, Module, nullptr);
+}
+
+bool VulkanRenderer::CaptureBlendRow(u32 line, u32 scale, u32 eva, u32 evb,
+    const u16* capturedB, const u16* nativeB)
+{
+    auto& raster = static_cast<VulkanRenderer3D&>(*Rend3D);
+    // Measured floor: one deferred submit/wait pair costs ~57us of host time
+    // per native row, which exceeds the CPU blend below the maximum scale.
+    // Only 16x clears the paired gate; smaller scales keep the CPU path.
+    if (scale < 16) return false;
+    // The CPU path is the oracle for every case the shader cannot reproduce:
+    // aborted/failed frames produce zeros, a stale retained image throws, and
+    // a render scale different from the display scale samples a CPU buffer.
+    if (CaptureBlendDisabled || GPU.GPU3D.AbortFrame || raster.Failed ||
+        !raster.Device || !raster.Pipeline || int(scale) != raster.RenderedScale ||
+        !raster.RenderedImage || raster.RenderedImage != raster.Pipeline->OutputImage())
+        return false;
+    const auto& device = raster.Device;
+    try
+    {
+        if (!CaptureBlend)
+        {
+            auto state = std::make_unique<CaptureBlendState>();
+            state->Owner = device;
+            const auto& f = device->Functions();
+            const VkDevice handle = device->Handle();
+            const auto spirv = Vulkan::EmbeddedCaptureBlend();
+            VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            shader.codeSize = spirv.size_bytes();
+            shader.pCode = spirv.data();
+            Vulkan::Device::Check(f.vkCreateShaderModule(handle, &shader, nullptr, &state->Module),
+                "Create capture blend shader");
+            std::array<VkDescriptorSetLayoutBinding, 3> fields{};
+            for (u32 i = 0; i < fields.size(); ++i)
+            {
+                fields[i].binding = i;
+                fields[i].descriptorCount = 1;
+                fields[i].descriptorType = i ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                fields[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            }
+            VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            setInfo.bindingCount = fields.size();
+            setInfo.pBindings = fields.data();
+            Vulkan::Device::Check(f.vkCreateDescriptorSetLayout(handle, &setInfo, nullptr, &state->Bindings),
+                "Create capture blend bindings");
+            const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 24};
+            VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            layoutInfo.setLayoutCount = 1;
+            layoutInfo.pSetLayouts = &state->Bindings;
+            layoutInfo.pushConstantRangeCount = 1;
+            layoutInfo.pPushConstantRanges = &push;
+            Vulkan::Device::Check(f.vkCreatePipelineLayout(handle, &layoutInfo, nullptr, &state->Layout),
+                "Create capture blend layout");
+            VkComputePipelineCreateInfo pipeline{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            pipeline.layout = state->Layout;
+            pipeline.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            pipeline.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            pipeline.stage.module = state->Module;
+            pipeline.stage.pName = "main";
+            Vulkan::Device::Check(f.vkCreateComputePipelines(handle, device->GetPipelineCache(), 1,
+                &pipeline, nullptr, &state->Pipeline), "Create capture blend pipeline");
+            const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+            VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+            poolInfo.maxSets = 1;
+            poolInfo.poolSizeCount = 2;
+            poolInfo.pPoolSizes = sizes;
+            Vulkan::Device::Check(f.vkCreateDescriptorPool(handle, &poolInfo, nullptr, &state->Pool),
+                "Create capture blend descriptor pool");
+            VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            alloc.descriptorPool = state->Pool;
+            alloc.descriptorSetCount = 1;
+            alloc.pSetLayouts = &state->Bindings;
+            Vulkan::Device::Check(f.vkAllocateDescriptorSets(handle, &alloc, &state->Descriptors),
+                "Allocate capture blend descriptors");
+            const VkDeviceSize rowCapacity =
+                sizeof(u16) * 256 * ComputeShader::VulkanMaxScale * ComputeShader::VulkanMaxScale;
+            state->Upload = device->CreateBuffer(rowCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+            state->Landing = device->CreateBuffer(rowCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            const VkDescriptorBufferInfo buffers[] = {{state->Upload->Handle(), 0, rowCapacity},
+                {state->Landing->Handle(), 0, rowCapacity}};
+            std::array<VkWriteDescriptorSet, 2> writes{};
+            for (u32 i = 0; i < writes.size(); ++i)
+            {
+                writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[i].dstSet = state->Descriptors;
+                writes[i].dstBinding = i + 1;
+                writes[i].descriptorCount = 1;
+                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                writes[i].pBufferInfo = &buffers[i];
+            }
+            f.vkUpdateDescriptorSets(handle, writes.size(), writes.data(), 0, nullptr);
+            CaptureBlend = std::move(state);
+        }
+        auto& state = *CaptureBlend;
+        const u32 bmode = capturedB ? 1u : nativeB ? 2u : 0u;
+        const size_t bBytes = bmode == 1 ? size_t(256) * scale * scale * sizeof(u16)
+            : bmode == 2 ? 256 * sizeof(u16) : 0;
+        if (bBytes) std::memcpy(state.Upload->Data(), bmode == 1 ? capturedB : nativeB, bBytes);
+        if (state.BoundImage != raster.RenderedImage)
+        {
+            VkDescriptorImageInfo image{VK_NULL_HANDLE, raster.RenderedImage->View(),
+                VK_IMAGE_LAYOUT_GENERAL};
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = state.Descriptors;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            write.pImageInfo = &image;
+            device->Functions().vkUpdateDescriptorSets(device->Handle(), 1, &write, 0, nullptr);
+            state.BoundImage = raster.RenderedImage;
+        }
+        const auto& f = device->Functions();
+        const auto cmd = device->Begin(Vulkan::Device::SubmitKind::Other);
+        // The host upload must be visible to the shader; the retained rendered
+        // image is already GENERAL and cannot transition per row.
+        VkMemoryBarrier toShader{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        toShader.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &toShader, 0, nullptr, 0, nullptr);
+        VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        imageBarrier.image = state.BoundImage->Handle();
+        imageBarrier.oldLayout = imageBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        imageBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        imageBarrier.srcQueueFamilyIndex = imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imageBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
+        f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, state.Pipeline);
+        f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, state.Layout, 0, 1,
+            &state.Descriptors, 0, nullptr);
+        const u32 push[] = {line, scale, eva, evb, (GPU.GPU3D.RenderXPos & 511) * scale, bmode};
+        f.vkCmdPushConstants(cmd, state.Layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+        f.vkCmdDispatch(cmd, (128 * scale * scale + 63) / 64, 1, 1);
+        VkMemoryBarrier toHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        toHost.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+            0, 1, &toHost, 0, nullptr, 0, nullptr);
+        device->Timestamp(Vulkan::Device::TimestampStage::Other);
+        // The wait is deferred past the native capture so the dispatch overlaps
+        // host work; CaptureBlendFinish drains it before the staging copy.
+        device->Submit();
+        state.Pending = true;
+        state.RowBytes = size_t(256) * scale * scale * sizeof(u16);
+        return true;
+    }
+    catch (const std::exception& error)
+    {
+        // Never strand the shared device mid-recording; a failed submit has
+        // already retired it. The released CPU path stays correct either way.
+        try { device->SubmitAndWait(); } catch (...) {}
+        if (CaptureBlend) CaptureBlend->Pending = false;
+        CaptureBlendDisabled = true;
+        Platform::Log(Platform::LogLevel::Warn, "Vulkan capture blend unavailable: %s\n", error.what());
+        return false;
+    }
+}
+
+bool VulkanRenderer::CaptureBlendFinish()
+{
+    auto& state = *CaptureBlend;
+    try
+    {
+        state.Owner->WaitForSubmission();
+    }
+    catch (const std::exception& error)
+    {
+        state.Pending = false;
+        CaptureBlendDisabled = true;
+        Platform::Log(Platform::LogLevel::Warn, "Vulkan capture blend wait failed: %s\n", error.what());
+        return false;
+    }
+    state.Pending = false;
+    std::memcpy(CaptureRow.data(), state.Landing->Data(), state.RowBytes);
+    return true;
+}
+
 void VulkanRenderer::DoCapture(u32 line)
 {
     // Nested full-image readback, memcpy, conversion and native capture have
@@ -288,6 +486,13 @@ void VulkanRenderer::DoCapture(u32 line)
             }
         }
     }
+    // Eligible scaled blends run on the device: A is the retained rendered
+    // image, B a host upload, and the landing buffer drains into the same
+    // staging row before the unchanged publication boundary.
+    const bool gpuBlend = mode >= 2 && size && (control & (1u << 24)) && !sampleB &&
+        CaptureBlendRow(line, scale, eva, evb, capturedB, nativeB);
+    const auto cpuRows = [&]
+    {
     for (u32 sy = 0; sy < scale; ++sy)
     {
         if (mode != 1)
@@ -345,12 +550,17 @@ void VulkanRenderer::DoCapture(u32 line)
                 });
         }
     }
+    };
+    if (!gpuBlend) cpuRows();
     // Emulated VRAM is written once by the unchanged native capture algorithm.
     // The sidecar is for presentation only, never for a CPU/DMA read.
     {
         RenderCostVulkanScope native(Costs(), Cost::NativeCapture);
         SoftRenderer::DoCapture(line);
     }
+    // The deferred dispatch overlapped the native capture; a mid-row device
+    // failure still publishes the CPU-computed row.
+    if (gpuBlend && !CaptureBlendFinish()) cpuRows();
     {
         RenderCostVulkanScope copy(Costs(), Cost::CaptureCopy);
         std::copy_n(CaptureRow.data(), size_t(width) * scale * scale,

@@ -63,6 +63,37 @@ private:
     // A whole scaled row is prepared before replacing a capture, including
     // when source B aliases the destination bank.
     std::array<u16, 256 * ComputeShader::VulkanMaxScale * ComputeShader::VulkanMaxScale> CaptureRow{};
+    // Optional GPU compute for the scaled mode>=2 capture blend: source A is
+    // the device-resident rendered image, source B a host-visible upload, and
+    // the result lands in a host-visible buffer copied through the unchanged
+    // staging/publication boundary. Lazily created; any failure keeps the CPU
+    // path permanently for this renderer instance.
+    struct CaptureBlendState
+    {
+        std::shared_ptr<Vulkan::Device> Owner;
+        VkShaderModule Module = nullptr;
+        VkDescriptorSetLayout Bindings = nullptr;
+        VkDescriptorPool Pool = nullptr;
+        VkDescriptorSet Descriptors = nullptr;
+        VkPipelineLayout Layout = nullptr;
+        VkPipeline Pipeline = nullptr;
+        std::shared_ptr<Vulkan::Device::Buffer> Upload, Landing;
+        std::shared_ptr<Vulkan::Device::Image> BoundImage;
+        // A deferred submit is in flight until CaptureBlendFinish drains it;
+        // RowBytes is the landing extent for the row being computed.
+        bool Pending = false;
+        size_t RowBytes = 0;
+        ~CaptureBlendState();
+    };
+    std::unique_ptr<CaptureBlendState> CaptureBlend;
+    // A creation/submission failure disables the GPU path permanently for this
+    // renderer instance; the released CPU path stays the fallback.
+    bool CaptureBlendDisabled = false;
+    bool CaptureBlendRow(u32 line, u32 scale, u32 eva, u32 evb,
+        const u16* capturedB, const u16* nativeB);
+    // Drains the deferred dispatch into CaptureRow. False means the device
+    // failed mid-row; the caller then recomputes the row on the CPU path.
+    bool CaptureBlendFinish();
     void DoCapture(u32 line) override;
     bool ReadDisplayCapture(u32 bank, u32 word, u32 subx, u32 suby, u16& color) const;
     bool DrawCapturedDisplay(u32 line);

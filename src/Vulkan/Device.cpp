@@ -345,6 +345,7 @@ VkCommandBuffer Device::Begin(SubmitKind kind)
 {
     if(failed)throw std::runtime_error("Compute device retired after submission failure");
     if(recording)throw std::logic_error("Compute command recording already active");
+    if(pending)throw std::logic_error("Compute submission still pending");
     Check(functions.vkResetCommandBuffer(command,0),"Reset compute commands");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     Check(functions.vkBeginCommandBuffer(command,&begin),"Begin compute commands");
@@ -354,29 +355,21 @@ VkCommandBuffer Device::Begin(SubmitKind kind)
     return command;
 }
 
-void Device::SubmitAndWait()
+void Device::Submit()
 {
     if(!recording)throw std::logic_error("No compute commands to submit");
     if (costs && timestampCount == 1) Timestamp(TimestampStage::Other);
     recording=false;
     static constexpr Cost::HostStage issues[] = {Cost::SubmitOther, Cost::SubmitUpload, Cost::Submit3D,
         Cost::SubmitFullReadback, Cost::SubmitDisplay};
-    static constexpr Cost::HostStage waits[] = {Cost::WaitOther, Cost::WaitUpload, Cost::Wait3D,
-        Cost::WaitFullReadback, Cost::WaitDisplay};
     try {
-        {
-            RenderCostVulkanScope issue(costs.get(), issues[unsigned(submitKind)]);
-            Check(functions.vkEndCommandBuffer(command),"End compute commands");
-            Check(functions.vkResetFences(device,1,&fence),"Reset compute fence");
-            VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&command;
-            Check(functions.vkQueueSubmit(queue,1,&submit,fence),"Submit compute commands");
-            ++submissionCount;
-        }
-        {
-            RenderCostVulkanScope wait(costs.get(), waits[unsigned(submitKind)]);
-            Check(functions.vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX),"Wait for compute commands");
-        }
-        CollectCosts();
+        RenderCostVulkanScope issue(costs.get(), issues[unsigned(submitKind)]);
+        Check(functions.vkEndCommandBuffer(command),"End compute commands");
+        Check(functions.vkResetFences(device,1,&fence),"Reset compute fence");
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&command;
+        Check(functions.vkQueueSubmit(queue,1,&submit,fence),"Submit compute commands");
+        ++submissionCount;
+        pending=true;
     }catch(...) {
         failed=true;
         // A failed wait does not imply queue completion. Drain outstanding work
@@ -384,5 +377,29 @@ void Device::SubmitAndWait()
         functions.vkDeviceWaitIdle(device);
         throw;
     }
+}
+
+void Device::WaitForSubmission()
+{
+    if(!pending)throw std::logic_error("No compute submission to wait for");
+    static constexpr Cost::HostStage waits[] = {Cost::WaitOther, Cost::WaitUpload, Cost::Wait3D,
+        Cost::WaitFullReadback, Cost::WaitDisplay};
+    try {
+        RenderCostVulkanScope wait(costs.get(), waits[unsigned(submitKind)]);
+        Check(functions.vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX),"Wait for compute commands");
+        pending=false;
+        CollectCosts();
+    }catch(...) {
+        failed=true;
+        pending=false;
+        functions.vkDeviceWaitIdle(device);
+        throw;
+    }
+}
+
+void Device::SubmitAndWait()
+{
+    Submit();
+    WaitForSubmission();
 }
 }

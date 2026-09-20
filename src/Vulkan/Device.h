@@ -74,6 +74,11 @@ public:
     enum class SubmitKind { Other, Upload, ThreeD, FullReadback, Display };
     enum class TimestampStage { Upload, ThreeD, NativeReadback, FullReadback, DisplayCompose, DisplayReadback, Other };
     VkCommandBuffer Begin(SubmitKind kind = SubmitKind::Other);
+    // Split form for work that may overlap host-side emulation: Submit() ends
+    // recording and queues the commands; WaitForSubmission() must run before
+    // the next Begin() and before reading or reusing referenced resources.
+    void Submit();
+    void WaitForSubmission();
     void SubmitAndWait();
     // Optional observations in the existing command buffer/fence lifetime.
     // A null meter is the default OFF path: no clocks, pools or query commands.
@@ -107,6 +112,7 @@ private:
     VkPipelineCache pipelineCache{};
     bool pipelineCacheInitialized=false;
     bool recording=false;
+    bool pending=false;
     bool failed=false;
     uint64_t submissionCount=0;
     std::unique_ptr<RenderCostVulkanMeter> costs;

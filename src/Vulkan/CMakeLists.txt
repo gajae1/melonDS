@@ -54,7 +54,7 @@ add_custom_command(OUTPUT "${embedded_shaders}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedShaders.cmake"
     DEPENDS ${vulkan_spirv_files} EmbedShaders.cmake VERBATIM)
 set(display_spirv_files)
-foreach(name IN ITEMS DisplayCompose NativeReadback)
+foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend)
     set(spirv "${vulkan_shader_dir}/${name}.spv")
     set(validate_command)
     if (MELONDS_SPIRV_VAL)

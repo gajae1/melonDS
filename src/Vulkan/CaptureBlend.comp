@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Scaled-capture mode>=2 blend: A from the device-resident rendered image,
+// B from a host-visible upload, result into a host-visible landing buffer.
+// Replicates the released CPU arithmetic exactly: imageLoad -> *255+0.5 ->
+// the two-step 6-bit intermediate -> 5-bit extract -> weighted blend.
+#version 450
+layout(local_size_x = 64) in;
+layout(rgba8, set = 0, binding = 0) uniform readonly image2D SourceA;
+layout(std430, set = 0, binding = 1) readonly buffer SourceB { uint b[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer OutputRow { uint o[]; };
+layout(push_constant) uniform Parameters {
+    uint line;    // native scanline
+    uint scale;   // display scale (>1)
+    uint eva;     // source-A blend weight (0..16)
+    uint evb;     // source-B blend weight (0..16)
+    uint scroll;  // (RenderXPos & 511) * scale
+    uint bmode;   // 0 = B zero, 1 = expanded captured row, 2 = native 256-word row
+} p;
+
+uint SourceA5(uint x, uint sy, uint width)
+{
+    // Same scroll wrap as GetScaledLine: period is twice the subrow width and
+    // the second half is blank.
+    uint sx = (p.scroll + x) % (width * 2u);
+    if (sx >= width) return 0u;
+    uvec4 rgba = uvec4(imageLoad(SourceA, ivec2(sx, p.line * p.scale + sy)) * 255.0 + 0.5);
+    return ((rgba.r >> 3u) & 31u) | (((rgba.g >> 3u) & 31u) << 5u) |
+           (((rgba.b >> 3u) & 31u) << 10u) | (((rgba.a >> 3u) != 0u) ? 0x8000u : 0u);
+}
+
+uint SourceB5(uint i, uint x)
+{
+    if (p.bmode == 0u) return 0u;
+    uint index = p.bmode == 1u ? i : x / p.scale;
+    return (b[index >> 1u] >> ((index & 1u) * 16u)) & 0xFFFFu;
+}
+
+uint Blend(uint ca, uint cb)
+{
+    uint wa = (ca & 0x8000u) != 0u ? p.eva : 0u;
+    uint wb = (cb & 0x8000u) != 0u ? p.evb : 0u;
+    uint value = (wa | wb) != 0u ? 0x8000u : 0u;
+    for (uint shift = 0u; shift <= 10u; shift += 5u)
+        value |= min(((((ca >> shift) & 31u) * wa + ((cb >> shift) & 31u) * wb + 8u) >> 4u), 31u) << shift;
+    return value;
+}
+
+void main()
+{
+    uint width = 256u * p.scale;
+    uint total = width * p.scale;      // u16 outputs for the whole native row
+    uint word = gl_GlobalInvocationID.x;
+    if (word * 2u >= total) return;
+    uint result = 0u;
+    for (uint k = 0u; k < 2u; ++k)
+    {
+        uint i = word * 2u + k;
+        if (i >= total) break;
+        uint sy = i / width;
+        uint x = i - sy * width;
+        result |= Blend(SourceA5(x, sy, width), SourceB5(i, x)) << (k * 16u);
+    }
+    o[word] = result;
+}
