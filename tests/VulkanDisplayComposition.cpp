@@ -956,10 +956,14 @@ void PrepareRunFrame(NDS* nds, int workload)
     nds->ARM9Write32(0x04000350, (31u << 16) | 0x3E0);
     nds->ARM9Write32(0x04000354, 0x7FFF);
     if (workload == 1) nds->ARM9Write32(0x04000000, 0x00010000);
-    if (workload == 2)
+    if (workload >= 2)
     {
         nds->ARM9Write8(0x04000241, 0x80);
         nds->ARM9Write32(0x04000000, 0x00060000);
+        // Additional source-B cases use generated guest data, never a ROM/save.
+        if (workload >= 4)
+            for (u32 word = 0; word < 65536; ++word)
+                nds->ARM9Write16(0x06820000 + word * 2, u16(word * 73 + 0x801F));
     }
     nds->Start();
 }
@@ -1062,6 +1066,13 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
     auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
     auto& raster = RendererAccess::Rasterizer(renderer);
     PrepareRunFrame(nds.get(), workload);
+    // Preserve workload 2 exactly; other controls exercise the unchanged
+    // composed-A, same-bank B, blended, and FIFO capture paths.
+    constexpr u32 controls[] = {0, 0, 0x81310000, 0x80310000,
+        0xA0310000, 0xC1310808, 0xA2310000, 0xC3310808};
+    constexpr const char* names[] = {"3D", "2D-only", "capture-heavy",
+        "capture-composed-A", "capture-B-VRAM", "capture-blend-VRAM",
+        "capture-B-FIFO", "capture-blend-FIFO"};
     std::vector<double> samples;
     u64 totalBefore = 0, rasterBefore = 0;
     Renderer::DisplayFrame frame;
@@ -1069,7 +1080,7 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
     {
         nds->GPU.GPU3D.RenderFrameIdentical = false;
         raster.FrameDirty = true;
-        if (workload == 2) nds->ARM9Write32(0x04000064, 0x81310000);
+        if (workload >= 2) nds->ARM9Write32(0x04000064, controls[workload]);
         if (i == 0)
         {
             totalBefore = renderer.TotalSubmissionCount(); rasterBefore = renderer.SubmissionCount();
@@ -1093,10 +1104,15 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
     const size_t pixels = size_t(frame.width) * frame.height;
     const u64 digest = Digest({static_cast<const u32*>(frame.top), pixels}) ^ Digest({static_cast<const u32*>(frame.bottom), pixels});
     std::printf("BENCH RunFrame path=%s scale=%d workload=%s samples=%zu median_ms=%.6f p95_ms=%.6f raster_submits=%llu total_submits=%llu digest=%016llx\n",
-        vectorPath ? "vector" : "direct", scale, workload == 0 ? "3D" : workload == 1 ? "2D-only" : "capture-heavy", samples.size(),
+        vectorPath ? "vector" : "direct", scale, names[workload], samples.size(),
         Quantile(samples, .5), Quantile(samples, .95),
         static_cast<unsigned long long>(renderer.SubmissionCount() - rasterBefore),
         static_cast<unsigned long long>(renderer.TotalSubmissionCount() - totalBefore), static_cast<unsigned long long>(digest));
+    if (workload >= 2)
+        std::printf("BENCH capture control=%08x top=%016llx bottom=%016llx native_bank1=%016llx native_bytes=131072\n",
+            controls[workload], static_cast<unsigned long long>(Digest({static_cast<const u32*>(frame.top), pixels})),
+            static_cast<unsigned long long>(Digest({static_cast<const u32*>(frame.bottom), pixels})),
+            static_cast<unsigned long long>(Digest({reinterpret_cast<const u32*>(nds->GPU.VRAM[1]), 131072 / 4})));
     if (auto* cost = renderer.Costs())
     {
         char report[8192], label[96];
@@ -1111,6 +1127,15 @@ int main(int argc, char** argv)
 {
     try
     {
+        if (argc == 4 && std::strcmp(argv[1], "benchmark-capture") == 0)
+        {
+            const int scale = std::atoi(argv[2]), workload = std::atoi(argv[3]);
+            Require(scale == 1 || scale == 3 || scale == 5 || scale == 8 || scale == 16,
+                "capture benchmark scale must be 1/3/5/8/16");
+            Require(workload >= 2 && workload <= 7, "capture benchmark workload must be 2..7");
+            BenchmarkRunFrame(scale, workload, false);
+            return 0;
+        }
         if (argc > 1 && std::strcmp(argv[1], "diagnostics") == 0)
         {
             DiagnosticsContract();

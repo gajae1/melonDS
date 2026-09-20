@@ -203,12 +203,23 @@ bool VulkanRenderer::DrawCapturedDisplay(u32 line)
         // lookup and coordinate division for each displayed subpixel.
         const u16* row = capture.width == 256 && capture.scale == scale
             ? capture.pixels.data() + size_t(captureY * scale + sy) * width : nullptr;
-        for (u32 x = 0; x < 256; ++x)
-        for (u32 sx = 0; sx < scale; ++sx)
+        if (row)
         {
-            u16 pixel = row ? row[x * scale + sx] : native[vcount * 256 + x];
-            if (!row) ReadDisplayCapture(bank, vcount * 256 + x, sx, sy, pixel);
-            dst[x * scale + sx] = ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) | ((pixel & 0x7C00) << 7);
+            // Keep the contiguous conversion independent of the provenance
+            // sampler so it can vectorize across the whole scaled scanline.
+            std::transform(row, row + width, dst, [](u16 pixel) {
+                return ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) | ((pixel & 0x7C00) << 7);
+            });
+        }
+        else
+        {
+            for (u32 x = 0; x < 256; ++x)
+            for (u32 sx = 0; sx < scale; ++sx)
+            {
+                u16 pixel = native[vcount * 256 + x];
+                ReadDisplayCapture(bank, vcount * 256 + x, sx, sy, pixel);
+                dst[x * scale + sx] = ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) | ((pixel & 0x7C00) << 7);
+            }
         }
         // Master brightness is applied after display selection, not in capture.
         for (u32 x = 0; x < width; x += 256) ApplyMasterBrightness(GPU.MasterBrightnessA, dst + x);
@@ -256,6 +267,17 @@ void VulkanRenderer::DoCapture(u32 line)
             raster.GetScaledLine(line, sy, scale, ScaledLine3D.data());
             if (!(control & (1u << 24)))
                 compositor.ComposeScaledLine(ScaledLine3D.data(), ScaledLine3D.data(), scale, sy);
+        }
+        if (mode == 0)
+        {
+            // Source A already contains every subpixel (including composed
+            // 2D). Convert one contiguous run without per-pixel mode/sampler
+            // branches; retain CaptureRow's snapshot and native-write boundary.
+            std::transform(ScaledLine3D.data(), ScaledLine3D.data() + width * scale,
+                CaptureRow.data() + sy * width * scale, [](u32 a) -> u16 {
+                    return ((a >> 1) & 31) | ((a >> 4) & 0x3E0) | ((a >> 7) & 0x7C00) | ((a >> 24) ? 0x8000 : 0);
+                });
+            continue;
         }
         for (u32 x = 0; x < width; ++x)
         for (u32 sx = 0; sx < scale; ++sx)
