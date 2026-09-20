@@ -68,7 +68,7 @@
 | AD-21 | [HLE/LLE·I2S/mic clock](workstreams/03-audio-dsi.md#AD-21) | 부분 실행 재현 | P2 | [1.1.22](Release_Plan.md#v22) | — | 1.1.31 BTDMP 단일-word 빈 큐 접근 수정·실제 I2S/DSP 경로와 FIFO/IRQ 대조; 부족 오른쪽 0은 Teakra 선례의 안전정책, 실기 출력·IRQ·채널 정렬/HLE 비교 후속 |
 | AD-22 | [I2C ACK·BPTWL reset](workstreams/03-audio-dsi.md#AD-22) | 부분 실행 재현 | P2 | [1.1.23](Release_Plan.md#v23) | — | [1.1.28](releases/1.1.28.md) 주소 방향·STOP·완료 IRQ·정상 MCU/카메라와 14.1/14.2 상태 호환; 전송 지연·warm-reset retention·실기 앱 후속 |
 | AD-23 | [카메라 형식·sensor arbitration](workstreams/03-audio-dsi.md#AD-23) | 관찰/확장 | P2 | [1.1.23](Release_Plan.md#v23) | — | 미착수 |
-| AD-24 | [AES block backend 실효성](workstreams/03-audio-dsi.md#AD-24) | 미측정 가설 | P3 | [1.1.29](Release_Plan.md#v29) | — | 미착수 |
+| AD-24 | [AES block backend 실효성](workstreams/03-audio-dsi.md#AD-24) | 미측정 가설 | P3 | [1.1.29](Release_Plan.md#v29) | — | 2026-09-21 측정으로 기각: DSi 부팅+1800프레임에서 245k블록(~24ms, 사실상 전부 부팅 1회성)이고 steady-state는 프레임당 ~1.4블록(0.14µs). 어떤 backend도 세션당 ~22ms 이상 절약 불가 — ISA-specific 경로의 검출·fallback·provenance 비용이 이득 상한을 초과. backend 미구현, local-docs/ad24-aes-20260921/ 참조. ARM64·다른 AES-heavy 시나리오는 재방문 조건 |
 | AD-25 | [SPU 정수 보간·pan 가속](workstreams/03-audio-dsi.md#AD-25) | 후보 검증·채택 보류 | P3 | [1.1.09](Release_Plan.md#v09) | — | 1.1.51 조사에서 pan 곱셈 재사용 후보의720조건 PCM/capture13,271,520바이트 일치. 12부하·7쌍의 Mix 비용은 이득/손실이 섞여 제품·테스트 패치 미반영. 프로세스 cycle은 초기화/출력도 포함하며 mixer 단독 비용으로 세지 않는다 |
 | AD-26 | [DSP opcode/상태 coverage](workstreams/03-audio-dsi.md#AD-26) | 관찰/확장 | P2 | [1.1.22](Release_Plan.md#v22) | — | 미착수 |
 | FS-01 | [load/undo 실패의 세션 복원](workstreams/04-frontend-storage.md#FS-01) | 실행 재현 | P1 | [1.1.05](Release_Plan.md#v05) | — | 1.1.04 CJ-10 공동 구현; 1.1.32 누락/빈 global·후반 짧은 section 거부와 기존 세션/다음 frame 보존; 전체 게임·장치 후속 |
