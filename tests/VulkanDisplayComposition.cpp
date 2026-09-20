@@ -1065,6 +1065,7 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
     auto nds = Console(scale, vectorPath);
     auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
     auto& raster = RendererAccess::Rasterizer(renderer);
+    DiagnosticProbe probe(*raster.Device, DiagnosticProbe::None);
     PrepareRunFrame(nds.get(), workload);
     // Preserve workload 2 exactly; other controls exercise the unchanged
     // composed-A, same-bank B, blended, and FIFO capture paths.
@@ -1084,6 +1085,7 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
         if (i == 0)
         {
             totalBefore = renderer.TotalSubmissionCount(); rasterBefore = renderer.SubmissionCount();
+            probe.uploads = probe.downloads = probe.submits = probe.waits = probe.idles = 0;
             if (renderer.Costs()) renderer.Costs()->Reset();
         }
         const auto start = Clock::now();
@@ -1099,8 +1101,19 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
         // Immediate CPU access is outside timing, never a deferred completion call.
         Require(static_cast<const u32*>(frame.top) != nullptr && static_cast<const u32*>(frame.bottom) != nullptr,
             "generated frame is not immediately CPU-readable");
-        if (i >= 0) samples.push_back(elapsed);
+        if (i >= 0)
+        {
+            samples.push_back(elapsed);
+            if (renderer.Costs())
+            {
+                const auto& sample = renderer.Costs()->Last();
+                u64 accounted = 0;
+                for (u64 ns : sample.HostNs) accounted += ns;
+                Require(accounted == sample.Total, "capture benchmark host stages lost exact reconciliation");
+            }
+        }
     }
+    Require(!probe.invalid, "capture benchmark queries added a wait or preceded fence completion");
     const size_t pixels = size_t(frame.width) * frame.height;
     const u64 digest = Digest({static_cast<const u32*>(frame.top), pixels}) ^ Digest({static_cast<const u32*>(frame.bottom), pixels});
     std::printf("BENCH RunFrame path=%s scale=%d workload=%s samples=%zu median_ms=%.6f p95_ms=%.6f raster_submits=%llu total_submits=%llu digest=%016llx\n",
@@ -1108,11 +1121,20 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
         Quantile(samples, .5), Quantile(samples, .95),
         static_cast<unsigned long long>(renderer.SubmissionCount() - rasterBefore),
         static_cast<unsigned long long>(renderer.TotalSubmissionCount() - totalBefore), static_cast<unsigned long long>(digest));
+    std::printf("BENCH physical submits=%llu waits=%llu idles=%llu upload_bytes=%llu download_bytes=%llu\n",
+        probe.submits, probe.waits, probe.idles, probe.uploads, probe.downloads);
     if (workload >= 2)
+    {
         std::printf("BENCH capture control=%08x top=%016llx bottom=%016llx native_bank1=%016llx native_bytes=131072\n",
             controls[workload], static_cast<unsigned long long>(Digest({static_cast<const u32*>(frame.top), pixels})),
             static_cast<unsigned long long>(Digest({static_cast<const u32*>(frame.bottom), pixels})),
             static_cast<unsigned long long>(Digest({reinterpret_cast<const u32*>(nds->GPU.VRAM[1]), 131072 / 4})));
+        const auto& capture = renderer.DisplayCaptures[4]; // All benchmark controls target bank B, start 0.
+        u64 sidecar = 1469598103934665603ull;
+        for (u16 pixel : capture.pixels) { sidecar ^= pixel; sidecar *= 1099511628211ull; }
+        std::printf("BENCH sidecar words=%zu digest=%016llx valid_rows=%zu\n", capture.pixels.size(),
+            static_cast<unsigned long long>(sidecar), size_t(std::count(capture.valid.begin(), capture.valid.end(), true)));
+    }
     if (auto* cost = renderer.Costs())
     {
         char report[8192], label[96];

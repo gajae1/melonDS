@@ -175,9 +175,13 @@ bool VulkanRenderer::ReadDisplayCapture(u32 bank, u32 word, u32 subx, u32 suby, 
     const auto& capture = DisplayCaptures[slot];
     if (capture.pixels.empty()) return false;
     const u32 offset = (word - capture.start * 16384) & 0xFFFF;
-    const u32 y = offset / capture.width, x = offset % capture.width;
+    // AllocCapture stores only 128/256-wide images. Keep every provenance
+    // lookup, but do not divide by the pitch or an identical scale per sample.
+    const u32 y = offset >> (capture.width == 256 ? 8 : 7), x = offset & (capture.width - 1);
     if (y >= capture.height || !capture.valid[y]) return false;
-    const u32 sx = subx * capture.scale / DisplayScale, sy = suby * capture.scale / DisplayScale;
+    const bool sameScale = capture.scale == u32(DisplayScale);
+    const u32 sx = sameScale ? subx : subx * capture.scale / DisplayScale;
+    const u32 sy = sameScale ? suby : suby * capture.scale / DisplayScale;
     color = capture.pixels[(size_t(y * capture.scale + sy) * capture.width + x) * capture.scale + sx];
     return true;
 }
