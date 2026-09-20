@@ -2,7 +2,7 @@
 // Differential oracle: the unchanged production SoftRenderer2D::ComposeScaledLine.
 #include "NDS.h"
 #include "GPU3D_Soft.h"
-#include "Vulkan/ComputePipeline.h"
+#include "Vulkan/ComputeResources.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -15,6 +15,7 @@
 #include <vector>
 // Test-only state generation/failure injection, not a production setting/API.
 #define private public
+#include "Vulkan/ComputePipeline.h"
 #include "GPU_Vulkan.h"
 #include "GPU3D_Vulkan.h"
 #undef private
@@ -1006,11 +1007,22 @@ DiagnosticOutput DiagnosticRunFrame(bool enabled, int scale, int workload)
             for (u64 ns : sample.HostNs) accounted += ns;
             Require(accounted == sample.Total, "real RunFrame host accounting overlaps or loses its residual");
             const u64 expectedFull = (scale == 1 || workload == 2) ? u64(256) * 192 * scale * scale * 4 : 0;
+            const auto readbackProperties = raster.Pipeline->readback->MemoryProperties();
+            const u64 expectedFullCopy = (readbackProperties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? 0 : expectedFull;
+            if (i == 0)
+                std::printf("DIAG FullCopy scale=%d workload=%d properties=0x%08x expected_bytes=%llu actual_bytes=%llu\n",
+                    scale, workload, unsigned(readbackProperties),
+                    static_cast<unsigned long long>(expectedFullCopy),
+                    static_cast<unsigned long long>(sample.Bytes[Cost::FullCopyBytes]));
+            Require(sample.Bytes[Cost::FullCopyBytes] == expectedFullCopy &&
+                sample.Events[Cost::FullCopyBytes] == unsigned(expectedFullCopy != 0) &&
+                sample.HostCalls[Cost::FullCopy] == unsigned(expectedFullCopy != 0) &&
+                (expectedFullCopy != 0 || sample.HostNs[Cost::FullCopy] == 0),
+                "full-copy accounting does not match actual landing-buffer memory properties");
             const u64 expectedNative = scale == 1 ? 0 : 256 * 192 * 4;
             const u64 expectedDisplay = scale > 1 && workload == 0 ? u64(256) * 192 * scale * scale * 4 : 0;
             Require(sample.Bytes[Cost::FullReadbackBytes] == expectedFull &&
                 sample.Events[Cost::FullReadbackBytes] == unsigned(expectedFull != 0) &&
-                sample.Bytes[Cost::FullCopyBytes] == expectedFull &&
                 sample.Bytes[Cost::NativeReadbackBytes] == expectedNative &&
                 sample.Bytes[Cost::NativeCopyBytes] == expectedNative &&
                 sample.Bytes[Cost::DisplayReadbackBytes] == expectedDisplay &&

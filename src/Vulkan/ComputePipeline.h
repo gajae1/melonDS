@@ -70,6 +70,7 @@ private:
     void Cleanup();
     void CleanupNativeReadback();
     void RecordFullReadback(VkCommandBuffer command);
+    std::span<const uint32_t> FullReadbackPixels() const;
     void Bind(VkCommandBuffer command,unsigned shader,VkDescriptorSet storage,VkDescriptorSet image,
         VkDescriptorSet textures=VK_NULL_HANDLE);
     void Validate(const Batch& batch) const;
@@ -101,8 +102,8 @@ private:
     // polygon, X span, Y span, color/depth/attributes, result, bin, work, meta, indices
     std::array<std::shared_ptr<Device::Buffer>,11> buffers;
     std::shared_ptr<Device::Buffer> readback;
-    // Mapped host-coherent memory need not be CPU-cached. Copy once with memcpy,
-    // then let color conversion/native sampling read this reusable allocation.
+    // Cached landing memory is consumed directly after the existing fence.
+    // Keep this CPU allocation for the unchanged uncached-landing memcpy path.
     std::vector<uint32_t> hostReadback;
     bool fullReadbackValid=false;
     VkPipeline nativePipeline{};

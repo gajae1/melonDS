@@ -539,13 +539,14 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
         if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeCopyBytes, nativeHostReadback.size()*sizeof(uint32_t));
         return nativeHostReadback;
     }
+    if(!(readback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
     {
         RenderCostVulkanScope copy(owner->Costs(), Cost::FullCopy);
         std::memcpy(hostReadback.data(),readback->Data(),Resources.Pixels*sizeof(uint32_t));
         if (owner->Costs()) owner->Costs()->Transfer(Cost::FullCopyBytes, Resources.Pixels*sizeof(uint32_t));
     }
     fullReadbackValid=true;
-    return hostReadback;
+    return FullReadbackPixels();
 }
 
 void ComputePipeline::RecordFullReadback(VkCommandBuffer command)
@@ -567,19 +568,27 @@ void ComputePipeline::RecordFullReadback(VkCommandBuffer command)
     owner->Timestamp(Device::TimestampStage::FullReadback);
 }
 
+std::span<const uint32_t> ComputePipeline::FullReadbackPixels() const
+{
+    if(readback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+        return {static_cast<const uint32_t*>(readback->Data()),Resources.Pixels};
+    return hostReadback;
+}
+
 std::span<const uint32_t> ComputePipeline::ReadbackView()
 {
-    if(fullReadbackValid)return hostReadback;
+    if(fullReadbackValid)return FullReadbackPixels();
     RenderCostVulkanScope cost(owner->Costs(), Cost::RecordFullReadback);
     const auto command=owner->Begin(Device::SubmitKind::FullReadback);
     RecordFullReadback(command);
     owner->SubmitAndWait();
+    if(!(readback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
     {
         RenderCostVulkanScope copy(owner->Costs(), Cost::FullCopy);
         std::memcpy(hostReadback.data(),readback->Data(),Resources.Pixels*sizeof(uint32_t));
         if (owner->Costs()) owner->Costs()->Transfer(Cost::FullCopyBytes, Resources.Pixels*sizeof(uint32_t));
     }
     fullReadbackValid=true;
-    return hostReadback;
+    return FullReadbackPixels();
 }
 }
