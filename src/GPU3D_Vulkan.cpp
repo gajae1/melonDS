@@ -171,7 +171,8 @@ void VulkanRenderer3D::Reset()
 {
     if (Texcache) Texcache->Reset();
     ColorBuffer.fill(0);
-    ScaledColorBuffer.clear();
+    ScaledColorBuffer = {};
+    ScaledColorStorage.clear();
     RenderedImage.reset();
     RenderedScale = 1;
     ClearBitmapDirty = 3;
@@ -198,7 +199,8 @@ void VulkanRenderer3D::RenderFrame()
         // replace it at the frame boundary; never claim a failed frame as GPU output.
         Failed = true;
         ColorBuffer.fill(0);
-        ScaledColorBuffer.clear();
+        ScaledColorBuffer = {};
+        ScaledColorStorage.clear();
         RenderedImage.reset();
         RenderedScale = 1;
         Platform::Log(Platform::LogLevel::Error, "Vulkan 3D frame failed: %s\n", error.what());
@@ -344,12 +346,13 @@ void VulkanRenderer3D::DrawFrame()
     if (ScaleFactor > 1 && !gpuComposition)
     {
         RenderCostVulkanScope convert(Device->Costs(), Cost::ScaledConvert);
-        ScaledColorBuffer.resize(pixels.size());
-        std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
+        ScaledColorStorage.resize(pixels.size());
+        std::transform(pixels.begin(), pixels.end(), ScaledColorStorage.begin(), [](u32 pixel) {
             return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
         });
+        ScaledColorBuffer = ScaledColorStorage;
     }
-    else ScaledColorBuffer.clear();
+    else ScaledColorBuffer = {};
     RenderedImage = Pipeline->OutputImage();
     RenderedScale = ScaleFactor;
     HadCaptureTextures = hasCaptures;
@@ -366,10 +369,11 @@ std::span<const u32> VulkanRenderer3D::GetScaledPixels() const
         // ordinary display path keeps it on-device and reads just native origins.
         const auto pixels = Pipeline->ReadbackView();
         RenderCostVulkanScope convert(Device->Costs(), Cost::ScaledConvert);
-        ScaledColorBuffer.resize(pixels.size());
-        std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
+        ScaledColorStorage.resize(pixels.size());
+        std::transform(pixels.begin(), pixels.end(), ScaledColorStorage.begin(), [](u32 pixel) {
             return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
         });
+        ScaledColorBuffer = ScaledColorStorage;
     }
     return ScaledColorBuffer.empty() ? std::span<const u32>(ColorBuffer) : std::span<const u32>(ScaledColorBuffer);
 }

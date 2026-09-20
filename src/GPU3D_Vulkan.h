@@ -44,7 +44,10 @@ private:
     std::unique_ptr<Vulkan::ComputePipeline> Pipeline;
     std::unique_ptr<Vulkan::TextureCache> Texcache;
     std::array<u32, 256 * 192> ColorBuffer{};
-    mutable std::vector<u32> ScaledColorBuffer;
+    // Invalidating the view keeps the storage sized: conversion overwrites every
+    // pixel, so a new frame needs no redundant clear/resize zero-fill pass.
+    mutable std::vector<u32> ScaledColorStorage;
+    mutable std::span<const u32> ScaledColorBuffer;
     int RenderedScale = 1;
     std::array<u32, 256> ScrolledLine{};
     std::array<u32, 256 * 256> ClearColor{}, ClearDepth{};
