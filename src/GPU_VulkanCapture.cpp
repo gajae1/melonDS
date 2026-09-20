@@ -264,6 +264,30 @@ void VulkanRenderer::DoCapture(u32 line)
     const u16* sourceB = fifo ? GPU.DispFIFOBuffer :
         (GPU.VRAMMap_LCDC & (1u << sourceBank)) ? reinterpret_cast<const u16*>(GPU.VRAM[sourceBank]) : nullptr;
     const u32 sourceOffset = (line * 256 + (((display >> 16) & 3) == 2 ? 0 : ((control >> 26) & 3) * 16384)) & 0xFFFF;
+    const u16* nativeB = sourceB ? sourceB + (fifo ? 0 : sourceOffset) : nullptr;
+    const u16* capturedB = nullptr;
+    bool sampleB = false;
+    if (mode != 0 && sourceB && !fifo)
+    {
+        // sourceOffset is 256-word aligned and width <= 256: this run stays
+        // in one provenance page and one row of a full-width capture. Neither
+        // provenance nor the source pixels change until the native write below.
+        const int slot = GPU.GetCaptureBlock_LCDC(sourceBank * 131072 + sourceOffset * 2);
+        if (slot >= 0)
+        {
+            const auto& source = DisplayCaptures[slot];
+            if (!source.pixels.empty())
+            {
+                if (source.width == 256 && source.scale == scale)
+                {
+                    const u32 y = ((sourceOffset - source.start * 16384) & 0xFFFF) >> 8;
+                    if (y < source.height && source.valid[y])
+                        capturedB = source.pixels.data() + size_t(y) * 256 * scale * scale;
+                }
+                else sampleB = true; // Preserve narrow-row and scale-mismatch sampling.
+            }
+        }
+    }
     for (u32 sy = 0; sy < scale; ++sy)
     {
         if (mode != 1)
@@ -283,29 +307,42 @@ void VulkanRenderer::DoCapture(u32 line)
                 });
             continue;
         }
-        for (u32 x = 0; x < width; ++x)
-        for (u32 sx = 0; sx < scale; ++sx)
+        auto* row = CaptureRow.data() + sy * width * scale;
+        if (capturedB)
+            std::copy_n(capturedB + sy * 256 * scale, width * scale, row);
+        else if (sampleB)
         {
-            const u32 a = mode == 1 ? 0 : ScaledLine3D[x * scale + sx];
-            const u16 ca = ((a >> 1) & 31) | ((a >> 4) & 0x3E0) | ((a >> 7) & 0x7C00) | ((a >> 24) ? 0x8000 : 0);
-            u16 cb = 0;
-            if (mode != 0 && sourceB)
+            for (u32 x = 0; x < width; ++x)
+            for (u32 sx = 0; sx < scale; ++sx)
             {
-                cb = sourceB[fifo ? x : sourceOffset + x];
-                if (!fifo) ReadDisplayCapture(sourceBank, sourceOffset + x, sx, sy, cb);
+                u16 cb = nativeB[x];
+                ReadDisplayCapture(sourceBank, sourceOffset + x, sx, sy, cb);
+                row[x * scale + sx] = cb;
             }
-            u16 result = mode == 0 ? ca : cb;
-            if (mode >= 2)
-            {
-                const u32 weightA = (ca & 0x8000) ? eva : 0, weightB = (cb & 0x8000) ? evb : 0;
-                result = (weightA || weightB) ? 0x8000 : 0;
-                for (u32 shift : {0u, 5u, 10u})
-                {
-                    const u32 color = ((((ca >> shift) & 31) * weightA + ((cb >> shift) & 31) * weightB + 8) >> 4);
-                    result |= std::min(color, 31u) << shift;
-                }
-            }
-            CaptureRow[(sy * width + x) * scale + sx] = result;
+        }
+        else if (nativeB)
+        {
+            for (u32 x = 0; x < width; ++x)
+                std::fill_n(row + x * scale, scale, nativeB[x]);
+        }
+        else std::fill_n(row, width * scale, 0);
+
+        // Mode 1 is only the B gather above. Blend a contiguous scaled row
+        // separately, without mode/FIFO/provenance branches per subpixel.
+        if (mode >= 2)
+        {
+            std::transform(ScaledLine3D.data(), ScaledLine3D.data() + width * scale,
+                row, row, [eva, evb](u32 a, u16 cb) -> u16 {
+                    const u16 ca = ((a >> 1) & 31) | ((a >> 4) & 0x3E0) | ((a >> 7) & 0x7C00) | ((a >> 24) ? 0x8000 : 0);
+                    const u32 weightA = (ca & 0x8000) ? eva : 0, weightB = (cb & 0x8000) ? evb : 0;
+                    u16 result = (weightA || weightB) ? 0x8000 : 0;
+                    for (u32 shift : {0u, 5u, 10u})
+                    {
+                        const u32 color = ((((ca >> shift) & 31) * weightA + ((cb >> shift) & 31) * weightB + 8) >> 4);
+                        result |= std::min(color, 31u) << shift;
+                    }
+                    return result;
+                });
         }
     }
     // Emulated VRAM is written once by the unchanged native capture algorithm.
