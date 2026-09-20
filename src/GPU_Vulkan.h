@@ -17,6 +17,8 @@ class VulkanRenderer final : public SoftRenderer
 {
 public:
     explicit VulkanRenderer(NDS& nds, const std::string& preferred = {});
+    ~VulkanRenderer() override;
+    RenderCostVulkanMeter* Costs() const;
     std::string DeviceName() const;
     // Rendering-thread 3D upload/render diagnostic, retaining its original
     // scope. Total includes the new final-display submissions on the same device.

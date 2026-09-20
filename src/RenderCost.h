@@ -26,6 +26,7 @@
 //   diffing, aux staging copies) is intentionally not attributed to a stage.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdarg>
 #include <cstdint>
@@ -33,7 +34,10 @@
 #include <cstdlib>
 #include <cstring>
 
+// CPU/Vulkan accounting must also compile without an OpenGL loader.
+#if defined(OGLRENDERER_ENABLED) || defined(PLATFORMOGL_H) || defined(__glad_h_)
 #include "PlatformOGL.h"
+#endif
 
 namespace melonDS
 {
@@ -142,6 +146,205 @@ struct RenderCostLine
     }
 };
 
+// Vulkan host accounting is one aligned, bounded cohort of completed RunFrame
+// (or explicit microbenchmark) intervals. A transition charges elapsed time to
+// exactly one stage, so nested readback/conversion never inflates capture cost.
+// GPU observations are a separate axis, NOT part of the host sum. Storage is
+// allocated by Device only when the existing diagnostics opt-in is enabled.
+class RenderCostVulkanMeter
+{
+public:
+    enum HostStage {
+        Prepare3D, TextureUpload, Record3D, RecordFullReadback, ContextCopy, RecordDisplay,
+        SubmitOther, WaitOther, SubmitUpload, WaitUpload, Submit3D, Wait3D,
+        SubmitFullReadback, WaitFullReadback, SubmitDisplay, WaitDisplay,
+        NativeCopy, FullCopy, DisplayCopy, NativeConvert, ScaledConvert, Scan2D, Capture, CaptureCopy, NativeCapture,
+        LCDC, CpuDisplay, Fallback, Diagnostic, Residual, HostCount
+    };
+    enum GpuStage { GpuUpload, Gpu3D, GpuNative, GpuFull, GpuCompose, GpuDisplayTransfer, GpuOther, GpuCount };
+    enum Traffic {
+        NativeReadbackBytes, FullReadbackBytes, DisplayReadbackBytes, NativeCopyBytes,
+        FullCopyBytes, DisplayCopyBytes, ContextCopyBytes, UploadCopyBytes,
+        ImageUploadBytes, OverrideUploadBytes, CaptureCopyBytes, ComposedRows, TrafficCount
+    };
+    static constexpr int MaxFrames = RenderCostStage::MaxSamples;
+    struct Snapshot {
+        std::array<std::uint64_t, HostCount> HostNs{}, HostCalls{};
+        std::array<std::uint64_t, GpuCount> GpuNs{}, GpuCalls{}, GpuDropped{};
+        std::array<std::uint64_t, TrafficCount> Bytes{}, Events{}, Units{};
+        std::uint64_t Total = 0;
+    };
+    // Device updates this only for optional diagnostic capability/results.
+    const char* GpuState = "unmeasured";
+    std::uint64_t Abandoned = 0;
+
+    bool Active() const { return FrameActive; }
+    int Count() const { return FrameCount; }
+    const Snapshot& Sum() const { return Aggregate; }
+    const Snapshot& Last() const { return History[(Next + MaxFrames - 1) % MaxFrames]; }
+
+    void Begin(std::uint64_t now)
+    {
+        if (FrameActive) ++Abandoned;
+        Current = {};
+        FrameActive = true;
+        CurrentStage = Residual;
+        Current.HostCalls[Residual] = 1;
+        Start = Tick = now;
+    }
+    HostStage Enter(HostStage stage, std::uint64_t now)
+    {
+        const auto previous = CurrentStage;
+        Charge(now);
+        CurrentStage = stage;
+        ++Current.HostCalls[stage];
+        return previous;
+    }
+    void Leave(HostStage previous, std::uint64_t now)
+    {
+        Charge(now);
+        CurrentStage = previous;
+    }
+    void End(std::uint64_t now)
+    {
+        if (!FrameActive) return;
+        Charge(now);
+        Current.Total = now - Start;
+        FrameActive = false;
+        auto& evicted = History[Next];
+        // Every field uses the SAME ring, including zero-work frames. Means
+        // can be reconciled with total; conditional medians cannot be summed.
+        Update(Aggregate.HostNs, evicted.HostNs, Current.HostNs);
+        Update(Aggregate.HostCalls, evicted.HostCalls, Current.HostCalls);
+        Update(Aggregate.GpuNs, evicted.GpuNs, Current.GpuNs);
+        Update(Aggregate.GpuCalls, evicted.GpuCalls, Current.GpuCalls);
+        Update(Aggregate.GpuDropped, evicted.GpuDropped, Current.GpuDropped);
+        Update(Aggregate.Bytes, evicted.Bytes, Current.Bytes);
+        Update(Aggregate.Events, evicted.Events, Current.Events);
+        Update(Aggregate.Units, evicted.Units, Current.Units);
+        Aggregate.Total = Aggregate.Total - evicted.Total + Current.Total;
+        evicted = Current;
+        Next = (Next + 1) % MaxFrames;
+        FrameCount = std::min(FrameCount + 1, MaxFrames);
+        Totals.Record(Current.Total);
+        if (++Frames % RenderCostReportInterval == 0) ReportDue = true;
+    }
+    void Transfer(Traffic kind, std::uint64_t bytes, std::uint64_t units = 0)
+    {
+        if (!FrameActive) return;
+        Current.Bytes[kind] += bytes;
+        Current.Units[kind] += units;
+        ++Current.Events[kind];
+    }
+    void Gpu(GpuStage stage, std::uint64_t ns)
+    {
+        if (!FrameActive) return;
+        Current.GpuNs[stage] += ns;
+        ++Current.GpuCalls[stage];
+    }
+    void Drop(GpuStage stage)
+    {
+        if (FrameActive) ++Current.GpuDropped[stage];
+    }
+    bool TakeReport() { const bool due = ReportDue; ReportDue = false; return due; }
+    void Discard() { if (FrameActive) ++Abandoned; FrameActive = false; }
+    void Reset()
+    {
+        for (auto& frame : History) frame = {};
+        Current = Aggregate = {};
+        Totals = {};
+        FrameCount = Next = 0;
+        Frames = Abandoned = 0;
+        FrameActive = ReportDue = false;
+    }
+    void Report(char* buffer, size_t size, const char* label) const
+    {
+        if (size) buffer[0] = 0;
+        RenderCostLine line(buffer, size);
+        line.Append("GR14 vk[%s] frames=%d abandoned=%llu", label, FrameCount, (unsigned long long)Abandoned);
+        if (!FrameCount) { line.Append(" host=unmeasured gpu=%s", GpuState); return; }
+        line.Append(" total_mean_ms=%.6f total_p50_p95_ms=", Aggregate.Total / (1e6 * FrameCount));
+        line.Ratio(Totals);
+        static constexpr const char* hosts[HostCount] = {
+            "prepare3d", "texture_upload", "record3d", "record_full_rb", "context_copy", "record_display",
+            "submit_other", "wait_other", "submit_upload", "wait_upload", "submit3d", "wait3d",
+            "submit_full_rb", "wait_full_rb", "submit_display", "wait_display",
+            "native_memcpy", "full_memcpy", "display_memcpy", "native_convert", "scaled_convert", "native2d", "capture_sidecar", "capture_memcpy",
+            "capture_native", "lcdc", "cpu_display", "fallback", "diagnostic", "residual"};
+        line.Append(" | host_mean_ms(calls):");
+        for (int i = 0; i < HostCount; ++i)
+        {
+            line.Append(" %s=", hosts[i]);
+            if (!Aggregate.HostCalls[i]) line.Append("unused");
+            else line.Append("%.6f(%llu)", Aggregate.HostNs[i] / (1e6 * FrameCount),
+                (unsigned long long)Aggregate.HostCalls[i]);
+        }
+        static constexpr const char* gpu[GpuCount] = {"upload", "3d", "native_extract", "full_readback", "compose", "display_readback", "other"};
+        line.Append(" | gpu=%s gpu_ms_per_frame(observations,dropped):", GpuState);
+        for (int i = 0; i < GpuCount; ++i)
+        {
+            line.Append(" %s=", gpu[i]);
+            if (!Aggregate.GpuCalls[i]) line.Append("unmeasured");
+            else line.Append("%.6f", Aggregate.GpuNs[i] / (1e6 * FrameCount));
+            line.Append("(%llu,%llu)", (unsigned long long)Aggregate.GpuCalls[i], (unsigned long long)Aggregate.GpuDropped[i]);
+        }
+        static constexpr const char* traffic[TrafficCount] = {
+            "native_shader_readback", "full_image_readback", "display_image_readback", "native_memcpy", "full_memcpy",
+            "display_memcpy", "context_memcpy", "upload_memcpy", "image_upload", "cpu_override_upload", "capture_memcpy", "composed_rows"};
+        line.Append(" | bytes_per_frame(events,units):");
+        for (int i = 0; i < TrafficCount; ++i)
+        {
+            line.Append(" %s=%.3f(%llu,%llu)", traffic[i], double(Aggregate.Bytes[i]) / FrameCount,
+                (unsigned long long)Aggregate.Events[i], (unsigned long long)Aggregate.Units[i]);
+        }
+    }
+private:
+    template<size_t N> static void Update(std::array<std::uint64_t, N>& sum,
+        const std::array<std::uint64_t, N>& old, const std::array<std::uint64_t, N>& value)
+    {
+        for (size_t i = 0; i < N; ++i) sum[i] = sum[i] - old[i] + value[i];
+    }
+    void Charge(std::uint64_t now) { Current.HostNs[CurrentStage] += now - Tick; Tick = now; }
+    std::array<Snapshot, MaxFrames> History{};
+    Snapshot Current{}, Aggregate{};
+    RenderCostStage Totals;
+    HostStage CurrentStage = Residual;
+    std::uint64_t Start = 0, Tick = 0, Frames = 0;
+    int FrameCount = 0, Next = 0;
+    bool FrameActive = false, ReportDue = false;
+};
+
+class RenderCostVulkanScope
+{
+public:
+    RenderCostVulkanScope(RenderCostVulkanMeter* meter, RenderCostVulkanMeter::HostStage stage)
+        : Meter(meter && meter->Active() ? meter : nullptr)
+    {
+        if (Meter) Previous = Meter->Enter(stage, RenderCostNowNs());
+    }
+    ~RenderCostVulkanScope() { if (Meter) Meter->Leave(Previous, RenderCostNowNs()); }
+    RenderCostVulkanScope(const RenderCostVulkanScope&) = delete;
+    RenderCostVulkanScope& operator=(const RenderCostVulkanScope&) = delete;
+private:
+    RenderCostVulkanMeter* Meter;
+    RenderCostVulkanMeter::HostStage Previous = RenderCostVulkanMeter::Residual;
+};
+class RenderCostVulkanFrame
+{
+public:
+    explicit RenderCostVulkanFrame(RenderCostVulkanMeter* meter)
+        : Meter(meter && !meter->Active() ? meter : nullptr)
+    {
+        if (Meter) Meter->Begin(RenderCostNowNs());
+    }
+    ~RenderCostVulkanFrame() { if (Meter) Meter->End(RenderCostNowNs()); }
+    RenderCostVulkanFrame(const RenderCostVulkanFrame&) = delete;
+    RenderCostVulkanFrame& operator=(const RenderCostVulkanFrame&) = delete;
+private:
+    RenderCostVulkanMeter* Meter;
+};
+
+#if defined(PLATFORMOGL_H)
 // Timestamp pairs belong to one context. Query names are opaque; slots use
 // array indices separately. No elapsed-query target is left active, so nested
 // rendering spans and another profiler cannot end one another's queries.
@@ -463,31 +666,100 @@ private:
     }
 };
 
-// Native (software) panel meter: the QImage copy in paintEvent.
+#endif // PLATFORMOGL_H: GL meters never enter a Vulkan-only/headless dependency.
+
+// Native paint uses disjoint host spans. Presenter details are nested within
+// PresentNs and must not be added to paint totals a second time. Neither axis
+// measures GPU/display completion. Existing Copy history remains conditional.
 struct RenderCostNativeMeter
 {
     bool Enabled = false;
     RenderCostStage Copy;
-    std::uint64_t Frames = 0;
-    bool ReportDue = false;
+    std::uint64_t Frames = 0, Paints = 0, LastGeneration = 0;
+    std::uint64_t IntervalPaints = 0, GenerationChanges = 0;
+    std::uint64_t PaintNs = 0, CopyNs = 0, PainterNs = 0, PresentNs = 0;
+    std::uint64_t ActualCalls = 0, Submits = 0, Skips = 0, Failures = 0;
+    std::uint64_t StagingBytes = 0, TransferBytes = 0, UploadNs = 0, SubmitNs = 0, QueuePresentNs = 0;
+    unsigned WindowWidth = 0, WindowHeight = 0;
+    bool ReportDue = false, PresenterMeasured = false;
 
-    void RecordCopy(std::uint64_t start)
+    std::uint64_t Start() const { return Enabled ? RenderCostNowNs() : 0; }
+    void Window(unsigned width, unsigned height)
+    {
+        if (Enabled) { WindowWidth = width; WindowHeight = height; }
+    }
+    void RecordPainter(std::uint64_t start)
+    {
+        if (start) PainterNs += RenderCostNowNs() - start;
+    }
+    void RecordCopy(std::uint64_t start, std::uint64_t bytes = 0, std::uint64_t generation = 0)
     {
         if (!start) return;
-        Copy.Record(RenderCostNowNs() - start);
+        const auto elapsed = RenderCostNowNs() - start;
+        Copy.Record(elapsed);
+        Copy.IntervalBytes += bytes;
+        CopyNs += elapsed;
+        GenerationChanges += generation != LastGeneration;
+        LastGeneration = generation;
         ++Frames;
-        if ((Frames % RenderCostReportInterval) == 0) ReportDue = true;
     }
-
+    template<class Counters> void RecordPresent(std::uint64_t start, unsigned width, unsigned height,
+        const Counters& before, const Counters& after)
+    {
+        if (!start) return;
+        PresentNs += RenderCostNowNs() - start;
+        Window(width, height);
+        PresenterMeasured |= after.Enabled;
+        ActualCalls += after.Calls - before.Calls;
+        Submits += after.Submits - before.Submits;
+        Skips += after.Skips - before.Skips;
+        Failures += after.Failures - before.Failures;
+        StagingBytes += after.StagingBytes - before.StagingBytes;
+        TransferBytes += after.TransferBytes - before.TransferBytes;
+        UploadNs += after.UploadNs - before.UploadNs;
+        SubmitNs += after.SubmitNs - before.SubmitNs;
+        QueuePresentNs += after.QueuePresentNs - before.QueuePresentNs;
+    }
+    void PaintEnd(std::uint64_t start)
+    {
+        if (!start) return;
+        PaintNs += RenderCostNowNs() - start;
+        ++IntervalPaints;
+        if (++Paints % RenderCostReportInterval == 0) ReportDue = true;
+    }
     bool TakeReport() { bool due = ReportDue; ReportDue = false; return due; }
-
     void Report(char* buf, size_t size, unsigned windowId)
     {
+        if (size) buf[0] = 0;
         RenderCostLine line(buf, size);
-        line.Append("GR14 present-native[%d frames win%u]:", Copy.Count, windowId);
-        line.Append(" copy="); line.Ratio(Copy);
-        line.Append("(n=%d)", Copy.IntervalSamples);
+        line.Append("GR14 present-native[win%u] paints=%llu copies=%d window_pixels=%ux%u generation=%llu changes=%llu",
+            windowId, (unsigned long long)IntervalPaints, Copy.IntervalSamples, WindowWidth, WindowHeight,
+            (unsigned long long)LastGeneration, (unsigned long long)GenerationChanges);
+        if (IntervalPaints)
+        {
+            const double denominator = 1e6 * IntervalPaints;
+            line.Append(" host_mean_ms: paint=%.6f qimage_copy=%.6f qpaint_setup_draw=%.6f present_return=%.6f residual=%.6f",
+                PaintNs / denominator, CopyNs / denominator, PainterNs / denominator, PresentNs / denominator,
+                (double(PaintNs) - CopyNs - PainterNs - PresentNs) / denominator);
+        }
+        line.Append(" copy_bytes=%llu copy_conditional_p50_p95_ms=", (unsigned long long)Copy.IntervalBytes);
+        line.Ratio(Copy);
+        if (PresenterMeasured)
+        {
+            line.Append(" present_calls=%llu actual_submits=%llu skipped_returns=%llu failed_returns=%llu staging_bytes=%llu submitted_bytes=%llu",
+                (unsigned long long)ActualCalls, (unsigned long long)Submits, (unsigned long long)Skips,
+                (unsigned long long)Failures, (unsigned long long)StagingBytes, (unsigned long long)TransferBytes);
+            if (ActualCalls) line.Append(" present_detail_ms_per_call: staging_copy=%.6f submit_api=%.6f queue_present_api=%.6f",
+                UploadNs / (1e6 * ActualCalls), SubmitNs / (1e6 * ActualCalls), QueuePresentNs / (1e6 * ActualCalls));
+        }
+        else line.Append(" presenter=unmeasured");
+        line.Append(" gpu_completion=unmeasured");
         Copy.IntervalSamples = 0;
+        Copy.IntervalBytes = 0;
+        IntervalPaints = GenerationChanges = PaintNs = CopyNs = PainterNs = PresentNs = 0;
+        ActualCalls = Submits = Skips = Failures = StagingBytes = TransferBytes = 0;
+        UploadNs = SubmitNs = QueuePresentNs = 0;
+        PresenterMeasured = false;
     }
 };
 

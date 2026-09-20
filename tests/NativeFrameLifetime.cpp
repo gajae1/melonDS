@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Actual paint method; renderer publication is replaced between draw and paint.
 #include "GPU.h"
+#include "RenderCost.h"
+#include "frontend/graphics/vulkan/Presenter.h"
 #include <QApplication>
 #include <QWidget>
 #include <QPainter>
@@ -23,10 +25,10 @@ enum class LogLevel { Warn, Info };
 void Log(LogLevel, const char*, ...) {}
 }
 namespace Vulkan {
-struct Presenter {
-    enum class Result { Failed, Presented };
-    Result Present(const void*, int, int, int, std::string&) { return Result::Failed; }
-};
+struct Presenter::Impl {};
+Presenter::~Presenter() = default;
+Presenter::Result Presenter::Present(const void*, uint32_t, uint32_t, uint32_t, std::string&) { return Result::Failed; }
+Presenter::Diagnostics Presenter::GetDiagnostics() const { return {}; }
 }
 namespace melonDS { using u32 = ::u32; }
 struct FrameSource {
@@ -58,13 +60,8 @@ struct Instance {
     Console* getNDS() { return hasConsole ? &console : nullptr; }
 };
 struct Window { int getWindowID() const { return 0; } };
-struct Meter {
-    bool Enabled = false;
-    void RecordCopy(uint64_t) {}
-    bool TakeReport() { return false; }
-    void Report(char*, size_t, int) {}
-};
-uint64_t RenderCostNowNs() { return 0; }
+using Meter = melonDS::RenderCostNativeMeter;
+using melonDS::RenderCostNowNs;
 class ScreenPanelNative : public QWidget {
 public:
     Meter RenderCost; Window window; Window* mainWindow = &window;
@@ -88,10 +85,13 @@ int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
     ScreenPanelNative panel; panel.resize(256,192);
+    panel.RenderCost.Enabled = melonDS::RenderCostEnabled();
+    uint64_t expectedCopyBytes = 0;
     std::vector<u32> retiredTop(256*192,0xFF102030), retiredBottom(256*192,0xFF506070);
     auto& current = panel.instance.console.renderer;
     current.ownerLock = &panel.instance.renderLock;
     for (int scale : {2,3,16,1,8,1}) {
+        expectedCopyBytes += uint64_t(2) * 256 * 192 * scale * scale * sizeof(u32);
         panel.hasBuffers = true;
         panel.topBuffer = retiredTop.data(); panel.bottomBuffer = retiredBottom.data();
         panel.bufferWidth = 256; panel.bufferHeight = 192;
@@ -140,6 +140,19 @@ int main(int argc, char** argv)
         panel.screen[0] != retained || panel.screen[1] != retainedBottom) {
         std::fprintf(stderr,"paused image or renderer locking contract changed\n"); return 1;
     }
-    std::puts("Native paint: 1/2/3/8/16x subpixels, source loss, paused image and locked reacquisition PASS");
+    if (panel.RenderCost.Enabled) {
+        const auto& cost = panel.RenderCost;
+        if (cost.Frames != 6 || cost.Copy.IntervalBytes != expectedCopyBytes || cost.LastGeneration != 1 ||
+            cost.GenerationChanges != 1 || !cost.IntervalPaints || !cost.PainterNs ||
+            cost.PaintNs < cost.CopyNs + cost.PainterNs + cost.PresentNs || cost.ActualCalls) {
+            std::fputs("Native paint diagnostics miscounted copies, generation, or disjoint CPU spans\n", stderr); return 2;
+        }
+        char report[1536];
+        panel.RenderCost.Report(report, sizeof(report), 0);
+        std::puts(report);
+    } else if (panel.RenderCost.Frames || panel.RenderCost.Paints || panel.RenderCost.Copy.Count) {
+        std::fputs("Native paint diagnostics OFF recorded samples\n", stderr); return 3;
+    }
+    std::puts("Native paint: 1/2/3/8/16x subpixels, source loss, paused image and locked reacquisition; diagnostics accounting PASS");
     return 0;
 }

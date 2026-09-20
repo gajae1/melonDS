@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
@@ -19,6 +20,7 @@
 #undef private
 #include "Vulkan/DisplayCompositor.h"
 #include "Vulkan/EmbeddedShaders.h"
+#include "RenderCost.h"
 #include "GPU_ColorOp.h"
 #include "PixelConvert.h"
 
@@ -688,12 +690,207 @@ void DirectDifferential(const std::shared_ptr<Vulkan::Device>& device, int scale
     Require(rejected, "mismatched mapped destination accepted");
     compared += oracle.size();
 }
+// Diagnostics must observe, not alter, real rendering or synchronization.
+struct DiagnosticEnvironment
+{
+    std::optional<std::string> previous;
+    explicit DiagnosticEnvironment(bool enabled)
+    {
+        if (const char* value = std::getenv("MELONDS_RENDER_DIAGNOSTICS")) previous = value;
+        Set(enabled ? "1" : "0");
+    }
+    static void Set(const char* value)
+    {
+#ifdef _WIN32
+        _putenv_s("MELONDS_RENDER_DIAGNOSTICS", value ? value : "");
+#else
+        if (value) setenv("MELONDS_RENDER_DIAGNOSTICS", value, 1);
+        else unsetenv("MELONDS_RENDER_DIAGNOSTICS");
+#endif
+    }
+    ~DiagnosticEnvironment() { Set(previous ? previous->c_str() : nullptr); }
+};
+struct DiagnosticProbe
+{
+    enum Failure { None, PoolFailure, ResultFailure, MissingTimestamp, UnreadyResults };
+    static inline DiagnosticProbe* active = nullptr;
+    volk::VolkDeviceTable& f;
+    volk::VolkDeviceTable original;
+    Failure failure;
+    u64 uploads = 0, downloads = 0, submits = 0, waits = 0, idles = 0;
+    u64 pools = 0, timestamps = 0, results = 0;
+    bool completed = false, invalid = false;
+    DiagnosticProbe(Vulkan::Device& device, Failure failure)
+        : f(const_cast<volk::VolkDeviceTable&>(device.Functions())), original(f), failure(failure)
+    {
+        active = this;
+        f.vkCmdCopyBufferToImage = Upload;
+        f.vkCmdCopyImageToBuffer = Download;
+        f.vkQueueSubmit = Submit;
+        f.vkWaitForFences = Wait;
+        f.vkDeviceWaitIdle = Idle;
+        f.vkCreateQueryPool = Pool;
+        f.vkCmdWriteTimestamp = failure == MissingTimestamp ? nullptr : Timestamp;
+        f.vkGetQueryPoolResults = Results;
+    }
+    ~DiagnosticProbe() { f = original; active = nullptr; }
+    static u64 Bytes(u32 count, const VkBufferImageCopy* regions)
+    {
+        u64 bytes = 0;
+        for (u32 i = 0; i < count; ++i)
+            bytes += u64(regions[i].imageExtent.width) * regions[i].imageExtent.height *
+                regions[i].imageExtent.depth * regions[i].imageSubresource.layerCount * 4;
+        return bytes;
+    }
+    static VKAPI_ATTR void VKAPI_CALL Upload(VkCommandBuffer command, VkBuffer buffer, VkImage image,
+        VkImageLayout layout, u32 count, const VkBufferImageCopy* regions)
+    {
+        active->uploads += Bytes(count, regions);
+        active->original.vkCmdCopyBufferToImage(command, buffer, image, layout, count, regions);
+    }
+    static VKAPI_ATTR void VKAPI_CALL Download(VkCommandBuffer command, VkImage image, VkImageLayout layout,
+        VkBuffer buffer, u32 count, const VkBufferImageCopy* regions)
+    {
+        active->downloads += Bytes(count, regions);
+        active->original.vkCmdCopyImageToBuffer(command, image, layout, buffer, count, regions);
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Submit(VkQueue queue, u32 count, const VkSubmitInfo* info, VkFence fence)
+    {
+        active->completed = false;
+        const auto result = active->original.vkQueueSubmit(queue, count, info, fence);
+        if (result == VK_SUCCESS) active->submits += count;
+        return result;
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Wait(VkDevice device, u32 count, const VkFence* fences,
+        VkBool32 all, u64 timeout)
+    {
+        ++active->waits;
+        const auto result = active->original.vkWaitForFences(device, count, fences, all, timeout);
+        active->completed = result == VK_SUCCESS;
+        return result;
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Idle(VkDevice device)
+    {
+        ++active->idles;
+        return active->original.vkDeviceWaitIdle(device);
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Pool(VkDevice device, const VkQueryPoolCreateInfo* info,
+        const VkAllocationCallbacks* allocator, VkQueryPool* pool)
+    {
+        ++active->pools;
+        if (active->failure == PoolFailure) return VK_ERROR_OUT_OF_HOST_MEMORY;
+        return active->original.vkCreateQueryPool(device, info, allocator, pool);
+    }
+    static VKAPI_ATTR void VKAPI_CALL Timestamp(VkCommandBuffer command, VkPipelineStageFlagBits stage,
+        VkQueryPool pool, u32 query)
+    {
+        ++active->timestamps;
+        active->original.vkCmdWriteTimestamp(command, stage, pool, query);
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Results(VkDevice device, VkQueryPool pool, u32 first, u32 count,
+        size_t bytes, void* data, VkDeviceSize stride, VkQueryResultFlags flags)
+    {
+        ++active->results;
+        active->invalid |= !active->completed || (flags & VK_QUERY_RESULT_WAIT_BIT);
+        if (active->failure == ResultFailure) return VK_ERROR_OUT_OF_HOST_MEMORY;
+        const auto result = active->original.vkGetQueryPoolResults(device, pool, first, count, bytes, data, stride, flags);
+        if (active->failure == UnreadyResults)
+        {
+            std::memset(data, 0, bytes);
+            return VK_NOT_READY;
+        }
+        return result;
+    }
+};
+struct DiagnosticOutput
+{
+    std::vector<u32> pixels;
+    u64 uploads, downloads, submits, waits, idles, pools, timestamps, results;
+    bool timestampSupport;
+};
+DiagnosticOutput DiagnosticExercise(bool enabled, DiagnosticProbe::Failure failure)
+{
+    DiagnosticEnvironment environment(enabled);
+    std::string error;
+    auto device = Vulkan::Device::Create(error);
+    Require(bool(device), error.c_str());
+    DiagnosticProbe probe(*device, failure);
+    if (device->Costs()) device->Costs()->Begin(RenderCostNowNs());
+    constexpr u32 scale = 3;
+    const size_t count = size_t(256) * 192 * scale * scale;
+    std::vector<u32> rgba(count, 0xFF6C98DC), rgb6(count, 0x1F1B2637);
+    auto input = Upload(device, rgba, scale);
+    Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale);
+    auto memory = device->CreateBuffer(count * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        true, 0, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    std::span<u32> output{static_cast<u32*>(memory->Data()), count};
+    std::vector<Line> lines(192);
+    for (u32 y = 0; y < 192; ++y)
+    {
+        lines[y].mode = y % 4 == 0 ? Line::Composite3D : y % 2 ? Line::Keep : Line::CaptureOverride;
+        lines[y].sourceLine = y;
+        for (auto& pixel : lines[y].pixels) { pixel.top = 0x40000000; pixel.second = 0x013F0000; pixel.window = 0x3F; }
+    }
+    DiagnosticOutput result{};
+    for (u32 screen = 0; screen < 2; ++screen)
+    {
+        std::fill(output.begin(), output.end(), 0xFF125600 ^ (screen << 20));
+        std::vector<u32> expected(output.begin(), output.end());
+        Vulkan::ComposeDisplayCPU(lines, rgb6, scale, scale, expected);
+        compositor.Compose(screen, lines, input, scale, output, memory.get());
+        Equal(output, expected, "diagnostic path changed immediate CPU-readable screen");
+        result.pixels.insert(result.pixels.end(), output.begin(), output.end());
+    }
+    Require(!probe.invalid, "diagnostics waited for queries or read them before the existing fence completed");
+    if (device->Costs())
+    {
+        auto& cost = *device->Costs();
+        cost.End(RenderCostNowNs());
+        if (failure == DiagnosticProbe::UnreadyResults)
+        {
+            u64 observed = 0, dropped = 0;
+            for (u64 count : cost.Sum().GpuCalls) observed += count;
+            for (u64 count : cost.Sum().GpuDropped) dropped += count;
+            Require(!observed && dropped && std::strcmp(cost.GpuState, "on"),
+                "unavailable GPU samples were reported as zero-time observations");
+        }
+    }
+    result.uploads = probe.uploads; result.downloads = probe.downloads;
+    result.submits = probe.submits; result.waits = probe.waits; result.idles = probe.idles;
+    result.pools = probe.pools; result.timestamps = probe.timestamps; result.results = probe.results;
+    result.timestampSupport = device->Properties().limits.timestampComputeAndGraphics &&
+        device->Properties().limits.timestampPeriod > 0;
+    std::printf("DIAG enabled=%d failure=%d submits=%llu waits=%llu idle=%llu upload_bytes=%llu download_bytes=%llu pools=%llu timestamps=%llu results=%llu\n",
+        enabled, int(failure), result.submits, result.waits, result.idles, result.uploads, result.downloads,
+        result.pools, result.timestamps, result.results);
+    return result;
+}
+void DiagnosticsContract()
+{
+    const auto off = DiagnosticExercise(false, DiagnosticProbe::None);
+    Require(!off.pools && !off.timestamps && !off.results, "diagnostics OFF issued GPU queries");
+    for (auto failure : {DiagnosticProbe::None, DiagnosticProbe::PoolFailure,
+        DiagnosticProbe::ResultFailure, DiagnosticProbe::MissingTimestamp, DiagnosticProbe::UnreadyResults})
+    {
+        const auto on = DiagnosticExercise(true, failure);
+        Equal(on.pixels, off.pixels, "diagnostics OFF/ON two-screen identity");
+        Require(on.submits == off.submits && on.waits == off.waits && on.idles == off.idles &&
+            on.uploads == off.uploads && on.downloads == off.downloads,
+            "diagnostics changed real submissions, waits or image-transfer bytes");
+        if (failure == DiagnosticProbe::None && on.timestampSupport)
+            Require(on.pools && on.timestamps && on.results, "supported diagnostics ON has no GPU observations");
+        if (failure == DiagnosticProbe::MissingTimestamp)
+            Require(!on.timestamps, "missing timestamp support was not tolerated");
+    }
+    std::printf("Diagnostics OFF/ON/failure: %zu two-screen pixels per comparison, identical; no extra submissions/transfers/waits PASS\n", off.pixels.size());
+}
 using Clock = std::chrono::steady_clock;
 double Milliseconds(Clock::time_point start) { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
 double Quantile(std::vector<double> samples, double fraction)
 {
     std::sort(samples.begin(), samples.end());
-    return samples[size_t((samples.size() - 1) * fraction)];
+    // Match RenderCost's existing empirical ranks, including even-sized cohorts.
+    return samples[std::min(samples.size() - 1, size_t(samples.size() * fraction))];
 }
 u64 Digest(std::span<const u32> pixels)
 {
@@ -727,8 +924,12 @@ void BenchmarkCompose(const std::shared_ptr<Vulkan::Device>& device, int scale, 
     std::vector<double> samples;
     for (int i = -5; i < 31; ++i)
     {
+        if (i == 0 && device->Costs()) device->Costs()->Reset();
         const auto start = Clock::now();
-        compositor.Compose(0, lines, input, scale, output, memory.get());
+        {
+            RenderCostVulkanFrame interval(device->Costs());
+            compositor.Compose(0, lines, input, scale, output, memory.get());
+        }
         const double elapsed = Milliseconds(start);
         if (i >= 0) samples.push_back(elapsed);
     }
@@ -738,12 +939,17 @@ void BenchmarkCompose(const std::shared_ptr<Vulkan::Device>& device, int scale, 
         directPath ? "direct" : "staging", scale, stride, samples.size(), Quantile(samples, .5), Quantile(samples, .95),
         static_cast<unsigned long long>(directPath ? 0 : composed * row * 4), static_cast<unsigned long long>(probe.bytes / 36),
         static_cast<unsigned long long>(Digest(output)));
+    if (auto* cost = device->Costs())
+    {
+        char report[8192], label[96];
+        std::snprintf(label, sizeof(label), "compose-%s-s%d-stride%d", directPath ? "direct" : "staging", scale, stride);
+        cost->Report(report, sizeof(report), label);
+        std::puts(report);
+        cost->Reset();
+    }
 }
-void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
+void PrepareRunFrame(NDS* nds, int workload)
 {
-    auto nds = Console(scale, vectorPath);
-    auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
-    auto& raster = RendererAccess::Rasterizer(renderer);
     nds->ARM9Write32(0x02000000, 0xEAFFFFFE);
     nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
     nds->ARM9.JumpTo(0x02000000); nds->ARM7.JumpTo(0x02000200);
@@ -756,6 +962,106 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
         nds->ARM9Write32(0x04000000, 0x00060000);
     }
     nds->Start();
+}
+DiagnosticOutput DiagnosticRunFrame(bool enabled, int scale, int workload)
+{
+    DiagnosticEnvironment environment(enabled);
+    auto nds = Console(scale);
+    auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
+    auto& raster = RendererAccess::Rasterizer(renderer);
+    DiagnosticProbe probe(*raster.Device, DiagnosticProbe::None);
+    PrepareRunFrame(nds.get(), workload);
+    u64 generation = 0;
+    Renderer::DisplayFrame frame;
+    for (int i = -10; i < 4; ++i)
+    {
+        nds->GPU.GPU3D.RenderFrameIdentical = false;
+        raster.FrameDirty = true;
+        if (workload == 2) nds->ARM9Write32(0x04000064, 0x81310000);
+        if (i == 0 && renderer.Costs()) renderer.Costs()->Reset();
+        u32 lines;
+        {
+            RenderCostVulkanFrame interval(renderer.Costs());
+            lines = nds->RunFrame();
+        }
+        Require(lines > 0 && !renderer.HasRenderFailure(), "diagnostic RunFrame failed");
+        Require(renderer.GetDisplayFrame(frame) && frame.kind == Renderer::DisplayFrame::Kind::CpuBGRA &&
+            frame.top && frame.bottom && frame.generation > generation &&
+            frame.width == u32(256 * scale) && frame.height == u32(192 * scale),
+            "diagnostics changed completed CPU publication or generation");
+        generation = frame.generation;
+        Renderer::DisplayFrame repeated;
+        Require(renderer.GetDisplayFrame(repeated) && repeated.generation == frame.generation &&
+            repeated.top == frame.top && repeated.bottom == frame.bottom,
+            "diagnostic paused/repeated query changed publication");
+        if (i >= 0 && renderer.Costs())
+        {
+            using Cost = RenderCostVulkanMeter;
+            const auto& sample = renderer.Costs()->Last();
+            u64 accounted = 0;
+            for (u64 ns : sample.HostNs) accounted += ns;
+            Require(accounted == sample.Total, "real RunFrame host accounting overlaps or loses its residual");
+            const u64 expectedFull = (scale == 1 || workload == 2) ? u64(256) * 192 * scale * scale * 4 : 0;
+            const u64 expectedNative = scale == 1 ? 0 : 256 * 192 * 4;
+            const u64 expectedDisplay = scale > 1 && workload == 0 ? u64(256) * 192 * scale * scale * 4 : 0;
+            Require(sample.Bytes[Cost::FullReadbackBytes] == expectedFull &&
+                sample.Events[Cost::FullReadbackBytes] == unsigned(expectedFull != 0) &&
+                sample.Bytes[Cost::FullCopyBytes] == expectedFull &&
+                sample.Bytes[Cost::NativeReadbackBytes] == expectedNative &&
+                sample.Bytes[Cost::NativeCopyBytes] == expectedNative &&
+                sample.Bytes[Cost::DisplayReadbackBytes] == expectedDisplay &&
+                !sample.Bytes[Cost::DisplayCopyBytes] && !sample.Events[Cost::OverrideUploadBytes],
+                "RunFrame traffic accounting conflates native/full/display/override paths");
+            if (workload == 2)
+                Require(sample.HostCalls[Cost::Capture] == 192 && sample.HostCalls[Cost::LCDC] == 192 &&
+                    sample.HostCalls[Cost::ScaledConvert] == 1 &&
+                    sample.Bytes[Cost::CaptureCopyBytes] == u64(256) * 192 * scale * scale * 2,
+                    "source-A 3D capture/LCDC accounting lost lazy conversion or scanlines");
+        }
+    }
+    DiagnosticOutput result{};
+    const size_t pixels = size_t(frame.width) * frame.height;
+    const auto* top = static_cast<const u32*>(frame.top);
+    const auto* bottom = static_cast<const u32*>(frame.bottom);
+    result.pixels.assign(top, top + pixels);
+    result.pixels.insert(result.pixels.end(), bottom, bottom + pixels);
+    void* nativeTop = nullptr; void* nativeBottom = nullptr;
+    Require(renderer.GetFramebuffers(&nativeTop, &nativeBottom), "diagnostics lost guest-native framebuffers");
+    result.pixels.insert(result.pixels.end(), static_cast<const u32*>(nativeTop), static_cast<const u32*>(nativeTop) + 256 * 192);
+    result.pixels.insert(result.pixels.end(), static_cast<const u32*>(nativeBottom), static_cast<const u32*>(nativeBottom) + 256 * 192);
+    result.uploads = probe.uploads; result.downloads = probe.downloads;
+    result.submits = probe.submits; result.waits = probe.waits; result.idles = probe.idles;
+    result.pools = probe.pools; result.timestamps = probe.timestamps; result.results = probe.results;
+    Require(!probe.invalid, "RunFrame query retrieval added a wait or preceded fence completion");
+    if (!enabled) Require(!result.pools && !result.timestamps && !result.results && !renderer.Costs(),
+        "diagnostics OFF allocated a meter or issued queries");
+    std::printf("DIAG RunFrame enabled=%d scale=%d workload=%d top=%016llx bottom=%016llx submits=%llu waits=%llu upload_bytes=%llu download_bytes=%llu\n",
+        enabled, scale, workload, static_cast<unsigned long long>(Digest({top, pixels})),
+        static_cast<unsigned long long>(Digest({bottom, pixels})), result.submits, result.waits, result.uploads, result.downloads);
+    if (renderer.Costs()) renderer.Costs()->Reset();
+    return result;
+}
+void DiagnosticsRunFrames()
+{
+    size_t compared = 0;
+    for (const auto [scale, workload] : {std::pair{1, 0}, {3, 0}, {5, 0}, {8, 0}, {16, 0}, {16, 1}, {16, 2}})
+    {
+        const auto off = DiagnosticRunFrame(false, scale, workload);
+        const auto on = DiagnosticRunFrame(true, scale, workload);
+        Equal(on.pixels, off.pixels, "RunFrame diagnostics OFF/ON two-screen/native byte identity");
+        Require(on.submits == off.submits && on.waits == off.waits && on.idles == off.idles &&
+            on.uploads == off.uploads && on.downloads == off.downloads,
+            "RunFrame diagnostics changed physical submissions/transfers/waits");
+        compared += off.pixels.size();
+    }
+    std::printf("Diagnostics RunFrame: %zu display/native pixel comparisons, unchanged physical submissions/transfers/waits; aligned host and traffic accounting PASS\n", compared);
+}
+void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
+{
+    auto nds = Console(scale, vectorPath);
+    auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
+    auto& raster = RendererAccess::Rasterizer(renderer);
+    PrepareRunFrame(nds.get(), workload);
     std::vector<double> samples;
     u64 totalBefore = 0, rasterBefore = 0;
     Renderer::DisplayFrame frame;
@@ -764,9 +1070,18 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
         nds->GPU.GPU3D.RenderFrameIdentical = false;
         raster.FrameDirty = true;
         if (workload == 2) nds->ARM9Write32(0x04000064, 0x81310000);
-        if (i == 0) { totalBefore = renderer.TotalSubmissionCount(); rasterBefore = renderer.SubmissionCount(); }
+        if (i == 0)
+        {
+            totalBefore = renderer.TotalSubmissionCount(); rasterBefore = renderer.SubmissionCount();
+            if (renderer.Costs()) renderer.Costs()->Reset();
+        }
         const auto start = Clock::now();
-        Require(nds->RunFrame() > 0, "generated RunFrame did not run");
+        u32 drawn;
+        {
+            RenderCostVulkanFrame interval(renderer.Costs());
+            drawn = nds->RunFrame();
+        }
+        Require(drawn > 0, "generated RunFrame did not run");
         const double elapsed = Milliseconds(start);
         Require(renderer.GetDisplayFrame(frame) && frame.kind == Renderer::DisplayFrame::Kind::CpuBGRA &&
             !renderer.HasRenderFailure(), "generated RunFrame publication failed");
@@ -782,12 +1097,30 @@ void BenchmarkRunFrame(int scale, int workload, bool vectorPath)
         Quantile(samples, .5), Quantile(samples, .95),
         static_cast<unsigned long long>(renderer.SubmissionCount() - rasterBefore),
         static_cast<unsigned long long>(renderer.TotalSubmissionCount() - totalBefore), static_cast<unsigned long long>(digest));
+    if (auto* cost = renderer.Costs())
+    {
+        char report[8192], label[96];
+        std::snprintf(label, sizeof(label), "RunFrame-%s-s%d-w%d", vectorPath ? "vector" : "direct", scale, workload);
+        cost->Report(report, sizeof(report), label);
+        std::puts(report);
+        cost->Reset();
+    }
 }
 }
 int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::strcmp(argv[1], "diagnostics") == 0)
+        {
+            DiagnosticsContract();
+            return 0;
+        }
+        if (argc > 1 && std::strcmp(argv[1], "diagnostics-frames") == 0)
+        {
+            DiagnosticsRunFrames();
+            return 0;
+        }
         if (argc > 1 && std::strcmp(argv[1], "direct") == 0)
         {
             auto nds = Console();
@@ -807,7 +1140,7 @@ int main(int argc, char** argv)
             std::printf("BENCH device=%s warmup_compose=5 warmup_RunFrame=10\n", device->Properties().deviceName);
             BenchmarkCompose(device, 3, 1, directPath);
             for (int stride : {1, 4, 16}) BenchmarkCompose(device, 16, stride, directPath);
-            for (int scale : {1, 3, 16}) BenchmarkRunFrame(scale, 0, !directPath);
+            for (int scale : {1, 3, 5, 8, 16}) BenchmarkRunFrame(scale, 0, !directPath);
             BenchmarkRunFrame(16, 1, !directPath); BenchmarkRunFrame(16, 2, !directPath);
             return 0;
         }

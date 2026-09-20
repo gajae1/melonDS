@@ -2,6 +2,10 @@
 #include "Device.h"
 #include "MemoryType.h"
 #include "AdapterSelection.h"
+#include "RenderCost.h"
+#include <cmath>
+#include <new>
+#include <limits>
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -9,6 +13,11 @@
 #include <vector>
 
 namespace melonDS::Vulkan {
+namespace {
+using Cost = RenderCostVulkanMeter;
+constexpr Cost::GpuStage GpuStages[] = {Cost::GpuUpload, Cost::Gpu3D, Cost::GpuNative,
+    Cost::GpuFull, Cost::GpuCompose, Cost::GpuDisplayTransfer, Cost::GpuOther};
+}
 void Device::Check(VkResult result,const char* operation)
 {
     if(result!=VK_SUCCESS)throw std::runtime_error(std::string(operation)+" (Vulkan "+std::to_string(result)+")");
@@ -34,6 +43,8 @@ std::shared_ptr<Device> Device::Create(std::string& error, const std::string& pr
 
 void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters)
 {
+    if (!adapters && RenderCostEnabled())
+        costs.reset(new (std::nothrow) RenderCostVulkanMeter);
     // Process-wide loader only. Instance/device functions are never published
     // globally, so another emulator device cannot replace this one's dispatch.
     static std::once_flag once;
@@ -94,6 +105,7 @@ void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters)
             const int rank=AdapterRank(props.deviceType);
             if((preferred.empty() && rank>bestRank) || (!preferred.empty() && candidateId==preferred)) {
                 physical=candidate;properties=props;family=i;id=candidateId;bestRank=rank;
+                timestampBits=queues[i].timestampValidBits;
             }
             break;
         }
@@ -127,6 +139,7 @@ Device::~Device()
 {
     if(device) {
         functions.vkDeviceWaitIdle(device);
+        if(timestampPool)functions.vkDestroyQueryPool(device,timestampPool,nullptr);
         if(fence)functions.vkDestroyFence(device,fence,nullptr);
         if(pool)functions.vkDestroyCommandPool(device,pool,nullptr);
         if(pipelineCache)functions.vkDestroyPipelineCache(device,pipelineCache,nullptr);
@@ -239,26 +252,131 @@ Device::Image::~Image()
     if(memory)f.vkFreeMemory(d,memory,nullptr);
 }
 
-VkCommandBuffer Device::Begin()
+void Device::BeginCosts() noexcept
+{
+    if (!costs) return;
+    RenderCostVulkanScope diagnostic(costs.get(), Cost::Diagnostic);
+    timestampCount = 0;
+    if (!timestampInitialized)
+    {
+        timestampInitialized = true;
+        // The selected queue, not only the adapter-wide graphics/compute
+        // guarantee, determines support. No extension or alternate queue needed.
+        if (!timestampBits || timestampBits > 64 || !(properties.limits.timestampPeriod > 0) ||
+            !std::isfinite(properties.limits.timestampPeriod) || !functions.vkCreateQueryPool ||
+            !functions.vkDestroyQueryPool || !functions.vkCmdResetQueryPool ||
+            !functions.vkCmdWriteTimestamp || !functions.vkGetQueryPoolResults)
+        {
+            costs->GpuState = "unsupported";
+            return;
+        }
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = MaxTimestamps;
+        VkQueryPool created{};
+        if (functions.vkCreateQueryPool(device, &info, nullptr, &created) != VK_SUCCESS)
+        {
+            costs->GpuState = "unmeasured-pool-failure";
+            return;
+        }
+        timestampPool = created;
+        timestampUsable = true;
+    }
+    if (!timestampUsable) return;
+    functions.vkCmdResetQueryPool(command, timestampPool, 0, MaxTimestamps);
+    functions.vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampPool, 0);
+    timestampCount = 1;
+}
+
+void Device::Timestamp(TimestampStage stage) noexcept
+{
+    if (!costs || !timestampCount) return;
+    RenderCostVulkanScope diagnostic(costs.get(), Cost::Diagnostic);
+    if (timestampCount == MaxTimestamps)
+    {
+        costs->Drop(GpuStages[unsigned(stage)]);
+        return;
+    }
+    // Consecutive observations delimit the existing ordered work. They include
+    // its barriers/pipeline effects, not just shader instructions. No new memory
+    // barrier or completion boundary is introduced by the instrumentation.
+    timestampStages[timestampCount] = stage;
+    functions.vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        timestampPool, timestampCount++);
+}
+
+void Device::CollectCosts() noexcept
+{
+    if (!costs || timestampCount < 2) return;
+    RenderCostVulkanScope diagnostic(costs.get(), Cost::Diagnostic);
+    struct Result { uint64_t ticks, available; };
+    std::array<Result, MaxTimestamps> values{};
+    // Called ONLY after the original successful fence wait. Never wait for a
+    // query, submit a diagnostic command buffer, or fetch a previous frame's
+    // still-available value before this command buffer's reset has executed.
+    const auto result = functions.vkGetQueryPoolResults(device, timestampPool, 0, timestampCount,
+        sizeof(Result) * timestampCount, values.data(), sizeof(Result),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    const bool readable = result == VK_SUCCESS || result == VK_NOT_READY;
+    if (!readable)
+    {
+        timestampUsable = false;
+        costs->GpuState = "unmeasured-result-failure";
+    }
+    const uint64_t mask = timestampBits == 64 ? UINT64_MAX : (uint64_t(1) << timestampBits) - 1;
+    for (uint32_t i = 1; i < timestampCount; ++i)
+    {
+        const auto stage = GpuStages[unsigned(timestampStages[i])];
+        const uint64_t delta = (values[i].ticks - values[i - 1].ticks) & mask;
+        const double ns = double(delta) * properties.limits.timestampPeriod;
+        if (!readable || !values[i - 1].available || !values[i].available || !std::isfinite(ns) ||
+            ns >= double(std::numeric_limits<uint64_t>::max()))
+            costs->Drop(stage);
+        else
+        {
+            costs->Gpu(stage, static_cast<uint64_t>(ns));
+            costs->GpuState = "on";
+        }
+    }
+    timestampCount = 0;
+}
+
+VkCommandBuffer Device::Begin(SubmitKind kind)
 {
     if(failed)throw std::runtime_error("Compute device retired after submission failure");
     if(recording)throw std::logic_error("Compute command recording already active");
     Check(functions.vkResetCommandBuffer(command,0),"Reset compute commands");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    Check(functions.vkBeginCommandBuffer(command,&begin),"Begin compute commands");recording=true;return command;
+    Check(functions.vkBeginCommandBuffer(command,&begin),"Begin compute commands");
+    recording=true;
+    submitKind=kind;
+    BeginCosts();
+    return command;
 }
 
 void Device::SubmitAndWait()
 {
     if(!recording)throw std::logic_error("No compute commands to submit");
+    if (costs && timestampCount == 1) Timestamp(TimestampStage::Other);
     recording=false;
+    static constexpr Cost::HostStage issues[] = {Cost::SubmitOther, Cost::SubmitUpload, Cost::Submit3D,
+        Cost::SubmitFullReadback, Cost::SubmitDisplay};
+    static constexpr Cost::HostStage waits[] = {Cost::WaitOther, Cost::WaitUpload, Cost::Wait3D,
+        Cost::WaitFullReadback, Cost::WaitDisplay};
     try {
-        Check(functions.vkEndCommandBuffer(command),"End compute commands");
-        Check(functions.vkResetFences(device,1,&fence),"Reset compute fence");
-        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&command;
-        Check(functions.vkQueueSubmit(queue,1,&submit,fence),"Submit compute commands");
-        ++submissionCount;
-        Check(functions.vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX),"Wait for compute commands");
+        {
+            RenderCostVulkanScope issue(costs.get(), issues[unsigned(submitKind)]);
+            Check(functions.vkEndCommandBuffer(command),"End compute commands");
+            Check(functions.vkResetFences(device,1,&fence),"Reset compute fence");
+            VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&command;
+            Check(functions.vkQueueSubmit(queue,1,&submit,fence),"Submit compute commands");
+            ++submissionCount;
+        }
+        {
+            RenderCostVulkanScope wait(costs.get(), waits[unsigned(submitKind)]);
+            Check(functions.vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX),"Wait for compute commands");
+        }
+        CollectCosts();
     }catch(...) {
         failed=true;
         // A failed wait does not imply queue completion. Drain outstanding work

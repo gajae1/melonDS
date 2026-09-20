@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Production timer ownership with non-index GL names and delayed GPU results.
+#include "PlatformOGL.h"
 #include "RenderCost.h"
 #include <cstdio>
 #include <map>

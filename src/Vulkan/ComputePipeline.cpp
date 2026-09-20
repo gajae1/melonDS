@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ComputePipeline.h"
+#include "RenderCost.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
 namespace melonDS::Vulkan {
 namespace {
+using Cost = RenderCostVulkanMeter;
 void ImageBarrier(const volk::VolkDeviceTable& f,VkCommandBuffer command,VkImage image,
     VkImageLayout before,VkImageLayout after,VkPipelineStageFlags source,VkPipelineStageFlags dest,
     VkAccessFlags read,VkAccessFlags write,uint32_t layers=1,uint32_t firstLayer=0)
@@ -202,7 +204,10 @@ void ComputePipeline::ReserveUpload(VkDeviceSize bytes,size_t images)
         auto staging=owner->CreateBuffer(std::max(required,grown),VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);
         // No commands reference staging until FlushUploads records them. Keep
         // the old allocation/data if growth fails, including optional captures.
-        if(uploadUsed)std::memcpy(staging->Data(),uploadStaging->Data(),uploadUsed);
+        if(uploadUsed) {
+            std::memcpy(staging->Data(),uploadStaging->Data(),uploadUsed);
+            if (owner->Costs()) owner->Costs()->Transfer(Cost::UploadCopyBytes, uploadUsed);
+        }
         uploadStaging=std::move(staging);
     }
 }
@@ -215,8 +220,10 @@ void ComputePipeline::SubmitUploadsIfNeeded()
 void ComputePipeline::FlushUploads()
 {
     if(pendingUploads.empty())return;
-    const auto command=owner->Begin();
+    RenderCostVulkanScope cost(owner->Costs(), Cost::TextureUpload);
+    const auto command=owner->Begin(Device::SubmitKind::Upload);
     for(const auto& upload:pendingUploads)RecordImageUpload(command,upload);
+    owner->Timestamp(Device::TimestampStage::Upload);
     // The Device drains on submission failure before throwing. Retain both
     // staging and images until this fence succeeds (or pipeline teardown).
     owner->SubmitAndWait();
@@ -229,8 +236,10 @@ void ComputePipeline::FlushUploads()
 void ComputePipeline::UploadImage(const std::shared_ptr<Device::Image>& image,uint32_t width,uint32_t height,
     uint32_t layers,std::span<const uint32_t> pixels,VkImageLayout oldLayout,uint32_t firstLayer)
 {
+    RenderCostVulkanScope cost(owner->Costs(), Cost::TextureUpload);
     ReserveUpload(pixels.size_bytes(),1);
     std::memcpy(static_cast<unsigned char*>(uploadStaging->Data())+uploadUsed,pixels.data(),pixels.size_bytes());
+    if (owner->Costs()) owner->Costs()->Transfer(Cost::UploadCopyBytes, pixels.size_bytes());
     pendingUploads.push_back({image,width,height,layers,firstLayer,oldLayout,uploadUsed,false});
     uploadUsed+=pixels.size_bytes();
     SubmitUploadsIfNeeded();
@@ -255,6 +264,8 @@ void ComputePipeline::RecordImageUpload(VkCommandBuffer command,const ImageUploa
         copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,upload.firstLayer,upload.layers};
         copy.imageExtent={upload.width,upload.height,1};
         f.vkCmdCopyBufferToImage(command,uploadStaging->Handle(),image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
+        if (owner->Costs()) owner->Costs()->Transfer(Cost::ImageUploadBytes,
+            uint64_t(upload.width) * upload.height * upload.layers * sizeof(uint32_t));
     }
     ImageBarrier(f,command,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -264,6 +275,7 @@ void ComputePipeline::RecordImageUpload(VkCommandBuffer command,const ImageUploa
 std::shared_ptr<const ComputePipeline::Texture> ComputePipeline::UploadTexture(uint32_t width,uint32_t height,
     uint32_t layers,std::span<const uint32_t> pixels,bool capture)
 {
+    RenderCostVulkanScope cost(owner->Costs(), Cost::TextureUpload);
     const auto& limits=owner->Properties().limits;
     if(!width||!height||!layers||width>limits.maxImageDimension2D||height>limits.maxImageDimension2D||
         layers>limits.maxImageArrayLayers||uint64_t(width)*height*layers!=pixels.size())
@@ -276,6 +288,7 @@ std::shared_ptr<const ComputePipeline::Texture> ComputePipeline::UploadTexture(u
 
 std::shared_ptr<const ComputePipeline::Texture> ComputePipeline::CreateTexture(uint32_t width,uint32_t height,uint32_t layers)
 {
+    RenderCostVulkanScope cost(owner->Costs(), Cost::TextureUpload);
     const auto& limits=owner->Properties().limits;
     if(!width||!height||!layers||width>limits.maxImageDimension2D||height>limits.maxImageDimension2D||layers>limits.maxImageArrayLayers)
         throw std::invalid_argument("Invalid texture cache dimensions");
@@ -297,6 +310,7 @@ void ComputePipeline::UploadTextureLayer(const Texture& texture,uint32_t layer,s
 
 void ComputePipeline::UploadClearBitmap(std::span<const uint32_t> colors,std::span<const uint32_t> depths)
 {
+    RenderCostVulkanScope cost(owner->Costs(), Cost::TextureUpload);
     if(colors.size()!=256*256||depths.size()!=256*256)throw std::invalid_argument("Invalid clear bitmap dimensions");
     const size_t bytes=colors.size_bytes();
     // Reserve both images atomically; an allocation failure must not queue
@@ -305,6 +319,10 @@ void ComputePipeline::UploadClearBitmap(std::span<const uint32_t> colors,std::sp
     auto* staging=static_cast<unsigned char*>(uploadStaging->Data())+uploadUsed;
     std::memcpy(staging,colors.data(),bytes);
     std::memcpy(staging+bytes,depths.data(),bytes);
+    if (owner->Costs()) {
+        owner->Costs()->Transfer(Cost::UploadCopyBytes, bytes);
+        owner->Costs()->Transfer(Cost::UploadCopyBytes, bytes);
+    }
     pendingUploads.push_back({clearColor,256,256,1,0,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,uploadUsed,false});
     pendingUploads.push_back({clearDepth,256,256,1,0,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,uploadUsed+bytes,false});
     uploadUsed+=2*bytes;
@@ -451,6 +469,7 @@ std::vector<uint32_t> ComputePipeline::Render(std::span<const Batch> batches)
 
 std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> batches,Readback mode)
 {
+    RenderCostVulkanScope cost(owner->Costs(), Cost::Record3D);
     if(batches.empty())throw std::invalid_argument("Compute frame needs a clear batch");
     if(mode==Readback::Native&&!nativePipeline)throw std::logic_error("Native readback unavailable");
     FlushUploads(); // Complete copies before validation/dispatch can consume images.
@@ -474,7 +493,7 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
         size_t index=0;
         for(const auto& batch:batches)for(const auto& variant:batch.variants)WriteTextureSet(textures[index++],variant);
     }
-    const auto command=owner->Begin();
+    const auto command=owner->Begin(Device::SubmitKind::ThreeD);
     size_t offset=0;
     bool first=true;
     for(const auto& batch:batches) {
@@ -496,6 +515,7 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
     const auto dispCnt=batches.back().meta.DispCnt;
     const unsigned effect=((dispCnt>>5)&1)|((dispCnt>>6)&2)|((dispCnt>>2)&4);
     Bind(command,24+effect,rasterSet,outputSet);f.vkCmdDispatch(command,Resources.config.ScreenWidth/32,Resources.config.ScreenHeight,1);
+    owner->Timestamp(Device::TimestampStage::ThreeD);
     if(mode==Readback::Full)RecordFullReadback(command);
     else {
         ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_GENERAL,
@@ -507,42 +527,58 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
             VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
             download.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
             f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
+            owner->Timestamp(Device::TimestampStage::NativeReadback);
+            if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeReadbackBytes, 256 * 192 * sizeof(uint32_t), 192);
         }
     }
     owner->SubmitAndWait();
     if(mode==Readback::None)return {};
     if(mode==Readback::Native) {
+        RenderCostVulkanScope copy(owner->Costs(), Cost::NativeCopy);
         std::memcpy(nativeHostReadback.data(),nativeReadback->Data(),nativeHostReadback.size()*sizeof(uint32_t));
+        if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeCopyBytes, nativeHostReadback.size()*sizeof(uint32_t));
         return nativeHostReadback;
     }
-    std::memcpy(hostReadback.data(),readback->Data(),Resources.Pixels*sizeof(uint32_t));
+    {
+        RenderCostVulkanScope copy(owner->Costs(), Cost::FullCopy);
+        std::memcpy(hostReadback.data(),readback->Data(),Resources.Pixels*sizeof(uint32_t));
+        if (owner->Costs()) owner->Costs()->Transfer(Cost::FullCopyBytes, Resources.Pixels*sizeof(uint32_t));
+    }
     fullReadbackValid=true;
     return hostReadback;
 }
 
 void ComputePipeline::RecordFullReadback(VkCommandBuffer command)
 {
+    RenderCostVulkanScope cost(owner->Costs(), Cost::RecordFullReadback);
     ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_SHADER_READ_BIT,VK_ACCESS_TRANSFER_READ_BIT);
     VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
     copy.imageExtent={uint32_t(Resources.config.ScreenWidth),uint32_t(Resources.config.ScreenHeight),1};
     f.vkCmdCopyImageToBuffer(command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback->Handle(),1,&copy);
+    if (owner->Costs()) owner->Costs()->Transfer(Cost::FullReadbackBytes, Resources.Pixels*sizeof(uint32_t), Resources.config.ScreenHeight);
     ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL,
         VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_TRANSFER_READ_BIT,
         VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
     VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     download.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
     f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
+    owner->Timestamp(Device::TimestampStage::FullReadback);
 }
 
 std::span<const uint32_t> ComputePipeline::ReadbackView()
 {
     if(fullReadbackValid)return hostReadback;
-    const auto command=owner->Begin();
+    RenderCostVulkanScope cost(owner->Costs(), Cost::RecordFullReadback);
+    const auto command=owner->Begin(Device::SubmitKind::FullReadback);
     RecordFullReadback(command);
     owner->SubmitAndWait();
-    std::memcpy(hostReadback.data(),readback->Data(),Resources.Pixels*sizeof(uint32_t));
+    {
+        RenderCostVulkanScope copy(owner->Costs(), Cost::FullCopy);
+        std::memcpy(hostReadback.data(),readback->Data(),Resources.Pixels*sizeof(uint32_t));
+        if (owner->Costs()) owner->Costs()->Transfer(Cost::FullCopyBytes, Resources.Pixels*sizeof(uint32_t));
+    }
     fullReadbackValid=true;
     return hostReadback;
 }

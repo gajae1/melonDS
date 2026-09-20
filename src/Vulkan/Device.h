@@ -4,10 +4,12 @@
 #define VOLK_NAMESPACE
 #endif
 #include <volk.h>
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
 
+namespace melonDS { class RenderCostVulkanMeter; }
 namespace melonDS::Vulkan {
 // A core compute device, independent of Qt, windows and the presentation device.
 // One rendering thread owns command recording/submission for each Device.
@@ -69,8 +71,14 @@ public:
         VkFormat format,VkImageUsageFlags usage,bool arrayView=false);
     // Buffers may be reused after successful SubmitAndWait. A submission failure
     // retires this device; create a new device instead of resetting pending work.
-    VkCommandBuffer Begin();
+    enum class SubmitKind { Other, Upload, ThreeD, FullReadback, Display };
+    enum class TimestampStage { Upload, ThreeD, NativeReadback, FullReadback, DisplayCompose, DisplayReadback, Other };
+    VkCommandBuffer Begin(SubmitKind kind = SubmitKind::Other);
     void SubmitAndWait();
+    // Optional observations in the existing command buffer/fence lifetime.
+    // A null meter is the default OFF path: no clocks, pools or query commands.
+    RenderCostVulkanMeter* Costs() const { return costs.get(); }
+    void Timestamp(TimestampStage stage) noexcept;
     // Rendering-thread diagnostic: successful queue submissions, including uploads.
     uint64_t SubmissionCount() const { return submissionCount; }
     static void Check(VkResult result, const char* operation);
@@ -101,5 +109,14 @@ private:
     bool recording=false;
     bool failed=false;
     uint64_t submissionCount=0;
+    std::unique_ptr<RenderCostVulkanMeter> costs;
+    SubmitKind submitKind = SubmitKind::Other;
+    static constexpr uint32_t MaxTimestamps = 8;
+    VkQueryPool timestampPool{};
+    uint32_t timestampBits = 0, timestampCount = 0;
+    bool timestampInitialized = false, timestampUsable = false;
+    std::array<TimestampStage, MaxTimestamps> timestampStages{};
+    void BeginCosts() noexcept;
+    void CollectCosts() noexcept;
 };
 }

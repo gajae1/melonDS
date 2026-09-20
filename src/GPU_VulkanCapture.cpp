@@ -3,12 +3,14 @@
 #include "GPU_Vulkan.h"
 #include "GPU3D_Vulkan.h"
 #include "Platform.h"
+#include "RenderCost.h"
 #include <algorithm>
 #include <bit>
 #include <cstring>
 
 namespace melonDS
 {
+using Cost = RenderCostVulkanMeter;
 bool VulkanRenderer::CaptureTexturePixels(u32 texparam, u32 scale, std::vector<u32>& pixels) const
 {
     if (scale <= 1 || scale != u32(DisplayScale)) return false;
@@ -188,6 +190,7 @@ bool VulkanRenderer::DrawCapturedDisplay(u32 line)
     if (!(GPU.VRAMMap_LCDC & (1u << bank))) return false;
     u16 first;
     if (!ReadDisplayCapture(bank, vcount * 256, 0, 0, first)) return false;
+    RenderCostVulkanScope lcdc(Costs(), Cost::LCDC);
     const auto* native = reinterpret_cast<const u16*>(GPU.VRAM[bank]);
     const u32 scale = DisplayScale, width = 256 * scale;
     const int screen = GPU.ScreenSwap ? 0 : 1;
@@ -216,12 +219,16 @@ bool VulkanRenderer::DrawCapturedDisplay(u32 line)
 
 void VulkanRenderer::DoCapture(u32 line)
 {
+    // Nested full-image readback, memcpy, conversion and native capture have
+    // their own scopes. Only the sidecar's exclusive host work remains here.
+    RenderCostVulkanScope capture(Costs(), Cost::Capture);
     const u32 control = GPU.CaptureCnt, size = (control >> 20) & 3;
     const u32 width = size ? 256 : 128, height = size ? 64 * size : 128;
     const u32 bank = (control >> 16) & 3, start = (control >> 18) & 3;
     if (DisplayScale == 1) DisplayCaptures[bank * 4 + start] = {};
     if (DisplayScale == 1 || line >= height || !(GPU.VRAMMap_LCDC & (1u << bank)))
     {
+        RenderCostVulkanScope native(Costs(), Cost::NativeCapture);
         SoftRenderer::DoCapture(line);
         return;
     }
@@ -229,6 +236,7 @@ void VulkanRenderer::DoCapture(u32 line)
     if (captured.scale != u32(DisplayScale)) AllocCapture(bank, start, size);
     if (captured.pixels.empty() || captured.width != width || captured.height != height)
     {
+        RenderCostVulkanScope native(Costs(), Cost::NativeCapture);
         SoftRenderer::DoCapture(line);
         return;
     }
@@ -276,9 +284,16 @@ void VulkanRenderer::DoCapture(u32 line)
     }
     // Emulated VRAM is written once by the unchanged native capture algorithm.
     // The sidecar is for presentation only, never for a CPU/DMA read.
-    SoftRenderer::DoCapture(line);
-    std::copy_n(CaptureRow.data(), size_t(width) * scale * scale,
-        captured.pixels.data() + size_t(line) * width * scale * scale);
+    {
+        RenderCostVulkanScope native(Costs(), Cost::NativeCapture);
+        SoftRenderer::DoCapture(line);
+    }
+    {
+        RenderCostVulkanScope copy(Costs(), Cost::CaptureCopy);
+        std::copy_n(CaptureRow.data(), size_t(width) * scale * scale,
+            captured.pixels.data() + size_t(line) * width * scale * scale);
+        if (Costs()) Costs()->Transfer(Cost::CaptureCopyBytes, uint64_t(width) * scale * scale * sizeof(u16));
+    }
     captured.valid[line] = true;
 }
 }

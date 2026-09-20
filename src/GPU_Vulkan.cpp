@@ -5,13 +5,31 @@
 #include "NDS.h"
 #include "GPU_ColorOp.h"
 #include "Platform.h"
+#include "RenderCost.h"
 #include <algorithm>
 
 namespace melonDS
 {
+using Cost = RenderCostVulkanMeter;
 VulkanRenderer::VulkanRenderer(NDS& nds, const std::string& preferred)
     : SoftRenderer(nds, std::make_unique<VulkanRenderer3D>(*this, nds.GPU.GPU3D, preferred))
 {
+}
+
+VulkanRenderer::~VulkanRenderer()
+{
+    if (const auto* cost = Costs(); cost && cost->Count())
+    {
+        char line[8192];
+        cost->Report(line, sizeof(line), "renderer-final");
+        Platform::Log(Platform::LogLevel::Info, "%s\n", line);
+    }
+}
+
+RenderCostVulkanMeter* VulkanRenderer::Costs() const
+{
+    const auto& rasterizer = static_cast<const VulkanRenderer3D&>(*Rend3D);
+    return rasterizer.Device ? rasterizer.Device->Costs() : nullptr;
 }
 
 bool VulkanRenderer::IsAvailable(std::string& error)
@@ -137,8 +155,12 @@ void VulkanRenderer::DrawScanline(u32 line)
     const bool capturedDisplay = DrawCapturedDisplay(line);
     // Guest layers/capture run once; capture-aware layer output was latched
     // by each 2D compositor before native capture writes this scanline.
-    SoftRenderer::DrawScanline(line);
+    {
+        RenderCostVulkanScope scan(Costs(), Cost::Scan2D);
+        SoftRenderer::DrawScanline(line);
+    }
     if (DisplayScale == 1) return;
+    RenderCostVulkanScope display(Costs(), Cost::CpuDisplay);
     const int scale = DisplayScale, width = 256 * scale;
     const u32 vcount = GPU.VCount;
     const int mainScreen = GPU.ScreenSwap ? 0 : 1;
@@ -207,6 +229,7 @@ void VulkanRenderer::DiscardDisplayComposition()
 void VulkanRenderer::FinishDisplayComposition() noexcept
 {
     if (!CompositionPending) return;
+    RenderCostVulkanScope display(Costs(), Cost::RecordDisplay);
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
     const auto pending = [](const auto& lines) {
         return std::any_of(lines.begin(), lines.end(), [](const auto& line) {
@@ -233,6 +256,7 @@ void VulkanRenderer::FinishDisplayComposition() noexcept
     }
     if (replay)
     {
+        RenderCostVulkanScope fallback(Costs(), Cost::Fallback);
         try
         {
             const auto pixels = rasterizer.GetScaledPixels();

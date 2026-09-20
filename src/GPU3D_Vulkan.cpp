@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "GPU3D_Vulkan.h"
 #include "GPU_Vulkan.h"
+#include "RenderCost.h"
 #include "Vulkan/EmbeddedShaders.h"
 #include "Platform.h"
 #include <algorithm>
@@ -12,6 +13,7 @@ namespace melonDS
 namespace
 {
 using Pipeline = Vulkan::ComputePipeline;
+using Cost = RenderCostVulkanMeter;
 
 struct PreparedBatch
 {
@@ -209,6 +211,7 @@ void VulkanRenderer3D::DrawFrame()
     // Finish consumers of the old image BEFORE any render can reuse it.
     Parent.FinishDisplayComposition();
     if (Failed) return;
+    RenderCostVulkanScope prepare(Device->Costs(), Cost::Prepare3D);
     std::unordered_map<u32, std::shared_ptr<const Pipeline::Texture>> captures;
     bool hasCaptures = false;
     if (ScaleFactor > 1 && (GPU3D.RenderDispCnt & 1))
@@ -316,11 +319,14 @@ void VulkanRenderer3D::DrawFrame()
     // Scaled edge coverage follows the shared compute rasterizer, not a
     // stretched native image. The clear VRAM bitmap remains 256x256.
     const u32 width = 256 * ScaleFactor;
-    for (u32 y = 0; y < 192; ++y)
-    for (u32 x = 0; x < 256; ++x)
     {
-        const u32 pixel = pixels[gpuComposition ? y * 256 + x : (y * ScaleFactor) * width + x * ScaleFactor];
-        ColorBuffer[y * 256 + x] = ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
+        RenderCostVulkanScope convert(Device->Costs(), Cost::NativeConvert);
+        for (u32 y = 0; y < 192; ++y)
+        for (u32 x = 0; x < 256; ++x)
+        {
+            const u32 pixel = pixels[gpuComposition ? y * 256 + x : (y * ScaleFactor) * width + x * ScaleFactor];
+            ColorBuffer[y * 256 + x] = ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
+        }
     }
     // Never derive guest pixels from captured subpixel UVs: even a native
     // screen origin can address a fractional texel. The native result above
@@ -337,6 +343,7 @@ void VulkanRenderer3D::DrawFrame()
     }
     if (ScaleFactor > 1 && !gpuComposition)
     {
+        RenderCostVulkanScope convert(Device->Costs(), Cost::ScaledConvert);
         ScaledColorBuffer.resize(pixels.size());
         std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
             return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
@@ -358,6 +365,7 @@ std::span<const u32> VulkanRenderer3D::GetScaledPixels() const
         // Only enhanced capture or CPU fallback consumes this full image. The
         // ordinary display path keeps it on-device and reads just native origins.
         const auto pixels = Pipeline->ReadbackView();
+        RenderCostVulkanScope convert(Device->Costs(), Cost::ScaledConvert);
         ScaledColorBuffer.resize(pixels.size());
         std::transform(pixels.begin(), pixels.end(), ScaledColorBuffer.begin(), [](u32 pixel) {
             return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);

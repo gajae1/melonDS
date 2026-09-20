@@ -768,9 +768,9 @@ ScreenPanelNative::ScreenPanelNative(QWidget* parent) : ScreenPanel(parent)
 
 ScreenPanelNative::~ScreenPanelNative()
 {
-    if (RenderCost.Enabled && RenderCost.Frames)
+    if (RenderCost.Enabled && RenderCost.Paints)
     {
-        char line[512];
+        char line[1536];
         RenderCost.Report(line, sizeof(line), mainWindow->getWindowID());
         Platform::Log(Platform::LogLevel::Info, "%s\n", line);
     }
@@ -839,6 +839,8 @@ bool ScreenPanelNative::drawScreen()
 
 void ScreenPanelNative::paintEvent(QPaintEvent* event)
 {
+    const auto paintStart = RenderCost.Start();
+    std::uint64_t painterTime = RenderCost.Start();
     // Vulkan's first stage presents the existing Software composition. CPU
     // images are copied under the same render lock; the presenter owns every
     // staging buffer until its submission fence completes.
@@ -848,14 +850,26 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
         const qreal scale = devicePixelRatioF();
         const QSize pixels = (QSizeF(size()) * scale).toSize();
         if (composed.size() != pixels) composed = QImage(pixels, QImage::Format_RGB32);
-        if (composed.isNull()) return;
+        if (composed.isNull()) {
+            RenderCost.RecordPainter(painterTime);
+            RenderCost.PaintEnd(paintStart);
+            return;
+        }
+        RenderCost.Window(pixels.width(), pixels.height());
         composed.setDevicePixelRatio(scale);
         painter.begin(&composed);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, filter);
-    } else painter.begin(this);
+    } else {
+        if (RenderCost.Enabled) {
+            const QSize pixels = (QSizeF(size()) * devicePixelRatioF()).toSize();
+            RenderCost.Window(pixels.width(), pixels.height());
+        }
+        painter.begin(this);
+    }
 
     // Vulkan submits a whole window image, including on partial expose.
     painter.fillRect(vulkan ? rect() : event->rect(), QColor::fromRgb(0, 0, 0));
+    RenderCost.RecordPainter(painterTime);
 
     auto emuThread = emuInstance->getEmuThread();
     
@@ -891,11 +905,12 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
                 const size_t bytes = size_t(bufferWidth) * bufferHeight * sizeof(melonDS::u32);
                 memcpy(screen[0].scanLine(0), frame.top, bytes);
                 memcpy(screen[1].scanLine(0), frame.bottom, bytes);
-                RenderCost.RecordCopy(copy);
+                RenderCost.RecordCopy(copy, 2 * bytes, frame.generation);
             }
         }
         bufferLock.unlock();
 
+        painterTime = RenderCost.Start();
         QRect screenrc(0, 0, 256, 192);
 
         for (int i = 0; i < numScreens; i++)
@@ -903,6 +918,7 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
             painter.setTransform(screenTrans[i]);
             painter.drawImage(screenrc, screen[screenKind[i]]);
         }
+        RenderCost.RecordPainter(painterTime);
         emuInstance->renderLock.unlock();
     }
 
@@ -912,18 +928,21 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
     {
         // splashscreen
         osdMutex.lock();
+        painterTime = RenderCost.Start();
 
         painter.drawPixmap(QRect(splashPos[3], QSize(kLogoWidth, kLogoWidth)), splashLogo);
 
         for (int i = 0; i < 3; i++)
             painter.drawImage(splashPos[i], splashText[i].bitmap);
 
+        RenderCost.RecordPainter(painterTime);
         osdMutex.unlock();
     }
 
     if (osdEnabled)
     {
         osdMutex.lock();
+        painterTime = RenderCost.Start();
 
         u32 y = kOSDMargin;
 
@@ -939,14 +958,21 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
             it++;
         }
 
+        RenderCost.RecordPainter(painterTime);
         osdMutex.unlock();
     }
 
+    painterTime = RenderCost.Start();
     painter.end();
+    RenderCost.RecordPainter(painterTime);
     if (vulkan) {
         std::string error;
+        const auto presentStart = RenderCost.Start();
+        const auto before = presentStart ? vulkan->GetDiagnostics() : Vulkan::Presenter::Diagnostics{};
         const auto result = vulkan->Present(composed.constBits(), composed.width(),
                                              composed.height(), composed.bytesPerLine(), error);
+        if (presentStart) RenderCost.RecordPresent(presentStart, composed.width(), composed.height(),
+            before, vulkan->GetDiagnostics());
         if (result == Vulkan::Presenter::Result::Failed) {
             Platform::Log(Platform::LogLevel::Warn, "Vulkan output lost: %s\n", error.c_str());
             vulkan.reset();
@@ -957,9 +983,10 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
         }
     }
 
+    RenderCost.PaintEnd(paintStart);
     if (RenderCost.TakeReport())
     {
-        char line[512];
+        char line[1536];
         RenderCost.Report(line, sizeof(line), mainWindow->getWindowID());
         Platform::Log(Platform::LogLevel::Info, "%s\n", line);
     }

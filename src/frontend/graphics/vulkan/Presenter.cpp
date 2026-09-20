@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Presenter.h"
+#include "RenderCost.h"
 #include "Vulkan/AdapterSelection.h"
 #include <QtGui/qtguiglobal.h>
 #if defined(Q_OS_WIN) && __has_include(<vulkan/vulkan.h>)
@@ -60,6 +61,7 @@ struct Presenter::Impl {
     std::array<Frame, 2> frames{};
     std::vector<Image> images;
     std::string error;
+    Diagnostics diagnostics;
 
     bool Check(VkResult result, const char* operation) {
         if (result == VK_SUCCESS) return true;
@@ -106,6 +108,7 @@ struct Presenter::Impl {
         if (surface && destroySurface) destroySurface(instance.vkInstance(), surface, nullptr);
     }
     bool Init(void* handle, const std::string& preferredId = {}) {
+        diagnostics.Enabled = melonDS::RenderCostEnabled();
         window = static_cast<HWND>(handle);
         if (!window || !IsWindow(window)) { error = "No valid native window"; return false; }
         instance.setApiVersion(QVersionNumber(1,1));
@@ -312,8 +315,13 @@ struct Presenter::Impl {
         if (acquired!=VK_SUBOPTIMAL_KHR && !Check(acquired,"Acquire image")) return Result::Failed;
         recreate=acquired==VK_SUBOPTIMAL_KHR;
         auto& image=images[index];
+        const auto uploadStart = diagnostics.Enabled ? melonDS::RenderCostNowNs() : 0;
         for (uint32_t y=0;y<height;++y)
             std::memcpy(static_cast<char*>(frame.mapped)+size_t(y)*width*4,static_cast<const char*>(pixels)+size_t(y)*stride,size_t(width)*4);
+        if (uploadStart) {
+            diagnostics.UploadNs += melonDS::RenderCostNowNs() - uploadStart;
+            diagnostics.StagingBytes += uint64_t(width) * height * 4;
+        }
         if (!Check(d->vkResetCommandBuffer(frame.command,0),"Reset command buffer")) return Result::Failed;
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if (!Check(d->vkBeginCommandBuffer(frame.command,&begin),"Begin upload")) return Result::Failed;
@@ -336,13 +344,22 @@ struct Presenter::Impl {
         submit.waitSemaphoreCount=1; submit.pWaitSemaphores=&frame.available; submit.pWaitDstStageMask=&waitStage;
         submit.commandBufferCount=1; submit.pCommandBuffers=&frame.command;
         submit.signalSemaphoreCount=1; submit.pSignalSemaphores=&image.finished;
-        if (!Check(d->vkQueueSubmit(queue,1,&submit,frame.fence),"Submit upload")) return Result::Failed;
+        const auto submitStart = diagnostics.Enabled ? melonDS::RenderCostNowNs() : 0;
+        const auto submitted = d->vkQueueSubmit(queue,1,&submit,frame.fence);
+        if (submitStart) diagnostics.SubmitNs += melonDS::RenderCostNowNs() - submitStart;
+        if (!Check(submitted,"Submit upload")) return Result::Failed;
+        if (diagnostics.Enabled) {
+            ++diagnostics.Submits;
+            diagnostics.TransferBytes += uint64_t(width) * height * 4;
+        }
         VkSwapchainPresentFenceInfoEXT fenceInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT};
         fenceInfo.swapchainCount=1; fenceInfo.pFences=&image.presented;
         VkPresentInfoKHR info{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         info.pNext=&fenceInfo; info.waitSemaphoreCount=1; info.pWaitSemaphores=&image.finished;
         info.swapchainCount=1; info.pSwapchains=&swapchain; info.pImageIndices=&index;
+        const auto presentStart = diagnostics.Enabled ? melonDS::RenderCostNowNs() : 0;
         const auto result=present(queue,&info);
+        if (presentStart) diagnostics.QueuePresentNs += melonDS::RenderCostNowNs() - presentStart;
         // OUT_OF_DATE and SURFACE_LOST still enqueue their semaphore waits.
         image.pending=result==VK_SUCCESS || result==VK_SUBOPTIMAL_KHR ||
             result==VK_ERROR_OUT_OF_DATE_KHR || result==VK_ERROR_SURFACE_LOST_KHR ||
@@ -359,6 +376,13 @@ struct Presenter::Impl {};
 #endif
 Presenter::Presenter() : impl(std::make_unique<Impl>()) {}
 Presenter::~Presenter() = default;
+Presenter::Diagnostics Presenter::GetDiagnostics() const {
+#if defined(Q_OS_WIN) && __has_include(<vulkan/vulkan.h>) && defined(VK_EXT_swapchain_maintenance1) && QT_CONFIG(vulkan)
+    return impl->diagnostics;
+#else
+    return {};
+#endif
+}
 std::unique_ptr<Presenter> Presenter::Create(void* nativeWindow,std::string& error,const std::string& preferredId) {
     error.clear();
 #if defined(Q_OS_WIN) && __has_include(<vulkan/vulkan.h>) && defined(VK_EXT_swapchain_maintenance1) && QT_CONFIG(vulkan)
@@ -371,7 +395,13 @@ std::unique_ptr<Presenter> Presenter::Create(void* nativeWindow,std::string& err
 }
 Presenter::Result Presenter::Present(const void* pixels,uint32_t width,uint32_t height,uint32_t stride,std::string& error) {
 #if defined(Q_OS_WIN) && __has_include(<vulkan/vulkan.h>) && defined(VK_EXT_swapchain_maintenance1) && QT_CONFIG(vulkan)
-    const auto result=impl->Draw(pixels,width,height,stride); error=impl->error; return result;
+    const auto result=impl->Draw(pixels,width,height,stride);
+    if (impl->diagnostics.Enabled) {
+        ++impl->diagnostics.Calls;
+        impl->diagnostics.Skips += result == Result::Skipped;
+        impl->diagnostics.Failures += result == Result::Failed;
+    }
+    error=impl->error; return result;
 #else
     error="Vulkan display is not built for this platform"; return Result::Failed;
 #endif

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "DisplayCompositor.h"
+#include "RenderCost.h"
 #include "GPU_ColorOp.h"
 #include "PixelConvert.h"
 #include <algorithm>
@@ -9,6 +10,7 @@
 namespace melonDS::Vulkan {
 namespace {
 using Line = SoftRenderer2D::ScaledLineContext;
+using Cost = RenderCostVulkanMeter;
 static_assert(sizeof(Line::Pixel) == 5 * sizeof(u32));
 static_assert(sizeof(Line) == (256 * 5 + 9) * sizeof(u32));
 static_assert(offsetof(Line, blendCnt) == 256 * sizeof(Line::Pixel));
@@ -181,6 +183,7 @@ void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
     const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
     const Device::Buffer* direct)
 {
+    RenderCostVulkanScope cost(owner->Costs(), Cost::RecordDisplay);
     CheckExtents(lines, sourceScale, scale, destination.size());
     constexpr VkMemoryPropertyFlags directProperties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
@@ -197,7 +200,11 @@ void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
         throw std::invalid_argument("Invalid display composition image");
     const auto& input = image3D ? image3D : blank3D;
     if (!image3D) sourceScale = 1;
-    std::memcpy(contexts->Data(), lines.data(), lines.size_bytes());
+    {
+        RenderCostVulkanScope copy(owner->Costs(), Cost::ContextCopy);
+        std::memcpy(contexts->Data(), lines.data(), lines.size_bytes());
+        if (owner->Costs()) owner->Costs()->Transfer(Cost::ContextCopyBytes, lines.size_bytes());
+    }
     const VkDescriptorImageInfo images[] = {{VK_NULL_HANDLE, input->View(), VK_IMAGE_LAYOUT_GENERAL},
         {VK_NULL_HANDLE, outputs[screen]->View(), VK_IMAGE_LAYOUT_GENERAL}};
     for (u32 i = 0; i < 2; ++i)
@@ -207,7 +214,7 @@ void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
         write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; write.pImageInfo = &images[i];
         f.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     }
-    const auto command = owner->Begin();
+    const auto command = owner->Begin(Device::SubmitKind::Display);
     VkMemoryBarrier upload{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     upload.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT; upload.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -223,6 +230,8 @@ void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
     const u32 settings[] = {scale, sourceScale};
     f.vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(settings), settings);
     f.vkCmdDispatch(command, 32 * scale, 24 * scale, 1);
+    owner->Timestamp(Device::TimestampStage::DisplayCompose);
+    u32 transferredRows = 0;
     ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     if (direct)
@@ -246,6 +255,7 @@ void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
             copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
             copy.imageOffset.y = static_cast<int32_t>(first * scale);
             copy.imageExtent = {256 * scale, (y - first) * scale, 1};
+            transferredRows += y - first;
         }
         if (count)
             f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -255,6 +265,7 @@ void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
     {
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {256 * scale, 192 * scale, 1};
+        transferredRows = 192;
         f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback->Handle(), 1, &copy);
     }
     ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
@@ -264,14 +275,26 @@ void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
     download.dstAccessMask = VK_ACCESS_HOST_READ_BIT | (direct ? VK_ACCESS_HOST_WRITE_BIT : 0);
     f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
         0, 1, &download, 0, nullptr, 0, nullptr);
+    if (transferredRows)
+    {
+        owner->Timestamp(Device::TimestampStage::DisplayReadback);
+        if (owner->Costs()) owner->Costs()->Transfer(Cost::DisplayReadbackBytes,
+            uint64_t(transferredRows) * 256 * scale * scale * sizeof(u32), transferredRows);
+    }
+    if (owner->Costs()) owner->Costs()->Transfer(Cost::ComposedRows, 0,
+        std::count_if(lines.begin(), lines.end(), [](const Line& line) { return !Preserved(line); }));
     owner->SubmitAndWait();
     // Cached coherent backing needs no invalidate; GPU completion and the host
     // visibility barrier still precede both reads and future CPU fills.
     if (direct) return;
+    RenderCostVulkanScope copy(owner->Costs(), Cost::DisplayCopy);
     const size_t rowPixels = size_t(256) * scale * scale;
     for (u32 y = 0; y < 192; ++y)
         if (!Preserved(lines[y]))
+        {
             std::memcpy(destination.data() + y * rowPixels,
                 static_cast<const u32*>(readback->Data()) + y * rowPixels, rowPixels * sizeof(u32));
+            if (owner->Costs()) owner->Costs()->Transfer(Cost::DisplayCopyBytes, rowPixels * sizeof(u32));
+        }
 }
 }

@@ -361,6 +361,27 @@ void EmuThread::run()
             else
             {
                 emuInstance->nds->AREngine.SetStopToken(cheatStopToken());
+                const auto runFrame = [&] {
+#ifdef VULKANRENDERER_ENABLED
+                    auto* renderer = dynamic_cast<VulkanRenderer*>(&emuInstance->nds->GetRenderer());
+                    auto* cost = renderer ? renderer->Costs() : nullptr;
+                    u32 lines;
+                    {
+                        RenderCostVulkanFrame interval(cost);
+                        lines = emuInstance->nds->RunFrame();
+                        if (!lines && cost) cost->Discard();
+                    }
+                    if (cost && cost->TakeReport())
+                    {
+                        char report[8192];
+                        cost->Report(report, sizeof(report), "RunFrame");
+                        Platform::Log(Platform::LogLevel::Info, "%s\n", report);
+                    }
+                    return lines;
+#else
+                    return emuInstance->nds->RunFrame();
+#endif
+                };
 
 #ifdef GDBSTUB_ENABLED
                 if (emuInstance->nds->IsGdbInterpreter())
@@ -376,7 +397,7 @@ void EmuThread::run()
                         }
                     }
                     const auto frame = debugger->Run(
-                        [&] { return emuInstance->nds->RunFrame(); },
+                        runFrame,
                         [&] {
                             handleMessages();
                             if (emuStatus == emuStatus_Paused)
@@ -404,7 +425,7 @@ void EmuThread::run()
 #ifdef GDBSTUB_ENABLED
                     debugger.reset();
 #endif
-                    nlines = emuInstance->nds->RunFrame();
+                    nlines = runFrame();
                 }
                 if (emuInstance->nds->GetRenderer().HasRenderFailure())
                 {
