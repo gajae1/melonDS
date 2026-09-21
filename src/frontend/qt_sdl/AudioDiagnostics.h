@@ -3,7 +3,7 @@
 #define AUDIODIAGNOSTICS_H
 
 #include <algorithm>
-#include <SDL2/SDL.h>
+#include "SDLCompat.h"
 
 // Written only by the device callback. Read/reset only while that device is
 // paused, closed, or locked. No logging or allocation on the callback thread.

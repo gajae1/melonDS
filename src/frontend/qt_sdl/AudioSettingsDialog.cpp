@@ -17,7 +17,7 @@
 */
 
 #include <bit>
-#include <SDL2/SDL.h>
+#include "SDLCompat.h"
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QSignalBlocker>
@@ -141,6 +141,23 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     bool isext = (mictype == micInputType_External);
     ui->cbMic->setEnabled(isext);
 
+#ifdef MELONDS_SDL3
+    int count = 0;
+    SDL_AudioDeviceID* mics = SDL_GetAudioRecordingDevices(&count);
+    for (int i = 0; i < count; i++)
+    {
+        if (const char* name = SDL_GetAudioDeviceName(mics[i]))
+            ui->cbMic->addItem(name);
+    }
+
+    QString micdev = cfg.GetQString("Mic.Device");
+    if (micdev == "" && count > 0)
+    {
+        if (const char* name = SDL_GetAudioDeviceName(mics[0]))
+            micdev = name;
+    }
+    SDL_free(mics);
+#else
     const int count = SDL_GetNumAudioDevices(true);
     for (int i = 0; i < count; i++)
     {
@@ -152,6 +169,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     {
         micdev = SDL_GetAudioDeviceName(0, true);
     }
+#endif
 
     ui->cbMic->setCurrentText(micdev);
 

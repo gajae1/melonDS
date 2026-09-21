@@ -46,7 +46,14 @@
 #include <csignal>
 #endif
 
-#include <SDL2/SDL.h>
+#include "SDLCompat.h"
+#ifdef MELONDS_SDL3
+// SDL3 does not ship a separate SDLmain library here. SDL_MAIN_NOIMPL keeps
+// only the main -> SDL_main rename; the real entry points are emitted at the
+// bottom of this file (see there for why the header impl is not used).
+#define SDL_MAIN_NOIMPL
+#include <SDL3/SDL_main.h>
+#endif
 
 #include "OpenGLSupport.h"
 #include "graphics/gl/context.h"
@@ -431,19 +438,19 @@ int main(int argc, char** argv)
 
     SDL_SetHint(SDL_HINT_APP_NAME, "melonDS");
 
-    if (SDL_Init(SDL_INIT_HAPTIC) < 0)
+    if (!SDLCompat_Init(SDL_INIT_HAPTIC))
     {
         printf("SDL couldn't init rumble\n");
     }
-    if (SDL_Init(SDL_INIT_JOYSTICK) < 0)
+    if (!SDLCompat_Init(SDL_INIT_JOYSTICK))
     {
         printf("SDL couldn't init joystick\n");
     }
-    if (SDL_Init(SDL_INIT_SENSOR) < 0)
+    if (!SDLCompat_Init(SDL_INIT_SENSOR))
     {
         printf("SDL couldn't init motion sensors\n");
     }
-    if (SDL_Init(SDL_INIT_AUDIO) < 0)
+    if (!SDLCompat_Init(SDL_INIT_AUDIO))
     {
         const char* err = SDL_GetError();
         QString errorStr = "Failed to initialize SDL. This could indicate an issue with your audio driver.\n\nThe error was: ";
@@ -453,7 +460,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    SDL_JoystickEventState(SDL_ENABLE);
+    SDL_SetJoystickEventsEnabled(true);
 
     SDL_InitSubSystem(SDL_INIT_VIDEO);
     SDL_EnableScreenSaver(); SDL_DisableScreenSaver();
@@ -544,3 +551,20 @@ int main(int argc, char** argv)
     SDL_Quit();
     return ret;
 }
+
+#if defined(MELONDS_SDL3) && defined(_WIN32)
+// SDL3 ships no SDLmain library in this toolchain, so the program entry points
+// live here. They must NOT come from SDL_main_impl.h: that header emits only
+// wWinMain under UNICODE, which forces the wide CRT startup and leaves the
+// ANSI __argc/__argv that main() restores null. WinMain keeps the ANSI CRT
+// entry so __argv is populated exactly like under SDL2main.
+#undef main
+int main(int argc, char** argv)
+{
+    return SDL_RunApp(argc, argv, SDL_main, nullptr);
+}
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
+    return SDL_RunApp(0, nullptr, SDL_main, nullptr);
+}
+#endif

@@ -23,7 +23,7 @@
 #include <QSignalBlocker>
 #include <QTimer>
 
-#include <SDL2/SDL.h>
+#include "SDLCompat.h"
 
 #include "types.h"
 #include "Platform.h"
@@ -97,7 +97,7 @@ InputConfigDialog::~InputConfigDialog()
 {
     auto mutex = getJoyMutex();
     SDL_LockMutex(mutex.get());
-    if (previewJoystick) SDL_JoystickClose(previewJoystick);
+    if (previewJoystick) SDL_CloseJoystick(previewJoystick);
     SDL_UnlockMutex(mutex.get());
     delete ui;
 }
@@ -243,16 +243,16 @@ void InputConfigDialog::refreshJoysticks()
     int selected;
     {
         JoystickListLock devicesLock;
-        SDL_JoystickUpdate();
+        SDL_UpdateJoysticks();
         devices = ListJoysticks();
         selected = joystickSelection.Resolve(devices);
-        if (previewJoystick && (selected < 0 || !SDL_JoystickGetAttached(previewJoystick) ||
-            SDL_JoystickInstanceID(previewJoystick) != joystickSelection.device.instance))
+        if (previewJoystick && (selected < 0 || !SDL_JoystickConnected(previewJoystick) ||
+            SDL_GetJoystickID(previewJoystick) != joystickSelection.device.instance))
         {
-            SDL_JoystickClose(previewJoystick);
+            SDL_CloseJoystick(previewJoystick);
             previewJoystick = nullptr;
         }
-        if (!previewJoystick && selected >= 0) previewJoystick = SDL_JoystickOpen(selected);
+        if (!previewJoystick && selected >= 0) previewJoystick = SDL_OpenJoystick(devices[selected].instance);
         if (selected >= 0 && !previewJoystick)
         {
             selected = -1;
@@ -314,7 +314,7 @@ SDL_Joystick* InputConfigDialog::getJoystick()
     return previewJoystick;
 }
 
-std::shared_ptr<SDL_mutex> InputConfigDialog::getJoyMutex()
+std::shared_ptr<SDL_Mutex> InputConfigDialog::getJoyMutex()
 {
     return emuInstance->getJoyMutex();
 }

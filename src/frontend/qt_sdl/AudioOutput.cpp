@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "AudioOutput.h"
 #include "AudioOutputRamp.h"
-#include <SDL2/SDL.h>
+#include "SDLCompat.h"
 #include <atomic>
 #include <bit>
 #include <algorithm>
@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <condition_variable>
+#include <cstdio>
 #include <future>
 #include <mutex>
 #include <thread>
@@ -47,11 +48,60 @@ void ReportBoundedWait(const char* call, const char* action)
     melonDS::Platform::Log(melonDS::Platform::LogLevel::Error,
         "Audio %s exceeded the %d ms bounded wait; %s\n", call, BoundedWaitMs(), action);
 }
+
+#ifdef MELONDS_SDL3
+// Saved settings identify an output by name; SDL3 opens instance IDs, so the
+// name is resolved against the current physical device list at open time.
+SDL_AudioDeviceID FindPlaybackDevice(const char* name)
+{
+    int count = 0;
+    SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
+    SDL_AudioDeviceID found = 0;
+    if (devices)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            const char* current = SDL_GetAudioDeviceName(devices[i]);
+            if (current && std::strcmp(current, name) == 0)
+            {
+                found = devices[i];
+                break;
+            }
+        }
+        SDL_free(devices);
+    }
+    return found;
+}
+
+// SDL3 has no "stopped" device status: a stream opened on the default device
+// migrates with the system default, while a stream bound to a specific
+// physical device goes silent when that device disappears. Re-enumeration is
+// the removal check.
+bool PlaybackDevicePresent(SDL_AudioDeviceID physical)
+{
+    int count = 0;
+    SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
+    bool found = false;
+    if (devices)
+    {
+        for (int i = 0; i < count; ++i)
+            if (devices[i] == physical) { found = true; break; }
+        SDL_free(devices);
+    }
+    return found;
+}
+#endif
 }
 
 struct AudioOutput::Impl
 {
+#ifdef MELONDS_SDL3
+    SDL_AudioStream* sdl = nullptr;
+    SDL_AudioDeviceID sdlPhysical = 0; // opened physical device; 0 = default
+    std::vector<uint8_t> sdlScratch;
+#else
     SDL_AudioDeviceID sdl = 0;
+#endif
     Callback callback = nullptr;
     void* userdata = nullptr;
     std::atomic<bool> running{false};
@@ -66,6 +116,21 @@ struct AudioOutput::Impl
     static void Render(ma_device* device, void* output, const void*, ma_uint32 frames)
     {
         RenderOutput(device->pUserData, static_cast<uint8_t*>(output), static_cast<int>(frames * 4));
+    }
+#endif
+#ifdef MELONDS_SDL3
+    static void RenderRequest(void* userdata, SDL_AudioStream* stream, int additional, int)
+    {
+        // The stream get callback asks for unconverted input bytes. Fulfilling
+        // exactly the request keeps delivery at one device period, matching the
+        // fixed pull buffer the SDL2 device callback used.
+        auto& self = *static_cast<Impl*>(userdata);
+        additional &= ~3; // whole stereo s16 frames
+        if (additional <= 0) return;
+        if (self.sdlScratch.size() < static_cast<size_t>(additional))
+            self.sdlScratch.resize(additional);
+        RenderOutput(userdata, self.sdlScratch.data(), additional);
+        SDL_PutAudioStreamData(stream, self.sdlScratch.data(), additional);
     }
 #endif
     static void RenderOutput(void* userdata, uint8_t* output, int bytes)
@@ -117,7 +182,11 @@ struct AudioOutput::Impl
     ~Impl()
     {
         PauseCallbacks();
+#ifdef MELONDS_SDL3
+        if (sdl) SDL_DestroyAudioStream(sdl);
+#else
         if (sdl) SDL_CloseAudioDevice(sdl);
+#endif
 #ifdef _WIN32
         if (deviceReady)
         {
@@ -241,15 +310,26 @@ bool AudioOutput::IsRunning() const
 {
     if (impl && (impl->callbackState.load(std::memory_order_acquire) & Impl::Paused))
         return false;
-    return impl && impl->running.load(std::memory_order_relaxed) &&
-        (!impl->sdl || SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_PLAYING);
+    if (!impl || !impl->running.load(std::memory_order_relaxed)) return false;
+    if (!impl->sdl) return true;
+#ifdef MELONDS_SDL3
+    if (SDL_AudioStreamDevicePaused(impl->sdl)) return false;
+    return !impl->sdlPhysical || PlaybackDevicePresent(impl->sdlPhysical);
+#else
+    return SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_PLAYING;
+#endif
 }
 bool AudioOutput::NeedsRecovery() const
 {
     if (!impl) return true;
+#ifdef MELONDS_SDL3
+    // A specific physical device that disappeared leaves the stream silent.
+    if (impl->sdl) return impl->sdlPhysical && !PlaybackDevicePresent(impl->sdlPhysical);
+#else
     // SDL updates enabled on removal, but this wrapper's last Start cannot
     // observe it. Querying status reads SDL's atomic enabled/paused flags.
     if (impl->sdl) return SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_STOPPED;
+#endif
     return !impl->running.load(std::memory_order_relaxed);
 }
 
@@ -369,6 +449,40 @@ AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, C
     auto& obtained = opened.spec;
     if (next.backend == SDL)
     {
+#ifdef MELONDS_SDL3
+        SDL_AudioDeviceID devid = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+        if (!next.device.empty())
+        {
+            devid = FindPlaybackDevice(next.device.c_str());
+            if (!devid)
+            {
+                error = "Audio output device not found: " + next.device;
+                return opened;
+            }
+        }
+        // Match SDL2's ALLOW_FREQUENCY_CHANGE result: the stream should take
+        // input at the device's own rate so no resampling stage is inserted.
+        SDL_AudioSpec devspec{};
+        int devframes = 0;
+        int rate = 48000;
+        if (SDL_GetAudioDeviceFormat(devid, &devspec, &devframes) && devspec.freq > 0)
+            rate = devspec.freq;
+        SDL_AudioSpec wanted{};
+        wanted.freq = rate;
+        wanted.format = SDL_AUDIO_S16;
+        wanted.channels = 2;
+        char framesText[16];
+        std::snprintf(framesText, sizeof(framesText), "%d", next.frames);
+        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, framesText);
+        output->sdl = SDL_OpenAudioDeviceStream(devid, &wanted, Impl::RenderRequest, output.get());
+        if (!output->sdl) { error = SDL_GetError(); return opened; }
+        output->sdlPhysical = devid == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK ? 0 : devid;
+        obtained.rate = rate;
+        obtained.frames = devframes > 0 ? devframes : next.frames;
+        output->outputRamp.Init(rate);
+        const char* driver = SDL_GetCurrentAudioDriver();
+        obtained.backend = std::string("SDL3 / ") + (driver ? driver : "unknown");
+#else
         SDL_AudioSpec wanted{}, actual{};
         wanted.freq = 48000;
         wanted.format = AUDIO_S16SYS;
@@ -384,6 +498,7 @@ AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, C
         output->outputRamp.Init(actual.freq);
         const char* driver = SDL_GetCurrentAudioDriver();
         obtained.backend = std::string("SDL / ") + (driver ? driver : "unknown");
+#endif
     }
 #ifdef _WIN32
     else if (next.backend == WASAPIShared)
@@ -437,6 +552,21 @@ bool AudioOutput::Start(std::string& error)
     if (!impl) { error = "Audio output unavailable"; return false; }
     if (impl->sdl)
     {
+#ifdef MELONDS_SDL3
+        if (impl->sdlPhysical && !PlaybackDevicePresent(impl->sdlPhysical))
+        {
+            impl->running.store(false, std::memory_order_relaxed);
+            error = "Audio output device disconnected";
+            return false;
+        }
+        impl->ResumeCallbacks();
+        if (!impl->running.load(std::memory_order_relaxed))
+        {
+            SDL_ResumeAudioStreamDevice(impl->sdl);
+            impl->running.store(true, std::memory_order_relaxed);
+        }
+        return true;
+#else
         if (SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_STOPPED)
         {
             impl->running.store(false, std::memory_order_relaxed);
@@ -450,6 +580,7 @@ bool AudioOutput::Start(std::string& error)
             impl->running.store(true, std::memory_order_relaxed);
         }
         return true;
+#endif
     }
 #ifdef _WIN32
     if (!impl->running.load(std::memory_order_relaxed))
@@ -481,12 +612,23 @@ std::vector<AudioOutput::DeviceInfo> AudioOutput::Enumerate(int backend, std::st
     {
         if (!SDL_GetCurrentAudioDriver())
         { error = "SDL audio is not initialized"; return result; }
-        const int count = SDL_GetNumAudioDevices(0);
         // SDL permits <= 0 when a driver cannot enumerate names but can still
         // open its default output. Only Open can determine whether it works.
         result.push_back({"", "System default"});
+#ifdef MELONDS_SDL3
+        int count = 0;
+        if (SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count))
+        {
+            for (int i = 0; i < count; ++i)
+                if (const char* name = SDL_GetAudioDeviceName(devices[i]))
+                    result.push_back({name, name});
+            SDL_free(devices);
+        }
+#else
+        const int count = SDL_GetNumAudioDevices(0);
         for (int i = 0; i < count; ++i)
             if (const char* name = SDL_GetAudioDeviceName(i, 0)) result.push_back({name, name});
+#endif
     }
 #ifdef _WIN32
     else if (backend == WASAPIShared)

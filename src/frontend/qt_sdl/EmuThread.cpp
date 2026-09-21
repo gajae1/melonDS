@@ -29,7 +29,7 @@
 #include <cmath>
 #include <mutex>
 
-#include <SDL2/SDL.h>
+#include "SDLCompat.h"
 
 #include "main.h"
 

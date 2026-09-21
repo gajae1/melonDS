@@ -2,7 +2,7 @@
 #ifndef JOYSTICKSELECTION_H
 #define JOYSTICKSELECTION_H
 
-#include <SDL2/SDL.h>
+#include "SDLCompat.h"
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,25 +25,28 @@ struct JoystickDevice
 inline std::vector<JoystickDevice> ListJoysticks()
 {
     std::vector<JoystickDevice> devices;
-    for (int i = 0; i < SDL_NumJoysticks(); ++i)
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+    for (int i = 0; i < count; ++i)
     {
         JoystickDevice device;
         device.index = i;
-        device.instance = SDL_JoystickGetDeviceInstanceID(i);
+        device.instance = ids[i];
         char guid[33];
-        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), guid, sizeof(guid));
+        SDL_GUIDToString(SDL_GetJoystickGUIDForID(ids[i]), guid, sizeof(guid));
         device.guid = guid;
-        if (const char* name = SDL_JoystickNameForIndex(i)) device.name = name;
+        if (const char* name = SDL_GetJoystickNameForID(ids[i])) device.name = name;
         // Serial is available since SDL 2.0.14, below the existing rumble API
         // floor. SDL paths are implementation dependent (and may be reused for
         // a different device); they are not a portable physical identity.
-        if (SDL_Joystick* joystick = SDL_JoystickOpen(i))
+        if (SDL_Joystick* joystick = SDL_OpenJoystick(ids[i]))
         {
-            if (const char* serial = SDL_JoystickGetSerial(joystick)) device.serial = serial;
-            SDL_JoystickClose(joystick);
+            if (const char* serial = SDL_GetJoystickSerial(joystick)) device.serial = serial;
+            SDL_CloseJoystick(joystick);
         }
         devices.push_back(std::move(device));
     }
+    SDL_free(ids);
     return devices;
 }
 

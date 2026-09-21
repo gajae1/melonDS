@@ -147,6 +147,7 @@ if (ENABLE_GDBSTUB)
 endif()
 
 option(BUILD_QT_SDL "Build Qt/SDL frontend" ON)
+option(ENABLE_SDL3 "Build the Qt frontend against SDL3 instead of SDL2" OFF)
 option(MELONDS_BUILD_TESTS "Build focused regression and core integration tests" OFF)
 include(PGO)
 if (MELONDS_BUILD_TESTS)

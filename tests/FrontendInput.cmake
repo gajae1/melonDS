@@ -467,7 +467,11 @@ foreach(pair IN ITEMS "stateAudioEnable|audioEnable" "stateAudioDisable|audioDis
         DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" EmuInstanceAudio.cpp VERBATIM)
     target_sources(SavestateLoad PRIVATE "${output}")
 endforeach()
-target_link_libraries(SavestateLoad PRIVATE PkgConfig::SDL2 melonds-audio-output melonds-audio-stretch)
+target_sources(SavestateLoad PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/AudioOutput.cpp")
+target_link_libraries(SavestateLoad PRIVATE PkgConfig::SDL2 melonds-audio-stretch)
+if (WIN32)
+    target_link_libraries(SavestateLoad PRIVATE melonds-wasapi)
+endif()
 melonds_configure_audio_kernels(SavestateLoad)
 foreach(case IN ITEMS audio-success audio-rebase audio-rollback audio-preflight
         stretch-success stretch-rollback stretch-preflight)

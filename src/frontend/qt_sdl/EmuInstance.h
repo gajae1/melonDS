@@ -20,7 +20,7 @@
 #define EMUINSTANCE_H
 #include "ROMPreparation.h"
 
-#include <SDL2/SDL.h>
+#include "SDLCompat.h"
 #include <atomic>
 #include <stop_token>
 
@@ -171,7 +171,7 @@ public:
     void saveJoystickConfig();
     int getJoystickID() { return joystickID; }
     SDL_Joystick* getJoystick() { return joystick; }
-    std::shared_ptr<SDL_mutex> getJoyMutex() { return joyMutex; }
+    std::shared_ptr<SDL_Mutex> getJoyMutex() { return joyMutex; }
 
     void touchScreen(int x, int y);
     void releaseScreen();
@@ -262,6 +262,9 @@ private:
     int micGetNumSamplesIn(int inlen);
     void micResample(melonDS::s16* inbuf, int inlen);
     static void micCallback(void* data, Uint8* stream, int len);
+#ifdef MELONDS_SDL3
+    static void micCallbackSDL3(void* data, SDL_AudioStream* stream, int additional, int total);
+#endif
 
     void onKeyPress(QKeyEvent* event);
     void onKeyRelease(QKeyEvent* event);
@@ -365,14 +368,19 @@ private:
     std::atomic<bool> audioMutedToggle;
     std::atomic<bool> audioMutedByFastForward;
     std::atomic<bool> audioMutedByWindowFocus;
-    SDL_cond* audioSyncCond;
-    SDL_mutex* audioSyncLock;
+    SDL_Condition* audioSyncCond;
+    SDL_Mutex* audioSyncLock;
 
     int mpAudioMode;
 
     bool micStarted;
 
+#ifdef MELONDS_SDL3
+    SDL_AudioStream* micStream;
+    std::vector<melonDS::u8> micScratch;
+#else
     SDL_AudioDeviceID micDevice;
+#endif
     int micFreq;
     int micBufSize;
     float micSampleFrac;
@@ -388,7 +396,7 @@ private:
     melonDS::u32 micBufferLength;
     melonDS::u32 micBufferReadPos;
 
-    SDL_mutex* micLock;
+    SDL_Mutex* micLock;
 
     //int audioInterp;
     std::atomic<int> audioVolume;
@@ -407,14 +415,14 @@ private:
     std::vector<SDL_JoystickID> joystickTopology;
     Uint32 joystickLastOpen = 0;
     SDL_Joystick* joystick;
-    SDL_GameController* controller;
+    SDL_Gamepad* controller;
     bool hasAccelerometer = false;
     bool hasGyroscope = false;
     bool hasRumble = false;
     bool isRumbling = false;
 
-    static std::shared_ptr<SDL_mutex> joyMutexGlobal;
-    std::shared_ptr<SDL_mutex> joyMutex;
+    static std::shared_ptr<SDL_Mutex> joyMutexGlobal;
+    std::shared_ptr<SDL_Mutex> joyMutex;
 
     // The GUI writes keyboard state while the emulation thread samples it.
     std::atomic<melonDS::u32> keyInputMask, keyHotkeyMask;

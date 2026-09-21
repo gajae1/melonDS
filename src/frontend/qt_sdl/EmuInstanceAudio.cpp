@@ -44,7 +44,7 @@ void EmuInstance::audioInit()
     audioMutedToggle = false;
     audioMutedByFastForward = false;
     audioMutedByWindowFocus = false;
-    audioSyncCond = SDL_CreateCond();
+    audioSyncCond = SDL_CreateCondition();
     audioSyncLock = SDL_CreateMutex();
 
     audioFreq = 48000;
@@ -74,7 +74,11 @@ void EmuInstance::audioInit()
     audioDiagnostics.Enabled = diagnostics && std::strcmp(diagnostics, "1") == 0;
 
     micStarted = false;
+#ifdef MELONDS_SDL3
+    micStream = nullptr;
+#else
     micDevice = 0;
+#endif
     micWavBuffer = nullptr;
     micBuffer = nullptr;
 
@@ -372,7 +376,7 @@ void EmuInstance::audioDeInit()
     micClose();
     micStarted = false;
 
-    if (audioSyncCond) SDL_DestroyCond(audioSyncCond);
+    if (audioSyncCond) SDL_DestroyCondition(audioSyncCond);
     audioSyncCond = nullptr;
 
     if (audioSyncLock) SDL_DestroyMutex(audioSyncLock);
@@ -483,7 +487,7 @@ void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
         // callback synchronously. Destroy it only after releasing the mutex.
         std::stop_callback wakeOnStop(stopToken, [this] {
             SDL_LockMutex(audioSyncLock);
-            SDL_CondSignal(audioSyncCond);
+            SDL_SignalCondition(audioSyncCond);
             SDL_UnlockMutex(audioSyncLock);
         });
         audioPumpTimeStretch(maxQueued);
@@ -493,8 +497,7 @@ void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
                    ? (audioTimeStretch.PendingFrames() >= static_cast<size_t>(maxQueued) || nds->SPU.GetOutputSize() > 0)
                    : nds->SPU.GetOutputSize() >= maxQueued))
         {
-            int ret = SDL_CondWaitTimeout(audioSyncCond, audioSyncLock, 500);
-            if (ret == SDL_MUTEX_TIMEDOUT) break;
+            if (!SDL_WaitConditionTimeout(audioSyncCond, audioSyncLock, 500)) break;
             SDL_UnlockMutex(audioSyncLock);
             audioPumpTimeStretch(maxQueued);
             SDL_LockMutex(audioSyncLock);
@@ -516,7 +519,7 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
     int num_in = inst->audioTimeStretchEnabled
         ? static_cast<int>(inst->audioTimeStretch.Read(reinterpret_cast<s16*>(stream), len))
         : inst->nds->SPU.ReadOutput((s16*) stream, len);
-    SDL_CondSignal(inst->audioSyncCond);
+    SDL_SignalCondition(inst->audioSyncCond);
     SDL_UnlockMutex(inst->audioSyncLock);
     inst->audioDiagnostics.Record(len, num_in, started);
 
@@ -575,7 +578,11 @@ void EmuInstance::audioReportDiagnostics()
 
 void EmuInstance::micOpen()
 {
+#ifdef MELONDS_SDL3
+    if (micStream) return;
+#else
     if (micDevice) return;
+#endif
 
     SDL_LockMutex(micLock);
     memset(micExtBuffer, 0, sizeof(micExtBuffer));
@@ -587,10 +594,71 @@ void EmuInstance::micOpen()
 
     if (micInputType != micInputType_External)
     {
+#ifdef MELONDS_SDL3
+        micStream = nullptr;
+#else
         micDevice = 0;
+#endif
         return;
     }
 
+#ifdef MELONDS_SDL3
+    int numMics = 0;
+    SDL_AudioDeviceID* mics = SDL_GetAudioRecordingDevices(&numMics);
+    if (!mics || numMics == 0)
+    {
+        SDL_free(mics);
+        return;
+    }
+
+    SDL_AudioDeviceID devid = SDL_AUDIO_DEVICE_DEFAULT_RECORDING;
+    if (!micDeviceName.empty())
+    {
+        devid = 0;
+        for (int i = 0; i < numMics; ++i)
+        {
+            const char* name = SDL_GetAudioDeviceName(mics[i]);
+            if (name && micDeviceName == name)
+            {
+                devid = mics[i];
+                break;
+            }
+        }
+    }
+    SDL_free(mics);
+    if (!devid)
+    {
+        Platform::Log(Platform::LogLevel::Error,
+            "Mic init failed: recording device '%s' not found\n", micDeviceName.c_str());
+        return;
+    }
+
+    micFreq = 48000;
+    micBufSize = 1024;
+    // Ask for the device's own rate so the stream does no sample-rate
+    // conversion; micResample already handles any source rate.
+    SDL_AudioSpec devspec{};
+    if (SDL_GetAudioDeviceFormat(devid, &devspec, nullptr) && devspec.freq > 0)
+        micFreq = devspec.freq;
+
+    SDL_AudioSpec spec{};
+    spec.freq = micFreq;
+    spec.format = SDL_AUDIO_S16;
+    spec.channels = 1;
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "1024");
+    micStream = SDL_OpenAudioDeviceStream(devid, &spec, micCallbackSDL3, this);
+    if (!micStream)
+    {
+        Platform::Log(Platform::LogLevel::Error, "Mic init failed: %s\n", SDL_GetError());
+    }
+    else
+    {
+        Platform::Log(Platform::LogLevel::Info, "Mic output frequency: %d Hz\n", micFreq);
+        Platform::Log(Platform::LogLevel::Info, "Mic output buffer size: %d samples\n", micBufSize);
+        // Streams open paused; recording starts on resume.
+        SDL_ResumeAudioStreamDevice(micStream);
+    }
+#else
     int numMics = SDL_GetNumAudioDevices(1);
     if (numMics == 0)
         return;
@@ -623,14 +691,22 @@ void EmuInstance::micOpen()
         Platform::Log(Platform::LogLevel::Info, "Mic output buffer size: %d samples\n", micBufSize);
         SDL_PauseAudioDevice(micDevice, 0);
     }
+#endif
 }
 
 void EmuInstance::micClose()
 {
+#ifdef MELONDS_SDL3
+    if (micStream)
+        SDL_DestroyAudioStream(micStream);
+
+    micStream = nullptr;
+#else
     if (micDevice)
         SDL_CloseAudioDevice(micDevice);
 
     micDevice = 0;
+#endif
 }
 
 void EmuInstance::micStart()
@@ -661,10 +737,54 @@ void EmuInstance::micLoadWav(const std::string& name)
 
     if (len > 0x4000000)
     {
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
+#ifdef MELONDS_SDL3
+    // SDL3 replaces AudioCVT with an audio stream used here as an offline
+    // converter: put the whole file, flush the resampler tail, read it back.
+    SDL_AudioSpec dst{};
+    dst.format = SDL_AUDIO_S16LE;
+    dst.channels = 1;
+    dst.freq = 47743;
+
+    if (format.format == dst.format && format.channels == dst.channels && format.freq == dst.freq)
+    {
+        // no conversion needed
+        micWavLength = len >> 1;
+        micWavBuffer = new s16[micWavLength];
+        memcpy(micWavBuffer, buf, len);
+    }
+    else
+    {
+        SDL_AudioStream* cvt = SDL_CreateAudioStream(&format, &dst);
+        if (!cvt)
+        {
+            SDL_free(buf);
+            return;
+        }
+        if (!SDL_PutAudioStreamData(cvt, buf, static_cast<int>(len)) ||
+            !SDL_FlushAudioStream(cvt))
+        {
+            SDL_DestroyAudioStream(cvt);
+            SDL_free(buf);
+            return;
+        }
+        const int converted = SDL_GetAudioStreamAvailable(cvt);
+        if (converted <= 0)
+        {
+            SDL_DestroyAudioStream(cvt);
+            SDL_free(buf);
+            return;
+        }
+        micWavBuffer = new s16[converted >> 1];
+        micWavLength = SDL_GetAudioStreamData(cvt, micWavBuffer, converted) >> 1;
+        SDL_DestroyAudioStream(cvt);
+    }
+
+    SDL_free(buf);
+#else
     SDL_AudioCVT cvt;
     int cvtres = SDL_BuildAudioCVT(&cvt,
         format.format, format.channels, format.freq,
@@ -673,7 +793,7 @@ void EmuInstance::micLoadWav(const std::string& name)
     if (cvtres < 0)
     {
         // failure
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
@@ -694,7 +814,7 @@ void EmuInstance::micLoadWav(const std::string& name)
         if (SDL_ConvertAudio(&cvt) < 0)
         {
             delete[] cvt.buf;
-            SDL_FreeWAV(buf);
+            SDL_free(buf);
             return;
         }
 
@@ -704,7 +824,8 @@ void EmuInstance::micLoadWav(const std::string& name)
         delete[] cvt.buf;
     }
 
-    SDL_FreeWAV(buf);
+    SDL_free(buf);
+#endif
 }
 
 void EmuInstance::setupMicInputData()
@@ -866,6 +987,21 @@ void EmuInstance::micCallback(void* data, Uint8* stream, int len)
     inst->micResample(input, len);
     SDL_UnlockMutex(inst->micLock);
 }
+
+#ifdef MELONDS_SDL3
+void EmuInstance::micCallbackSDL3(void* data, SDL_AudioStream* stream, int additional, int)
+{
+    // Recording streams fire the callback when captured data is available;
+    // dequeue exactly what arrived and feed the shared resample path.
+    EmuInstance* inst = (EmuInstance*)data;
+    additional &= ~1; // whole s16 samples
+    if (additional <= 0) return;
+    if (inst->micScratch.size() < static_cast<size_t>(additional))
+        inst->micScratch.resize(additional);
+    const int got = SDL_GetAudioStreamData(stream, inst->micScratch.data(), additional);
+    if (got > 0) micCallback(data, inst->micScratch.data(), got);
+}
+#endif
 
 
 
