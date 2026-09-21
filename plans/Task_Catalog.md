@@ -124,7 +124,7 @@
 | BV-09 | [PGO train/holdout](workstreams/06-build-validation.md#BV-09) | GCC 수집·봉인·별도 사용 구현 | P2 | [1.1.38](Release_Plan.md#v38) | — | 1.1.108 source/compiler/명령/data 변경 거절, 실제 core 86/93 TU 수집. Black 학습 장면 중앙값11~16% 감소지만 Solatorobo holdout 일부5~8% 악화로 해당 profile 기본 채택 기각·OFF 유지. 다른 compiler/native 플랫폼·대표 workload 확대 후속 |
 | BV-10 | [paired median/tail 측정](workstreams/06-build-validation.md#BV-10) | 관찰/확장 | P1 | [1.1.03](Release_Plan.md#v03) | — | 1.1.38 state 재생·frame CSV·한 장면 paired 대조; GPU/장치 분리·holdout 대기 |
 | BV-11 | [sanitizer·JIT fault 구분](workstreams/06-build-validation.md#BV-11) | 관찰/확장 | P2 | [1.1.03](Release_Plan.md#v03) | — | 미착수 |
-| BV-12 | [CPU/OS feature·fallback](workstreams/06-build-validation.md#BV-12) | 관찰/확장 | P1 | [1.1.26](Release_Plan.md#v26) | — | 미착수 |
+| BV-12 | [CPU/OS feature·fallback](workstreams/06-build-validation.md#BV-12) | 관찰/확장 | P1 | [1.1.26](Release_Plan.md#v26) | — | 인벤토리 완료(2026-09-21): 디스패치 5곳 열거 — pixel(설정 강제 backend+RGB666 전수 대조)·lowpass(API backend)·JIT(mutable cpu_info, lzcnt-fallback ctest)·interpolation(런타임 fallback 없음, 유일 공백)·CRC32/sha1/xxhash(scalar, 입력 작아 가속 근거 약함). 동일 출력은 기존 ctest가 담당. 다른 CPU/ARM64 실측은 장치 게이트. local-docs/bv12-dispatch-20260921/ |
 | BV-13 | [분리 symbol·진단자료](workstreams/06-build-validation.md#BV-13) | 관찰/확장 | P2 | [1.1.43](Release_Plan.md#v43) | — | 1.1.46 선택형 GNU debug 분리 도구: 원본/기존 출력 보존·debuglink/hash 연결, 5개 행동 그룹 및 실제 Qt 주소→함수/소스 줄·코드/시작 동등 확인; 실제 crash/ASLR/JIT unwind·다른 OS 후속 |
 | BV-14 | [Linux/BSD native 수락](workstreams/06-build-validation.md#BV-14) | 장치/조건부 | P2 | [1.1.42](Release_Plan.md#v42) | — | 미착수 |
 | BV-15 | [Windows/Linux ARM64 native](workstreams/06-build-validation.md#BV-15) | 장치/조건부 | P1 | [1.1.40](Release_Plan.md#v40) | — | 미착수 |
