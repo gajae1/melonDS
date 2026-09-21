@@ -826,7 +826,12 @@ u32 ARMv5::CodeRead32(u32 addr, bool branch)
         //return *(u32*)&CurICacheLine[addr & 0x1C];
     }
 
-    if (CodeMem.Mem) return *(u32*)&CodeMem.Mem[addr & CodeMem.Mask];
+    if (CodeMem.Mem)
+    {
+        u32 v;
+        memcpy(&v, &CodeMem.Mem[addr & CodeMem.Mask], sizeof(v));
+        return v;
+    }
 
     return BusRead32(addr);
 }

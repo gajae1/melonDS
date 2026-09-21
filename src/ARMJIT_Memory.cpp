@@ -703,7 +703,8 @@ bool ARMJIT_Memory::MapAtAddress(u32 addr) noexcept
     }
 #endif
 
-    AddressRange* range = NDS.JIT.CodeMemRegions[region] + memoryOffset / 512;
+    AddressRange* const rangeBase = NDS.JIT.CodeMemRegions[region];
+    AddressRange* const range = rangeBase ? rangeBase + memoryOffset / 512 : nullptr;
 
     // this overcomplicated piece of code basically just finds whole pieces of code memory
     // which can be mapped/protected

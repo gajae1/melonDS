@@ -41,7 +41,8 @@ public:
 };
 
 
-std::atomic<std::shared_ptr<MPInterface>> MPInterface::Current{std::make_shared<DummyMP>()};
+std::shared_ptr<MPInterface> MPInterface::Current{std::make_shared<DummyMP>()};
+std::mutex MPInterface::CurrentMutex;
 std::atomic<MPInterfaceType> MPInterface::CurrentType{MPInterface_Dummy};
 
 
@@ -63,7 +64,10 @@ void MPInterface::Set(MPInterfaceType type)
         break;
     }
 
-    Current.store(std::move(next));
+    {
+        std::lock_guard<std::mutex> lock(CurrentMutex);
+        Current = std::move(next);
+    }
     CurrentType.store(type);
 }
 

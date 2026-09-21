@@ -1162,6 +1162,9 @@ void SPU::BufferAudio()
     BlipTimer = 0;
 
     int avail = blip_samples_avail(BlipLeft);
+    if (avail <= 0)
+        return;
+
     s16 temp[avail * 2];
     blip_read_samples(BlipLeft, temp, avail, true);
     blip_read_samples(BlipRight, temp + 1, avail, true);

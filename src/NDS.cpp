@@ -2218,7 +2218,9 @@ u32 NDS::ARM9Read32(u32 addr)
 
     if ((addr & 0xFFFFF000) == 0xFFFF0000)
     {
-        return *(u32*)&ARM9BIOS[addr & 0xFFF];
+        u32 v;
+        memcpy(&v, &ARM9BIOS[addr & 0xFFF], sizeof(v));
+        return v;
     }
 
     switch (addr & 0xFF000000)
@@ -2615,7 +2617,9 @@ u32 NDS::ARM7Read32(u32 addr)
         if (addr < ARM7BIOSProt && ARM7.R[15] >= ARM7BIOSProt)
             return 0xFFFFFFFF;
 
-        return *(u32*)&ARM7BIOS[addr];
+        u32 v;
+        memcpy(&v, &ARM7BIOS[addr], sizeof(v));
+        return v;
     }
 
     switch (addr & 0xFF800000)

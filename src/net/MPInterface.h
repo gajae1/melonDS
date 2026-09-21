@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <atomic>
+#include <mutex>
 #include "types.h"
 
 namespace melonDS
@@ -51,7 +52,7 @@ public:
 
     // Retain the interface for the whole operation: a UI session switch can
     // otherwise destroy it while an emulation worker is still receiving.
-    static std::shared_ptr<MPInterface> Acquire() { return Current.load(); }
+    static std::shared_ptr<MPInterface> Acquire() { std::lock_guard<std::mutex> lock(CurrentMutex); return Current; }
     static MPInterface& Get() { return *Acquire(); } // Requires externally excluded Set().
     static MPInterfaceType GetType() { return CurrentType.load(); }
     static void Set(MPInterfaceType type);
@@ -81,7 +82,11 @@ protected:
 
 private:
     static std::atomic<MPInterfaceType> CurrentType;
-    static std::atomic<std::shared_ptr<MPInterface>> Current;
+    // C++26 removed std::atomic<std::shared_ptr> (P2867); libc++ already
+    // drops the specialization. A short mutex hold keeps the same
+    // copy-out semantics on every standard library.
+    static std::shared_ptr<MPInterface> Current;
+    static std::mutex CurrentMutex;
 };
 
 }

@@ -82,10 +82,12 @@ Savestate::Savestate(void *buffer, u32 size, bool save) :
         u32 read_magic = 0;
         Var32(&read_magic);
 
-        if (read_magic != *((u32*)SAVESTATE_MAGIC))
+        u32 expected_magic;
+        memcpy(&expected_magic, SAVESTATE_MAGIC, sizeof(expected_magic));
+        if (read_magic != expected_magic)
         {
             Log(LogLevel::Error, "savestate: expected magic number %#08x (%s), got %#08x\n",
-                *((u32*)SAVESTATE_MAGIC),
+                expected_magic,
                 SAVESTATE_MAGIC,
                 read_magic
             );

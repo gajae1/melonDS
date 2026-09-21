@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Vulkan/MemoryType.h"
 #include <cstdio>
+#include <initializer_list>
 using namespace melonDS::Vulkan;
 int main() {
     const auto host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;

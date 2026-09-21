@@ -147,7 +147,7 @@ inline bool OverflowSbc(u32 a, u32 b, u32 carry)
     else if (s > 0) { cpu->SetC(x & (1<<(s-1))); x = ((s32)x) >> s; }
 
 #define ROR_REG_S(x, s) \
-    if (s > 0) cpu->SetC(x & (1<<(s-1))); \
+    if (s > 0) cpu->SetC(x & (1<<((s-1)&31))); \
     x = ROR(x, (s&0x1F));
 
 
