@@ -24,10 +24,10 @@ inline void AccumulateNeon(double* m, double delta, const double* w)
 #endif
 inline void Accumulate(double* moments, double delta, const double* weights) noexcept {
 #ifdef MELONDS_INTERPOLATION_NEON
-    AccumulateNeon(moments,delta,weights);return;
+    if(!ForcedScalar()){AccumulateNeon(moments,delta,weights);return;}
 #elif defined(MELONDS_INTERPOLATION_AVX2)
     static const bool supported=__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
-    if(supported){AccumulateAvx2(moments,delta,weights);return;}
+    if(supported&&!ForcedScalar()){AccumulateAvx2(moments,delta,weights);return;}
 #endif
     for(unsigned k=0;k<16;++k)moments[k]+=delta*weights[k];
 }

@@ -189,6 +189,15 @@ if (TARGET core)
     target_compile_definitions(AudioInterpolationScalarGate PRIVATE
         MELONDS_INTERPOLATION_FMA=0 MELONDS_INTERPOLATION_USE_NEON=0)
     add_test(NAME audio-interpolation-simd-disabled COMMAND AudioInterpolationScalarGate)
+    add_executable(AudioInterpolationScalarOverride AudioInterpolationScalarOverride.cpp)
+    target_link_libraries(AudioInterpolationScalarOverride PRIVATE core)
+    add_test(NAME audio-interpolation-override-auto COMMAND AudioInterpolationScalarOverride auto)
+    add_test(NAME audio-interpolation-override-forced COMMAND AudioInterpolationScalarOverride forced)
+    set_tests_properties(audio-interpolation-override-forced PROPERTIES
+        ENVIRONMENT "MELONDS_INTERPOLATION_SCALAR=1")
+    add_test(NAME audio-interpolation-override-zero COMMAND AudioInterpolationScalarOverride auto)
+    set_tests_properties(audio-interpolation-override-zero PROPERTIES
+        ENVIRONMENT "MELONDS_INTERPOLATION_SCALAR=0")
     add_executable(AudioResampling AudioResampling.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(AudioResampling PRIVATE core Threads::Threads)
     add_test(NAME audio-core-clock COMMAND AudioResampling)

@@ -15,8 +15,25 @@
 #define MELONDS_INTERPOLATION_NEON 1
 #endif
 
+#include <cstdlib>
+
 namespace melonDS::AudioInterpolationMath
 {
+// MELONDS_INTERPOLATION_SCALAR=1 forces the scalar kernels at runtime so a
+// SIMD-capable host can be diagnosed or measured against the scalar path
+// without rebuilding (BV-12 dispatch gap). Unset, empty, or "0" keeps the
+// automatic dispatch. Read once and cached like the CPU feature checks.
+inline bool ForcedScalar() noexcept
+{
+    static const bool forced = []
+    {
+        const char* value = std::getenv("MELONDS_INTERPOLATION_SCALAR");
+        return value != nullptr && value[0] != '\0' &&
+               !(value[0] == '0' && value[1] == '\0');
+    }();
+    return forced;
+}
+
 inline double DotScalar(const double* a, const double* b) noexcept
 {
     double result = 0;
@@ -38,13 +55,16 @@ __attribute__((target("avx2,fma"))) inline double DotAVX2(const double* a, const
 inline double Dot(const double* a, const double* b) noexcept
 {
 #ifdef MELONDS_INTERPOLATION_NEON
-    float64x2_t sum = vdupq_n_f64(0);
-    for (unsigned i = 0; i < 16; i += 2)
-        sum = vfmaq_f64(sum, vld1q_f64(a + i), vld1q_f64(b + i));
-    return vaddvq_f64(sum);
+    if (!ForcedScalar())
+    {
+        float64x2_t sum = vdupq_n_f64(0);
+        for (unsigned i = 0; i < 16; i += 2)
+            sum = vfmaq_f64(sum, vld1q_f64(a + i), vld1q_f64(b + i));
+        return vaddvq_f64(sum);
+    }
 #elif defined(MELONDS_INTERPOLATION_AVX2)
     static const bool supported = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
-    if (supported) return DotAVX2(a, b);
+    if (supported && !ForcedScalar()) return DotAVX2(a, b);
 #endif
     return DotScalar(a, b);
 }
