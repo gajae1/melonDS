@@ -130,6 +130,6 @@
 | BV-15 | [Windows/Linux ARM64 native](workstreams/06-build-validation.md#BV-15) | 장치/조건부 | P1 | [1.1.40](Release_Plan.md#v40) | — | 미착수 |
 | BV-16 | [고급 ARM/Apple 조건부 gate](workstreams/06-build-validation.md#BV-16) | 장치/조건부 | P2 | [1.1.41](Release_Plan.md#v41) | — | 미착수 |
 | BV-17 | [장기 게임·실기 통합 수락](workstreams/06-build-validation.md#BV-17) | 관찰/확장 | P1 | [1.1.44](Release_Plan.md#v44) | — | 미착수 |
-| BV-18 | [upstream/provenance 유지](workstreams/06-build-validation.md#BV-18) | 부분 대조 | P1 | [1.1.03](Release_Plan.md#v03) | — | [2026-09-11 감사](Audit_2026-09-11.md)의 최신 patch 표본·공식 issue·Android 고정 core/빌드/상태 형식 대조; 전체 upstream 및 native 실행 동등성 후속; 2026-09-12 확인 official master906e9ebb와 fork base8bdb579f의 전체 tree가 동일. 원본1.1→master 상류 변경과 자체 수정은 비교에서 구분 |
+| BV-18 | [upstream/provenance 유지](workstreams/06-build-validation.md#BV-18) | 부분 대조 | P1 | [1.1.03](Release_Plan.md#v03) | — | [2026-09-11 감사](Audit_2026-09-11.md)의 최신 patch 표본·공식 issue·Android 고정 core/빌드/상태 형식 대조; 전체 upstream 및 native 실행 동등성 후속; 2026-09-12 확인 official master906e9ebb와 fork base8bdb579f의 전체 tree가 동일. 원본1.1→master 상류 변경과 자체 수정은 비교에서 구분; 2026-09-21 양방향 git cherry(906e9ebb, 동일 HEAD): upstream→fork 미적용 0/2,174 — diff 수준 재적용 위험 0, fork 고유 212커밋(코드171+문서41)은 issue 참조 없는 독자 계열. 의미적 중복·open issue 대조는 후속. local-docs/bv18-provenance-20260921/ |
 | BV-19 | [실험 기능 승격·복구 matrix](workstreams/06-build-validation.md#BV-19) | 관찰/확장 | P1 | [1.1.44](Release_Plan.md#v44) | — | 미착수 |
 | BV-20 | [SDL3 API·장치 전환](workstreams/06-build-validation.md#BV-20) | 신규 이행 | P2 | [1.1.37](Release_Plan.md#v37) | — | 미착수 |
