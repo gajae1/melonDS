@@ -106,6 +106,10 @@ private slots:
     void camStart();
     void camStop();
 
+#if QT_VERSION >= 0x060000
+    void onVideoInputsChanged();
+#endif
+
 private:
     int num;
 
@@ -121,6 +125,7 @@ private:
     CameraFrameDumper* camDumper;
 #if QT_VERSION >= 0x060000
     QMediaCaptureSession* camSession;
+    QMediaDevices* mediaDevices;
 #endif
 
     int frameWidth, frameHeight;

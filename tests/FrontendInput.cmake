@@ -111,6 +111,30 @@ foreach(case IN ITEMS filter-cancel buffer-preview-cancel buffer-accept
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;SDL_AUDIODRIVER=dummy")
 endforeach()
 
+add_executable(CameraSettingsUI "${CMAKE_SOURCE_DIR}/tests/CameraSettingsUI.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformSync.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/PlatformHeadless.cpp"
+    Config.cpp CameraManager.cpp CameraSettingsDialog.h CameraSettingsDialog.ui)
+target_include_directories(CameraSettingsUI PRIVATE "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/src/net" "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_definitions(CameraSettingsUI PRIVATE MELONDS_TEST_FILE_EXISTS)
+set_target_properties(CameraSettingsUI PROPERTIES
+    AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(CameraSettingsUI PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)
+if (USE_QT6)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    target_link_libraries(CameraSettingsUI PRIVATE Qt6::Test)
+else()
+    find_package(Qt5 REQUIRED COMPONENTS Test)
+    target_link_libraries(CameraSettingsUI PRIVATE Qt5::Test)
+endif()
+foreach(case IN ITEMS cancel destroy accept saved-started preview-image xflip device-list switch-camera)
+    add_test(NAME camera-settings-ui-${case} COMMAND CameraSettingsUI ${case})
+    set_tests_properties(camera-settings-ui-${case} PROPERTIES TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()
+
 set(touch_methods)
 foreach(pair IN ITEMS "touchEvent|void ScreenPanel::touchEvent(QTouchEvent* event)"
         "releaseTouch|void ScreenPanel::releaseTouch()"

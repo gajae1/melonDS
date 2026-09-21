@@ -82,27 +82,25 @@ CameraSettingsDialog::CameraSettingsDialog(QWidget* parent) : QDialog(parent), u
         oldCamSettings[i].XFlip = cfg.GetBool("XFlip");
     }
 
+    // The dialog owns the preview lifecycle: snapshot which cameras the
+    // emulation had started, then stop them so the preview owns the device.
+    // The destructor hands the saved state back even when the dialog is
+    // destroyed without an accept/reject (e.g. parent window teardown).
+    settingsApplied = false;
+    for (int i = 0; i < 2; i++)
+    {
+        savedStarted[i] = camManager[i]->isStarted();
+        if (savedStarted[i]) camManager[i]->stop();
+    }
+
     ui->cbCameraSel->addItem("DSi outer camera");
     ui->cbCameraSel->addItem("DSi inner camera");
 
 #if QT_VERSION >= 0x060000
-    const QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
-    for (const QCameraDevice &cameraInfo : cameras)
-    {
-        QString name = cameraInfo.description();
-        QCameraDevice::Position pos = cameraInfo.position();
-        if (pos != QCameraDevice::UnspecifiedPosition)
-        {
-            name += " (";
-            if (pos == QCameraDevice::FrontFace)
-                name += "inner camera";
-            else if (pos == QCameraDevice::BackFace)
-                name += "outer camera";
-            name += ")";
-        }
-
-        ui->cbPhysicalCamera->addItem(name, QString(cameraInfo.id()));
-    }
+    mediaDevices = new QMediaDevices(this);
+    connect(mediaDevices, &QMediaDevices::videoInputsChanged,
+            this, &CameraSettingsDialog::refreshCameraList);
+    refreshCameraList();
 #else
     const QList<QCameraInfo> cameras = QCameraInfo::availableCameras();
     for (const QCameraInfo &cameraInfo : cameras)
@@ -146,11 +144,23 @@ CameraSettingsDialog::CameraSettingsDialog(QWidget* parent) : QDialog(parent), u
 
 CameraSettingsDialog::~CameraSettingsDialog()
 {
+    if (currentDlg == this) currentDlg = nullptr;
+    // End the preview feed first; the emulation's saved state is restored below.
+    for (int i = 0; i < 2; i++)
+        camManager[i]->stop();
+    // Destruction without accept() — Cancel, or a parent teardown where no
+    // finished/rejected runs — still has to undo the live-edited settings
+    // and hand the saved camera state back to the emulation.
+    if (!settingsApplied) restoreOldSettings(false);
+    for (int i = 0; i < 2; i++)
+        if (savedStarted[i]) camManager[i]->start();
     delete ui;
 }
 
 void CameraSettingsDialog::on_CameraSettingsDialog_accepted()
 {
+    settingsApplied = true;
+
     for (int i = 0; i < 2; i++)
     {
         camManager[i]->stop();
@@ -163,16 +173,22 @@ void CameraSettingsDialog::on_CameraSettingsDialog_accepted()
 
 void CameraSettingsDialog::on_CameraSettingsDialog_rejected()
 {
-    if (!((MainWindow*)parent())->getEmuInstance())
-    {
-        closeDlg();
-        return;
-    }
+    // The camera tables are live-edited during preview, so rejection always
+    // restores the snapshot. The device itself is only reinitialized while
+    // the emulation instance still exists.
+    restoreOldSettings(((MainWindow*)parent())->getEmuInstance() != nullptr);
+    closeDlg();
+}
 
+void CameraSettingsDialog::restoreOldSettings(bool reinit)
+{
     for (int i = 0; i < 2; i++)
     {
-        camManager[i]->stop();
-        camManager[i]->deInit();
+        if (reinit)
+        {
+            camManager[i]->stop();
+            camManager[i]->deInit();
+        }
 
         auto& cfg = camManager[i]->getConfig();
         cfg.SetInt("InputType", oldCamSettings[i].InputType);
@@ -180,11 +196,44 @@ void CameraSettingsDialog::on_CameraSettingsDialog_rejected()
         cfg.SetString("DeviceName", oldCamSettings[i].CamDeviceName);
         cfg.SetBool("XFlip", oldCamSettings[i].XFlip);
 
-        camManager[i]->init();
+        if (reinit)
+            camManager[i]->init();
     }
-
-    closeDlg();
 }
+
+#if QT_VERSION >= 0x060000
+void CameraSettingsDialog::refreshCameraList()
+{
+    // Re-enumerate without disturbing the selection so a camera plugged in
+    // while the dialog is open becomes selectable. Signals stay blocked: a
+    // hotplug rebuild must not rewrite the configured device name.
+    const QString selected = ui->cbPhysicalCamera->currentData().toString();
+    const QSignalBlocker blocker(ui->cbPhysicalCamera);
+    ui->cbPhysicalCamera->clear();
+    int restore = -1;
+    const QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
+    for (const QCameraDevice &cameraInfo : cameras)
+    {
+        QString name = cameraInfo.description();
+        QCameraDevice::Position pos = cameraInfo.position();
+        if (pos != QCameraDevice::UnspecifiedPosition)
+        {
+            name += " (";
+            if (pos == QCameraDevice::FrontFace)
+                name += "inner camera";
+            else if (pos == QCameraDevice::BackFace)
+                name += "outer camera";
+            name += ")";
+        }
+
+        ui->cbPhysicalCamera->addItem(name, QString(cameraInfo.id()));
+        if (QString(cameraInfo.id()) == selected)
+            restore = ui->cbPhysicalCamera->count() - 1;
+    }
+    ui->cbPhysicalCamera->setCurrentIndex(restore >= 0 ? restore : 0);
+    ui->rbPictureCamera->setEnabled(ui->cbPhysicalCamera->count() > 0);
+}
+#endif
 
 void CameraSettingsDialog::on_cbCameraSel_currentIndexChanged(int id)
 {

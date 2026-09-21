@@ -103,6 +103,12 @@ private:
     Config::Table* currentCfg;
     CameraManager* currentCam;
 
+    bool settingsApplied;
+    bool savedStarted[2];
+#if QT_VERSION >= 0x060000
+    QMediaDevices* mediaDevices;
+#endif
+
     struct
     {
         int InputType; // 0=blank 1=image 2=camera
@@ -112,6 +118,10 @@ private:
     } oldCamSettings[2];
 
     void populateCamControls(int id);
+    void restoreOldSettings(bool reinit);
+#if QT_VERSION >= 0x060000
+    void refreshCameraList();
+#endif
 };
 
 #endif // CAMERASETTINGSDIALOG_H

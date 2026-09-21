@@ -20,6 +20,7 @@
 
 #include "CameraManager.h"
 #include "Config.h"
+#include "Platform.h"
 
 using namespace melonDS;
 
@@ -131,6 +132,12 @@ CameraManager::CameraManager(int num, int width, int height, bool yuv)
     connect(this, SIGNAL(camStartSignal()), this, SLOT(camStart()));
     connect(this, SIGNAL(camStopSignal()), this, SLOT(camStop()));
 
+#if QT_VERSION >= 0x060000
+    mediaDevices = new QMediaDevices(this);
+    connect(mediaDevices, &QMediaDevices::videoInputsChanged,
+            this, &CameraManager::onVideoInputsChanged);
+#endif
+
     frameWidth = width;
     frameHeight = height;
     frameFormatYUV = yuv;
@@ -216,6 +223,13 @@ void CameraManager::init()
             if (QString(cam.id()) == camDeviceName)
             {
                 camDevice = new QCamera(cam);
+                connect(camDevice, &QCamera::errorOccurred, this,
+                        [this](QCamera::Error error, const QString& description)
+                {
+                    Platform::Log(Platform::LogLevel::Warn,
+                                  "Camera%d device error (%d): %s\n", num, int(error),
+                                  description.toUtf8().constData());
+                });
                 break;
             }
         }
@@ -256,6 +270,12 @@ void CameraManager::init()
         }
 #else
         camDevice = new QCamera(camDeviceName.toUtf8());
+        connect(camDevice, QOverload<QCamera::Error>::of(&QCamera::error), this,
+                [this](QCamera::Error error)
+        {
+            Platform::Log(Platform::LogLevel::Warn, "Camera%d device error (%d)\n",
+                          num, int(error));
+        });
         if (camDevice->error() != QCamera::NoError)
         {
             delete camDevice;
@@ -364,6 +384,40 @@ void CameraManager::camStop()
     if (camDevice)
         camDevice->stop();
 }
+
+#if QT_VERSION >= 0x060000
+void CameraManager::onVideoInputsChanged()
+{
+    if (inputType != 2) return;
+
+    bool present = false;
+    const QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
+    for (const QCameraDevice& cam : cameras)
+    {
+        if (QString(cam.id()) == camDeviceName)
+        {
+            present = true;
+            break;
+        }
+    }
+
+    if (camDevice && !present)
+    {
+        // The configured device went away. Release it so a later
+        // re-appearance can reinitialize cleanly; the last received frame
+        // stays latched in frameBuffer meanwhile.
+        Platform::Log(Platform::LogLevel::Warn, "Camera%d device unavailable\n", num);
+        deInit();
+        inputType = 2; // deInit resets it; keep the configured input kind
+    }
+    else if (!camDevice && present)
+    {
+        Platform::Log(Platform::LogLevel::Info, "Camera%d device available again\n", num);
+        init();
+        if (camDevice && startNum) emit camStartSignal();
+    }
+}
+#endif
 
 void CameraManager::setXFlip(bool flip)
 {

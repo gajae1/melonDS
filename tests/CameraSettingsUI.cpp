@@ -1,0 +1,241 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Real CameraSettingsDialog + CameraManager + Config. The window/instance is
+// a fixture; physical cameras are not required — the blank and still-image
+// inputs plus the device-list enumeration all run headless. FS-21 covers the
+// preview lifecycle: live-edited settings must be restored on Cancel and on
+// destruction without an answer, and the emulation's started cameras must be
+// handed back.
+#include "main.h" // Load the real frontend declarations before replacing names.
+#include <QtWidgets>
+#include <QtTest/QTest>
+#include <cstdio>
+#include <memory>
+#include <stdexcept>
+#include "ui_CameraSettingsDialog.h" // anchor for AUTOUIC generation
+
+struct CameraInstance {};
+class CameraWindow : public QWidget
+{
+public:
+    CameraInstance instance;
+    CameraInstance* getEmuInstance() { return &instance; }
+};
+#define EmuInstance CameraInstance
+#define MainWindow CameraWindow
+#include "../src/frontend/qt_sdl/CameraSettingsDialog.cpp"
+#undef MainWindow
+#undef EmuInstance
+
+CameraManager* camManager[2];
+
+QString emuDirectory;
+static QString configDirectory;
+namespace melonDS::Platform
+{
+std::string GetLocalFilePath(const std::string& path)
+{
+    return (configDirectory + '/' + QString::fromStdString(path)).toStdString();
+}
+bool CheckFileWritable(const std::string&) { return true; }
+bool FileExists(const std::string& path) { return QFileInfo::exists(QString::fromStdString(path)); }
+}
+
+static void Require(bool ok, const char* message)
+{
+    if (!ok) throw std::runtime_error(message);
+}
+[[noreturn]] static void Fatal(const char* message)
+{
+    std::fprintf(stderr, "CameraSettingsUI: %s\n", message);
+    std::fflush(stderr);
+    std::_Exit(1);
+}
+template<typename T> static T* Widget(CameraSettingsDialog& dialog, const char* name)
+{
+    auto* widget = dialog.findChild<T*>(name);
+    Require(widget != nullptr, name);
+    return widget;
+}
+static void Click(QAbstractButton* button)
+{
+    QTest::mouseClick(button, Qt::LeftButton, Qt::NoModifier, QPoint(8, button->height() / 2));
+    QApplication::processEvents();
+}
+static Config::Table Cam(int id)
+{
+    return Config::GetGlobalTable().GetTable(id == 0 ? "DSi.Camera0" : "DSi.Camera1");
+}
+static std::unique_ptr<CameraSettingsDialog> Open(CameraWindow& window)
+{
+    std::unique_ptr<CameraSettingsDialog> dialog(CameraSettingsDialog::openDlg(&window));
+    dialog->setAttribute(Qt::WA_DeleteOnClose, false);
+    QApplication::processEvents();
+    Require(dialog->isVisible(), "Camera settings dialog did not open");
+    return dialog;
+}
+static void Finish(CameraSettingsDialog& dialog, QDialogButtonBox::StandardButton action)
+{
+    Click(Widget<QDialogButtonBox>(dialog, "buttonBox")->button(action));
+    Require(!dialog.isVisible(), "Dialog did not close through its standard button");
+    Require(dialog.result() == (action == QDialogButtonBox::Ok ? QDialog::Accepted : QDialog::Rejected),
+            "Dialog returned the wrong acceptance result");
+    Require(CameraSettingsDialog::currentDlg == nullptr, "Closed dialog retained its singleton");
+}
+static void SelectImageInput(CameraSettingsDialog& dialog, const QString& imagePath)
+{
+    Widget<QLineEdit>(dialog, "txtSrcImagePath")->setText(imagePath);
+    QApplication::processEvents();
+    Click(Widget<QRadioButton>(dialog, "rbPictureImg"));
+}
+static u32 CapturePixel(CameraManager& cam, int x)
+{
+    u32 frame[256 * 192];
+    cam.captureFrame(frame, 256, 192, false);
+    return frame[(96 * 256) + x];
+}
+static bool MostlyRed(u32 pixel)
+{
+    return ((pixel >> 16) & 0xFF) > 200 && ((pixel >> 8) & 0xFF) < 80 && (pixel & 0xFF) < 80;
+}
+static bool MostlyBlue(u32 pixel)
+{
+    return ((pixel >> 16) & 0xFF) < 80 && ((pixel >> 8) & 0xFF) < 80 && (pixel & 0xFF) > 200;
+}
+static void Scenario(const QString& name)
+{
+    CameraWindow window;
+
+    if (name == "saved-started")
+    {
+        // The emulation had both cameras started (a DSi game using them).
+        camManager[0]->start();
+        camManager[1]->start();
+        auto dialog = Open(window);
+        Require(camManager[0]->isStarted(), "Preview did not take over the selected camera");
+        Require(!camManager[1]->isStarted(), "Preview did not stop the other camera");
+        Finish(*dialog, QDialogButtonBox::Cancel);
+        dialog.reset();
+        Require(camManager[0]->isStarted() && camManager[1]->isStarted(),
+                "Closing the dialog did not hand the saved camera state back");
+        camManager[0]->stop();
+        camManager[1]->stop();
+        return;
+    }
+
+    auto dialog = Open(window);
+
+    if (name == "device-list")
+    {
+#if QT_VERSION >= 0x060000
+        auto* devices = Widget<QComboBox>(*dialog, "cbPhysicalCamera");
+        const int real = QMediaDevices::videoInputs().count();
+        Require(devices->count() == real, "Physical camera list does not match the real enumeration");
+        Require(Widget<QRadioButton>(*dialog, "rbPictureCamera")->isEnabled() == (real > 0),
+                "Camera input radio does not track device availability");
+#endif
+        Finish(*dialog, QDialogButtonBox::Cancel);
+    }
+    else if (name == "preview-image" || name == "xflip" || name == "accept" ||
+             name == "cancel" || name == "destroy" || name == "switch-camera")
+    {
+        // Solid red PNG; the still-image input needs no physical device.
+        const QString imagePath = configDirectory + "/camtest.png";
+        QImage image(8, 8, QImage::Format_RGB32);
+        image.fill(qRgb(255, 0, 0));
+        if (name == "xflip")
+        {
+            for (int x = 0; x < 8; ++x)
+                for (int y = 0; y < 8; ++y)
+                    image.setPixel(x, y, x < 4 ? qRgb(255, 0, 0) : qRgb(0, 0, 255));
+        }
+        Require(image.save(imagePath), "Could not write the generated camera image");
+
+        if (name == "switch-camera")
+            Widget<QComboBox>(*dialog, "cbCameraSel")->setCurrentIndex(1);
+        const int id = name == "switch-camera" ? 1 : 0;
+
+        SelectImageInput(*dialog, imagePath);
+        Require(Cam(id).GetInt("InputType") == 1 && Cam(id).GetQString("ImagePath") == imagePath,
+                "Preview selection did not live-edit the camera configuration");
+
+        if (name == "preview-image" || name == "xflip" || name == "accept")
+        {
+            // Left quarter: inside the red half for the split xflip image too.
+            Require(MostlyRed(CapturePixel(*camManager[id], 32)),
+                    "Still-image input did not reach the preview frame");
+        }
+        if (name == "xflip")
+        {
+            Click(Widget<QCheckBox>(*dialog, "chkFlipPicture"));
+            Require(MostlyBlue(CapturePixel(*camManager[id], 64)),
+                    "XFlip preview did not mirror the image horizontally");
+        }
+
+        if (name == "accept")
+        {
+            Finish(*dialog, QDialogButtonBox::Ok);
+            dialog.reset();
+            Require(Cam(id).GetInt("InputType") == 1 && Cam(id).GetQString("ImagePath") == imagePath,
+                    "OK did not keep the selected image input");
+            Require(Config::Load() && Cam(id).GetInt("InputType") == 1,
+                    "Accepted camera settings were not saved to disk");
+        }
+        else
+        {
+            if (name == "destroy")
+            {
+                // Parent teardown path: destruction without accept/reject.
+                dialog.reset();
+                Require(CameraSettingsDialog::currentDlg == nullptr,
+                        "Destroyed dialog retained its singleton");
+            }
+            else
+            {
+                Finish(*dialog, QDialogButtonBox::Cancel);
+                dialog.reset();
+            }
+            Require(Cam(id).GetInt("InputType") == 0 && Cam(id).GetQString("ImagePath").isEmpty() &&
+                    !Cam(id).GetBool("XFlip"),
+                    "Unconfirmed dialog changes leaked into the camera configuration");
+            Require(!camManager[id]->isStarted(), "Preview camera was left started");
+            const int other = id ^ 1;
+            Require(Cam(other).GetInt("InputType") == 0, "Other camera configuration was touched");
+        }
+    }
+    else throw std::runtime_error("Unknown CameraSettingsUI scenario");
+}
+
+int main(int argc, char** argv)
+{
+    QApplication app(argc, argv);
+    QTimer watchdog;
+    QObject::connect(&watchdog, &QTimer::timeout, &watchdog, [] { Fatal("Scenario exceeded 15 seconds"); });
+    watchdog.setSingleShot(true); watchdog.start(15000);
+    try
+    {
+        Require(argc == 2, "Expected one CameraSettingsUI scenario name");
+        QTemporaryDir directory;
+        Require(directory.isValid(), "Temporary configuration directory unavailable");
+        configDirectory = directory.path();
+        emuDirectory = configDirectory;
+        QFile file(configDirectory + "/melonDS.toml");
+        const QByteArray seed = "[DSi.Camera0]\nInputType = 0\nImagePath = \"\"\nDeviceName = \"\"\nXFlip = false\n"
+                                "[DSi.Camera1]\nInputType = 0\nImagePath = \"\"\nDeviceName = \"\"\nXFlip = false\n";
+        Require(file.open(QIODevice::WriteOnly) && file.write(seed) == seed.size(),
+                "Could not write generated configuration fixture");
+        file.close();
+        Require(Config::Load(), "Generated configuration failed to load");
+        camManager[0] = new CameraManager(0, 640, 480, true);
+        camManager[1] = new CameraManager(1, 640, 480, true);
+        Scenario(QString::fromLocal8Bit(argv[1]));
+        delete camManager[0];
+        delete camManager[1];
+        std::printf("CameraSettingsUI %s PASS\n", argv[1]);
+        return 0;
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "CameraSettingsUI %s: %s\n", argc > 1 ? argv[1] : "?", e.what());
+        return 1;
+    }
+}

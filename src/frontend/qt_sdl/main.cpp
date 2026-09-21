@@ -87,7 +87,6 @@ const int kMaxEmuInstances = 16;
 EmuInstance* emuInstances[kMaxEmuInstances];
 
 CameraManager* camManager[2];
-bool camStarted[2];
 
 std::optional<LibPCap> pcap;
 Net net;
@@ -479,8 +478,6 @@ int main(int argc, char** argv)
         message.exec();
     }
 
-    camStarted[0] = false;
-    camStarted[1] = false;
     camManager[0] = new CameraManager(0, 640, 480, true);
     camManager[1] = new CameraManager(1, 640, 480, true);
 

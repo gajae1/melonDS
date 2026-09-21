@@ -89,10 +89,6 @@ using namespace melonDS;
 
 
 
-extern CameraManager* camManager[2];
-extern bool camStarted[2];
-
-
 MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
     QMainWindow(parent),
     windowID(id),
@@ -1978,20 +1974,12 @@ void MainWindow::onOpenCameraSettings()
 {
     emuThread->emuPause();
 
-    camStarted[0] = camManager[0]->isStarted();
-    camStarted[1] = camManager[1]->isStarted();
-    if (camStarted[0]) camManager[0]->stop();
-    if (camStarted[1]) camManager[1]->stop();
-
     CameraSettingsDialog* dlg = CameraSettingsDialog::openDlg(this);
     connect(dlg, &CameraSettingsDialog::finished, this, &MainWindow::onCameraSettingsFinished);
 }
 
 void MainWindow::onCameraSettingsFinished(int res)
 {
-    if (camStarted[0]) camManager[0]->start();
-    if (camStarted[1]) camManager[1]->start();
-
     emuThread->emuUnpause();
 }
 
