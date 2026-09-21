@@ -195,7 +195,9 @@ void ScreenLayout::Setup(int screenWidth, int screenHeight,
         float vSize = fabsf(refpoints[primOffset][1] - refpoints[primOffset+1][1]);
 
         float scale = std::min(screenWidth / hSize, screenHeight / vSize);
-        if (integerScale)
+        // Integer scaling has no valid step below 1x; keep the fractional
+        // scale rather than collapsing the layout to an invisible point.
+        if (integerScale && scale >= 1.f)
             scale = floorf(scale);
 
         TopEnable = sizing == screenSizing_TopOnly;
@@ -273,7 +275,7 @@ void ScreenLayout::Setup(int screenWidth, int screenHeight,
                 // scale evenly
                 float scale = std::min(screenWidth / hSize, screenHeight / vSize);
 
-                if (integerScale)
+                if (integerScale && scale >= 1.f)
                     scale = floor(scale);
 
                 hybScale *= scale;
@@ -348,28 +350,39 @@ void ScreenLayout::Setup(int screenWidth, int screenHeight,
                 float primScale = std::min(screenWidth / primHSize, screenHeight / primVSize);
                 float secScale = 1.f;
 
-                if (integerScale)
+                if (integerScale && primScale >= 1.f)
                     primScale = floorf(primScale);
 
                 if (layout == 0)
                 {
                     if (screenHeight - primVSize * primScale < secVSize)
-                        primScale = std::min(screenWidth / primHSize, (screenHeight - secVSize) / primVSize);
+                    {
+                        // The secondary screen keeps priority for up to 1x,
+                        // but on windows too small to host it at 1x it must
+                        // shrink too; the primary gets whatever room remains.
+                        secScale = std::min({1.f, screenWidth / secHSize, screenHeight / secVSize});
+                        primScale = std::min(screenWidth / primHSize,
+                                             (screenHeight - secVSize * secScale) / primVSize);
+                    }
                     else
                         secScale = std::min((screenHeight - primVSize * primScale) / secVSize, screenWidth / secHSize);
                 }
                 else
                 {
                     if (screenWidth - primHSize * primScale < secHSize)
-                        primScale = std::min((screenWidth - secHSize) / primHSize, screenHeight / primVSize);
+                    {
+                        secScale = std::min({1.f, screenWidth / secHSize, screenHeight / secVSize});
+                        primScale = std::min((screenWidth - secHSize * secScale) / primHSize,
+                                             screenHeight / primVSize);
+                    }
                     else
                         secScale = std::min((screenWidth - primHSize * primScale) / secHSize, screenHeight / secVSize);
                 }
 
                 if (integerScale)
                 {
-                    primScale = floorf(primScale);
-                    secScale = floorf(secScale);
+                    if (primScale >= 1.f) primScale = floorf(primScale);
+                    if (secScale >= 1.f) secScale = floorf(secScale);
                 }
 
                 M23_Scale(primMtx, primScale);
@@ -405,8 +418,10 @@ void ScreenLayout::Setup(int screenWidth, int screenHeight,
         float width = maxX - minX;
         float height = maxY - minY;
 
-        float tx = (screenWidth/2) - (width/2) - minX;
-        float ty = (screenHeight/2) - (height/2) - minY;
+        // Odd window sizes must keep the half pixel; integer division here
+        // pushed the layout off-center and let edge rows clip past the panel.
+        float tx = (screenWidth/2.f) - (width/2) - minX;
+        float ty = (screenHeight/2.f) - (height/2) - minY;
 
         M23_Translate(TopScreenMtx, tx, ty);
         M23_Translate(BotScreenMtx, tx, ty);

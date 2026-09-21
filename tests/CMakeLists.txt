@@ -793,6 +793,14 @@ foreach(case IN ITEMS availability warn-once inert)
     set_tests_properties(net-driver-${case} PROPERTIES TIMEOUT 5)
 endforeach()
 
+add_executable(ScreenLayout ScreenLayout.cpp ../src/frontend/ScreenLayout.cpp)
+target_include_directories(ScreenLayout PRIVATE ../src ../src/frontend)
+target_compile_features(ScreenLayout PRIVATE cxx_std_26)
+foreach(case IN ITEMS bounds touch-roundtrip degenerate toponly-notouch)
+    add_test(NAME screen-layout-${case} COMMAND ScreenLayout ${case})
+    set_tests_properties(screen-layout-${case} PROPERTIES TIMEOUT 15)
+endforeach()
+
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/SlirpFinishUDPFrame.inc"
            "${CMAKE_CURRENT_BINARY_DIR}/SlirpHandleDNSFrame.inc"
