@@ -48,6 +48,8 @@ public:
 
     int SendPacket(u8* data, int len) noexcept override;
     void RecvCheck() noexcept override;
+    // slirp_new may fail, leaving a null context that silently drops traffic.
+    [[nodiscard]] bool IsActive() const noexcept override { return Ctx != nullptr; }
 private:
     static constexpr int PollListMax = 64;
     static const SlirpCb cb;

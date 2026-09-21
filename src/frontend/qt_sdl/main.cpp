@@ -91,6 +91,10 @@ CameraManager* camManager[2];
 std::optional<LibPCap> pcap;
 Net net;
 
+// Reason the configured network backend is unavailable; empty while the
+// configured driver initialized successfully. Surfaced in Wifi settings.
+std::string netInitError;
+
 
 QElapsedTimer sysTimer;
 
@@ -98,12 +102,26 @@ QElapsedTimer sysTimer;
 void NetInit()
 {
     Config::Table cfg = Config::GetGlobalTable();
+    netInitError.clear();
+
+    // Clear the previous driver first: a failed re-init must not leave a
+    // stale driver of a different mode silently carrying traffic.
+    net.SetDriver(nullptr);
+
     if (cfg.GetBool("LAN.DirectMode"))
     {
         if (!pcap)
             pcap = LibPCap::New();
 
-        if (pcap)
+        if (!pcap)
+        {
+#ifdef __WIN32__
+            netInitError = "winpcap/npcap is not installed";
+#else
+            netInitError = "libpcap is not available";
+#endif
+        }
+        else
         {
             std::string devicename = cfg.GetString("LAN.Device");
             std::unique_ptr<Net_PCap> netPcap = pcap->Open(devicename, [](const u8* data, int len) {
@@ -114,13 +132,29 @@ void NetInit()
             {
                 net.SetDriver(std::move(netPcap));
             }
+            else
+            {
+                netInitError = "could not open the selected network adapter";
+            }
         }
     }
     else
     {
-        net.SetDriver(std::make_unique<Net_Slirp>([](const u8* data, int len) {
+        auto driver = std::make_unique<Net_Slirp>([](const u8* data, int len) {
             net.RXEnqueue(data, len);
-        }));
+        });
+        if (driver->IsActive())
+            net.SetDriver(std::move(driver));
+        else
+            netInitError = "could not initialize libslirp";
+    }
+
+    if (!netInitError.empty())
+    {
+        Platform::Log(Platform::LogLevel::Error, "Network driver init failed: %s\n", netInitError.c_str());
+        for (EmuInstance* inst : emuInstances)
+            if (inst)
+                inst->osdAddMessage(0xFFA0A0, "Wi-Fi unavailable; check Wifi settings");
     }
 }
 

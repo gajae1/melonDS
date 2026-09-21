@@ -39,6 +39,7 @@
 
 extern std::optional<melonDS::LibPCap> pcap;
 extern melonDS::Net net;
+extern std::string netInitError;
 
 WifiSettingsDialog* WifiSettingsDialog::currentDlg = nullptr;
 
@@ -85,6 +86,13 @@ WifiSettingsDialog::WifiSettingsDialog(QWidget* parent) : QDialog(parent), ui(ne
     if (!haspcap) ui->rbDirectMode->setEnabled(false);
 
     updateAdapterControls();
+
+    if (!netInitError.empty())
+        ui->lblNetStatus->setText(QString("Status: unavailable (%1)").arg(QString::fromStdString(netInitError)));
+    else if (net.HasActiveDriver())
+        ui->lblNetStatus->setText(direct ? "Status: direct mode active" : "Status: indirect mode active");
+    else
+        ui->lblNetStatus->setText("Status: unavailable");
 }
 
 WifiSettingsDialog::~WifiSettingsDialog()
@@ -127,6 +135,13 @@ void WifiSettingsDialog::done(int r)
     std::string devicename = cfg.GetString("LAN.Device");
 
     NetInit();
+
+    if (r == QDialog::Accepted && !netInitError.empty())
+    {
+        QMessageBox::warning(this, "melonDS",
+            QString("The configured network driver could not be initialized (%1). Wi-Fi will be unavailable.")
+                .arg(QString::fromStdString(netInitError)));
+    }
 
     QDialog::done(r);
 

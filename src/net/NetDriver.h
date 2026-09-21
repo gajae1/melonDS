@@ -27,6 +27,9 @@ class NetDriver
 {
 public:
     virtual ~NetDriver() = default;
+    // False when the driver object exists but its backend failed to
+    // initialize; such a driver carries no traffic.
+    [[nodiscard]] virtual bool IsActive() const noexcept { return true; }
     virtual int SendPacket(u8* data, int len) noexcept = 0;
     virtual void RecvCheck() noexcept = 0;
 };

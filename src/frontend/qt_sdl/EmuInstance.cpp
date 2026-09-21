@@ -1545,6 +1545,8 @@ bool EmuInstance::updateConsole(bool directBoot, bool firmwareBoot) noexcept
             }
         }
         auto sdcard = loadSDCard("DSi.SD");
+        if (sdcard && !sdcard->IsValid())
+            osdAddMessage(0xFFA0A0, "DSi SD card image could not be mounted; the SD card will be absent");
 
         DSiArgs _dsiargs {
                 std::move(ndsargs),
@@ -1592,7 +1594,13 @@ bool EmuInstance::updateConsole(bool directBoot, bool firmwareBoot) noexcept
     auto nextgbacart = changeGBACart ? std::move(nextGBACart) : (nds ? nds->EjectGBACart() : nullptr);
     changeCart = changeGBACart = false;
     if (auto* cartsd = dynamic_cast<NDSCart::CartSD*>(nextndscart.get()))
-        cartsd->SetSDCard(getSDCardArgs("DLDI"));
+    {
+        auto dldiargs = getSDCardArgs("DLDI");
+        const bool dldiwanted = dldiargs.has_value();
+        cartsd->SetSDCard(std::move(dldiargs));
+        if (dldiwanted && !cartsd->GetSDCard())
+            osdAddMessage(0xFFA0A0, "DLDI SD card image could not be mounted; DLDI will be disabled");
+    }
 
     consoleType = requestedType;
     if (replacement)
@@ -2060,11 +2068,13 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
 
     if (!loadSaveRAM(savname, origsav, false, savedata, savelen, errorstr)) return false;
 
+    auto dldiargs = getSDCardArgs("DLDI");
+    const bool dldiwanted = dldiargs.has_value();
     NDSCart::NDSCartArgs cartargs {
             // Don't load the SD card itself yet, because we don't know if
             // the ROM is homebrew or not.
             // So this is the card we *would* load if the ROM were homebrew.
-            .SDCard = getSDCardArgs("DLDI"),
+            .SDCard = std::move(dldiargs),
             .SRAM = std::move(savedata),
             .SRAMLength = savelen,
             .SPISaveType = dsSaveType,
@@ -2089,6 +2099,14 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
             "Failed to load the DS ROM. Custom SPI save types require a standard retail cartridge; use Automatic for NAND or homebrew." :
             "Failed to load the DS ROM.";
         return false;
+    }
+
+    // DLDI only applies to SD-backed (homebrew) carts; a wanted-but-absent
+    // card there means the image failed to mount.
+    if (dldiwanted)
+    {
+        if (auto* cartsd = dynamic_cast<NDSCart::CartSD*>(cart.get()); cartsd && !cartsd->GetSDCard())
+            osdAddMessage(0xFFA0A0, "DLDI SD card image could not be mounted; DLDI will be disabled");
     }
 
     auto oldSave = std::move(ndsSave);

@@ -545,7 +545,16 @@ u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata)
 
 int Net_SendPacket(u8* data, int len, void* userdata)
 {
-    int inst = ((EmuInstance*)userdata)->getInstanceID();
+    EmuInstance* instance = (EmuInstance*)userdata;
+    if (!net.HasActiveDriver())
+    {
+        // The guest only reaches the driver when it actually transmits; a dead
+        // backend would otherwise fail silently. Warn once per driver state.
+        if (net.WarnUnavailableOnce())
+            instance->osdAddMessage(0xFFA0A0, "Wi-Fi unavailable; check Wifi settings");
+        return 0;
+    }
+    int inst = instance->getInstanceID();
     net.SendPacket(data, len, inst);
     return 0;
 }

@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <mutex>
+#include <atomic>
 
 #include "types.h"
 #include "PacketDispatcher.h"
@@ -50,11 +51,21 @@ public:
 
     void SetDriver(std::unique_ptr<NetDriver>&& driver) noexcept;
 
+    // True while the installed driver reports a usable backend. Cheap enough
+    // to poll from the packet path; updated by SetDriver.
+    [[nodiscard]] bool HasActiveDriver() const noexcept { return ActiveDriver.load(std::memory_order_acquire); }
+
+    // One-shot latch for user-facing unavailability reports: returns true
+    // once per driver change so a dead backend surfaces a single warning.
+    bool WarnUnavailableOnce() noexcept { return !UnavailableWarned.exchange(true, std::memory_order_acq_rel); }
+
 private:
     // Lock order: DriverMutex -> Dispatcher. RXEnqueue never takes DriverMutex.
     std::mutex DriverMutex;
     PacketDispatcher Dispatcher {};
     std::unique_ptr<NetDriver> Driver = nullptr;
+    std::atomic<bool> ActiveDriver{false};
+    std::atomic<bool> UnavailableWarned{false};
 };
 
 }

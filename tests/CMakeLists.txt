@@ -784,6 +784,15 @@ foreach(case IN ITEMS controls missing-symbols capture link-type io-errors open-
     set_tests_properties(pcap-input-${case} PROPERTIES TIMEOUT 10)
 endforeach()
 
+add_executable(NetDriverState NetDriverState.cpp
+    ../src/net/Net.cpp ../src/net/PacketDispatcher.cpp PlatformSync.cpp)
+target_include_directories(NetDriverState PRIVATE ../src ../src/net)
+target_compile_features(NetDriverState PRIVATE cxx_std_26)
+foreach(case IN ITEMS availability warn-once inert)
+    add_test(NAME net-driver-${case} COMMAND NetDriverState ${case})
+    set_tests_properties(net-driver-${case} PROPERTIES TIMEOUT 5)
+endforeach()
+
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/SlirpFinishUDPFrame.inc"
            "${CMAKE_CURRENT_BINARY_DIR}/SlirpHandleDNSFrame.inc"

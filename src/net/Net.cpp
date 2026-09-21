@@ -49,6 +49,9 @@ void Net::SetDriver(std::unique_ptr<NetDriver>&& driver) noexcept
 {
     std::lock_guard lock(DriverMutex);
     Driver = std::move(driver);
+    ActiveDriver.store(Driver != nullptr && Driver->IsActive(), std::memory_order_release);
+    // A driver change is a new availability state; re-arm the warning latch.
+    UnavailableWarned.store(false, std::memory_order_release);
 }
 
 int Net::SendPacket(u8* data, int len, int inst)
