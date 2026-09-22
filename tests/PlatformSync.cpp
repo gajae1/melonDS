@@ -5,6 +5,8 @@
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <thread>
 namespace melonDS::Platform {
@@ -36,7 +38,9 @@ bool Semaphore_TryWait(Semaphore* s, int milliseconds) {
     --s->count; return true;
 }
 void Log(LogLevel level, const char* fmt, ...) {
-    if (level < LogLevel::Warn) return;
+    // Preserve opt-in render timing reports in headless performance runs.
+    const char* diagnostics = std::getenv("MELONDS_RENDER_DIAGNOSTICS");
+    if (level < LogLevel::Warn && !(diagnostics && std::strcmp(diagnostics, "1") == 0)) return;
     va_list args; va_start(args, fmt); vfprintf(stderr, fmt, args); va_end(args);
 }
 }

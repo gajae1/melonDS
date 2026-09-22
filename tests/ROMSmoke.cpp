@@ -14,12 +14,15 @@
 #include <fstream>
 #include <chrono>
 #include <vector>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <algorithm>
 #include <cstdlib>
 #include <memory>
+#include "RenderCost.h"
 #include "ROMSmokeAudio.h"
 
 // DSi writes go to a private RAM copy. The original NAND is never opened for writing.
@@ -66,7 +69,7 @@ static std::vector<melonDS::u8> Read(const char* name)
 int main(int argc, char** argv)
 {
     using namespace melonDS;
-    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute|vulkan frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM, MELONDS_SMOKE_SCALE, MELONDS_SMOKE_HIRES\n"); return 2; }
+    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute|vulkan frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM, MELONDS_SMOKE_SCALE, MELONDS_SMOKE_HIRES, MELONDS_SMOKE_VK_ADAPTER\n"); return 2; }
     const char* pcmPath = std::getenv("MELONDS_SMOKE_PCM");
     if (pcmPath && std::getenv("MELONDS_SMOKE_AUDIO_BUFFER")) {
         std::fprintf(stderr, "PCM export and device playback cannot consume the same queue\n");
@@ -101,6 +104,7 @@ int main(int argc, char** argv)
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
         window = SDL_CreateWindow("ROM smoke",0,0,256,384,SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN);
         if (!window || !(context = SDL_GL_CreateContext(window)) || !gladLoadGLLoader(SDL_GL_GetProcAddress)) return 77;
+        std::fprintf(stderr, "opengl adapter: %s (vendor: %s)\n", glGetString(GL_RENDERER), glGetString(GL_VENDOR));
     }
     {
         std::unique_ptr<NDSCart::CartCommon> cart;
@@ -165,8 +169,42 @@ int main(int argc, char** argv)
         }
 #ifdef VULKANRENDERER_ENABLED
         if (vulkan) {
-            nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds));
+            // Optional adapter choice for measuring a specific GPU. The value is
+            // an adapter id, or a case-insensitive substring of its name.
+            std::string preferred, adapterName, error;
+            const auto adapters = Vulkan::Device::Enumerate(error);
+            if (const char* wanted = std::getenv("MELONDS_SMOKE_VK_ADAPTER"); wanted && *wanted) {
+                for (const auto& adapter : adapters)
+                    if (adapter.id == wanted) { preferred = adapter.id; adapterName = adapter.name; break; }
+                if (preferred.empty()) {
+                    auto lower = [](std::string text) {
+                        std::transform(text.begin(), text.end(), text.begin(),
+                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        return text;
+                    };
+                    const std::string needle = lower(wanted);
+                    for (const auto& adapter : adapters)
+                        if (lower(adapter.name).find(needle) != std::string::npos)
+                        { preferred = adapter.id; adapterName = adapter.name; break; }
+                }
+                if (preferred.empty()) {
+                    if (!error.empty()) std::fprintf(stderr, "adapter enumeration failed: %s\n", error.c_str());
+                    else std::fprintf(stderr, "no Vulkan adapter matches \"%s\"\n", wanted);
+                    for (const auto& adapter : adapters)
+                        std::fprintf(stderr, "  %s (%s)\n", adapter.name.c_str(), adapter.id.c_str());
+                    return 4;
+                }
+            }
+            nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds, preferred));
             if (!dynamic_cast<VulkanRenderer*>(&nds->GetRenderer())) return 5;
+            // Report the device the renderer actually created, not the request.
+            const std::string live = static_cast<VulkanRenderer&>(nds->GetRenderer()).DeviceName();
+            if (!live.empty()) {
+                adapterName = live;
+                for (const auto& adapter : adapters)
+                    if (adapter.name == live) { preferred = adapter.id; break; }
+            }
+            std::fprintf(stderr, "vulkan adapter: %s (%s)\n", adapterName.c_str(), preferred.c_str());
         }
 #endif
         // Diagnostic 3D-scale overrides; the config default stays 1x, hires off.
@@ -251,7 +289,18 @@ int main(int argc, char** argv)
             if (launchCart && i == 2402) nds->SetKeyMask(0xFFF);
             std::chrono::steady_clock::time_point frameStart;
             if (frameTimesPath) frameStart = std::chrono::steady_clock::now();
-            const int lines = nds->RunFrame();
+            int lines;
+            {
+#ifdef VULKANRENDERER_ENABLED
+                const auto* renderer = dynamic_cast<VulkanRenderer*>(&nds->GetRenderer());
+                auto* cost = renderer ? renderer->Costs() : nullptr;
+                RenderCostVulkanFrame interval(cost);
+#endif
+                lines = nds->RunFrame();
+#ifdef VULKANRENDERER_ENABLED
+                if (!lines && cost) cost->Discard();
+#endif
+            }
             if (nds->GetRenderer().HasRenderFailure()) {
                 std::fprintf(stderr, "renderer failed at frame=%d\n", i); return 5;
             }

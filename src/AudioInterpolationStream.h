@@ -48,6 +48,7 @@ class AudioInterpolationStream
     std::shared_ptr<const Bank> Owner;
     std::vector<Active> Direct;
     std::vector<Block> Blocks;
+    size_t BlockStart = 0;
     std::array<Block, Bank::DensePeriods> Pending{};
     std::array<unsigned, Bank::DensePeriods> PendingIndices{};
     unsigned PendingCount = 0;
@@ -57,8 +58,17 @@ class AudioInterpolationStream
 
     void Flush()
     {
-        if (PendingCount > BlockCapacity - Blocks.size())
+        if (PendingCount > BlockCapacity - (Blocks.size() - BlockStart))
             throw std::length_error("Interpolation block capacity exceeded");
+        // Retired leading blocks need no per-sample history copies. Reclaim
+        // their storage only when appending would exhaust the reserved tail.
+        if (PendingCount > BlockCapacity - Blocks.size())
+        {
+            const size_t count = Blocks.size() - BlockStart;
+            for (size_t i = 0; i < count; ++i) Blocks[i] = Blocks[BlockStart + i];
+            Blocks.resize(count);
+            BlockStart = 0;
+        }
         for (unsigned i = 0; i < PendingCount; ++i)
         {
             auto& block = Pending[PendingIndices[i]];
@@ -78,12 +88,12 @@ public:
     }
     void Reset() noexcept
     {
-        Direct.clear(); Blocks.clear();
+        Direct.clear(); Blocks.clear(); BlockStart = 0;
         for (unsigned i = 0; i < PendingCount; ++i) Pending[PendingIndices[i]].Period = 0;
         PendingCount = 0; PendingEnd = LastInput = LastOutput = 0;
         HasOutput = false; Current = {};
     }
-    size_t ActiveTails() const noexcept { return Direct.size() + Blocks.size() + PendingCount; }
+    size_t ActiveTails() const noexcept { return Direct.size() + Blocks.size() - BlockStart + PendingCount; }
     size_t HistoryBytes() const noexcept
     { return Direct.capacity() * sizeof(Active) + Blocks.capacity() * sizeof(Block) + sizeof(Pending); }
     void ChangeBank(std::shared_ptr<const Bank> bank)
@@ -156,13 +166,23 @@ public:
             if (keep != i) Direct[keep] = tail;
             ++keep;
         }
-        Direct.resize(keep); keep = 0;
-        for (size_t i = 0; i < Blocks.size(); ++i)
+        Direct.resize(keep); keep = BlockStart;
+        for (size_t i = BlockStart; i < Blocks.size(); ++i)
         {
             const auto& block = Blocks[i];
             const u64 row = (clock - block.End) / mix;
             const auto coefficients = block.Coefficients;
-            if (row >= coefficients.size()) continue;
+            if (row >= coefficients.size())
+            {
+                // Different periods can retire out of order. Skip a leading
+                // prefix; compact later holes without changing summation order.
+                if (keep == BlockStart)
+                {
+                    ++BlockStart;
+                    ++keep;
+                }
+                continue;
+            }
             const double left = AudioInterpolationMath::Dot(block.Moments[0].data(), coefficients[row].data());
             value[0] -= left;
             value[1] -= block.SameSides ? left
@@ -171,6 +191,7 @@ public:
             ++keep;
         }
         Blocks.resize(keep);
+        if (BlockStart == Blocks.size()) { Blocks.clear(); BlockStart = 0; }
         HasOutput = true; LastOutput = clock;
         return value;
     }

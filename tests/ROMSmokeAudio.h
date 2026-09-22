@@ -35,7 +35,6 @@ struct SmokeAudio
     } audioTimeStretch;
     void audioPumpTimeStretch(int) {}
     bool audioIsRunning() const { return audioDevice && SDL_GetAudioDeviceStatus(audioDevice) == SDL_AUDIO_PLAYING; }
-    double LastTime = 0, FrameLimitError = 0;
 
     ~SmokeAudio()
     {
@@ -93,24 +92,12 @@ struct SmokeAudio
         if (!Started)
         {
             Started = true;
-            LastTime = Now();
             SDL_PauseAudioDevice(audioDevice, 0);
         }
         audioSync(static_cast<int>(std::ceil(audioFreq * lines / (60.0 * 263.0))));
-        // Same delay/error policy as the frontend at 60 FPS. Qt events and
-        // screen presentation are absent, so this is not full frontend timing.
-        const double step = std::max(0.001, lines / (60.0 * 263.0));
-        double now = Now();
-        FrameLimitError = std::clamp(FrameLimitError + step - (now - LastTime), -step, step);
-        const double delay = std::round(FrameLimitError * 1000);
-        if (delay > 0)
-        {
-            SDL_Delay(static_cast<Uint32>(delay));
-            const double after = Now();
-            FrameLimitError -= after - now;
-            now = after;
-        }
-        LastTime = now;
+        // This probe always synchronizes audio at its 60 FPS output rate.
+        // Like EmuThread's audioPacesFrames path, do not add a second FPS wait:
+        // it can starve the next producer frame. Qt presentation is absent.
     }
 
     void Report()
@@ -129,7 +116,6 @@ struct SmokeAudio
             (unsigned long long)nds->SPU.GetOutputDroppedFrames(), nds->SPU.GetOutputSize());
     }
 
-    static double Now() { return double(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency(); }
     void audioSync(int frameSamples, std::stop_token stopToken = {});
     static void audioCallback(void*, Uint8*, int);
 };

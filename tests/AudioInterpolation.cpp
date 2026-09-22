@@ -221,6 +221,56 @@ static void SilentChannelReuse()
     std::puts("silent channel reuse preserves previous note gain and pan PASS");
 }
 
+static void DenseHistoryReuse()
+{
+    for (const auto data : {std::span<const u8>(AudioInterpolation352, AudioInterpolation352Size),
+                            std::span<const u8>(AudioInterpolation512, AudioInterpolation512Size)})
+    {
+        auto bank = AudioInterpolationBank::Create(data);
+        size_t rows = 0;
+        for (unsigned period = 1; period <= AudioInterpolationBank::DensePeriods; ++period)
+            rows = std::max(rows, bank->Coefficients(period).size());
+        const size_t capacity = 2 * (rows + 1);
+        AudioInterpolationStream bounded(bank, 1, capacity), roomy(bank, 1, 16 * capacity);
+        const auto bytes = bounded.HistoryBytes();
+        const unsigned mix = bank->MixInterval();
+        const std::array<unsigned, 5> periods{1, 32, 33, 128, 256};
+        size_t highWater = 0;
+        // Two periods per output bucket exercise the renderer's capacity bound.
+        // Different lifetimes can retire later blocks before earlier ones. The
+        // small store repeatedly reuses its prefix while the roomy store does not.
+        for (unsigned epoch = 0; epoch < 2; ++epoch)
+        {
+            failNextAllocation = true;
+            for (unsigned n = 0; n < 8 * capacity; ++n)
+            {
+                for (unsigned event = 0; event < 2; ++event)
+                {
+                    const u64 clock = u64(n) * mix + 1 + event * (mix / 2);
+                    const double sample = int((n * 1901 + event * 7919) % 60001) - 30000;
+                    const std::array<double, 2> input{sample, epoch ? sample : -sample / 4};
+                    const unsigned period = periods[(n + event) % periods.size()];
+                    bounded.Push(clock, input, period);
+                    roomy.Push(clock, input, period);
+                }
+                const u64 clock = u64(n + 1) * mix;
+                Require(bounded.Read(clock) == roomy.Read(clock), "Dense history reuse changed PCM arithmetic");
+                Require(bounded.ActiveTails() == roomy.ActiveTails(), "Dense history reuse lost active tails");
+                highWater = std::max(highWater, bounded.ActiveTails());
+            }
+            Require(std::exchange(failNextAllocation, false), "Dense history processing allocated storage");
+            Require(bounded.ActiveTails() != 0, "Dense reset did not exercise live history");
+            bounded.Reset(); roomy.Reset();
+            Require(bounded.Read(0) == std::array<double, 2>{} && !bounded.ActiveTails(),
+                    "Dense history reset retained output or tails");
+            Require(roomy.Read(0) == std::array<double, 2>{}, "Dense reference reset retained output");
+        }
+        Require(highWater > capacity / 2 && bounded.HistoryBytes() == bytes,
+                "Dense reuse missed high water or changed reserved storage");
+        std::printf("dense history mix=%u high_water=%zu capacity=%zu reuse/reset PASS\n", mix, highWater, capacity);
+    }
+}
+
 static void UpperPassband()
 {
     for (const auto data : {std::span<const u8>(AudioInterpolation352, AudioInterpolation352Size),
@@ -256,6 +306,7 @@ int main() try
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SparseStreamReference();
     SilentChannelReuse();
+    DenseHistoryReuse();
     UpperPassband();
     for (bool dsi : {false, true})
     {
