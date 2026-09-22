@@ -796,7 +796,7 @@ void GLRenderer3D::BuildPolygons(GLRenderer3D::RendererPolygon* polygons, int np
     NumEdgeIndices = eidx - EdgeIndicesOffset;
 }
 
-void GLRenderer3D::SetupPolygonTexture(const RendererPolygon* poly) const
+void GLRenderer3D::SetupPolygonTexture(const RendererPolygon* poly, PolygonTextureState& state) const
 {
     bool iscap = (poly->TexID == (GLuint)-1 || poly->TexID == (GLuint)-2);
 
@@ -810,8 +810,15 @@ void GLRenderer3D::SetupPolygonTexture(const RendererPolygon* poly) const
     else
     {
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, poly->TexID);
     }
+
+    // SnapshotBlendDestination may have selected unit 3 even on a cache hit.
+    // Array bindings/wraps are otherwise unchanged during polygon passes.
+    if (state.Valid && state.TexID == poly->TexID && state.TexRepeat == poly->TexRepeat)
+        return;
+
+    if (!iscap)
+        glBindTexture(GL_TEXTURE_2D_ARRAY, poly->TexID);
 
     GLint repeatS, repeatT;
 
@@ -827,6 +834,10 @@ void GLRenderer3D::SetupPolygonTexture(const RendererPolygon* poly) const
 
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, repeatS);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, repeatT);
+
+    state.TexID = poly->TexID;
+    state.TexRepeat = poly->TexRepeat;
+    state.Valid = true;
 }
 
 void GLRenderer3D::SnapshotBlendDestination(int first, int count) const
@@ -855,18 +866,18 @@ void GLRenderer3D::SnapshotBlendDestination(int first, int count) const
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 }
 
-int GLRenderer3D::RenderSinglePolygon(int i) const
+int GLRenderer3D::RenderSinglePolygon(int i, PolygonTextureState& state) const
 {
     const RendererPolygon* rp = &PolygonList[i];
 
     SnapshotBlendDestination(i, 1);
-    SetupPolygonTexture(rp);
+    SetupPolygonTexture(rp, state);
     glDrawElements(rp->PrimType, rp->NumIndices, GL_UNSIGNED_SHORT, (void*)(uintptr_t)(rp->IndicesOffset * 2));
 
     return 1;
 }
 
-int GLRenderer3D::RenderPolygonBatch(int i) const
+int GLRenderer3D::RenderPolygonBatch(int i, PolygonTextureState& state) const
 {
     const RendererPolygon* rp = &PolygonList[i];
     GLuint primtype = rp->PrimType;
@@ -889,12 +900,12 @@ int GLRenderer3D::RenderPolygonBatch(int i) const
     }
 
     SnapshotBlendDestination(i, numpolys);
-    SetupPolygonTexture(rp);
+    SetupPolygonTexture(rp, state);
     glDrawElements(primtype, numindices, GL_UNSIGNED_SHORT, (void*)(uintptr_t)(rp->IndicesOffset * 2));
     return numpolys;
 }
 
-int GLRenderer3D::RenderPolygonEdgeBatch(int i) const
+int GLRenderer3D::RenderPolygonEdgeBatch(int i, PolygonTextureState& state) const
 {
     const RendererPolygon* rp = &PolygonList[i];
     u32 renderkey = rp->RenderKey;
@@ -914,7 +925,7 @@ int GLRenderer3D::RenderPolygonEdgeBatch(int i) const
         numindices += cur_rp->NumEdgeIndices;
     }
 
-    SetupPolygonTexture(rp);
+    SetupPolygonTexture(rp, state);
     glDrawElements(GL_LINES, numindices, GL_UNSIGNED_SHORT, (void*)(uintptr_t)(rp->EdgeIndicesOffset * 2));
     return numpolys;
 }
@@ -965,6 +976,10 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
     glActiveTexture(GL_TEXTURE0);
 
+    // Discard at the chunk boundary: uploads, 2D/capture work, resize and reset
+    // may change bindings, texture parameters or recycle names between chunks.
+    PolygonTextureState textureState;
+
     for (int i = 0; i < NumFinalPolys; )
     {
         RendererPolygon* rp = &PolygonList[i];
@@ -984,7 +999,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
         glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
         glStencilMask(0xFF);
 
-        i += RenderPolygonBatch(i);
+        i += RenderPolygonBatch(i, textureState);
     }
 
     // if edge marking is enabled, mark all opaque edges
@@ -1010,7 +1025,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
             if (rp->PolyData->IsShadowMask) { i++; continue; }
 
-            i += RenderPolygonEdgeBatch(i);
+            i += RenderPolygonEdgeBatch(i, textureState);
         }
 
         glDepthMask(GL_TRUE);
@@ -1056,7 +1071,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                     glStencilOp(GL_KEEP, GL_INVERT, GL_KEEP);
                     glStencilMask(0x01);
 
-                    i += RenderPolygonBatch(i);
+                    i += RenderPolygonBatch(i, textureState);
                 }
                 else if (rp->PolyData->Translucent)
                 {
@@ -1085,7 +1100,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
                         glDepthMask(GL_TRUE);
 
-                        RenderSinglePolygon(i);
+                        RenderSinglePolygon(i, textureState);
                     }
 
                     SetRenderMode(RenderMode_Translucent);
@@ -1114,7 +1129,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                         if (polyattr & (1<<11)) glDepthMask(GL_TRUE);
                         else                    glDepthMask(GL_FALSE);
 
-                        i += needopaque ? RenderSinglePolygon(i) : RenderPolygonBatch(i);
+                        i += needopaque ? RenderSinglePolygon(i, textureState) : RenderPolygonBatch(i, textureState);
                     }
                     else
                     {
@@ -1130,7 +1145,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                         if (polyattr & (1<<11)) glDepthMask(GL_TRUE);
                         else                    glDepthMask(GL_FALSE);
 
-                        i += needopaque ? RenderSinglePolygon(i) : RenderPolygonBatch(i);
+                        i += needopaque ? RenderSinglePolygon(i, textureState) : RenderPolygonBatch(i, textureState);
                     }
                 }
                 else
@@ -1168,7 +1183,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                 glStencilFunc(GL_ALWAYS, 0x80, 0x80);
                 glStencilOp(GL_KEEP, GL_REPLACE, GL_KEEP);
 
-                i += RenderPolygonBatch(i);
+                i += RenderPolygonBatch(i, textureState);
             }
             else if (rp->PolyData->Translucent)
             {
@@ -1197,7 +1212,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
 
                     glDepthMask(GL_TRUE);
 
-                    RenderSinglePolygon(i);
+                    RenderSinglePolygon(i, textureState);
                 }
 
                 SetRenderMode(RenderMode_Translucent);
@@ -1219,7 +1234,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                     glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
                     glStencilMask(0x80);
 
-                    RenderSinglePolygon(i);
+                    RenderSinglePolygon(i, textureState);
 
                     glEnable(GL_BLEND);
                     glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -1234,7 +1249,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                     if (polyattr & (1<<11)) glDepthMask(GL_TRUE);
                     else                    glDepthMask(GL_FALSE);
 
-                    i += RenderSinglePolygon(i);
+                    i += RenderSinglePolygon(i, textureState);
                 }
                 else
                 {
@@ -1251,7 +1266,7 @@ void GLRenderer3D::RenderSceneChunk(int y, int h)
                     if (polyattr & (1<<11)) glDepthMask(GL_TRUE);
                     else                    glDepthMask(GL_FALSE);
 
-                    i += needopaque ? RenderSinglePolygon(i) : RenderPolygonBatch(i);
+                    i += needopaque ? RenderSinglePolygon(i, textureState) : RenderPolygonBatch(i, textureState);
                 }
             }
             else

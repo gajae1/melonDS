@@ -159,7 +159,7 @@ QString EmuInstance::audioOutputDescription() const
     if (audioDevice.IsOpening()) return QObject::tr("Reconnecting audio output...");
     if (!audioDevice) return QObject::tr("Audio output unavailable");
     const auto& spec = audioDevice.GetSpec();
-    QString description = QObject::tr("%1: %2 frames at %3 Hz (%4 ms period)")
+    QString description = QObject::tr("%1: %2 frames at %3 Hz (%4 ms of audio)")
         .arg(QString::fromStdString(spec.backend)).arg(audioBufSize).arg(audioFreq)
         .arg(audioBufSize * 1000.0 / audioFreq, 0, 'f', 2);
     if (spec.bufferFrames > 0)
@@ -476,8 +476,8 @@ void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
         // less than one callback then stalls production until that burst has
         // already exhausted the queue. Bound lead by a producer frame instead.
         // The device drains continuously while a produced frame refills the
-        // queue. Keep one frame of production delay plus one device period of
-        // queued slack so a late frame cannot starve the next callback; never
+        // queue. Allow a producer frame plus the reported output block as
+        // queued slack to tolerate late production; never keep
         // so much that the next produced frame overflows the ring and drops
         // samples, which would be a different kind of underrun.
         const int capacity = nds->SPU.GetOutputCapacity();

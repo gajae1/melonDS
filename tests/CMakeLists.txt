@@ -388,12 +388,31 @@ if (MELONDS_TEST_GPU AND TARGET vulkan-compute)
     set_tests_properties(gpu-vulkan-unavailable PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE
         ENVIRONMENT "VK_DRIVER_FILES=${CMAKE_CURRENT_BINARY_DIR}/missing-vulkan-driver.json")
 endif()
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/texture-state.inc" "${CMAKE_CURRENT_BINARY_DIR}/texture-setup.inc"
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.."
+        "-DOUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/GL3DTextureState.cmake"
+    DEPENDS GL3DTextureState.cmake ../src/GPU3D_OpenGL.cpp ../src/GPU3D_OpenGL.h
+    VERBATIM)
+add_executable(GL3DTextureState GL3DTextureState.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/texture-state.inc" "${CMAKE_CURRENT_BINARY_DIR}/texture-setup.inc")
+target_include_directories(GL3DTextureState PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME gpu-gl3d-texture-state COMMAND GL3DTextureState)
+
 if (MELONDS_TEST_GPU)
     if (NOT TARGET core OR NOT ENABLE_OGLRENDERER)
         message(FATAL_ERROR "GPU tests require the full OpenGL core and SDL2 frontend dependencies")
     endif()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GPU_TEST_SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    add_executable(GL2DPaletteUploads GL2DPaletteUploads.cpp PlatformSync.cpp PlatformHeadless.cpp
+        ../src/frontend/glad/glad.c)
+    target_link_libraries(GL2DPaletteUploads PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)
+    add_test(NAME gpu-gl2d-palette-uploads COMMAND GL2DPaletteUploads optimized
+        "${CMAKE_CURRENT_BINARY_DIR}/gl2d-palette-snapshot.bin")
+    set_tests_properties(gpu-gl2d-palette-uploads
+        PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     add_executable(GLFrameReadback GLFrameReadback.cpp ComputeFailure.cpp ComputeWorkload.cpp GLTextureBoundaries.cpp GLCaptureReadback.cpp GLResourceLifetime.cpp GLAllocationFailure.cpp PlatformSync.cpp PlatformHeadless.cpp
         ../src/frontend/glad/glad.c)
     target_link_libraries(GLFrameReadback PRIVATE core PkgConfig::GPU_TEST_SDL2 Threads::Threads)

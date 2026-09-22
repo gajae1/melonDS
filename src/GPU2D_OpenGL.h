@@ -206,6 +206,7 @@ private:
     bool SpriteConfigDirty;
     bool SpriteDirty;
 
+    bool BGPaletteUploaded;
     u16 TempPalBuffer[256 * (1 + (4*16))];
 
     bool IsScreenOn();

@@ -70,6 +70,14 @@ private:
         int MinX, MinY, MaxX, MaxY;
     };
 
+    // Only the most recent setup within one RenderSceneChunk is remembered.
+    struct PolygonTextureState
+    {
+        GLuint TexID = 0;
+        u32 TexRepeat = 0;
+        bool Valid = false;
+    };
+
     //GLCompositor CurGLCompositor;
     RendererPolygon PolygonList[2048] {};
 
@@ -82,11 +90,11 @@ private:
     void SetupPolygon(RendererPolygon* rp, Polygon* polygon) const;
     u32* SetupVertex(const Polygon* poly, int vid, const Vertex* vtx, u32 vtxattr, u32 texlayer, u32* vptr) const;
     void BuildPolygons(RendererPolygon* polygons, int npolys, int captureinfo[16]);
-    void SetupPolygonTexture(const RendererPolygon* poly) const;
+    void SetupPolygonTexture(const RendererPolygon* poly, PolygonTextureState& state) const;
     void SnapshotBlendDestination(int first, int count) const;
-    int RenderSinglePolygon(int i) const;
-    int RenderPolygonBatch(int i) const;
-    int RenderPolygonEdgeBatch(int i) const;
+    int RenderSinglePolygon(int i, PolygonTextureState& state) const;
+    int RenderPolygonBatch(int i, PolygonTextureState& state) const;
+    int RenderPolygonEdgeBatch(int i, PolygonTextureState& state) const;
     void RenderSceneChunk(int y, int h);
 
 

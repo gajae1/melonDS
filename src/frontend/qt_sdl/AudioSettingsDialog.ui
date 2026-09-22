@@ -72,7 +72,7 @@
       </item>
       <item row="4" column="1" colspan="2">
        <widget class="QComboBox" name="cbOutputBackend">
-        <property name="toolTip"><string>Output methods are detected when this dialog opens. SDL selects its platform driver automatically; some drivers expose only a default output. WASAPI shared allows other apps to play audio and supports broadcast routing. Availability and the callback period are confirmed when applying the output.</string></property>
+        <property name="toolTip"><string>Output methods are detected when this dialog opens. SDL selects its platform driver automatically; some drivers expose only a default output. WASAPI shared allows other apps to play audio and supports broadcast routing. Availability and the reported block size are confirmed when applying the output.</string></property>
        </widget>
       </item>
       <item row="5" column="0">
@@ -103,7 +103,7 @@
       </item>
       <item row="7" column="1">
        <widget class="QComboBox" name="cbBufferSize">
-        <property name="toolTip"><string>Buffer size requested from the output device. WASAPI shared may use a smaller or larger supported period, shown below. Smaller buffers can crackle if the system cannot keep up. This setting does not adapt to underruns and is not total audio latency.</string></property>
+        <property name="toolTip"><string>Buffer size requested from the output device. The backend may report a different block size, shown below. Smaller buffers can crackle if the system cannot keep up. This setting does not adapt to underruns and is not total audio latency.</string></property>
        </widget>
       </item>
       <item row="7" column="2">
@@ -121,7 +121,7 @@
       </item>
       <item row="9" column="0" colspan="3">
        <widget class="QLabel" name="lblOutputPeriodNote">
-        <property name="text"><string>The callback period is not total audio latency.</string></property>
+        <property name="text"><string>The shown duration is not the device wake interval or total audio latency.</string></property>
         <property name="wordWrap"><bool>true</bool></property>
        </widget>
       </item>

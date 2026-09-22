@@ -17,6 +17,7 @@
 */
 
 #include <assert.h>
+#include <bit>
 #include "GPU_OpenGL.h"
 #include "GPU2D_OpenGL.h"
 #include "GPU.h"
@@ -440,6 +441,7 @@ void GLRenderer2D::Reset()
     SpriteConfigDirty = true;
     SpriteDirty = true;
 
+    BGPaletteUploaded = false;
     memset(TempPalBuffer, 0, sizeof(TempPalBuffer));
 }
 
@@ -726,19 +728,35 @@ void GLRenderer2D::UpdateAndRender(int line)
 
     if ((GPU.PaletteDirty & palmask) || bgExtPalDirty.CheckRange(0, 64))
     {
-        memcpy(&TempPalBuffer[0], &GPU.Palette[GPU2D.Num ? 0x400 : 0], 256*2);
-        for (int s = 0; s < 4; s++)
+        // The first upload also initializes rows while screen-off skips
+        // coherence. Later uploads bound all dirty rows with one driver call.
+        int start = 0;
+        int end = 65;
+        if (BGPaletteUploaded)
         {
-            for (int p = 0; p < 16; p++)
+            const u64 dirty = bgExtPalDirty.Data[0];
+            if (dirty)
             {
-                u16 *pal = GPU2D.GetBGExtPal(s, p);
-                memcpy(&TempPalBuffer[(1 + ((s*16)+p)) * 256], pal, 256*2);
+                if (!(GPU.PaletteDirty & palmask))
+                    start = 1 + std::countr_zero(dirty);
+                end = 65 - std::countl_zero(dirty);
             }
+            else
+                end = 1;
         }
-
+        // OBJ shares this buffer, so gaps cannot reuse staged data.
+        for (int row = start; row < end; row++)
+        {
+            const void* pal = row == 0
+                ? (const void*)&GPU.Palette[GPU2D.Num ? 0x400 : 0]
+                : GPU2D.GetBGExtPal((row - 1) / 16, (row - 1) % 16);
+            memcpy(&TempPalBuffer[row * 256], pal, 256*2);
+        }
         glBindTexture(GL_TEXTURE_2D, PalTex_BG);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1+(4*16), GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV,
-                        TempPalBuffer);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, start, 256, end - start,
+                       GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV,
+                       &TempPalBuffer[start * 256]);
+        BGPaletteUploaded = true;
     }
 
     GPU.PaletteDirty &= ~palmask;

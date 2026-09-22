@@ -24,7 +24,7 @@ public:
     struct Spec
     {
         int rate = 48000;
-        int frames = 512; // actual callback/engine period, not physical latency
+        int frames = 512; // backend-reported block size; not a measured wake interval or latency
         int bufferFrames = 0; // native WASAPI capacity; 0 = not available
         std::string backend;
     };
