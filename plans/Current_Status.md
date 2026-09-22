@@ -1,7 +1,7 @@
-# 현재 개발 상태 — 1.1.157
+# 현재 개발 상태 — 1.1.158
 
 2026-09-22. 메인 작업/빌드 경로는 `F:/melonDS`, `build/windows-dev`다.
-현재 변경의 범위·실제 검증은 [1.1.157 기록](releases/1.1.157.md)을 따른다.
+현재 변경의 범위·실제 검증은 [1.1.158 기록](releases/1.1.158.md)을 따른다.
 1.1.136 Windows 패키지 provenance는 2026-09-18 자체 manifest 기준으로 재확인했다. 패키지 바이너리 행동 검증은 이 세션에서 재실행하지 않았다.
 
 | 영역 | 현재 구현 | 남은 경계 |
@@ -12,7 +12,7 @@
 | 비트맵 합성 | 양 engine의 layer 후보·창·우선순위·효과·affine, native VRAM 기록 분리; 1.1.140 확대 3D 합성의 서브픽셀 공통 작업 제거; 1.1.157 no-target2/all-target1 brightness scanline fast path | 전체 GPU 2D/capture가 아니며 CPU 고배율 비용 일부가 남음 |
 | native 보존 | CPU/DMA용 캡처 기록, provenance 무효화·중복 mapping fallback | 실기 oracle와 모든 게임 경계의 수락은 별도 |
 | 캐시/전송 | RAM-only cache·비우기·32MiB 소프트 제한, clear 묶음 전송·cached readback; 1.1.143 프레임 단위 업로드 묶음 제출(texture·clear·capture를 phase당 한 번); 1.1.145 확대 표시의 GPU 최종 합성과 native-origin readback; 1.1.146 합성 행의 direct-landing readback으로 staging·host memcpy 제거; 1.1.147 GR-14 opt-in host/GPU 비용 분해 계측; 1.1.148 캡처 sidecar·LCDC 변환의 연속 실행(16x capture 29.9→16.1ms); 1.1.149 B/blend sidecar의 provenance 샘플러 나눗셈 제거(16x B-VRAM sidecar 49.1→28.1ms); 1.1.150 scaled conversion의 중복 zero-fill 제거(16x convert 3.05→1.60ms); 1.1.151 cached full-readback landing의 중복 host memcpy 제거(16x full_memcpy ~2.1ms 제거); 1.1.152 capture sidecar의 source-B 연속 gather·blend 변환(16x sidecar 최대 −99%); 1.1.153 확대 capture blend의 16x 한정 GPU 이식(행당 deferred dispatch, blend-VRAM 16x sidecar −74.8%·blend-FIFO −81.7%) | GPU 직접 표시; 16x 미만 capture 라인은 CPU 합성 유지 |
-| 오디오/저장 | 기존 PCM·보간·종료 소유권·저장 파일 교체 재시도 유지; 1.1.140 생산 pacing 상한을 링 용량으로 clamp | 장기 청취·탈착·물리 지연·전원 손실 내구성 |
+| 오디오/저장 | 기존 PCM·보간·종료 소유권·저장 파일 교체 재시도 유지; 1.1.140 생산 pacing 상한을 링 용량으로 clamp; 1.1.158 Minimum-phase dense 이력의 불필요한 복사 감소(16채널 제한 부하 14~23%, PCM 동일) | 실제 문제 장면의 저버퍼 끊김·음색 수락, 장기 청취·탈착·물리 지연·전원 손실 내구성 |
 
 기존에 중단된 비트맵 변경 7개 파일을 먼저 보존한 뒤 검토·확장했다.
 1:1 bitmap 좌표의 반복 modulo/division을 줄였다. 합성 시험의 개선을 게임 FPS나 실기 정확성으로 확대하지 않는다.
