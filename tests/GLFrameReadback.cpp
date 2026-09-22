@@ -132,11 +132,11 @@ static int CheckSoftware2DEffects()
     auto& gpu = nds->GPU.GPU2D_A;
     SoftRenderer2D renderer(gpu, parent);
     alignas(16) u32 output[264];
-    constexpr unsigned flags[] = {1,2,4,8,16,32,0x80,0xC0,0xC1,0xCF,0xD0,0x40,0x41,0x5E,0x5F};
+    constexpr unsigned flags[] = {0,1,2,4,8,16,32,0x80,0xC0,0xC1,0xCF,0xD0,0x40,0x41,0x5E,0x5F};
     constexpr unsigned colors[] = {0,1,31,32,62,63};
     unsigned pixels = 0;
     for (unsigned mode = 0; mode < 4; ++mode)
-    for (unsigned targets : {0u,0x0001u,0x0010u,0x2000u,0x3F00u,0x0101u,0x1010u,0x3F3Fu})
+    for (unsigned targets : {0u,0x0001u,0x0010u,0x003Fu,0x2000u,0x3F00u,0x0101u,0x1010u,0x3F3Fu})
     for (unsigned factor : {0u,1u,8u,15u,16u})
     for (unsigned flag : flags)
     {

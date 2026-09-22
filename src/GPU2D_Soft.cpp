@@ -148,6 +148,30 @@ void SoftRenderer2D::ColorComposite(u32* dst) const
             return;
         }
     }
+    else if (!(control & 0x3F00) && (control & 0x3F) == 0x3F)
+    {
+        // With no target2 blend and every target1 layer selected, brightness
+        // applies to any non-null top flag. Keep the per-pixel checks so a
+        // closed effect window or an unusual zero flag still takes the generic path.
+        bool fallback = false;
+        for (int x = 0; x < 256; ++x)
+        {
+            u32 top = BGOBJLine[x];
+            if (Scaled3DActive)
+            {
+                u32 second = BGOBJLine[x + 256];
+                Resolve3DPixel(x, Parent.Output3D[x], top, second);
+            }
+            if (!(top >> 24) || !(WindowMask[x] & 0x20))
+            {
+                fallback = true;
+                break;
+            }
+            dst[x] = effect == 2 ? ColorBrightnessUp(top, evy, 0x8)
+                                 : ColorBrightnessDown(top, evy, 0x7);
+        }
+        if (!fallback) return;
+    }
     for (int x = 0; x < 256; ++x)
     {
         u32 top = BGOBJLine[x], second = BGOBJLine[x + 256];
