@@ -851,7 +851,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
     {
         u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
 
-        interpX.SetX(x);
+        interpX.SetXForDepth(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
         u32 dstattr = AttrBuffer[pixeladdr];
@@ -877,7 +877,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
     {
         u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
 
-        interpX.SetX(x);
+        interpX.SetXForDepth(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
         u32 dstattr = AttrBuffer[pixeladdr];
@@ -903,7 +903,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
     {
         u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
 
-        interpX.SetX(x);
+        interpX.SetXForDepth(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
         u32 dstattr = AttrBuffer[pixeladdr];
@@ -1118,7 +1118,7 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
                 dstattr &= ~0xF; // quick way to prevent drawing the shadow under antialiased edges
         }
 
-        interpX.SetX(x);
+        interpX.SetXForDepth(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
 
@@ -1133,6 +1133,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
             if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
                 continue;
         }
+
+        interpX.PrepareAttributes();
 
         u32 vr = interpX.Interpolate(rl, rr);
         u32 vg = interpX.Interpolate(gl, gr);
@@ -1214,7 +1216,7 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
                 dstattr &= ~0xF; // quick way to prevent drawing the shadow under antialiased edges
         }
 
-        interpX.SetX(x);
+        interpX.SetXForDepth(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
 
@@ -1229,6 +1231,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
             if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
                 continue;
         }
+
+        interpX.PrepareAttributes();
 
         u32 vr = interpX.Interpolate(rl, rr);
         u32 vg = interpX.Interpolate(gl, gr);
@@ -1306,7 +1310,7 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
                 dstattr &= ~0xF; // quick way to prevent drawing the shadow under antialiased edges
         }
 
-        interpX.SetX(x);
+        interpX.SetXForDepth(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
 
@@ -1321,6 +1325,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
             if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
                 continue;
         }
+
+        interpX.PrepareAttributes();
 
         u32 vr = interpX.Interpolate(rl, rr);
         u32 vg = interpX.Interpolate(gl, gr);

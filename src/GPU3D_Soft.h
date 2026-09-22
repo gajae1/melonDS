@@ -127,18 +127,21 @@ private:
 
         constexpr void SetX(s32 x)
         {
-            x -= x0;
-            this->x = x;
-            if ((xdiff != 0) && ((!linear) || wbuffer))
-            {
-                u32 num = (x * w0n) << shift;
-                u32 den = (x * w0d) + ((xdiff-x) * w1d);
+            this->x = x - x0;
+            UpdatePerspective();
+        }
 
-                // this seems to be a proper division on hardware :/
-                // I haven't been able to find cases that produce imperfect output
-                if (den == 0) yfactor = 0;
-                else          yfactor = num / den;
-            }
+        constexpr void SetXForDepth(s32 x)
+        {
+            this->x = x - x0;
+            // Z depth is linear; only W depth needs the perspective factor.
+            if (wbuffer) UpdatePerspective();
+        }
+
+        constexpr void PrepareAttributes()
+        {
+            // W depth already prepared the factor for this pixel.
+            if (!wbuffer) UpdatePerspective();
         }
 
         constexpr s32 Interpolate(s32 y0, s32 y1) const
@@ -214,6 +217,20 @@ private:
         }
 
     private:
+        constexpr void UpdatePerspective()
+        {
+            if ((xdiff != 0) && ((!linear) || wbuffer))
+            {
+                u32 num = (x * w0n) << shift;
+                u32 den = (x * w0d) + ((xdiff-x) * w1d);
+
+                // this seems to be a proper division on hardware :/
+                // I haven't been able to find cases that produce imperfect output
+                if (den == 0) yfactor = 0;
+                else          yfactor = num / den;
+            }
+        }
+
         s32 x0, x1, xdiff, x;
 
         int shift;

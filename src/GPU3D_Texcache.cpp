@@ -170,26 +170,28 @@ void ConvertCompressedTexture(u32 width, u32 height, u32* output, u32 addr, u32 
                 break;
             }
 
-            // in 2020 our default data types are big enough to be used as lookup tables...
-            u64 packed = color0 | ((u64)color1 << 16) | ((u64)color2 << 32) | ((u64)color3 << 48);
+            const u16 colors[4] = {color0, color1, color2, color3};
+            u32 convertedColors[4];
+            for (int i = 0; i < 4; i++)
+            {
+                u16 color = colors[i];
+                switch (outputFmt)
+                {
+                case outputFmt_RGB6A5: convertedColors[i] = ConvertRGB5ToRGB6(color)
+                    | ((color & 0x8000) ? 0x1F000000 : 0); break;
+                case outputFmt_RGBA8: convertedColors[i] = ConvertRGB5ToRGB8(color)
+                    | ((color & 0x8000) ? 0xFF000000 : 0); break;
+                case outputFmt_BGRA8: convertedColors[i] = ConvertRGB5ToBGR8(color)
+                    | ((color & 0x8000) ? 0xFF000000 : 0); break;
+                }
+            }
 
             for (int j = 0; j < 4; j++)
             {
                 for (int i = 0; i < 4; i++)
                 {
-                    u32 colorIdx = 16 * ((data >> 2 * (i + j * 4)) & 0x3);
-                    u16 color = (packed >> colorIdx) & 0xFFFF;
-                    u32 res;
-                    switch (outputFmt)
-                    {
-                    case outputFmt_RGB6A5: res = ConvertRGB5ToRGB6(color)
-                        | ((color & 0x8000) ? 0x1F000000 : 0); break;
-                    case outputFmt_RGBA8: res = ConvertRGB5ToRGB8(color)
-                        | ((color & 0x8000) ? 0xFF000000 : 0); break;
-                    case outputFmt_BGRA8: res = ConvertRGB5ToBGR8(color)
-                        | ((color & 0x8000) ? 0xFF000000 : 0); break;
-                    }
-                    output[x * 4 + i + (y * 4 + j) * width] = res;
+                    u32 colorIdx = (data >> 2 * (i + j * 4)) & 0x3;
+                    output[x * 4 + i + (y * 4 + j) * width] = convertedColors[colorIdx];
                 }
             }
         }

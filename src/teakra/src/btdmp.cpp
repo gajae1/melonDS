@@ -5,9 +5,10 @@
 
 namespace Teakra {
 
-Btdmp::Btdmp(CoreTiming& core_timing, int num) {
+Btdmp::Btdmp(CoreTiming&, int num) {
     this->num = num;
-    core_timing.RegisterCallbacks(this);
+    // DSi drives BTDMP through SampleClock; Tick/Skip are inert.
+    // Register again if internal-clock support is implemented.
 }
 
 Btdmp::~Btdmp() = default;

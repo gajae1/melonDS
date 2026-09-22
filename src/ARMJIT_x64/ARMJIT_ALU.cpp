@@ -470,6 +470,7 @@ void Compiler::Comp_RetriveFlags(bool sign, bool retriveCV, bool carryUsed)
 // always uses RSCRATCH, RSCRATCH2 only if S == true
 OpArg Compiler::Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, bool& carryUsed)
 {
+    S = S && (CurInstr.SetFlags & 0x2);
     carryUsed = S;
 
     if (S)

@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <bit>
 #include "NDS.h"
 #include "ARM.h"
 #include "NDSCart.h"
@@ -998,20 +999,14 @@ u64 NDS::NextTargetSleep()
 {
     u64 minEvent = UINT64_MAX;
 
-    u32 mask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    u32 mask = SchedListMask & ((1u << Event_SPU) | (1u << Event_RTC) |
+                               (1u << Event_CartSave) | (1u << Event_DSi_Cart2Save));
+    while (mask)
     {
-        if (!mask) break;
-        if (i == Event_SPU || i == Event_RTC || i == Event_CartSave || i == Event_DSi_Cart2Save)
-        {
-            if (mask & 0x1)
-            {
-                if (SchedList[i].Timestamp < minEvent)
-                    minEvent = SchedList[i].Timestamp;
-            }
-        }
-
-        mask >>= 1;
+        const unsigned i = std::countr_zero(mask);
+        mask &= mask - 1;
+        if (SchedList[i].Timestamp < minEvent)
+            minEvent = SchedList[i].Timestamp;
     }
 
     return minEvent;
