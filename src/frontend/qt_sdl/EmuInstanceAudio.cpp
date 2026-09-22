@@ -498,9 +498,15 @@ void EmuInstance::audioSync(int frameSamples, std::stop_token stopToken)
                    : nds->SPU.GetOutputSize() >= maxQueued))
         {
             if (!SDL_WaitConditionTimeout(audioSyncCond, audioSyncLock, 500)) break;
-            SDL_UnlockMutex(audioSyncLock);
-            audioPumpTimeStretch(maxQueued);
-            SDL_LockMutex(audioSyncLock);
+            // The wait returns with the mutex held. Only the optional native
+            // processor needs to run unlocked; ordinary playback can recheck
+            // the queue without another unlock/lock round trip on every wake.
+            if (audioTimeStretchEnabled)
+            {
+                SDL_UnlockMutex(audioSyncLock);
+                audioPumpTimeStretch(maxQueued);
+                SDL_LockMutex(audioSyncLock);
+            }
         }
         SDL_UnlockMutex(audioSyncLock);
     }

@@ -123,6 +123,9 @@ std::span<const AudioInterpolationBank::Moment> AudioInterpolationBank::Coeffici
 u64 AudioInterpolationBank::SupportClocks(unsigned period) const
 {
     const auto& record = GetRecord(period);
-    return u64(std::ceil(double(record.Length) * period / std::min(period, 256u)));
+    if (period <= DensePeriods) return record.Length;
+    // Sparse responses use a 256-point grid. Round its integer clock span up
+    // exactly, without a floating division and ceil for each decoder event.
+    return (u64(record.Length) * period + 255) / 256;
 }
 }

@@ -47,7 +47,91 @@ bool CheckDirtyWrap()
         const bool changed = cache->CheckInvalid(bytes - 256, 512, original, dirty.data(), ram.data(), bytes);
         passed &= changed;
         std::printf("dirty_wrap bytes=%u wrapped_change_seen=%d\n", bytes, changed);
+
+        // Several dirty words can describe unchanged bytes after bank remaps
+        // or same-value writes. One whole-range hash must still see a change
+        // in the last word, including ranges that alias VRAM more than once.
+        for (u32 size : {bytes, bytes * 4})
+        {
+            std::fill(ram.begin(), ram.end(), 0);
+            std::fill(dirty.begin(), dirty.end(), ~u64{0});
+            const u64 hash = cache->MaskedHash(ram.data(), bytes, 0, size);
+            passed &= !cache->CheckInvalid(0, size, hash, dirty.data(), ram.data(), bytes);
+            ram[bytes - 1] = 0xA5;
+            passed &= cache->CheckInvalid(0, size, hash, dirty.data(), ram.data(), bytes);
+            // With only the last dirty word set, scanning must reach it.
+            std::fill(dirty.begin(), dirty.end(), 0);
+            dirty[words - 1] = u64{1} << 63;
+            passed &= cache->CheckInvalid(0, size, hash, dirty.data(), ram.data(), bytes);
+            std::fill(dirty.begin(), dirty.end(), 0);
+            passed &= !cache->CheckInvalid(0, size, hash, dirty.data(), ram.data(), bytes);
+        }
     }
+    return passed;
+}
+
+bool CheckCacheAliases()
+{
+    struct Uploads
+    {
+        unsigned Count = 0;
+        u32 FirstPixel = 0;
+    } uploads;
+    struct Loader
+    {
+        Uploads& Result;
+        u32 GenerateTexture(u32, u32, u32) { return 1; }
+        void UploadTexture(u32, u32, u32, u32, const u32* pixels)
+        {
+            ++Result.Count;
+            Result.FirstPixel = pixels[0];
+        }
+        void DeleteTexture(u32) {}
+    };
+    auto nds = std::make_unique<NDS>();
+    nds->Reset();
+    auto cache = std::make_unique<Texcache<Loader, u32>>(nds->GPU, Loader{uploads});
+    // A and B overlap texture slot 0; E supplies the 256-color palette.
+    nds->ARM9Write8(0x04000240, 0x80);
+    nds->ARM9Write8(0x04000241, 0x80);
+    nds->ARM9Write8(0x04000244, 0x80);
+    nds->ARM9Write16(0x06800000, 0x0101);
+    nds->ARM9Write16(0x06820000, 0x0202);
+    nds->ARM9Write16(0x06880002, Red);
+    nds->ARM9Write16(0x06880004, Green);
+    nds->ARM9Write16(0x06880006, Blue);
+    nds->ARM9Write8(0x04000240, 0x83);
+    nds->ARM9Write8(0x04000241, 0x83);
+    nds->ARM9Write8(0x04000244, 0x83);
+    bool passed = true;
+    auto check = [&](const char* stage, unsigned count, u32 pixel) {
+        u8 clearDirty;
+        cache->Update(clearDirty);
+        u32 handle, layer, *helper;
+        // 256x256 I8 spans two dirty words; overlapped banks are bitwise ORed.
+        cache->GetTexture((4u << 26) | (5u << 20) | (5u << 23), 0, handle, layer, helper);
+        const bool ok = uploads.Count == count && uploads.FirstPixel == pixel;
+        std::printf("cache_alias %s uploads=%u pixel=%08x result=%s\n",
+                    stage, uploads.Count, uploads.FirstPixel, ok ? "pass" : "fail");
+        passed &= ok;
+    };
+    check("overlap", 1, 0x1F3F0000); // palette[1 | 2] = blue
+    check("clean-reuse", 1, 0x1F3F0000);
+    nds->ARM9Write8(0x04000242, 0x83); // Zero bank C aliases the same slot.
+    check("same-content-remap", 1, 0x1F3F0000);
+    nds->ARM9Write8(0x04000240, 0x80);
+    nds->ARM9Write16(0x06800000, 0x0101); // Same bytes, dirty backing bank.
+    nds->ARM9Write8(0x04000240, 0x83);
+    check("same-value-reuse", 1, 0x1F3F0000);
+    nds->ARM9Write8(0x04000241, 0x80); // Remove B; index 3 becomes index 1.
+    check("unmap-overlap", 2, 0x1F00003F);
+    nds->ARM9Write8(0x04000241, 0x83);
+    check("restore-overlap", 3, 0x1F3F0000);
+    nds->ARM9Write8(0x04000244, 0x80);
+    nds->ARM9Write16(0x06880006, Green);
+    nds->ARM9Write8(0x04000244, 0x83);
+    check("palette-change", 4, 0x1F003F00);
+    check("palette-reuse", 4, 0x1F003F00);
     return passed;
 }
 
@@ -522,7 +606,7 @@ bool RunBitmap(const char* backend, int scale, int size, bool direct)
 
 int CheckGLTextureBoundaries(const char* name)
 {
-    if (!std::strcmp(name, "dirty-wrap")) return CheckDirtyWrap() ? 0 : 1;
+    if (!std::strcmp(name, "dirty-wrap")) return CheckDirtyWrap() && CheckCacheAliases() ? 0 : 1;
     const char* backend;
     const bool alpha = std::strncmp(name, "alpha-", 6) == 0;
     const bool blend = std::strncmp(name, "blend-", 6) == 0;

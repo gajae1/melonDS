@@ -109,8 +109,9 @@ public:
             // index when the texture/palette range crosses the end of VRAM.
             if (GetRangedBitMask(j, startBit, bitsCount) & dirty[j & ((vramSize / (VRAMDirtyGranularity * 64))-1)])
             {
-                if (MaskedHash(vram, vramSize, start, size) != oldHash)
-                    return true;
+                // MaskedHash covers the whole range, including all aliases.
+                // Further dirty words cannot change this comparison's result.
+                return MaskedHash(vram, vramSize, start, size) != oldHash;
             }
         }
 
