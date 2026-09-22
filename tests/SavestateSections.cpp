@@ -182,5 +182,20 @@ int main(int argc, char** argv)
         memcpy(data.data() + 20, &size, sizeof(size));
         return Rejects(data, "TEST") ? 0 : 1;
     }
+    if (!strcmp(argv[1], "future-minor"))
+    {
+        auto data = MakeState(32);
+        const u16 future = SAVESTATE_MAX_MINOR + 1;
+        memcpy(data.data() + 6, &future, sizeof(future));
+        Savestate state(data.data(), static_cast<u32>(data.size()), false);
+        if (!state.Error)
+        {
+            fprintf(stderr, "Accepted a state from minor %u\n", future);
+            return 1;
+        }
+        // A rejected global header stays rejected after a rewind.
+        state.Rewind(false);
+        return state.Error ? 0 : 1;
+    }
     return 2;
 }

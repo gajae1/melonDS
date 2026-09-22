@@ -142,6 +142,51 @@ static int TestSchedulerSavestate(NDSArgs&& args)
     return failures ? 1 : 0;
 }
 
+static int TestKeyInputSavestate(NDSArgs&& args)
+{
+    auto instance = std::make_unique<NDS>(std::move(args));
+    auto& nds = *instance;
+    unsigned failures = 0;
+    const struct {
+        const char* name;
+        u32 saved;      // KeyInput at save time
+        bool minor14;   // whether the state must require 14.14
+        u32 live;       // KeyInput in the loading instance
+        u32 expected;   // KeyInput after the load
+    } cases[] = {
+        // An idle input state keeps the pre-14.14 format and leaves the
+        // loading instance's live input untouched.
+        {"idle-default", 0x007F03FFu, false, 0x007F03FEu, 0x007F03FEu},
+        // Lid latch (bit 23) and a held button survive the round trip.
+        {"lid-closed", 0x00FF03FFu, true, 0x007F03FFu, 0x00FF03FFu},
+        {"held-key", 0x007F03FEu, true, 0x007F03FFu, 0x007F03FEu},
+        // Touch pen-down (bit 22 cleared) is latch state too.
+        {"pen-down", 0x003F03FFu, true, 0x007F03FFu, 0x003F03FFu},
+        // Bits this build never drives (24-31) are dropped on load.
+        {"reserved-masked", 0xFFFFFFFFu, true, 0x007F03FFu, 0x00FF03FFu},
+    };
+    for (const auto& test : cases)
+    {
+        nds.Reset();
+        nds.KeyInput = test.saved;
+        Savestate saved;
+        bool matches = nds.DoSavestate(&saved) && !saved.Error &&
+            (test.minor14 ? saved.MinorVersion() == 14 : saved.MinorVersion() < 14);
+        if (matches)
+        {
+            nds.Reset();
+            nds.KeyInput = test.live;
+            Savestate load(saved.Buffer(), saved.Length(), false);
+            matches = !load.Error && nds.DoSavestate(&load) && !load.Error &&
+                nds.KeyInput == test.expected;
+        }
+        std::printf("keyinput-savestate %s: %s\n", test.name, matches ? "PASS" : "FAIL");
+        if (!matches) ++failures;
+    }
+    std::printf("savestate-keyinput: %zu cases, %u failures\n", std::size(cases), failures);
+    return failures ? 1 : 0;
+}
+
 static int TestUnalignedMemory(NDSArgs&& args, bool jit)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -735,6 +780,8 @@ int main(int argc, char** argv) {
         return TestDeviceExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
         return TestSchedulerSavestate(std::move(args));
+    if (argc > 2 && std::strcmp(argv[2], "savestate-keyinput") == 0)
+        return TestKeyInputSavestate(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "dma-slot-timing") == 0)
         return TestDMASlotTiming(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "dsi-ndma") == 0)

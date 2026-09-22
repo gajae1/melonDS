@@ -639,6 +639,14 @@ bool NDS::DoSavestate(Savestate* file)
     if (ConsoleType == 0) GBACartSlot.PrepareSavestate(file);
     for (auto* slot : NDSCartSlots)
         if (slot) slot->PrepareSavestate(file);
+    // KeyInput is serialized only when it holds state that frontend input
+    // updates do not rewrite (held keys, touch pen, lid latch), so idle
+    // states keep the older minor and stay loadable by previous readers.
+    // DSi native mode keeps the pen bit clear; DS-compatibility TSC mode
+    // sets it, which is itself state worth saving.
+    const u32 idleKeyInput = ConsoleType == 1 ? 0x003F03FF : 0x007F03FF;
+    if (file->Saving && KeyInput != idleKeyInput)
+        file->RequireMinorVersion(14);
     const bool legacy = !file->Saving && file->MajorVersion() == 13;
     u64 legacySeed0[2] {}, legacySeed1[2] {};
     file->Section("NDSG");
@@ -789,7 +797,15 @@ bool NDS::DoSavestate(Savestate* file)
     file->Var32(&NumLagFrames);
     file->Bool32(&LagFrameFlag);
 
-    // TODO: save KeyInput????
+    // KeyInput also carries latch state that SetKeyMask does not rewrite
+    // (touch pen bit 22, lid bit 23). The prepare pass above raises the minor
+    // to 14 when it is non-default, so idle states stay compatible.
+    if (file->IsAtLeastVersion(14, 14))
+    {
+        file->Var32(&KeyInput);
+        if (!file->Saving)
+            KeyInput &= 0x00FF03FF; // keep the guest-visible bits; 24-31 are never driven
+    }
     file->VarArray(KeyCnt, 2*sizeof(u16));
     file->Var16(&RCnt);
 
