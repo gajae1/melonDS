@@ -897,6 +897,10 @@ bool NDS::DoSavestate(Savestate* file)
 #ifdef JIT_ENABLED
         JIT.Reset();
 #endif
+        // The next visible lines can capture the already-prepared 3D frame.
+        // Rebuild its renderer output from the restored polygon state before
+        // the guest advances; host color/depth buffers are not serialized.
+        GPU.GetRenderer().Start3DRendering();
     }
 
     file->Finish();

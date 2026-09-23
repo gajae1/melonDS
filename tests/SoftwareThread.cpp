@@ -91,13 +91,19 @@ public:
     SoftRenderer3D& Three() { return *static_cast<SoftRenderer3D*>(Rend3D.get()); }
 };
 
-static void ReadFrame(SoftRenderer3D& renderer, u32 color)
+static void ReadFrame(SoftRenderer3D& renderer, u32 color,
+                      const char* mismatch = "threaded/scalar scanline pixels differ")
 {
     for (int y = 0; y < 192; ++y)
     {
         const auto* line = renderer.GetLine(y);
         for (int x = 0; x < 256; ++x)
-            Require(line[x] == color, "threaded/scalar scanline pixels differ");
+        {
+            if (line[x] != color)
+                std::fprintf(stderr, "%s at (%d,%d): expected %08X, got %08X\n",
+                             mismatch, x, y, color, line[x]);
+            Require(line[x] == color, mismatch);
+        }
     }
     renderer.FinishRendering();
 }
@@ -111,6 +117,8 @@ int main(int argc, char** argv)
     auto renderer = std::make_unique<ObservedRenderer>(*nds);
     auto* software = renderer.get();
     nds->SetRenderer(std::move(renderer));
+    nds->PowerControl9 |= (1u << 2) | (1u << 3);
+    nds->GPU.SetPowerCnt(nds->PowerControl9);
     auto& three = software->Three();
     auto& gpu = nds->GPU.GPU3D;
     gpu.RenderClearAttr1 = 0x001F001F; // Opaque red, expected RGB6/alpha5 output.
@@ -137,9 +145,15 @@ int main(int argc, char** argv)
             Require(nds->DoSavestate(&saved) && !saved.Error, "real core state save");
             saved.Finish();
             if (threaded) ReadFrame(three, 0x1F003F00);
+            // A load must rebuild the 3D image that capture will read next,
+            // even when the renderer currently holds a different image.
+            gpu.RenderClearAttr1 = 0x001F001F;
+            gpu.RenderFrameIdentical = false;
+            three.RenderFrame();
+            ReadFrame(three, 0x1F00003F);
             Savestate loaded(saved.Buffer(), saved.Length(), false);
             Require(nds->DoSavestate(&loaded) && !loaded.Error, "real core state load");
-            if (threaded) ReadFrame(three, 0x1F003F00);
+            ReadFrame(three, 0x1F003F00, "savestate load did not restore pending 3D image");
             gpu.RenderClearAttr1 = 0x001F001F;
             gpu.RenderFrameIdentical = false;
             three.RenderFrame();
