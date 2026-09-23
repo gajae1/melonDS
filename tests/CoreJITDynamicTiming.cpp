@@ -279,7 +279,89 @@ int main()
                          interpretedSkipped.pc, nativeSkipped.pc);
             return 1;
         }
-        std::printf("PASS: cached memory timing and LDM-PC refill timing match\n");
+
+        // ARM7 private WRAM code fetches cost one cycle. A single LDR from
+        // private WRAM costs three cycles here; main RAM costs nine.
+        {
+            constexpr u32 ARM7Code = 0x03808000;
+            constexpr u32 ARM7WRAM = 0x03802040;
+            constexpr u32 ARM7RAM = 0x02012040;
+            constexpr u32 WRAMValue = 0xA1B2C3D4;
+            constexpr u32 MainRAMValue = 0x5E6F7081;
+            nds->CurCPU = 1;
+            auto& arm7 = nds->ARM7;
+            nds->JIT.SetMaxBlockSize(1);
+            nds->ARM7Write32(ARM7Code, 0xE5901000); // ldr r1,[r0]
+            nds->ARM7Write32(ARM7WRAM, WRAMValue);
+            nds->ARM7Write32(ARM7RAM, MainRAMValue);
+            Require(nds->ARM7Read32(ARM7WRAM) == WRAMValue &&
+                    nds->ARM7Read32(ARM7RAM) == MainRAMValue,
+                    "ARM7 test data was not mapped");
+            Require(nds->ARM7MemTimings[ARM7WRAM >> 15][2] == 1 &&
+                    nds->ARM7MemTimings[ARM7RAM >> 15][2] == 9,
+                    "ARM7 WRAM/main RAM timing setup differs");
+
+            auto prepare = [&](u32 address) {
+                arm7.R[0] = address;
+                arm7.R[1] = 0;
+                arm7.R[2] = 7;
+                arm7.CPSR = 0x000000DF;
+                arm7.StopExecution = 0;
+                arm7.JumpTo(ARM7Code);
+                arm7.Cycles = 0; // Exclude the pipeline refill at entry.
+            };
+            auto dispatch = [&](JitBlockEntry entry, u32 address) {
+                prepare(address);
+                ARM_Dispatch(&arm7, entry);
+                Require(arm7.R[0] == address, "ARM7 LDR changed its base register");
+                return Result{arm7.R[1], arm7.R[2], arm7.R[15], arm7.CPSR,
+                              u32(arm7.Cycles)};
+            };
+
+            prepare(ARM7WRAM);
+            nds->JIT.CompileBlock(&arm7);
+            Require(arm7.DataCycles == 1 && nds->JIT.JitBlocks7.contains(ARM7Code),
+                    "ARM7 WRAM trace did not compile with WRAM timing");
+            const auto cachedARM7Entry = nds->JIT.JitBlocks7.at(ARM7Code)->EntryPoint;
+            const Result wramLoad = dispatch(cachedARM7Entry, ARM7WRAM);
+            Require(wramLoad.value == WRAMValue && wramLoad.prefix == 7 &&
+                    wramLoad.cycles == 3, "ARM7 WRAM native load or timing differs");
+
+            const Result reusedARM7 = dispatch(cachedARM7Entry, ARM7RAM);
+            Require(nds->JIT.JitBlocks7.at(ARM7Code)->EntryPoint == cachedARM7Entry,
+                    "ARM7 block was replaced before main RAM reuse");
+
+            nds->JIT.ResetBlockCache();
+            prepare(ARM7RAM);
+            nds->JIT.CompileBlock(&arm7);
+            Require(arm7.DataCycles == 9 && nds->JIT.JitBlocks7.contains(ARM7Code),
+                    "ARM7 main RAM trace did not compile with main RAM timing");
+            const Result freshARM7 = dispatch(nds->JIT.JitBlocks7.at(ARM7Code)->EntryPoint,
+                                              ARM7RAM);
+            Require(freshARM7.value == MainRAMValue && freshARM7.prefix == 7 &&
+                    freshARM7.cycles == 9, "ARM7 fresh main RAM load or timing differs");
+
+            prepare(ARM7RAM);
+            nds->ARM7Timestamp = 0;
+            nds->ARM7Target = 1; // One LDR reaches the target.
+            arm7.Execute<CPUExecuteMode::Interpreter>();
+            Require(arm7.R[0] == ARM7RAM, "ARM7 interpreter changed its base register");
+            const Result interpretedARM7 = {arm7.R[1], arm7.R[2], arm7.R[15],
+                                            arm7.CPSR, u32(nds->ARM7Timestamp)};
+            if (!(reusedARM7 == freshARM7 && freshARM7 == interpretedARM7)) {
+                std::fprintf(stderr,
+                    "FAIL: ARM7 cached WRAM->RAM vs fresh RAM vs interpreter: "
+                    "r1=%08x/%08x/%08x r2=%08x/%08x/%08x pc=%08x/%08x/%08x "
+                    "cpsr=%08x/%08x/%08x cycles=%u/%u/%u\n",
+                    reusedARM7.value, freshARM7.value, interpretedARM7.value,
+                    reusedARM7.prefix, freshARM7.prefix, interpretedARM7.prefix,
+                    reusedARM7.pc, freshARM7.pc, interpretedARM7.pc,
+                    reusedARM7.cpsr, freshARM7.cpsr, interpretedARM7.cpsr,
+                    reusedARM7.cycles, freshARM7.cycles, interpretedARM7.cycles);
+                return 1;
+            }
+        }
+        std::printf("PASS: cached ARM9/ARM7 memory timing and LDM-PC refill timing match\n");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: %s\n", error.what());

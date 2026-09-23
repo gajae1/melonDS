@@ -131,42 +131,59 @@ void Compiler::Comp_MemPermission(const OpArg& address, bool store)
 
 void Compiler::Comp_MemTimingGuard(const OpArg& address, int size)
 {
-    if (Num != 0) return;
-
-    // Native memory instructions bake in the data timing observed while the
-    // block is traced. A register address can later move between TCM and RAM
-    // (or between pages with different timings) without changing the code.
-    const auto* cpu = static_cast<const ARMv5*>(CurCPU);
-    const bool tracedITCM = CurInstr.DataRegion < cpu->ITCMSize;
-    const bool tracedDTCM = !tracedITCM &&
-        (CurInstr.DataRegion & cpu->DTCMMask) == cpu->DTCMBase;
-
-    MOV(32, R(RSCRATCH2), address);
-    if (tracedITCM)
+    if (Num == 1)
     {
-        CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, ITCMSize)));
-        J_CC(CC_AE, FarCode);
-    }
-    else if (tracedDTCM)
-    {
-        AND(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMMask)));
-        CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMBase)));
+        // ARM7 data timing also depends on the runtime address. In particular,
+        // a cached block can move from WRAM to main RAM without changing code.
+        MOV(32, R(RSCRATCH2), address);
+        SHR(32, R(RSCRATCH2), Imm8(24));
+        CMP(32, R(RSCRATCH2), Imm8(0x02));
+        J_CC((CurInstr.DataRegion >> 24) == 0x02 ? CC_NE : CC_E, FarCode);
+
+        MOV(32, R(RSCRATCH2), address);
+        SHR(32, R(RSCRATCH2), Imm8(15));
+        MOV(64, R(RSCRATCH), ImmPtr(&NDS.ARM7MemTimings[0][0]));
+        CMP(8, MComplex(RSCRATCH, RSCRATCH2, SCALE_4, size == 32 ? 2 : 0),
+            Imm8(CurInstr.DataCycles));
         J_CC(CC_NE, FarCode);
     }
     else
     {
-        CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, ITCMSize)));
-        J_CC(CC_B, FarCode);
-        AND(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMMask)));
-        CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMBase)));
-        J_CC(CC_E, FarCode);
+        // Native memory instructions bake in the data timing observed while the
+        // block is traced. A register address can later move between TCM and RAM
+        // (or between pages with different timings) without changing the code.
+        const auto* cpu = static_cast<const ARMv5*>(CurCPU);
+        const bool tracedITCM = CurInstr.DataRegion < cpu->ITCMSize;
+        const bool tracedDTCM = !tracedITCM &&
+            (CurInstr.DataRegion & cpu->DTCMMask) == cpu->DTCMBase;
 
         MOV(32, R(RSCRATCH2), address);
-        SHR(32, R(RSCRATCH2), Imm8(12));
-        LEA(64, RSCRATCH, MDisp(RCPU, offsetof(ARMv5, MemTimings)));
-        CMP(8, MComplex(RSCRATCH, RSCRATCH2, SCALE_4, size == 32 ? 2 : 1),
-            Imm8(CurInstr.DataCycles));
-        J_CC(CC_NE, FarCode);
+        if (tracedITCM)
+        {
+            CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, ITCMSize)));
+            J_CC(CC_AE, FarCode);
+        }
+        else if (tracedDTCM)
+        {
+            AND(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMMask)));
+            CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMBase)));
+            J_CC(CC_NE, FarCode);
+        }
+        else
+        {
+            CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, ITCMSize)));
+            J_CC(CC_B, FarCode);
+            AND(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMMask)));
+            CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMBase)));
+            J_CC(CC_E, FarCode);
+
+            MOV(32, R(RSCRATCH2), address);
+            SHR(32, R(RSCRATCH2), Imm8(12));
+            LEA(64, RSCRATCH, MDisp(RCPU, offsetof(ARMv5, MemTimings)));
+            CMP(8, MComplex(RSCRATCH, RSCRATCH2, SCALE_4, size == 32 ? 2 : 1),
+                Imm8(CurInstr.DataCycles));
+            J_CC(CC_NE, FarCode);
+        }
     }
 
     SwitchToFarCode();
