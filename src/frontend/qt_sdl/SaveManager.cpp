@@ -211,6 +211,8 @@ void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset,
             memcpy(buffer.get(), savedata, savelen);
             Buffer = std::move(buffer);
             Length = savelen;
+            DirtyStart = 0;
+            DirtyEnd = savelen;
         }
         catch (const std::bad_alloc&)
         {
@@ -224,6 +226,8 @@ void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset,
     {
         // A later partial write cannot recover the bytes missed by a failed capture.
         memcpy(Buffer.get(), savedata, Length);
+        DirtyStart = 0;
+        DirtyEnd = Length;
     }
     else
     {
@@ -238,6 +242,23 @@ void SaveManager::RequestFlush(const u8* savedata, u32 savelen, u32 writeoffset,
         else
         {
             memcpy(&Buffer[writeoffset], &savedata[writeoffset], writelen);
+        }
+
+        // A wrapped or empty request conservatively republishes the whole save.
+        if (!writelen || writeoffset >= savelen || writelen > savelen - writeoffset)
+        {
+            DirtyStart = 0;
+            DirtyEnd = savelen;
+        }
+        else if (!DirtyEnd)
+        {
+            DirtyStart = writeoffset;
+            DirtyEnd = writeoffset + writelen;
+        }
+        else
+        {
+            DirtyStart = std::min(DirtyStart, writeoffset);
+            DirtyEnd = std::max(DirtyEnd, writeoffset + writelen);
         }
     }
 
@@ -269,14 +290,26 @@ void SaveManager::CheckFlushLocked()
         return;
     }
 
-    if (SecondaryBufferLength != Length)
+    const bool newBuffer = SecondaryBufferLength != Length;
+    if (newBuffer)
     {
         auto buffer = std::make_unique<u8[]>(Length);
         SecondaryBuffer = std::move(buffer);
         SecondaryBufferLength = Length;
     }
 
-    if (Length) memcpy(SecondaryBuffer.get(), Buffer.get(), Length);
+    // The secondary buffer is the last complete publication. Disk writers take
+    // their own full snapshot, so updating this interval cannot mutate a write.
+    if (Length)
+    {
+        if (newBuffer || !DirtyEnd)
+            memcpy(SecondaryBuffer.get(), Buffer.get(), Length);
+        else
+            memcpy(SecondaryBuffer.get() + DirtyStart, Buffer.get() + DirtyStart,
+                   DirtyEnd - DirtyStart);
+    }
+
+    DirtyStart = DirtyEnd = 0;
 
     Log(LogLevel::Info, "SaveManager: Flush requested\n");
     FlushRequested = false;

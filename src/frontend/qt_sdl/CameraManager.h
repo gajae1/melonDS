@@ -94,9 +94,10 @@ public:
 
     void captureFrame(melonDS::u32* frame, int width, int height, bool yuv);
 
-    void feedFrame(melonDS::u32* frame, int width, int height, bool yuv);
-    void feedFrame_UYVY(melonDS::u32* frame, int width, int height);
-    void feedFrame_NV12(melonDS::u8* planeY, melonDS::u8* planeUV, int width, int height);
+    void feedFrame(melonDS::u32* frame, int width, int height, bool yuv, int bytesPerLine = 0);
+    void feedFrame_UYVY(melonDS::u32* frame, int width, int height, int bytesPerLine = 0);
+    void feedFrame_NV12(melonDS::u8* planeY, melonDS::u8* planeUV, int width, int height,
+                        int yBytesPerLine = 0, int uvBytesPerLine = 0);
 
 signals:
     void camStartSignal();

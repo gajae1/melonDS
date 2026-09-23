@@ -17,6 +17,8 @@
 */
 
 #include <QEventLoop>
+#include <cstring>
+#include <vector>
 
 #include "CameraManager.h"
 #include "Config.h"
@@ -50,15 +52,17 @@ void CameraFrameDumper::present(const QVideoFrame& _frame)
     {
     case QVideoFrameFormat::Format_XRGB8888:
     case QVideoFrameFormat::Format_YUYV:
-        cam->feedFrame((u32*)frame.bits(0), frame.width(), frame.height(), frame.pixelFormat() == QVideoFrameFormat::Format_YUYV);
+        cam->feedFrame((u32*)frame.bits(0), frame.width(), frame.height(),
+                       frame.pixelFormat() == QVideoFrameFormat::Format_YUYV, frame.bytesPerLine(0));
         break;
 
     case QVideoFrameFormat::Format_UYVY:
-        cam->feedFrame_UYVY((u32*)frame.bits(0), frame.width(), frame.height());
+        cam->feedFrame_UYVY((u32*)frame.bits(0), frame.width(), frame.height(), frame.bytesPerLine(0));
         break;
 
     case QVideoFrameFormat::Format_NV12:
-        cam->feedFrame_NV12((u8*)frame.bits(0), (u8*)frame.bits(1), frame.width(), frame.height());
+        cam->feedFrame_NV12((u8*)frame.bits(0), (u8*)frame.bits(1), frame.width(), frame.height(),
+                            frame.bytesPerLine(0), frame.bytesPerLine(1));
         break;
     default:
         break;
@@ -89,15 +93,17 @@ bool CameraFrameDumper::present(const QVideoFrame& _frame)
     {
     case QVideoFrame::Format_RGB32:
     case QVideoFrame::Format_YUYV:
-        cam->feedFrame((u32*)frame.bits(0), frame.width(), frame.height(), frame.pixelFormat() == QVideoFrame::Format_YUYV);
+        cam->feedFrame((u32*)frame.bits(0), frame.width(), frame.height(),
+                       frame.pixelFormat() == QVideoFrame::Format_YUYV, frame.bytesPerLine(0));
         break;
 
     case QVideoFrame::Format_UYVY:
-        cam->feedFrame_UYVY((u32*)frame.bits(0), frame.width(), frame.height());
+        cam->feedFrame_UYVY((u32*)frame.bits(0), frame.width(), frame.height(), frame.bytesPerLine(0));
         break;
 
     case QVideoFrame::Format_NV12:
-        cam->feedFrame_NV12((u8*)frame.bits(0), (u8*)frame.bits(1), frame.width(), frame.height());
+        cam->feedFrame_NV12((u8*)frame.bits(0), (u8*)frame.bits(1), frame.width(), frame.height(),
+                            frame.bytesPerLine(0), frame.bytesPerLine(1));
         break;
     }
 
@@ -167,8 +173,6 @@ void CameraManager::init()
     if (inputType != -1)
         deInit();
 
-    startNum = 0;
-
     inputType = config.GetInt("InputType");
     imagePath = config.GetQString("ImagePath");
     camDeviceName = config.GetQString("DeviceName");
@@ -200,13 +204,13 @@ void CameraManager::init()
             QImage imgconv = img.convertToFormat(QImage::Format_RGB32);
             if (frameFormatYUV)
             {
-                copyFrame_RGBtoYUV((u32*)img.bits(), img.width(), img.height(),
+                copyFrame_RGBtoYUV((u32*)imgconv.bits(), imgconv.width(), imgconv.height(),
                                    frameBuffer, frameWidth, frameHeight,
                                    false);
             }
             else
             {
-                copyFrame_Straight((u32*)img.bits(), img.width(), img.height(),
+                copyFrame_Straight((u32*)imgconv.bits(), imgconv.width(), imgconv.height(),
                                    frameBuffer, frameWidth, frameHeight,
                                    false, false);
             }
@@ -462,8 +466,25 @@ void CameraManager::captureFrame(u32* frame, int width, int height, bool yuv)
     frameMutex.unlock();
 }
 
-void CameraManager::feedFrame(u32* frame, int width, int height, bool yuv)
+void CameraManager::feedFrame(u32* frame, int width, int height, bool yuv, int bytesPerLine)
 {
+    if (width <= 0 || height <= 0 || (yuv && (width & 1))) return;
+    const int rowBytes = width * (yuv ? 2 : 4);
+    if (!bytesPerLine) bytesPerLine = rowBytes;
+    if (bytesPerLine < rowBytes) return;
+
+    if (bytesPerLine != rowBytes)
+    {
+        // The conversion helpers expect packed rows. Only padded camera frames
+        // need a copy; the usual tightly packed path remains allocation-free.
+        std::vector<u32> packed((size_t)rowBytes * height / sizeof(u32));
+        for (int y = 0; y < height; ++y)
+            std::memcpy((u8*)packed.data() + (size_t)y * rowBytes,
+                        (const u8*)frame + (size_t)y * bytesPerLine, rowBytes);
+        feedFrame(packed.data(), width, height, yuv);
+        return;
+    }
+
     frameMutex.lock();
 
     if (width == frameWidth && height == frameHeight && yuv == frameFormatYUV)
@@ -497,8 +518,12 @@ void CameraManager::feedFrame(u32* frame, int width, int height, bool yuv)
     frameMutex.unlock();
 }
 
-void CameraManager::feedFrame_UYVY(u32* frame, int width, int height)
+void CameraManager::feedFrame_UYVY(u32* frame, int width, int height, int bytesPerLine)
 {
+    if (width <= 0 || height <= 0 || (width & 1)) return;
+    if (!bytesPerLine) bytesPerLine = width * 2;
+    if (bytesPerLine < width * 2) return;
+
     for (int y = 0; y < frameHeight; y++)
     {
         int sy = (y * height) / frameHeight;
@@ -507,7 +532,9 @@ void CameraManager::feedFrame_UYVY(u32* frame, int width, int height)
         {
             int sx = (x * width) / frameWidth;
 
-            u32 val = frame[((sy*width) + sx) >> 1];
+            u32 val;
+            std::memcpy(&val, (const u8*)frame + (size_t)sy * bytesPerLine + (sx >> 1) * 4,
+                        sizeof(val));
 
             val = ((val & 0xFF00FF00) >> 8) | ((val & 0x00FF00FF) << 8);
 
@@ -518,8 +545,14 @@ void CameraManager::feedFrame_UYVY(u32* frame, int width, int height)
     feedFrame(tempFrameBuffer, frameWidth, frameHeight, true);
 }
 
-void CameraManager::feedFrame_NV12(u8* planeY, u8* planeUV, int width, int height)
+void CameraManager::feedFrame_NV12(u8* planeY, u8* planeUV, int width, int height,
+                                   int yBytesPerLine, int uvBytesPerLine)
 {
+    if (width <= 0 || height <= 0 || (width & 1)) return;
+    if (!yBytesPerLine) yBytesPerLine = width;
+    if (!uvBytesPerLine) uvBytesPerLine = width;
+    if (yBytesPerLine < width || uvBytesPerLine < width) return;
+
     for (int y = 0; y < frameHeight; y++)
     {
         int sy = (y * height) / frameHeight;
@@ -531,12 +564,12 @@ void CameraManager::feedFrame_NV12(u8* planeY, u8* planeUV, int width, int heigh
 
             u32 val;
 
-            u8 y1 = planeY[(sy*width) + sx1];
-            u8 y2 = planeY[(sy*width) + sx2];
+            u8 y1 = planeY[(size_t)sy * yBytesPerLine + sx1];
+            u8 y2 = planeY[(size_t)sy * yBytesPerLine + sx2];
 
-            int uvpos = (((sy>>1)*(width>>1)) + (sx1>>1));
-            u8 u = planeUV[uvpos << 1];
-            u8 v = planeUV[(uvpos << 1) + 1];
+            size_t uvpos = (size_t)(sy >> 1) * uvBytesPerLine + (sx1 & ~1);
+            u8 u = planeUV[uvpos];
+            u8 v = planeUV[uvpos + 1];
 
             val = y1 | (u << 8) | (y2 << 16) | (v << 24);
             tempFrameBuffer[((y*frameWidth) + x) >> 1] = val;

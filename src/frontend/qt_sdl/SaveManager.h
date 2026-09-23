@@ -75,6 +75,9 @@ private:
     std::unique_ptr<melonDS::u8[]> Buffer;
     melonDS::u32 Length;
     bool FlushRequested;
+    // Conservative union of writes since the last publication, end exclusive.
+    melonDS::u32 DirtyStart = 0;
+    melonDS::u32 DirtyEnd = 0;
     bool CaptureFailed = false;
     bool PublicationFailed = false;
 

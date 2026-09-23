@@ -129,7 +129,8 @@ else()
     find_package(Qt5 REQUIRED COMPONENTS Test)
     target_link_libraries(CameraSettingsUI PRIVATE Qt5::Test)
 endif()
-foreach(case IN ITEMS cancel destroy accept saved-started preview-image xflip device-list switch-camera)
+foreach(case IN ITEMS cancel destroy accept saved-started preview-image xflip device-list switch-camera
+        padded-frames indexed-image started-reinit)
     add_test(NAME camera-settings-ui-${case} COMMAND CameraSettingsUI ${case})
     set_tests_properties(camera-settings-ui-${case} PROPERTIES TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -434,11 +435,21 @@ endforeach()
 
 add_executable(SaveManagerIO "${CMAKE_SOURCE_DIR}/tests/SaveManagerIO.cpp" SaveManager.cpp SaveManager.h)
 target_include_directories(SaveManagerIO PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+add_executable(SaveManagerPublication "${CMAKE_SOURCE_DIR}/tests/Optimization162SaveManager.cpp"
+    SaveManager.cpp SaveManager.h)
+target_include_directories(SaveManagerPublication PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
 if (USE_QT6)
     target_link_libraries(SaveManagerIO PRIVATE Qt6::Core)
+    target_link_libraries(SaveManagerPublication PRIVATE Qt6::Core)
 else()
     target_link_libraries(SaveManagerIO PRIVATE Qt5::Core)
+    target_link_libraries(SaveManagerPublication PRIVATE Qt5::Core)
 endif()
+foreach(case IN ITEMS verify concurrent)
+    add_test(NAME save-manager-publication-${case}
+        COMMAND SaveManagerPublication ${case} "${CMAKE_CURRENT_BINARY_DIR}/save-manager-publication-${case}")
+    set_tests_properties(save-manager-publication-${case} PROPERTIES TIMEOUT 15)
+endforeach()
 foreach(case IN ITEMS replace retry-open retry-rename retry-worker path-during-flush buffer-resize
         unpublished-pending memory-copy-pending flush-latest recovery-copy same-copy-path copy-commit-failure
         relocation-pending relocation-clean allocation-capture allocation-publish producer-during-flush replace-retry)

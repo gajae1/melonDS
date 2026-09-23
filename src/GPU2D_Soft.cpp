@@ -764,6 +764,63 @@ void SoftRenderer2D::DrawBG_Text(u32 line, u32 bgnum)
     else
         tilemapaddr += ((yoff & 0xF8) << 3);
 
+    if constexpr (!mosaic)
+    {
+        const u32 flag = 0x01000000 << bgnum;
+        const u32 row = yoff & 7;
+        if (bgcnt & (1<<7))
+        {
+            // Work on the visible part of each tile, including a partial tile
+            // at either end of the scanline. Tile-map reads were already once
+            // per tile; the span keeps coordinate/flip work out of each pixel.
+            for (u32 i = 0; i < 256;)
+            {
+                const u32 span = std::min(256u - i, 8u - (xoff & 7));
+                const u16 tile = *(u16*)&bgvram[(tilemapaddr + ((xoff & 0xF8) >> 2)
+                    + ((xoff & widexmask) << 3)) & bgvrammask];
+                u16* tilepal = extpal ? GPU2D.GetBGExtPal(extpalslot, tile >> 12) : pal;
+                const u32 pixelsaddr = tilesetaddr + ((tile & 0x03FF) << 6)
+                    + (((tile & (1<<11)) ? (7 - row) : row) << 3);
+                const int step = (tile & (1<<10)) ? -1 : 1;
+                int tilex = (tile & (1<<10)) ? 7 - (xoff & 7) : (xoff & 7);
+                for (u32 end = i + span; i < end; ++i, tilex += step)
+                {
+                    if (WindowMask[i] & (1<<bgnum))
+                    {
+                        const u8 color = bgvram[(pixelsaddr + tilex) & bgvrammask];
+                        if (color) DrawPixel(&BGOBJLine[i], tilepal[color], flag);
+                    }
+                }
+                xoff += span;
+            }
+        }
+        else
+        {
+            for (u32 i = 0; i < 256;)
+            {
+                const u32 span = std::min(256u - i, 8u - (xoff & 7));
+                const u16 tile = *(u16*)&bgvram[(tilemapaddr + ((xoff & 0xF8) >> 2)
+                    + ((xoff & widexmask) << 3)) & bgvrammask];
+                u16* tilepal = pal + ((tile & 0xF000) >> 8);
+                const u32 pixelsaddr = tilesetaddr + ((tile & 0x03FF) << 5)
+                    + (((tile & (1<<11)) ? (7 - row) : row) << 2);
+                const int step = (tile & (1<<10)) ? -1 : 1;
+                int tilex = (tile & (1<<10)) ? 7 - (xoff & 7) : (xoff & 7);
+                for (u32 end = i + span; i < end; ++i, tilex += step)
+                {
+                    if (WindowMask[i] & (1<<bgnum))
+                    {
+                        const u8 packed = bgvram[(pixelsaddr + (tilex >> 1)) & bgvrammask];
+                        const u8 color = (tilex & 1) ? (packed >> 4) : (packed & 0x0F);
+                        if (color) DrawPixel(&BGOBJLine[i], tilepal[color], flag);
+                    }
+                }
+                xoff += span;
+            }
+        }
+        return;
+    }
+
     u16 curtile;
     u16* curpal;
     u32 pixelsaddr;

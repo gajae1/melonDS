@@ -192,6 +192,14 @@ if (TARGET core)
         "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/compressed-texture-colors.bin"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/CompressedTextureColors.cmake")
     set_tests_properties(compressed-texture-colors PROPERTIES TIMEOUT 30)
+    add_executable(SoftwareTextBG Optimization162TextBG.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_include_directories(SoftwareTextBG PRIVATE ../src)
+    target_link_libraries(SoftwareTextBG PRIVATE core Threads::Threads)
+    add_test(NAME software-text-bg-output COMMAND "${CMAKE_COMMAND}"
+        "-DEXECUTABLE=$<TARGET_FILE:SoftwareTextBG>"
+        "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/software-text-bg.bin"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/Optimization162TextBG.cmake")
+    set_tests_properties(software-text-bg-output PROPERTIES TIMEOUT 60)
     if(ENABLE_JIT AND ARCHITECTURE STREQUAL "x86_64")
         add_executable(CoreThumbCarry Optimization161A3.cpp PlatformSync.cpp PlatformHeadless.cpp)
         target_link_libraries(CoreThumbCarry PRIVATE core Threads::Threads)

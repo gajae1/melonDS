@@ -105,6 +105,76 @@ static void Scenario(const QString& name)
 {
     CameraWindow window;
 
+    if (name == "padded-frames")
+    {
+        CameraManager yuv(0, 4, 2, true);
+        u8 yuyv[] = {
+            0x10, 0x80, 0x40, 0x80, 0x20, 0x81, 0x60, 0x82, 0xEE, 0xEE, 0xEE, 0xEE,
+            0x30, 0x90, 0x50, 0xA0, 0x70, 0x91, 0x80, 0xA1, 0xEE, 0xEE, 0xEE, 0xEE
+        };
+        const u32 expectedYuyv[] = {0x80408010, 0x82608120, 0xA0509030, 0xA1809170};
+        u32 actualYuv[4] = {};
+        yuv.feedFrame((u32*)yuyv, 4, 2, true, 12);
+        yuv.captureFrame(actualYuv, 4, 2, true);
+        for (int i = 0; i < 4; ++i)
+            Require(actualYuv[i] == expectedYuyv[i], "Padded YUYV row was decoded as tightly packed");
+
+        u8 uyvy[] = {
+            0x80, 0x10, 0x80, 0x40, 0x81, 0x20, 0x82, 0x60, 0xEE, 0xEE, 0xEE, 0xEE,
+            0x90, 0x30, 0xA0, 0x50, 0x91, 0x70, 0xA1, 0x80, 0xEE, 0xEE, 0xEE, 0xEE
+        };
+        yuv.feedFrame_UYVY((u32*)uyvy, 4, 2, 12);
+        yuv.captureFrame(actualYuv, 4, 2, true);
+        for (int i = 0; i < 4; ++i)
+            Require(actualYuv[i] == expectedYuyv[i], "Padded UYVY row was decoded as tightly packed");
+
+        u8 planeY[] = {0x10, 0x40, 0x20, 0x60, 0xEE, 0xEE,
+                             0x30, 0x50, 0x70, 0x80, 0xEE, 0xEE};
+        u8 planeUV[] = {0x80, 0x80, 0x81, 0x82, 0xEE, 0xEE};
+        const u32 expectedNv12[] = {0x80408010, 0x82608120, 0x80508030, 0x82808170};
+        yuv.feedFrame_NV12(planeY, planeUV, 4, 2, 6, 6);
+        yuv.captureFrame(actualYuv, 4, 2, true);
+        for (int i = 0; i < 4; ++i)
+            Require(actualYuv[i] == expectedNv12[i], "Padded NV12 plane was decoded as tightly packed");
+
+        CameraManager rgb(0, 4, 2, false);
+        u32 rgbRows[] = {0xFF010203, 0xFF040506, 0xFF070809, 0xFF0A0B0C, 0xEEEEEEEE,
+                               0xFF111213, 0xFF141516, 0xFF171819, 0xFF1A1B1C, 0xEEEEEEEE};
+        u32 actualRgb[8] = {};
+        rgb.feedFrame(rgbRows, 4, 2, false, 20);
+        rgb.captureFrame(actualRgb, 4, 2, false);
+        for (int i = 0; i < 8; ++i)
+            Require(actualRgb[i] == rgbRows[i + i / 4], "Padded RGB row was decoded as tightly packed");
+        return;
+    }
+
+    if (name == "indexed-image")
+    {
+        const QString imagePath = configDirectory + "/indexed-camera.png";
+        QImage image(8, 8, QImage::Format_Indexed8);
+        image.setColorTable({qRgb(255, 0, 0), qRgb(0, 0, 255)});
+        image.fill(0);
+        Require(image.save(imagePath), "Could not write camera image fixture");
+        Require(QImage(imagePath).format() == QImage::Format_Indexed8,
+                "Camera image fixture did not retain its pixel format");
+        Cam(0).SetInt("InputType", 1);
+        Cam(0).SetQString("ImagePath", imagePath);
+        camManager[0]->init();
+        Require(MostlyRed(CapturePixel(*camManager[0], 32)),
+                "Non-RGB32 still image was not converted before pixel access");
+        return;
+    }
+
+    if (name == "started-reinit")
+    {
+        camManager[0]->start();
+        camManager[0]->deInit();
+        camManager[0]->init();
+        Require(camManager[0]->isStarted(), "Reinitialization lost the active camera request");
+        camManager[0]->stop();
+        return;
+    }
+
     if (name == "saved-started")
     {
         // The emulation had both cameras started (a DSi game using them).
