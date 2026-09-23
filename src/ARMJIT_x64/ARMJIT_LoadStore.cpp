@@ -28,6 +28,30 @@ extern "C" void ARM_Ret();
 namespace melonDS
 {
 
+static u32 CurrentBlockDataCycles(const ARMv5* cpu, u32 firstAddr, u32 count)
+{
+    u32 cycles = 0;
+    for (u32 i = 0; i < count; ++i)
+    {
+        const u32 addr = (firstAddr + i * 4) & ~3u;
+        if (addr < cpu->ITCMSize || (addr & cpu->DTCMMask) == cpu->DTCMBase)
+            ++cycles;
+        else
+            cycles += cpu->MemTimings[addr >> 12][i ? 3 : 2];
+    }
+    return cycles;
+}
+
+static void AdjustBlockLoadPCCycles(ARMv5* cpu, s32 tracedCycles, s32 dataCycles)
+{
+    // The interpreter refills the branch target before charging LDM's data
+    // access. The JIT's earlier charge used the instruction's code timing.
+    const s32 codeCycles = (cpu->R[15] & 0x2) ? 0 : cpu->CodeCycles;
+    const s32 actualCycles = std::max(codeCycles + dataCycles - 6,
+                                      std::max(codeCycles, dataCycles));
+    cpu->Cycles += actualCycles - tracedCycles;
+}
+
 template <typename T>
 int squeezePointer(T* ptr)
 {
@@ -105,6 +129,63 @@ void Compiler::Comp_MemPermission(const OpArg& address, bool store)
     SwitchToNearCode();
 }
 
+void Compiler::Comp_MemTimingGuard(const OpArg& address, int size)
+{
+    if (Num != 0) return;
+
+    // Native memory instructions bake in the data timing observed while the
+    // block is traced. A register address can later move between TCM and RAM
+    // (or between pages with different timings) without changing the code.
+    const auto* cpu = static_cast<const ARMv5*>(CurCPU);
+    const bool tracedITCM = CurInstr.DataRegion < cpu->ITCMSize;
+    const bool tracedDTCM = !tracedITCM &&
+        (CurInstr.DataRegion & cpu->DTCMMask) == cpu->DTCMBase;
+
+    MOV(32, R(RSCRATCH2), address);
+    if (tracedITCM)
+    {
+        CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, ITCMSize)));
+        J_CC(CC_AE, FarCode);
+    }
+    else if (tracedDTCM)
+    {
+        AND(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMMask)));
+        CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMBase)));
+        J_CC(CC_NE, FarCode);
+    }
+    else
+    {
+        CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, ITCMSize)));
+        J_CC(CC_B, FarCode);
+        AND(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMMask)));
+        CMP(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, DTCMBase)));
+        J_CC(CC_E, FarCode);
+
+        MOV(32, R(RSCRATCH2), address);
+        SHR(32, R(RSCRATCH2), Imm8(12));
+        LEA(64, RSCRATCH, MDisp(RCPU, offsetof(ARMv5, MemTimings)));
+        CMP(8, MComplex(RSCRATCH, RSCRATCH2, SCALE_4, size == 32 ? 2 : 1),
+            Imm8(CurInstr.DataCycles));
+        J_CC(CC_NE, FarCode);
+    }
+
+    SwitchToFarCode();
+    // Replay this instruction with the current data timing. Earlier native
+    // instructions in the block are already committed to the register cache.
+    RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);
+    SaveCPSR(false);
+    MOV(32, MDisp(RCPU, offsetof(ARM, R[15])), Imm32(R15));
+    MOV(32, MDisp(RCPU, offsetof(ARM, CurInstr)), Imm32(CurInstr.Instr));
+    MOV(32, MDisp(RCPU, offsetof(ARM, CodeCycles)), Imm32(CurInstr.CodeCycles));
+    MOV(64, R(ABI_PARAM1), R(RCPU));
+    ABI_CallFunction(Thumb ? InterpretTHUMB[CurInstr.Info.Kind] : InterpretARM[CurInstr.Info.Kind]);
+    MOV(32, R(RCPSR), MDisp(RCPU, offsetof(ARM, CPSR)));
+    if (ConstantCycles)
+        ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(ConstantCycles));
+    ABI_TailCall(ARM_Ret);
+    SwitchToNearCode();
+}
+
 bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
 {
     u32 localAddr = NDS.JIT.LocaliseCodeAddress(Num, addr);
@@ -116,6 +197,7 @@ bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
         return false;
     }
 
+    Comp_MemTimingGuard(Imm32(addr), size);
     Comp_MemPermission(Imm32(addr), false);
     Comp_AddCycles_CDI();
 
@@ -189,6 +271,7 @@ void Compiler::Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flag
     {
         Comp_MemPermission(rnMapped, flags & memop_Store);
         MOV(32, R(RSCRATCH3), rnMapped);
+        Comp_MemTimingGuard(R(RSCRATCH3), size);
 
         finalAddr = rnMapped.GetSimpleReg();
     }
@@ -226,7 +309,10 @@ void Compiler::Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flag
     }
 
     if (!(flags & memop_Post))
+    {
+        Comp_MemTimingGuard(R(finalAddr), size);
         Comp_MemPermission(R(finalAddr), flags & memop_Store);
+    }
     if (flags & memop_Store) Comp_AddCycles_CD();
     else Comp_AddCycles_CDI();
 
@@ -471,6 +557,37 @@ void Compiler::Comp_MemBlockPermission(int rn, int count, bool store, bool prein
     SwitchToNearCode();
 }
 
+void Compiler::Comp_MemBlockTimingGuard(int rn, int count, bool preinc, bool decrement)
+{
+    if (Num != 0) return;
+
+    const s32 firstOffset = decrement ? -4*count + (preinc ? 0 : 4) : (preinc ? 4 : 0);
+    MOV_sum(32, RSCRATCH3, MapReg(rn), Imm32(firstOffset));
+    AND(32, R(RSCRATCH3), Imm8(~3));
+    PushRegs(false, false);
+    MOV(32, R(ABI_PARAM2), R(RSCRATCH3));
+    MOV(64, R(ABI_PARAM1), R(RCPU));
+    MOV(32, R(ABI_PARAM3), Imm32(count));
+    ABI_CallFunction(&CurrentBlockDataCycles);
+    PopRegs(false, false);
+    CMP(32, R(RSCRATCH), Imm32(CurInstr.DataCycles));
+    J_CC(CC_NE, FarCode);
+
+    SwitchToFarCode();
+    RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);
+    SaveCPSR(false);
+    MOV(32, MDisp(RCPU, offsetof(ARM, R[15])), Imm32(R15));
+    MOV(32, MDisp(RCPU, offsetof(ARM, CurInstr)), Imm32(CurInstr.Instr));
+    MOV(32, MDisp(RCPU, offsetof(ARM, CodeCycles)), Imm32(CurInstr.CodeCycles));
+    MOV(64, R(ABI_PARAM1), R(RCPU));
+    ABI_CallFunction(Thumb ? InterpretTHUMB[CurInstr.Info.Kind] : InterpretARM[CurInstr.Info.Kind]);
+    MOV(32, R(RCPSR), MDisp(RCPU, offsetof(ARM, CPSR)));
+    if (ConstantCycles)
+        ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(ConstantCycles));
+    ABI_TailCall(ARM_Ret);
+    SwitchToNearCode();
+}
+
 s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc, bool decrement, bool usermode, bool skipLoadingRn)
 {
     int regsCount = regs.Count();
@@ -480,7 +597,8 @@ s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc
 
     Comp_MemBlockPermission(rn, regsCount, store, preinc, decrement);
     int firstReg = *regs.begin();
-    if (regsCount == 1 && !usermode && RegCache.LoadedRegs & (1 << firstReg) && !(firstReg == rn && skipLoadingRn))
+    if (regsCount == 1 && !usermode && !(Num == 0 && firstReg == 15)
+        && RegCache.LoadedRegs & (1 << firstReg) && !(firstReg == rn && skipLoadingRn))
     {
         int flags = 0;
         if (store)
@@ -495,6 +613,8 @@ s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc
     }
 
     s32 offset = (regsCount * 4) * (decrement ? -1 : 1);
+
+    Comp_MemBlockTimingGuard(rn, regsCount, preinc, decrement);
 
     int expectedTarget = Num == 0
         ? NDS.JIT.Memory.ClassifyAddress9(CurInstr.DataRegion)
@@ -731,6 +851,19 @@ s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc
                 AND(32, MapReg(15), Imm8(0xFE));
         }
         Comp_JumpTo(MapReg(15).GetSimpleReg(), usermode);
+        if (Num == 0)
+        {
+            const s32 codeCycles = (R15 & 0x2) ? 0 : CurInstr.CodeCycles;
+            const s32 dataCycles = CurInstr.DataCycles;
+            const s32 tracedCycles = std::max(codeCycles + dataCycles - 6,
+                                              std::max(codeCycles, dataCycles));
+            PushRegs(false, false);
+            MOV(64, R(ABI_PARAM1), R(RCPU));
+            MOV(32, R(ABI_PARAM2), Imm32(tracedCycles));
+            MOV(32, R(ABI_PARAM3), Imm32(dataCycles));
+            ABI_CallFunction(&AdjustBlockLoadPCCycles);
+            PopRegs(false, false);
+        }
     }
 
     return offset;
