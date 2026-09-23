@@ -463,9 +463,8 @@ AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, C
         // Match SDL2's ALLOW_FREQUENCY_CHANGE result: the stream should take
         // input at the device's own rate so no resampling stage is inserted.
         SDL_AudioSpec devspec{};
-        int devframes = 0;
         int rate = 48000;
-        if (SDL_GetAudioDeviceFormat(devid, &devspec, &devframes) && devspec.freq > 0)
+        if (SDL_GetAudioDeviceFormat(devid, &devspec, nullptr) && devspec.freq > 0)
             rate = devspec.freq;
         SDL_AudioSpec wanted{};
         wanted.freq = rate;
@@ -478,7 +477,14 @@ AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, C
         if (!output->sdl) { error = SDL_GetError(); return opened; }
         output->sdlPhysical = devid == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK ? 0 : devid;
         obtained.rate = rate;
-        obtained.frames = devframes > 0 ? devframes : next.frames;
+        // Before open, SDL reports the preferred period. Query the bound
+        // logical device for the period the backend actually selected.
+        SDL_AudioSpec openedSpec{};
+        int openedFrames = 0;
+        const SDL_AudioDeviceID logical = SDL_GetAudioStreamDevice(output->sdl);
+        if (!logical || !SDL_GetAudioDeviceFormat(logical, &openedSpec, &openedFrames) || openedFrames <= 0)
+            openedFrames = next.frames;
+        obtained.frames = openedFrames;
         output->outputRamp.Init(rate);
         const char* driver = SDL_GetCurrentAudioDriver();
         obtained.backend = std::string("SDL3 / ") + (driver ? driver : "unknown");

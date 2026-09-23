@@ -458,6 +458,11 @@ void EmuInstance::inputProcess()
     {
         openJoystick();
     }
+#ifdef MELONDS_SDL3
+    // Gamepad events are disabled; keep motion sensor data current when a
+    // controller is selected. Raw joystick buttons are updated above.
+    if (controller) SDL_UpdateGamepads();
+#endif
 
     joyInputMask = 0xFFF;
     if (joystick)

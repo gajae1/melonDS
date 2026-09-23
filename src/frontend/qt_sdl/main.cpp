@@ -493,7 +493,16 @@ int main(int argc, char** argv)
         return 1;
     }
 
+#ifdef MELONDS_SDL3
+    // The Qt frontend polls joystick state and never drains SDL's event queue.
+    // SDL3 emits an UPDATE_COMPLETE event even with joystick events disabled.
+    SDL_SetJoystickEventsEnabled(false);
+    SDL_SetGamepadEventsEnabled(false);
+    SDL_SetEventEnabled(SDL_EVENT_JOYSTICK_UPDATE_COMPLETE, false);
+    SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_UPDATE_COMPLETE, false);
+#else
     SDL_SetJoystickEventsEnabled(true);
+#endif
 
     SDL_InitSubSystem(SDL_INIT_VIDEO);
     SDL_EnableScreenSaver(); SDL_DisableScreenSaver();
