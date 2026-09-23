@@ -438,12 +438,19 @@ void EmuInstance::inputProcess()
     bool topologyChanged;
     {
         JoystickListLock devicesLock;
+#ifdef MELONDS_SDL3
         int count = 0;
         SDL_JoystickID* ids = SDL_GetJoysticks(&count);
         topologyChanged = !ids || count != static_cast<int>(joystickTopology.size());
         for (int i = 0; !topologyChanged && i < count; ++i)
             topologyChanged = joystickTopology[i] != ids[i];
         SDL_free(ids);
+#else
+        const int count = SDL_NumJoysticks();
+        topologyChanged = count < 0 || count != static_cast<int>(joystickTopology.size());
+        for (int i = 0; !topologyChanged && i < count; ++i)
+            topologyChanged = joystickTopology[i] != SDL_JoystickGetDeviceInstanceID(i);
+#endif
     }
     if (topologyChanged || (!joystick &&
         joystickSelection.status == JoystickSelection::Status::Missing &&

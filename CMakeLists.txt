@@ -17,7 +17,7 @@ if (USE_VCPKG)
 endif()
 
 project(melonDS
-    VERSION 1.1.162
+    VERSION 1.1.163
     DESCRIPTION "DS emulator, sorta"
     HOMEPAGE_URL "https://melonds.kuribo64.net"
     LANGUAGES C CXX)
@@ -110,7 +110,14 @@ cmake_dependent_option(ENABLE_JIT "Enable JIT recompiler" ON
 cmake_dependent_option(ENABLE_JIT_PROFILING "Enable JIT profiling with VTune" OFF "ENABLE_JIT" OFF)
 option(ENABLE_OGLRENDERER "Enable OpenGL renderer" ON)
 
-check_ipo_supported(RESULT IPO_SUPPORTED)
+# A toolchain or explicit profile may have already disabled both LTO modes.
+# In that case the IPO compiler/linker probe cannot affect this build.
+if (DEFINED ENABLE_LTO_RELEASE AND NOT ENABLE_LTO_RELEASE AND
+    (NOT DEFINED ENABLE_LTO OR NOT ENABLE_LTO))
+    set(IPO_SUPPORTED OFF)
+else()
+    check_ipo_supported(RESULT IPO_SUPPORTED)
+endif()
 cmake_dependent_option(ENABLE_LTO_RELEASE "Enable link-time optimizations for release builds" ON "IPO_SUPPORTED" OFF)
 cmake_dependent_option(ENABLE_LTO "Enable link-time optimizations" OFF "IPO_SUPPORTED" OFF)
 
