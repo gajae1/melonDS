@@ -165,12 +165,16 @@ def main():
             archive.write(runtime_file(runtime, relative), exe_name if relative == exe.name else relative)
     with zipfile.ZipFile(runtime_temp) as archive:
         names = archive.namelist()
-        if len(names) != len(expected_archive) or set(names) != set(expected_archive) or archive.testzip():
+        if len(names) != len(expected_archive) or set(names) != set(expected_archive):
             raise RuntimeError('Runtime archive does not match the manifest selection')
-        for name, expected in expected_archive.items():
-            with archive.open(name) as stream:
-                if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
-                    raise RuntimeError('Runtime archive file hash differs from the manifest')
+        # Reading each member to EOF also verifies its ZIP CRC and detects truncation.
+        try:
+            for name, expected in expected_archive.items():
+                with archive.open(name) as stream:
+                    if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
+                        raise RuntimeError('Runtime archive file hash differs from the manifest')
+        except zipfile.BadZipFile as exc:
+            raise RuntimeError('Runtime archive does not match the manifest selection') from exc
         archived_private = sum(private(Path(name)) for name in names)
     subprocess.run(['git', 'archive', '--format=zip', '--output=' + str(source_temp), commit],
                    cwd=root, check=True)
