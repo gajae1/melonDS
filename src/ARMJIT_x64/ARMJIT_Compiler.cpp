@@ -794,6 +794,7 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
             else
             {
                 IrregularCycles = comp == NULL;
+                const u32 constantCyclesBefore = ConstantCycles;
 
                 FixupBranch skipExecute;
                 if (cond < 0xE)
@@ -822,7 +823,11 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                         FixupBranch skipFailed = J();
                         SetJumpTarget(skipExecute);
 
-                        Comp_AddCycles_C(true);
+                        // A conditional transfer can defer its regular C cost
+                        // before a PC load marks the instruction irregular.
+                        // That deferred cost is shared by both paths.
+                        if (ConstantCycles == constantCyclesBefore)
+                            Comp_AddCycles_C(true);
 
                         Comp_SpecialBranchBehaviour(false);
 

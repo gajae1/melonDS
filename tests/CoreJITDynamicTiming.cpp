@@ -217,6 +217,68 @@ int main()
                                      u32(cpu.Cycles)};
         Require(interpretedSingle == nativeSingle,
                 "single-register LDM PC interpreter/native timing differs");
+
+        // A conditional return with a long register list exercises the
+        // executed-path charge separately from the skipped instruction.
+        Require(cpu.DataWrite32(ReturnCode, 0x08BD8FF8), "conditional return write failed");
+        for (u32 i = 0; i < 10; ++i)
+            Require(cpu.DataWrite32(DTCM + 0x200 + i * 4,
+                                    i == 9 ? ReturnTarget : 0x11110000 + i),
+                    "conditional return stack write failed");
+        nds->JIT.ResetBlockCache();
+        cpu.CPSR = 0x400000DF; // EQ executes.
+        for (int reg = 3; reg <= 11; ++reg) cpu.R[reg] = 0;
+        cpu.R[13] = DTCM + 0x200;
+        cpu.StopExecution = 0;
+        cpu.JumpTo(ReturnCode);
+        cpu.Cycles = 0;
+        nds->JIT.CompileBlock(&cpu);
+        const Result interpretedConditional = {cpu.R[4], cpu.R[13], cpu.R[15], cpu.CPSR,
+                                               u32(cpu.Cycles)};
+        Require(nds->JIT.JitBlocks9.contains(ReturnCode),
+                "conditional return block was not compiled");
+        cpu.CPSR = 0x400000DF;
+        for (int reg = 3; reg <= 11; ++reg) cpu.R[reg] = 0;
+        cpu.R[13] = DTCM + 0x200;
+        cpu.StopExecution = 0;
+        cpu.JumpTo(ReturnCode);
+        cpu.Cycles = 0;
+        ARM_Dispatch(&cpu, nds->JIT.JitBlocks9.at(ReturnCode)->EntryPoint);
+        const Result nativeConditional = {cpu.R[4], cpu.R[13], cpu.R[15], cpu.CPSR,
+                                          u32(cpu.Cycles)};
+        if (!(interpretedConditional == nativeConditional)) {
+            std::fprintf(stderr, "FAIL: conditional LDM PC cycles=%u/%u pc=%08x/%08x\n",
+                         interpretedConditional.cycles, nativeConditional.cycles,
+                         interpretedConditional.pc, nativeConditional.pc);
+            return 1;
+        }
+        Require(cpu.DataWrite32(ReturnCode, 0x18BD8FF8),
+                "skipped conditional return write failed");
+        nds->JIT.ResetBlockCache();
+        cpu.CPSR = 0x400000DF; // NE skips.
+        cpu.R[13] = DTCM + 0x200;
+        cpu.StopExecution = 0;
+        cpu.JumpTo(ReturnCode);
+        cpu.Cycles = 0;
+        nds->JIT.CompileBlock(&cpu);
+        const Result interpretedSkipped = {cpu.R[4], cpu.R[13], cpu.R[15], cpu.CPSR,
+                                           u32(cpu.Cycles)};
+        Require(nds->JIT.JitBlocks9.contains(ReturnCode),
+                "skipped return block was not compiled");
+        cpu.CPSR = 0x400000DF;
+        cpu.R[13] = DTCM + 0x200;
+        cpu.StopExecution = 0;
+        cpu.JumpTo(ReturnCode);
+        cpu.Cycles = 0;
+        ARM_Dispatch(&cpu, nds->JIT.JitBlocks9.at(ReturnCode)->EntryPoint);
+        const Result nativeSkipped = {cpu.R[4], cpu.R[13], cpu.R[15], cpu.CPSR,
+                                      u32(cpu.Cycles)};
+        if (!(interpretedSkipped == nativeSkipped)) {
+            std::fprintf(stderr, "FAIL: skipped LDM PC cycles=%u/%u pc=%08x/%08x\n",
+                         interpretedSkipped.cycles, nativeSkipped.cycles,
+                         interpretedSkipped.pc, nativeSkipped.pc);
+            return 1;
+        }
         std::printf("PASS: cached memory timing and LDM-PC refill timing match\n");
         return 0;
     } catch (const std::exception& error) {
