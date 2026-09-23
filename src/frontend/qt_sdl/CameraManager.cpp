@@ -524,13 +524,16 @@ void CameraManager::feedFrame_UYVY(u32* frame, int width, int height, int bytesP
     if (!bytesPerLine) bytesPerLine = width * 2;
     if (bytesPerLine < width * 2) return;
 
+    const int yStep = height / frameHeight;
+    const int yRemainder = height % frameHeight;
+    const int xStep = (2LL * width) / frameWidth;
+    const int xRemainder = (2LL * width) % frameWidth;
+    int sy = 0, yError = 0;
     for (int y = 0; y < frameHeight; y++)
     {
-        int sy = (y * height) / frameHeight;
-
+        int sx = 0, xError = 0;
         for (int x = 0; x < frameWidth; x+=2)
         {
-            int sx = (x * width) / frameWidth;
 
             u32 val;
             std::memcpy(&val, (const u8*)frame + (size_t)sy * bytesPerLine + (sx >> 1) * 4,
@@ -539,7 +542,13 @@ void CameraManager::feedFrame_UYVY(u32* frame, int width, int height, int bytesP
             val = ((val & 0xFF00FF00) >> 8) | ((val & 0x00FF00FF) << 8);
 
             tempFrameBuffer[((y*frameWidth) + x) >> 1] = val;
+            sx += xStep;
+            xError += xRemainder;
+            if (xError >= frameWidth) { ++sx; xError -= frameWidth; }
         }
+        sy += yStep;
+        yError += yRemainder;
+        if (yError >= frameHeight) { ++sy; yError -= frameHeight; }
     }
 
     feedFrame(tempFrameBuffer, frameWidth, frameHeight, true);
@@ -553,14 +562,19 @@ void CameraManager::feedFrame_NV12(u8* planeY, u8* planeUV, int width, int heigh
     if (!uvBytesPerLine) uvBytesPerLine = width;
     if (yBytesPerLine < width || uvBytesPerLine < width) return;
 
+    const int yStep = height / frameHeight;
+    const int yRemainder = height % frameHeight;
+    const int pixelStep = width / frameWidth;
+    const int pixelRemainder = width % frameWidth;
+    const int pairStep = (2LL * width) / frameWidth;
+    const int pairRemainder = (2LL * width) % frameWidth;
+    int sy = 0, yError = 0;
     for (int y = 0; y < frameHeight; y++)
     {
-        int sy = (y * height) / frameHeight;
-
+        int sx1 = 0, xError = 0;
         for (int x = 0; x < frameWidth; x+=2)
         {
-            int sx1 = (x * width) / frameWidth;
-            int sx2 = ((x+1) * width) / frameWidth;
+            int sx2 = sx1 + pixelStep + (xError >= frameWidth - pixelRemainder);
 
             u32 val;
 
@@ -573,7 +587,13 @@ void CameraManager::feedFrame_NV12(u8* planeY, u8* planeUV, int width, int heigh
 
             val = y1 | (u << 8) | (y2 << 16) | (v << 24);
             tempFrameBuffer[((y*frameWidth) + x) >> 1] = val;
+            sx1 += pairStep;
+            xError += pairRemainder;
+            if (xError >= frameWidth) { ++sx1; xError -= frameWidth; }
         }
+        sy += yStep;
+        yError += yRemainder;
+        if (yError >= frameHeight) { ++sy; yError -= frameHeight; }
     }
 
     feedFrame(tempFrameBuffer, frameWidth, frameHeight, true);
