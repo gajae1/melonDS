@@ -1,7 +1,8 @@
-# 현재 개발 상태 — 1.1.161
+# 현재 개발 상태 — 1.1.162
 
 2026-09-22. 메인 작업/빌드 경로는 `F:/melonDS`, `build/windows-dev`다.
-현재 변경의 범위·실제 검증은 [1.1.161 기록](releases/1.1.161.md)을 따른다.
+현재 변경의 범위·실제 검증은 [1.1.162 기록](releases/1.1.162.md)을 따른다.
+1.1.162는 비모자이크 software text BG의 타일 구간 처리, SaveManager의 변경 구간 게시, 카메라의 stride·정지 이미지·재시작 정확성을 포함한다. 국소 측정의 이득을 게임 FPS로 확대하지 않는다.
 1.1.161은 압축 texture 변환, Thumb register shift, 휴면 deadline, DSP callback, Software 3D의 반복 작업을 줄인다. Dense audio·awake scheduler·Thumb immediate 후보는 측정 결과에 따라 제외했다. 국소 부하의 이득을 전체 게임 FPS로 확대하지 않는다.
 1.1.160은 OpenGL BG 팔레트의 변경 구간 전송과 3D chunk 내 동일 texture 설정 생략을 추가했다. 다음 최적화의 우선순위와 수정 범위는 [12영역 평가](Optimization_Assessment_2026-09-22.md)에 기록했다. 평가의 후보 42개는 측정 전이며 완료한 개선 수가 아니다.
 1.1.159는 텍스처 무효화의 중복 전체 해시, 오디오 생산자 대기의 불필요한 잠금 전환,
