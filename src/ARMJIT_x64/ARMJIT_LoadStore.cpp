@@ -42,6 +42,17 @@ static u32 CurrentBlockDataCycles(const ARMv5* cpu, u32 firstAddr, u32 count)
     return cycles;
 }
 
+static u32 CurrentARM7BlockDataCycles(const NDS* nds, u32 firstAddr, u32 count)
+{
+    u32 cycles = 0;
+    for (u32 i = 0; i < count; ++i)
+    {
+        const u32 addr = (firstAddr + i * 4) & ~3u;
+        cycles += nds->ARM7MemTimings[addr >> 15][i ? 3 : 2];
+    }
+    return cycles;
+}
+
 static void AdjustBlockLoadPCCycles(ARMv5* cpu, s32 tracedCycles, s32 dataCycles)
 {
     // The interpreter refills the branch target before charging LDM's data
@@ -576,16 +587,31 @@ void Compiler::Comp_MemBlockPermission(int rn, int count, bool store, bool prein
 
 void Compiler::Comp_MemBlockTimingGuard(int rn, int count, bool preinc, bool decrement)
 {
-    if (Num != 0) return;
-
     const s32 firstOffset = decrement ? -4*count + (preinc ? 0 : 4) : (preinc ? 4 : 0);
     MOV_sum(32, RSCRATCH3, MapReg(rn), Imm32(firstOffset));
     AND(32, R(RSCRATCH3), Imm8(~3));
+    if (Num == 1)
+    {
+        // ARM7's memory/code overlap also depends on whether the first word
+        // is in main RAM, even when the total transfer cost happens to match.
+        MOV(32, R(RSCRATCH2), R(RSCRATCH3));
+        SHR(32, R(RSCRATCH2), Imm8(24));
+        CMP(32, R(RSCRATCH2), Imm8(0x02));
+        J_CC((CurInstr.DataRegion >> 24) == 0x02 ? CC_NE : CC_E, FarCode);
+    }
     PushRegs(false, false);
     MOV(32, R(ABI_PARAM2), R(RSCRATCH3));
-    MOV(64, R(ABI_PARAM1), R(RCPU));
     MOV(32, R(ABI_PARAM3), Imm32(count));
-    ABI_CallFunction(&CurrentBlockDataCycles);
+    if (Num == 1)
+    {
+        MOV(64, R(ABI_PARAM1), ImmPtr(&NDS));
+        ABI_CallFunction(&CurrentARM7BlockDataCycles);
+    }
+    else
+    {
+        MOV(64, R(ABI_PARAM1), R(RCPU));
+        ABI_CallFunction(&CurrentBlockDataCycles);
+    }
     PopRegs(false, false);
     CMP(32, R(RSCRATCH), Imm32(CurInstr.DataCycles));
     J_CC(CC_NE, FarCode);

@@ -4,6 +4,7 @@
 #include "Args.h"
 #include "NDS.h"
 #include "ARM.h"
+#include <array>
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
@@ -358,6 +359,93 @@ int main()
                     reusedARM7.pc, freshARM7.pc, interpretedARM7.pc,
                     reusedARM7.cpsr, freshARM7.cpsr, interpretedARM7.cpsr,
                     reusedARM7.cycles, freshARM7.cycles, interpretedARM7.cycles);
+                return 1;
+            }
+
+            // LDMIA sp!, {r3-r7,lr}: the six-word transfer was traced from
+            // main RAM, then the same native entry is reused with a WRAM SP.
+            constexpr u32 ARM7BlockCode = ARM7Code + 4;
+            constexpr u32 ARM7RAMStack = ARM7RAM + 0x100;
+            constexpr u32 ARM7WRAMStack = ARM7WRAM + 0x100;
+            const std::array<u32, 6> ramRegs = {
+                0x10304050, 0x20304050, 0x30304050,
+                0x40304050, 0x50304050, 0x60304050};
+            const std::array<u32, 6> wramRegs = {
+                0xA0304050, 0xB0304050, 0xC0304050,
+                0xD0304050, 0xE0304050, 0xF0304050};
+            nds->ARM7Write32(ARM7BlockCode, 0xE8BD40F8);
+            for (u32 i = 0; i < 6; ++i) {
+                nds->ARM7Write32(ARM7RAMStack + i * 4, ramRegs[i]);
+                nds->ARM7Write32(ARM7WRAMStack + i * 4, wramRegs[i]);
+            }
+            Require(nds->ARM7MemTimings[ARM7RAMStack >> 15][2] == 9 &&
+                    nds->ARM7MemTimings[ARM7RAMStack >> 15][3] == 2 &&
+                    nds->ARM7MemTimings[ARM7WRAMStack >> 15][2] == 1 &&
+                    nds->ARM7MemTimings[ARM7WRAMStack >> 15][3] == 1,
+                    "ARM7 LDM stack timing setup differs");
+
+            struct BlockResult {
+                std::array<u32, 6> regs;
+                u32 sp, pc, cpsr, cycles;
+                bool operator==(const BlockResult&) const = default;
+            };
+            auto prepareBlock = [&](u32 stack) {
+                for (int reg = 3; reg <= 7; ++reg) arm7.R[reg] = 0;
+                arm7.R[14] = 0;
+                arm7.R[13] = stack;
+                arm7.CPSR = 0x000000DF;
+                arm7.StopExecution = 0;
+                arm7.JumpTo(ARM7BlockCode);
+                arm7.Cycles = 0;
+            };
+            auto blockResult = [&](u32 cycles) {
+                return BlockResult{{arm7.R[3], arm7.R[4], arm7.R[5],
+                                    arm7.R[6], arm7.R[7], arm7.R[14]},
+                                   arm7.R[13], arm7.R[15], arm7.CPSR, cycles};
+            };
+            auto dispatchBlock = [&](JitBlockEntry entry, u32 stack) {
+                prepareBlock(stack);
+                ARM_Dispatch(&arm7, entry);
+                return blockResult(u32(arm7.Cycles));
+            };
+
+            nds->JIT.ResetBlockCache();
+            prepareBlock(ARM7RAMStack);
+            nds->JIT.CompileBlock(&arm7);
+            Require(arm7.DataCycles == 19 && nds->JIT.JitBlocks7.contains(ARM7BlockCode),
+                    "ARM7 six-register MainRAM LDM did not trace 19 data cycles");
+            const auto cachedBlockEntry = nds->JIT.JitBlocks7.at(ARM7BlockCode)->EntryPoint;
+            const BlockResult reusedBlock = dispatchBlock(cachedBlockEntry, ARM7WRAMStack);
+            Require(nds->JIT.JitBlocks7.at(ARM7BlockCode)->EntryPoint == cachedBlockEntry,
+                    "ARM7 LDM block was replaced before WRAM reuse");
+
+            nds->JIT.ResetBlockCache();
+            prepareBlock(ARM7WRAMStack);
+            nds->JIT.CompileBlock(&arm7);
+            Require(arm7.DataCycles == 6 && nds->JIT.JitBlocks7.contains(ARM7BlockCode),
+                    "ARM7 six-register WRAM LDM did not trace 6 data cycles");
+            const BlockResult freshBlock7 = dispatchBlock(
+                nds->JIT.JitBlocks7.at(ARM7BlockCode)->EntryPoint, ARM7WRAMStack);
+
+            prepareBlock(ARM7WRAMStack);
+            nds->ARM7Timestamp = 0;
+            nds->ARM7Target = 1; // Execute exactly one interpreter instruction.
+            arm7.Execute<CPUExecuteMode::Interpreter>();
+            const BlockResult interpretedBlock = blockResult(u32(nds->ARM7Timestamp));
+            Require(freshBlock7.regs == wramRegs &&
+                    freshBlock7.sp == ARM7WRAMStack + 24,
+                    "ARM7 fresh WRAM LDM returned wrong registers or SP");
+            if (!(reusedBlock == freshBlock7 && freshBlock7 == interpretedBlock)) {
+                std::fprintf(stderr,
+                    "FAIL: ARM7 cached MainRAM->WRAM LDM vs fresh WRAM vs interpreter: "
+                    "r3=%08x/%08x/%08x lr=%08x/%08x/%08x sp=%08x/%08x/%08x "
+                    "pc=%08x/%08x/%08x cpsr=%08x/%08x/%08x cycles=%u/%u/%u\n",
+                    reusedBlock.regs[0], freshBlock7.regs[0], interpretedBlock.regs[0],
+                    reusedBlock.regs[5], freshBlock7.regs[5], interpretedBlock.regs[5],
+                    reusedBlock.sp, freshBlock7.sp, interpretedBlock.sp,
+                    reusedBlock.pc, freshBlock7.pc, interpretedBlock.pc,
+                    reusedBlock.cpsr, freshBlock7.cpsr, interpretedBlock.cpsr,
+                    reusedBlock.cycles, freshBlock7.cycles, interpretedBlock.cycles);
                 return 1;
             }
         }
