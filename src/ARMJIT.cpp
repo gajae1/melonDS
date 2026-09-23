@@ -918,9 +918,12 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
                 {
                     // we might have an idle loop
                     u32 backwardsOffset = (instrs[i].Addr - target) / (thumb ? 2 : 4);
-                    if (IsIdleLoop(thumb, &instrs[i - backwardsOffset], backwardsOffset + 1))
+                    // A prefix before the loop may have side effects. Only
+                    // idle when the entire block is the polling loop.
+                    if (target == blockAddr && IsIdleLoop(thumb, &instrs[i - backwardsOffset], backwardsOffset + 1))
                     {
                         instrs[i].BranchFlags |= branch_IdleBranch;
+                        if (hasBranched) cpu->IdleLoop = 1;
                         JIT_DEBUGPRINT("found %s idle loop %d in block %08x\n", thumb ? "thumb" : "arm", cpu->Num, blockAddr);
                     }
                 }

@@ -449,6 +449,165 @@ int main()
                 return 1;
             }
         }
+        // A one-cycle target is shorter than the executed LDR/CMP/BEQ block.
+        // Both cold and cached idle exits must charge that block before
+        // considering any remaining idle time.
+        {
+            constexpr u32 IdleCode = RAM + 0x800;
+            constexpr u32 PollAddress = RAM + 0x900;
+            nds->Reset();
+            nds->CurCPU = 0;
+            nds->JIT.SetMaxBlockSize(3);
+            nds->JIT.SetBranchOptimizations(true);
+            nds->ARM9Write32(IdleCode, 0xE5901000);     // ldr r1,[r0]
+            nds->ARM9Write32(IdleCode + 4, 0xE3510000); // cmp r1,#0
+            nds->ARM9Write32(IdleCode + 8, 0x0AFFFFFC); // beq IdleCode
+            nds->ARM9Write32(PollAddress, 0);
+
+            struct IdleResult {
+                std::array<u32, 16> regs;
+                u32 cpsr;
+                u64 timestamp;
+                s32 cycles;
+                u32 stopExecution;
+                bool operator==(const IdleResult&) const = default;
+            };
+            auto prepareIdle = [&](u64 target = 101) {
+                cpu.R[0] = PollAddress;
+                cpu.R[1] = ~0u;
+                cpu.CPSR = 0x000000DF;
+                cpu.StopExecution = 0;
+                cpu.JumpTo(IdleCode);
+                cpu.Cycles = 0;
+                nds->ARM9Timestamp = 100;
+                nds->ARM9Target = target;
+            };
+            auto runIdle = [&](u64 target = 101) {
+                prepareIdle(target);
+                cpu.Execute<CPUExecuteMode::JIT>();
+                IdleResult result{};
+                for (unsigned reg = 0; reg < result.regs.size(); ++reg)
+                    result.regs[reg] = cpu.R[reg];
+                result.cpsr = cpu.CPSR;
+                result.timestamp = nds->ARM9Timestamp;
+                result.cycles = cpu.Cycles;
+                result.stopExecution = cpu.StopExecution;
+                return result;
+            };
+
+            const IdleResult cold = runIdle();
+            Require(nds->JIT.JitBlocks9.contains(IdleCode), "cold idle trace was not cached");
+            prepareIdle();
+            ARM_Dispatch(&cpu, nds->JIT.JitBlocks9.at(IdleCode)->EntryPoint);
+            const s32 pending = cpu.Cycles;
+            Require(pending > 1 && cpu.IdleLoop, "native polling block did not produce pending idle cycles");
+            const IdleResult warm = runIdle();
+            if (!(cold == warm && cold.timestamp >= 100 + pending && cold.regs[1] == 0)) {
+                std::fprintf(stderr,
+                    "FAIL: taken ARM9 idle branch cold/warm timestamp=%llu/%llu pending=%d "
+                    "pc=%08x/%08x stop=%08x/%08x r1=%08x/%08x\n",
+                    static_cast<unsigned long long>(cold.timestamp),
+                    static_cast<unsigned long long>(warm.timestamp), pending,
+                    cold.regs[15], warm.regs[15], cold.stopExecution,
+                    warm.stopExecution, cold.regs[1], warm.regs[1]);
+                return 1;
+            }
+
+            // The same detected branch must not idle when its condition fails.
+            nds->ARM9Write32(PollAddress, 1);
+            nds->JIT.ResetBlockCache();
+            const IdleResult untaken = runIdle();
+            Require(untaken.timestamp > 101 && untaken.stopExecution == 0 && untaken.regs[1] == 1,
+                    "untaken polling branch incorrectly idled");
+
+            // With branch optimization disabled, the interpreter trace has no
+            // idle-branch classification to inherit.
+            nds->ARM9Write32(PollAddress, 0);
+            nds->JIT.SetBranchOptimizations(false);
+            const IdleResult fallback = runIdle();
+            Require(fallback.timestamp > 101 && fallback.stopExecution == 0,
+                    "non-optimized polling branch incorrectly idled");
+
+            nds->JIT.SetBranchOptimizations(true);
+            nds->JIT.ResetBlockCache();
+            const IdleResult coldWithTimeLeft = runIdle(1000);
+            const IdleResult warmWithTimeLeft = runIdle(1000);
+            Require(coldWithTimeLeft == warmWithTimeLeft && coldWithTimeLeft.timestamp == 1000,
+                    "idle polling did not skip only the remaining time");
+
+            // A side-effecting prefix before a backward poll belongs to this
+            // execution. The whole block must not be tagged as an idle loop.
+            constexpr u32 PrefixCode = RAM + 0xA00;
+            constexpr u32 WriteAddress = RAM + 0x2000;
+            nds->JIT.SetMaxBlockSize(4);
+            nds->JIT.SetBranchOptimizations(true);
+            nds->ARM9Write32(PrefixCode, 0xE5832000);      // str r2,[r3]
+            nds->ARM9Write32(PrefixCode + 4, 0xE5901000);  // ldr r1,[r0]
+            nds->ARM9Write32(PrefixCode + 8, 0xE3510000);  // cmp r1,#0
+            nds->ARM9Write32(PrefixCode + 12, 0x0AFFFFFC); // beq PrefixCode+4
+            auto preparePrefix = [&]() {
+                cpu.R[0] = PollAddress;
+                cpu.R[1] = ~0u;
+                cpu.R[2] = 0x12345678;
+                cpu.R[3] = WriteAddress;
+                cpu.CPSR = 0x000000DF;
+                cpu.StopExecution = 0;
+                cpu.JumpTo(PrefixCode);
+                cpu.Cycles = 0;
+                nds->ARM9Timestamp = 100;
+                nds->ARM9Target = 101;
+            };
+            preparePrefix();
+            cpu.Execute<CPUExecuteMode::JIT>();
+            Require(nds->JIT.JitBlocks9.contains(PrefixCode), "prefix polling block was not cached");
+            const u64 coldPrefixTimestamp = nds->ARM9Timestamp;
+            const u32 coldPrefixPC = cpu.R[15];
+            preparePrefix();
+            ARM_Dispatch(&cpu, nds->JIT.JitBlocks9.at(PrefixCode)->EntryPoint);
+            Require(cpu.IdleLoop == 0 && cpu.Cycles > 1 && nds->ARM9Read32(WriteAddress) == cpu.R[2],
+                    "prefix polling block skipped or discarded its side effect");
+            preparePrefix();
+            cpu.Execute<CPUExecuteMode::JIT>();
+            Require(nds->ARM9Timestamp == coldPrefixTimestamp && cpu.R[15] == coldPrefixPC
+                    && nds->ARM9Timestamp > 101,
+                    "prefix polling cold/cached execution diverged");
+
+            nds->Reset();
+            nds->CurCPU = 1;
+            nds->JIT.SetMaxBlockSize(3);
+            nds->JIT.SetBranchOptimizations(true);
+            auto& arm7 = nds->ARM7;
+            constexpr u32 ARM7IdleCode = 0x03808100;
+            constexpr u32 ARM7PollAddress = 0x03802100;
+            nds->ARM7Write32(ARM7IdleCode, 0xE5901000);     // ldr r1,[r0]
+            nds->ARM7Write32(ARM7IdleCode + 4, 0xE3510000); // cmp r1,#0
+            nds->ARM7Write32(ARM7IdleCode + 8, 0x0AFFFFFC); // beq ARM7IdleCode
+            nds->ARM7Write32(ARM7PollAddress, 0);
+            auto prepareARM7Idle = [&]() {
+                arm7.R[0] = ARM7PollAddress;
+                arm7.R[1] = ~0u;
+                arm7.CPSR = 0x000000DF;
+                arm7.StopExecution = 0;
+                arm7.JumpTo(ARM7IdleCode);
+                arm7.Cycles = 0;
+                nds->ARM7Timestamp = 100;
+                nds->ARM7Target = 101;
+            };
+            auto runARM7Idle = [&]() {
+                prepareARM7Idle();
+                arm7.Execute<CPUExecuteMode::JIT>();
+                return std::array<u64, 3>{nds->ARM7Timestamp, arm7.R[15], arm7.CPSR};
+            };
+            const auto coldARM7 = runARM7Idle();
+            Require(nds->JIT.JitBlocks7.contains(ARM7IdleCode), "ARM7 idle trace was not cached");
+            prepareARM7Idle();
+            ARM_Dispatch(&arm7, nds->JIT.JitBlocks7.at(ARM7IdleCode)->EntryPoint);
+            const s32 pendingARM7 = arm7.Cycles;
+            Require(pendingARM7 > 1 && arm7.IdleLoop, "ARM7 polling block did not produce idle cycles");
+            const auto warmARM7 = runARM7Idle();
+            Require(coldARM7 == warmARM7 && coldARM7[0] >= 100 + pendingARM7,
+                    "ARM7 idle polling discarded pending cycles");
+        }
         std::printf("PASS: cached ARM9/ARM7 memory timing and LDM-PC refill timing match\n");
         return 0;
     } catch (const std::exception& error) {

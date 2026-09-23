@@ -711,6 +711,13 @@ void ARMv5::Execute()
 
                 if (Halted || IdleLoop)
                 {
+                    // The block has already run. Only skip time left after
+                    // charging its pending cycles.
+                    if (IdleLoop)
+                    {
+                        NDS.ARM9Timestamp += Cycles;
+                        Cycles = 0;
+                    }
                     if ((Halted == 1 || IdleLoop) && NDS.ARM9Timestamp < NDS.ARM9Target)
                     {
                         Cycles = 0;
@@ -868,6 +875,11 @@ void ARMv4::Execute()
 
                 if (Halted || IdleLoop)
                 {
+                    if (IdleLoop)
+                    {
+                        NDS.ARM7Timestamp += Cycles;
+                        Cycles = 0;
+                    }
                     if ((Halted == 1 || IdleLoop) && NDS.ARM7Timestamp < NDS.ARM7Target)
                     {
                         Cycles = 0;
