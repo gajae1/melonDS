@@ -1,7 +1,8 @@
-# 현재 개발 상태 — 1.1.163
+# 현재 개발 상태 — 1.1.164
 
 2026-09-23. 메인 작업/빌드 경로는 `F:/melonDS`, `build/windows-dev`다.
-현재 변경의 범위·실제 검증은 [1.1.163 기록](releases/1.1.163.md)을 따른다.
+현재 변경의 범위·실제 검증은 [1.1.164 기록](releases/1.1.164.md)을 따른다.
+1.1.164는 UYVY·NV12 카메라 프레임 좌표 계산과 Windows 런타임 ZIP 검증의 중복 해제를 줄인다. 두 측정은 국소 변환·패키징 검증 구간이며 게임 FPS와 무관하다.
 1.1.163은 SDL2 조이스틱 목록 조회의 주기별 배열 할당을 제거하고, 두 LTO 모드가 꺼진 구성의 IPO 검사를 건너뛴다. 입력 조회의 국소 측정과 구성 시간은 게임 FPS 개선을 의미하지 않는다.
 1.1.162는 비모자이크 software text BG의 타일 구간 처리, SaveManager의 변경 구간 게시, 카메라의 stride·정지 이미지·재시작 정확성을 포함한다. 국소 측정의 이득을 게임 FPS로 확대하지 않는다.
 1.1.161은 압축 texture 변환, Thumb register shift, 휴면 deadline, DSP callback, Software 3D의 반복 작업을 줄인다. Dense audio·awake scheduler·Thumb immediate 후보는 측정 결과에 따라 제외했다. 국소 부하의 이득을 전체 게임 FPS로 확대하지 않는다.
