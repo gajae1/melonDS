@@ -44,6 +44,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # No C++ module units are used; do not require a separate dependency scanner.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+include(LibraryFeatures)
 include(HostFeatures)
 
 option(MELONDS_CURRENT_TOOLCHAIN "Require the toolchain release floors audited for this fork" OFF)

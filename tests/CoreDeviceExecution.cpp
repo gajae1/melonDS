@@ -1040,6 +1040,18 @@ int TestDSiNDMAExecution(NDSArgs&& args)
     return failures ? 1 : 0;
 }
 
+#ifdef JIT_ENABLED
+// The x64 emitter's write cursor is GetCodePtr; the A64 emitter's is GetRWPtr.
+const u8* CodeWritePtr(ARMJIT& jit)
+{
+#if defined(__x86_64__)
+    return jit.JITCompiler.GetCodePtr();
+#else
+    return jit.JITCompiler.GetRWPtr();
+#endif
+}
+#endif
+
 // GBATEK: both CPUs' NDMA startup modes 0..3 select their timer overflows.
 // Timer IRQ enable is independent from the DMA request. Use actual timer MMIO
 // and the production timer/DMA consumers, never a direct CheckNDMAs request.
@@ -1186,7 +1198,7 @@ int TestDSiNDMATimers(NDSArgs&& args)
             write(0x04000214, 1u << 28);
             for (u32 i = 0; i < 3; ++i) write(Dest + i * 4, 0);
 #ifdef JIT_ENABLED
-            const auto* codePtr = dsi->JIT.JITCompiler.GetCodePtr();
+            const auto* codePtr = CodeWritePtr(dsi->JIT);
             const bool cached = (num ? dsi->JIT.JitBlocks7 : dsi->JIT.JitBlocks9).contains(Code);
 #endif
             dsi->ARM9.JumpTo(num ? Idle : Code);
@@ -1199,7 +1211,7 @@ int TestDSiNDMATimers(NDSArgs&& args)
             for (u32 i = 0; i < 3; ++i)
                 ok &= dsi->ARM9Read32(Dest + i * 4) == 0xABC00001 + i;
 #ifdef JIT_ENABLED
-            ok &= !native || !warm || (cached && codePtr == dsi->JIT.JITCompiler.GetCodePtr());
+            ok &= !native || !warm || (cached && codePtr == CodeWritePtr(dsi->JIT));
 #endif
             failures += !ok;
             ++cases;

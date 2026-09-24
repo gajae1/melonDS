@@ -50,6 +50,16 @@ JitBlockEntry Lookup(NDS& nds, u32 num, u32 addr, bool thumb)
     if (!nds.JIT.SetupExecutableRegion(num, addr, entries, start, size)) return nullptr;
     return nds.JIT.LookUpBlock(num, entries, addr - start, addr, thumb);
 }
+
+// The x64 emitter's write cursor is GetCodePtr; the A64 emitter's is GetRWPtr.
+const u8* CodeWritePtr(ARMJIT& jit)
+{
+#if defined(__x86_64__)
+    return jit.JITCompiler.GetCodePtr();
+#else
+    return jit.JITCompiler.GetRWPtr();
+#endif
+}
 #endif
 }
 
@@ -121,12 +131,12 @@ int TestSMCExecution(NDSArgs&& args, bool jit)
             bool cached = false, neighborKept = true;
             long long emitted = 0;
 #ifdef JIT_ENABLED
-            const auto* nativeBefore = nds->JIT.JITCompiler.GetCodePtr();
+            const auto* nativeBefore = CodeWritePtr(nds->JIT);
             if (jit) cached = Lookup(*nds, arm7, entry, thumb) != nullptr;
 #endif
             const u64 timestamp = Execute(*nds, cpu, jit, entry | u32(thumb));
 #ifdef JIT_ENABLED
-            emitted = nds->JIT.JITCompiler.GetCodePtr() - nativeBefore;
+            emitted = CodeWritePtr(nds->JIT) - nativeBefore;
             if (jit) neighborKept = Lookup(*nds, arm7, Neighbor, false) == neighborEntry;
 #endif
             const u32 observed = thumb ? nds->ARM9Read16(Code) : nds->ARM9Read32(Code);
@@ -231,7 +241,7 @@ int TestSMCLiteralRegions(NDSArgs&& args, bool jit)
                 const auto expectedCycles = Execute(*reference, ref, false, code | u32(thumb));
                 NDS::Current = actual.get();
 #ifdef JIT_ENABLED
-                const auto* before = actual->JIT.JITCompiler.GetCodePtr();
+                const auto* before = CodeWritePtr(actual->JIT);
                 const bool cached = !jit || Lookup(*actual, num, code, thumb);
 #endif
                 const auto cycles = Execute(*actual, cpu, jit, code | u32(thumb));
@@ -239,7 +249,7 @@ int TestSMCLiteralRegions(NDSArgs&& args, bool jit)
                     && cpu.CPSR == ref.CPSR && cycles == expectedCycles;
 #ifdef JIT_ENABLED
                 ok = ok && (!jit || (Lookup(*actual, num, neighbor, false) == neighborEntry
-                    && (!warm || (cached && actual->JIT.JITCompiler.GetCodePtr() == before))));
+                    && (!warm || (cached && CodeWritePtr(actual->JIT) == before))));
                 if (jit && region >= 3)
                 {
                     const auto& blocks = num ? actual->JIT.JitBlocks7 : actual->JIT.JitBlocks9;

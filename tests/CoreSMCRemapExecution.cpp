@@ -76,6 +76,16 @@ JitBlockEntry Lookup(NDS& nds, unsigned cpu, u32 addr, bool thumb)
     if (!nds.JIT.SetupExecutableRegion(cpu, addr, table, start, size)) return nullptr;
     return nds.JIT.LookUpBlock(cpu, table, addr - start, addr, thumb);
 }
+
+// The x64 emitter's write cursor is GetCodePtr; the A64 emitter's is GetRWPtr.
+const u8* CodeWritePtr(ARMJIT& jit)
+{
+#if defined(__x86_64__)
+    return jit.JITCompiler.GetCodePtr();
+#else
+    return jit.JITCompiler.GetRWPtr();
+#endif
+}
 #endif
 
 void Run(NDS& nds, unsigned num, bool thumb, u32 addr, u32 expected,
@@ -87,7 +97,7 @@ void Run(NDS& nds, unsigned num, bool thumb, u32 addr, u32 expected,
     long long emitted = 0;
 #ifdef JIT_ENABLED
     cached = jit && Lookup(nds, num, addr, thumb);
-    const auto* before = nds.JIT.JITCompiler.GetCodePtr();
+    const auto* before = CodeWritePtr(nds.JIT);
     physical = nds.JIT.LocaliseCodeAddress(num, addr);
 #endif
     nds.CurCPU = num;
@@ -115,7 +125,7 @@ void Run(NDS& nds, unsigned num, bool thumb, u32 addr, u32 expected,
         else nds.ARM9.Execute<CPUExecuteMode::Interpreter>();
     }
 #ifdef JIT_ENABLED
-    emitted = nds.JIT.JITCompiler.GetCodePtr() - before;
+    emitted = CodeWritePtr(nds.JIT) - before;
 #endif
     const bool values = load ? cpu.R[3] == expected && cpu.R[0] == 0 && cpu.R[2] == 0
         : cpu.R[thumb ? 0 : 2] == expected && cpu.R[thumb ? 2 : 0] == 0;

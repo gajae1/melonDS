@@ -27,7 +27,8 @@ jobs:
             flags: ""
           - name: Clang 18 ASan UBSan
             compiler: clang++-18
-            flags: -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+            # vptr checks need the full core's RTTI; standalone tests link single sources.
+            flags: -fsanitize=address,undefined -fno-sanitize=vptr -fno-sanitize-recover=all -fno-omit-frame-pointer
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v6
