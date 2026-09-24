@@ -752,10 +752,8 @@ static int TestConditionalCycles(NDSArgs&& args, bool jit)
         // A skipped PC write costs one fetch; an executed one refills the pipeline.
         {0x0281F004, branchTarget + 4, 3}, // ADDEQ pc,r1,#4
         {0x11A0F001, branchTarget, 3},     // MOVNE pc,r1
-#if defined(__x86_64__)
-        // Nearest control for the x64 register-valued C+I helper (guest ARM7).
+        // Conditional multiply exercises register-valued C+I timing on ARM7.
         {0x00000291, 1, 2}, // MULEQ r0,r1,r2; r1=r2=1
-#endif
     };
     unsigned checked = 0, failures = 0;
     for (bool arm7 : {false, true})

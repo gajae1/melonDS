@@ -843,6 +843,23 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
             LoadCPSR();
         }
 
+        // An interpreter fallback can redirect the CPU without setting
+        // JITPipelineDrain: a user mode MCR/MRC takes the undefined vector,
+        // and an empty LDM or ARM7 Thumb LDMIA is a hidden branch. If the
+        // helper moved the PC off the sequential path, leave the block.
+        if (comp == NULL)
+        {
+            LDR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, R[15]));
+            MOVI2R(W1, R15);
+            SUB(W0, W0, W1);
+            FixupBranch sequential = CBZ(W0);
+            RegCache.PrepareExit();
+            if (ConstantCycles)
+                ADD(RCycles, RCycles, ConstantCycles);
+            QuickTailCall(X0, ARM_Ret);
+            SetJumpTarget(sequential);
+        }
+
         if (canRemap)
         {
             LDR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, JITPipelineDrain));
