@@ -597,6 +597,8 @@ void ARMv5::CP15Write(u32 id, u32 val)
     case 0x670:
     case 0x671:
         char log_output[1024];
+        u32 oldregion;
+        oldregion = PU_Region[(id >> 4) & 0xF];
         PU_Region[(id >> 4) & 0xF] = val;
 
         std::snprintf(log_output,
@@ -612,7 +614,8 @@ void ARMv5::CP15Write(u32 id, u32 val)
         // Some implementations of Log imply a newline, so we build up the line before printing it
 
         // TODO: smarter region update for this?
-        UpdatePURegions(true);
+        // An identical raw value cannot change the derived maps or timings.
+        if (val != oldregion) UpdatePURegions(true);
         return;
 
 

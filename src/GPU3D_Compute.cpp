@@ -794,7 +794,7 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
                     else
                         glUniform1i(UniformIdxTexIsCapture, 0);
                 }
-                glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, BinResultMemory);
+                // Still bound to the indirect target from the sort dispatch above.
                 glDispatchComputeIndirect(offsetof(BinResultHeader, VariantWorkCount) + i*4*4);
             }
         }

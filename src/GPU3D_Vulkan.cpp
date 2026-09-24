@@ -6,6 +6,7 @@
 #include "Vulkan/EmbeddedShaders.h"
 #include "Platform.h"
 #include <algorithm>
+#include <cassert>
 #include <stdexcept>
 
 namespace melonDS
@@ -39,7 +40,7 @@ u32 AddVariant(std::vector<Pipeline::Variant>& variants, const Pipeline::Variant
 
 // Match the pipeline's scaled full-width work bound and indirect-dispatch limit.
 // Whole polygons in order preserve depth, translucent IDs and shadow stencil.
-u32 BatchSize(std::span<Polygon* const> polygons, int scale, bool hires, u32 capacity, u32 spanCapacity, u32 tileSize)
+u32 BatchSize(std::span<Polygon* const> polygons, int scale, bool hires, u32 capacity, u32 spanCapacity, u32 tileSize, u32& numSpans)
 {
     u32 work = 0, count = 0, spans = 0;
     for (const auto* polygon : polygons)
@@ -61,6 +62,7 @@ u32 BatchSize(std::span<Polygon* const> polygons, int scale, bool hires, u32 cap
         ++count;
     }
     if (!count && !polygons.empty()) throw std::runtime_error("Vulkan polygon exceeds batch capacity");
+    numSpans = spans;
     return count;
 }
 
@@ -273,12 +275,13 @@ void VulkanRenderer3D::DrawFrame()
     u32 first = 0;
     do
     {
-        const u32 count = BatchSize(polygons.subspan(first), ScaleFactor, HiresCoordinates, Pipeline->WorkCapacity(), Pipeline->SpanCapacity(), Pipeline->TileSize());
+        u32 numSpans;
+        const u32 count = BatchSize(polygons.subspan(first), ScaleFactor, HiresCoordinates, Pipeline->WorkCapacity(), Pipeline->SpanCapacity(), Pipeline->TileSize(), numSpans);
         auto& batch = prepared.emplace_back();
         batch.Polygons.resize(count);
         if (hasCaptures) batch.DisplayPolygons.resize(count);
         batch.Edges.resize(count * 12);
-        batch.Indices.resize(count * 192 * ScaleFactor);
+        batch.Indices.resize(numSpans);
         int numEdges = 0, numIndices = 0;
         for (u32 i = 0; i < count; ++i)
         {
@@ -305,6 +308,7 @@ void VulkanRenderer3D::DrawFrame()
             }
         }
         batch.Edges.resize(numEdges);
+        assert(numIndices <= (int)numSpans);
         batch.Indices.resize(numIndices);
         first += count;
     } while (first < polygons.size());

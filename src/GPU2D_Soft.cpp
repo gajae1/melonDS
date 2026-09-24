@@ -378,49 +378,91 @@ void SoftRenderer2D::ComposeCapturedLine(u32* dst, u32 subline) const
         (GPU2D.LayerEnable & 0x10) && NumSprites;
     const u16* objPal = reinterpret_cast<const u16*>(&GPU.Palette[GPU2D.Num ? 0x600 : 0x200]);
     const u16* objExtPal = capturedOBJ ? GPU2D.GetOBJExtPal() : nullptr;
+    const u32 control = GPU2D.BlendCnt;
+    const u32 eva = GPU2D.EVA, evb = GPU2D.EVB, evy = GPU2D.EVY;
+    const u32 bgRanks[4] = {(GPU2D.BGCnt[0] & 3) * 8 + 1u,
+        (GPU2D.BGCnt[1] & 3) * 8 + 2u, (GPU2D.BGCnt[2] & 3) * 8 + 3u,
+        (GPU2D.BGCnt[3] & 3) * 8 + 4u};
     for (u32 x = 0; x < 256; ++x)
-    for (u32 subx = 0; subx < CaptureScale; ++subx)
     {
-        const u32 object = capturedOBJ ? CaptureOBJLine[(size_t(subline) * 256 + x) * CaptureScale + subx]
-            : OBJLine[x];
-        u32 top = DisplayBackdrop, second = 0, topRank = 32, secondRank = 33;
+        const u8 window = WindowMask[x];
+        u32 staticTop = DisplayBackdrop, staticSecond = 0;
+        u32 staticTopRank = 32, staticSecondRank = 33;
+        u32 varying[4], numVarying = 0;
         for (u32 layer = 0; layer < 5; ++layer)
         {
-            u32 color = DisplayLayers[layer][x];
-            if (layer >= 2 && layer < 4)
+            const u32 color = DisplayLayers[layer][x];
+            // Enabled captured BGs can be opaque even at a transparent native
+            // sample or without a borrowed row. Let the sampler decide.
+            if ((layer == 0 && color == 0x40000000) ||
+                (layer >= 2 && layer < 4 && BitmapLines[layer - 2].enabled &&
+                    (window & (1u << layer))) || (layer == 4 && capturedOBJ))
             {
-                if (const auto* row = rows[layer - 2][x])
-                {
-                    const u16 pixel = row[subx];
-                    color = pixel & 0x8000 ? ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) |
-                        ((pixel & 0x7C00) << 7) | (0x01000000u << layer) : 0;
-                }
-                else color = SampleBitmapLayer(layer, x, subx, subline);
-            }
-            if (layer == 4 && capturedOBJ)
-            {
-                color = 0;
-                if ((object & OBJ_IsOpaque) && (WindowMask[x] & 0x10))
-                {
-                    const u16 pixel = object & OBJ_DirectColor ? object & 0x7FFF :
-                        object & OBJ_StandardPal ? objPal[object & 0xFF] : objExtPal[object & 0xFFF];
-                    color = ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) |
-                        ((pixel & 0x8000) >> 7) | ((pixel & 0x7C00) << 7) | (object & 0xFF000000);
-                }
-            }
-            if (layer == 0 && color == 0x40000000)
-            {
-                color = dst[x * CaptureScale + subx];
-                color = color >> 24 ? color | 0x40000000 : 0;
+                varying[numVarying++] = layer;
+                continue;
             }
             if (!color) continue;
-            const u32 rank = layer == 4 ? ((object >> 16) & 3) * 8
-                : (GPU2D.BGCnt[layer] & 3) * 8 + layer + 1;
-            if (rank < topRank) { second = top; secondRank = topRank; top = color; topRank = rank; }
-            else if (rank < secondRank) { second = color; secondRank = rank; }
+            const u32 rank = layer == 4 ? ((OBJLine[x] >> 16) & 3) * 8 : bgRanks[layer];
+            if (rank < staticTopRank)
+            {
+                staticSecond = staticTop; staticSecondRank = staticTopRank;
+                staticTop = color; staticTopRank = rank;
+            }
+            else if (rank < staticSecondRank) { staticSecond = color; staticSecondRank = rank; }
         }
-        dst[x * CaptureScale + subx] = CompositePixel<effect>(top, second,
-            GPU2D.BlendCnt, GPU2D.EVA, GPU2D.EVB, GPU2D.EVY, WindowMask[x]);
+        u32* out = dst + x * CaptureScale;
+        if (!numVarying)
+        {
+            std::fill_n(out, CaptureScale,
+                CompositePixel<effect>(staticTop, staticSecond, control, eva, evb, evy, window));
+            continue;
+        }
+        for (u32 subx = 0; subx < CaptureScale; ++subx)
+        {
+            // Retain two static candidates: transparent dynamic pixels may
+            // expose either one. All metadata is local to this composition.
+            u32 top = staticTop, second = staticSecond;
+            u32 topRank = staticTopRank, secondRank = staticSecondRank;
+            for (u32 i = 0; i < numVarying; ++i)
+            {
+                const u32 layer = varying[i];
+                u32 color, rank;
+                if (layer == 4)
+                {
+                    const u32 object = CaptureOBJLine[(size_t(subline) * 256 + x) * CaptureScale + subx];
+                    color = 0;
+                    if ((object & OBJ_IsOpaque) && (window & 0x10))
+                    {
+                        const u16 pixel = object & OBJ_DirectColor ? object & 0x7FFF :
+                            object & OBJ_StandardPal ? objPal[object & 0xFF] : objExtPal[object & 0xFFF];
+                        color = ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) |
+                            ((pixel & 0x8000) >> 7) | ((pixel & 0x7C00) << 7) | (object & 0xFF000000);
+                    }
+                    rank = ((object >> 16) & 3) * 8;
+                }
+                else
+                {
+                    rank = bgRanks[layer];
+                    if (layer == 0)
+                    {
+                        // Read the incoming 3D sample before overwriting dst.
+                        color = out[subx];
+                        color = color >> 24 ? color | 0x40000000 : 0;
+                    }
+                    else if (const auto* row = rows[layer - 2][x])
+                    {
+                        const u16 pixel = row[subx];
+                        color = pixel & 0x8000 ? ((pixel & 31) << 1) | ((pixel & 0x3E0) << 4) |
+                            ((pixel & 0x7C00) << 7) | (0x01000000u << layer) : 0;
+                    }
+                    else color = SampleBitmapLayer(layer, x, subx, subline);
+                }
+                if (!color) continue;
+                if (rank < topRank) { second = top; secondRank = topRank; top = color; topRank = rank; }
+                else if (rank < secondRank) { second = color; secondRank = rank; }
+            }
+            out[subx] = CompositePixel<effect>(top, second, control, eva, evb, evy, window);
+        }
     }
 }
 

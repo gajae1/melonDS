@@ -944,6 +944,9 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
     PrevIsShadowMask = false;
 
+    bool useTexCoords = (GPU3D.RenderDispCnt & (1<<0)) &&
+                        (((polygon->TexParam >> 26) & 0x7) != 0);
+
     if (polygon->YTop != polygon->YBottom)
     {
         if (y >= polygon->Vertices[rp->NextVL]->FinalPosition[1] && rp->CurVL != polygon->VBottom)
@@ -1141,8 +1144,12 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
         u32 vg = interpX.Interpolate(gl, gr);
         u32 vb = interpX.Interpolate(bl, br);
 
-        s16 s = interpX.Interpolate(sl, sr);
-        s16 t = interpX.Interpolate(tl, tr);
+        s16 s = 0, t = 0;
+        if (useTexCoords)
+        {
+            s = interpX.Interpolate(sl, sr);
+            t = interpX.Interpolate(tl, tr);
+        }
 
         u32 color = RenderPixel(polygon, vr>>3, vg>>3, vb>>3, s, t);
         u8 alpha = color >> 24;
@@ -1239,8 +1246,12 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
         u32 vg = interpX.Interpolate(gl, gr);
         u32 vb = interpX.Interpolate(bl, br);
 
-        s16 s = interpX.Interpolate(sl, sr);
-        s16 t = interpX.Interpolate(tl, tr);
+        s16 s = 0, t = 0;
+        if (useTexCoords)
+        {
+            s = interpX.Interpolate(sl, sr);
+            t = interpX.Interpolate(tl, tr);
+        }
 
         u32 color = RenderPixel(polygon, vr>>3, vg>>3, vb>>3, s, t);
         u8 alpha = color >> 24;
@@ -1333,8 +1344,12 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
         u32 vg = interpX.Interpolate(gl, gr);
         u32 vb = interpX.Interpolate(bl, br);
 
-        s16 s = interpX.Interpolate(sl, sr);
-        s16 t = interpX.Interpolate(tl, tr);
+        s16 s = 0, t = 0;
+        if (useTexCoords)
+        {
+            s = interpX.Interpolate(sl, sr);
+            t = interpX.Interpolate(tl, tr);
+        }
 
         u32 color = RenderPixel(polygon, vr>>3, vg>>3, vb>>3, s, t);
         u8 alpha = color >> 24;
