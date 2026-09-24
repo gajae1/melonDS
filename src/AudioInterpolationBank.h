@@ -50,11 +50,15 @@ private:
         return period < Interval ? 1 - value : value;
     }
 
+    // Coefficient rows and sparse responses are allocated uninitialised and
+    // written completely by the loader; value-initialising them first would
+    // zero-fill every byte only to overwrite it (98 MB over both rates).
     struct Record
     {
         unsigned Length = 0;
-        std::vector<Moment> Moments;
-        std::vector<double> Values;
+        unsigned Rows = 0;
+        std::unique_ptr<Moment[]> Moments;
+        std::unique_ptr<double[]> Values;
     };
 
     explicit AudioInterpolationBank(std::span<const u8> data);

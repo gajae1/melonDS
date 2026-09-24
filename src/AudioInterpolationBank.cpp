@@ -87,8 +87,8 @@ AudioInterpolationBank::AudioInterpolationBank(std::span<const u8> data)
         if (period == Interval)
         {
             if (rows != 0) throw std::invalid_argument("Invalid shared interpolation response");
-            record.Values.resize(record.Length);
-            for (double& value : record.Values) value = reader.Value();
+            record.Values = std::make_unique_for_overwrite<double[]>(record.Length);
+            for (unsigned i = 0; i < record.Length; ++i) record.Values[i] = reader.Value();
             continue;
         }
 
@@ -98,26 +98,28 @@ AudioInterpolationBank::AudioInterpolationBank(std::span<const u8> data)
         const unsigned expectedRows = (record.Length + span - 1) / span + (period <= 32 ? 1 : 0);
         if (rows != expectedRows)
             throw std::invalid_argument("Invalid interpolation coefficient count");
-        std::vector<Moment> coefficients(rows);
-        for (auto& row : coefficients)
-            for (double& value : row) value = reader.Value();
+        auto coefficients = std::make_unique_for_overwrite<Moment[]>(rows);
+        for (unsigned row = 0; row < rows; ++row)
+            for (double& value : coefficients[row]) value = reader.Value();
         if (period <= DensePeriods)
         {
             record.Moments = std::move(coefficients);
+            record.Rows = rows;
             continue;
         }
 
-        record.Values.resize(record.Length);
+        record.Values = std::make_unique_for_overwrite<double[]>(record.Length);
         for (unsigned i = 0; i + 1 < record.Length; ++i)
             record.Values[i] = AudioInterpolationMath::Dot(coefficients[i / 256].data(), knotWeights[i % 256].data());
-        record.Values.back() = 0;
+        record.Values[record.Length - 1] = 0;
     }
     if (!reader.Empty()) throw std::invalid_argument("Trailing interpolation bank data");
 }
 
 std::span<const AudioInterpolationBank::Moment> AudioInterpolationBank::Coefficients(unsigned period) const
 {
-    return GetRecord(period).Moments;
+    const auto& record = GetRecord(period);
+    return std::span<const Moment>(record.Moments.get(), record.Rows);
 }
 
 u64 AudioInterpolationBank::SupportClocks(unsigned period) const
