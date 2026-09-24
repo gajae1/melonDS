@@ -226,7 +226,9 @@ void Compiler::T_Comp_BCOND()
 
     Comp_SpecialBranchBehaviour(true);
 
-    FixupBranch skipFailed = J();
+    // The skipped body is the not-taken exit sequence (a spill of every dirty
+    // register plus a tail call), so it has no small local upper bound.
+    FixupBranch skipFailed = J(true);
     SetJumpTarget(skipExecute);
 
     Comp_SpecialBranchBehaviour(false);

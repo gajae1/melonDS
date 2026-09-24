@@ -840,7 +840,10 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                 {
                     if (IrregularCycles || (CurInstr.BranchFlags & branch_FollowCondTaken))
                     {
-                        FixupBranch skipFailed = J();
+                        // The skipped body is the whole not-taken exit: a spill
+                        // of every register the block still holds dirty plus a
+                        // tail call, so it has no small local upper bound.
+                        FixupBranch skipFailed = J(true);
                         SetJumpTarget(skipExecute);
 
                         // A conditional transfer can defer its regular C cost
@@ -873,7 +876,9 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
         if (comp == NULL)
         {
             CMP(32, MDisp(RCPU, offsetof(ARM, R[15])), Imm32(R15));
-            FixupBranch sequential = J_CC(CC_E);
+            // The skipped body is the exit sequence below: a spill of every
+            // dirty register plus a tail call.
+            FixupBranch sequential = J_CC(CC_E, true);
             RegCache.PrepareExit();
             if (ConstantCycles)
                 ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(ConstantCycles));
@@ -884,7 +889,8 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
         if (canRemap)
         {
             CMP(32, MDisp(RCPU, offsetof(ARM, JITPipelineDrain)), Imm8(0));
-            FixupBranch unchanged = J_CC(CC_E);
+            // Same exit sequence as above.
+            FixupBranch unchanged = J_CC(CC_E, true);
             RegCache.PrepareExit();
             if (ConstantCycles)
                 ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(ConstantCycles));

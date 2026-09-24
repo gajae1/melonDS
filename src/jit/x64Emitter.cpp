@@ -3,6 +3,8 @@
 // Refer to the license_dolphin.txt file included.
 
 #include <cinttypes>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "CPUDetect.h"
@@ -547,12 +549,16 @@ void XEmitter::SetJumpTarget(const FixupBranch& branch)
   if (branch.type == FixupBranch::Type::Branch8Bit)
   {
     s64 distance = (s64)(code - branch.ptr);
+    // Truncating the displacement would silently land the branch inside the
+    // body it was meant to skip (asserts are compiled out in release builds),
+    // so this has to fail loudly instead.
     if (!(distance >= -0x80 && distance < 0x80))
     {
-      printf("miauz\n");
+      printf("x64Emitter: rel8 jump out of range (%lld bytes), needs force5Bytes = true\n",
+             (long long)distance);
+      fflush(stdout);
+      std::abort();
     }
-    ASSERT_MSG(DYNA_REC, distance >= -0x80 && distance < 0x80,
-               "Jump target too far away, needs force5Bytes = true");
     branch.ptr[-1] = (u8)(s8)distance;
   }
   else if (branch.type == FixupBranch::Type::Branch32Bit)
