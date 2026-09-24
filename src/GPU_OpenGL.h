@@ -154,7 +154,7 @@ private:
     void DoCapture(int ystart, int yend);
     void FlushCapture(int line);
     void SyncCaptureLines(u32 bank, u32 start, u32 size, int ystart, int yend);
-    void DownscaleCapture(int width, int height, int layer);
+    void DownscaleCapture(int width, int height, int layer, int row = 0, int count = 0);
 
     RenderCostMeter Cost;
 };

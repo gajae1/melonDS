@@ -970,7 +970,9 @@ void GLRenderer::SyncCaptureLines(u32 bank, u32 start, u32 size, int ystart, int
     if (ystart >= yend) return;
     const int width = size == 0 ? 128 : 256;
     glDisable(GL_DITHER);
-    DownscaleCapture(width, size == 0 ? 128 : 256, size == 0 ? (bank << 2) | start : bank);
+    const int row = size == 0 ? ystart : (start * 64 + ystart) & 255;
+    DownscaleCapture(width, size == 0 ? 128 : 256,
+                     size == 0 ? (bank << 2) | start : bank, row, yend - ystart);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, CaptureSyncFB);
 
     // Copy only newly captured rows: future rows and CPU writes to an earlier
@@ -1003,7 +1005,7 @@ void GLRenderer::AllocCapture(u32 bank, u32 start, u32 len)
     rend2D->SpriteConfigDirty = true;
 }
 
-void GLRenderer::DownscaleCapture(int width, int height, int layer)
+void GLRenderer::DownscaleCapture(int width, int height, int layer, int row, int count)
 {
     // downscale a hi-res capture buffer to 1x IR, and convert to RGBA5551
     // we need to do this with a shader so we can accurately downscale color components
@@ -1022,9 +1024,27 @@ void GLRenderer::DownscaleCapture(int width, int height, int layer)
         glBindTexture(GL_TEXTURE_2D_ARRAY, CaptureOutput256Tex);
     glUniform1i(CapDownInputLayerULoc, layer);
 
+    // Keep the full viewport and sampling coordinates. Scratch rows outside
+    // this readback are disposable: every consumer first downscales its rows.
+    if (count)
+    {
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, row, width, std::min(count, height - row));
+    }
+
     glBindBuffer(GL_ARRAY_BUFFER, RectVtxBuffer);
     glBindVertexArray(RectVtxArray);
     glDrawArrays(GL_TRIANGLES, 0, 2*3);
+
+    if (count)
+    {
+        if (row + count > height)
+        {
+            glScissor(0, 0, width, row + count - height);
+            glDrawArrays(GL_TRIANGLES, 0, 2*3);
+        }
+        glDisable(GL_SCISSOR_TEST);
+    }
 }
 
 void GLRenderer::SyncVRAMCapture(u32 bank, u32 start, u32 len, bool complete)
