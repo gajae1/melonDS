@@ -534,6 +534,8 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
     owner->SubmitAndWait();
     if(mode==Readback::None)return {};
     if(mode==Readback::Native) {
+        if(nativeReadback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+            return {static_cast<const uint32_t*>(nativeReadback->Data()),nativeHostReadback.size()};
         RenderCostVulkanScope copy(owner->Costs(), Cost::NativeCopy);
         std::memcpy(nativeHostReadback.data(),nativeReadback->Data(),nativeHostReadback.size()*sizeof(uint32_t));
         if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeCopyBytes, nativeHostReadback.size()*sizeof(uint32_t));

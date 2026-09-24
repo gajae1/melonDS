@@ -1020,11 +1020,13 @@ DiagnosticOutput DiagnosticRunFrame(bool enabled, int scale, int workload)
                 (expectedFullCopy != 0 || sample.HostNs[Cost::FullCopy] == 0),
                 "full-copy accounting does not match actual landing-buffer memory properties");
             const u64 expectedNative = scale == 1 ? 0 : 256 * 192 * 4;
+            const u64 expectedNativeCopy =
+                (raster.Pipeline->nativeReadback->MemoryProperties() & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? 0 : expectedNative;
             const u64 expectedDisplay = scale > 1 && workload == 0 ? u64(256) * 192 * scale * scale * 4 : 0;
             Require(sample.Bytes[Cost::FullReadbackBytes] == expectedFull &&
                 sample.Events[Cost::FullReadbackBytes] == unsigned(expectedFull != 0) &&
                 sample.Bytes[Cost::NativeReadbackBytes] == expectedNative &&
-                sample.Bytes[Cost::NativeCopyBytes] == expectedNative &&
+                sample.Bytes[Cost::NativeCopyBytes] == expectedNativeCopy &&
                 sample.Bytes[Cost::DisplayReadbackBytes] == expectedDisplay &&
                 !sample.Bytes[Cost::DisplayCopyBytes] && !sample.Events[Cost::OverrideUploadBytes],
                 "RunFrame traffic accounting conflates native/full/display/override paths");
