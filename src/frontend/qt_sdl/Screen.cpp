@@ -134,6 +134,9 @@ void ScreenPanel::loadConfig()
 void ScreenPanel::setFilter(bool filter)
 {
     this->filter = filter;
+    // Cached presentation pixels are reused only for an identical layout and
+    // filter state, so any change forces one fresh copy/upload.
+    invalidatePresentedFrame();
 }
 
 void ScreenPanel::setMouseHide(bool enable, int delay)
@@ -179,6 +182,10 @@ void ScreenPanel::setupScreenLayout()
                 aspectBot);
 
     numScreens = layout.GetScreenTransforms(screenMatrix[0], screenKind);
+
+    // Rotation, layout, sizing and resize all reach this point; drop cached
+    // presentation pixels so the next paint re-copies/re-uploads once.
+    invalidatePresentedFrame();
 
     calcSplashLayout();
 }
@@ -795,6 +802,13 @@ QPaintEngine* ScreenPanelNative::paintEngine() const
     return vulkan ? nullptr : ScreenPanel::paintEngine();
 }
 
+void ScreenPanelNative::invalidatePresentedFrame()
+{
+    bufferLock.lock();
+    screenGeneration = 0;
+    bufferLock.unlock();
+}
+
 void ScreenPanelNative::setupScreenLayout()
 {
     ScreenPanel::setupScreenLayout();
@@ -826,6 +840,7 @@ bool ScreenPanelNative::drawScreen()
         screen[0] = preservedFrame[0];
         screen[1] = preservedFrame[1];
         hasBuffers = false;
+        screenGeneration = 0;
         bufferLock.unlock();
         return true;
     }
@@ -879,15 +894,16 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
 
         bufferLock.lock();
         melonDS::Renderer::DisplayFrame frame;
+        auto* nds = emuInstance->getNDS();
         if (hasBuffers)
         {
             // drawScreen may have run before a scale/renderer change.
             // Re-query under the lock protecting renderer replacement and keep
             // the borrowed payload only until this paint's copy is complete.
-            auto* nds = emuInstance->getNDS();
             hasBuffers = nds && nds->GetRenderer().GetDisplayFrame(frame) &&
                 frame.kind == melonDS::Renderer::DisplayFrame::Kind::CpuBGRA &&
                 frame.top && frame.bottom && frame.width > 0 && frame.height > 0;
+            if (!hasBuffers) screenGeneration = 0;
         }
         if (hasBuffers)
         {
@@ -898,14 +914,34 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
                 QImage bottom(bufferWidth, bufferHeight, QImage::Format_RGB32);
                 if (top.isNull() || bottom.isNull()) hasBuffers = false;
                 else { screen[0] = std::move(top); screen[1] = std::move(bottom); }
+                // Reallocation discards the previously copied pixels.
+                screenGeneration = 0;
             }
             if (hasBuffers)
             {
-                std::uint64_t copy = RenderCost.Enabled ? RenderCostNowNs() : 0;
                 const size_t bytes = size_t(bufferWidth) * bufferHeight * sizeof(melonDS::u32);
-                memcpy(screen[0].scanLine(0), frame.top, bytes);
-                memcpy(screen[1].scanLine(0), frame.bottom, bytes);
-                RenderCost.RecordCopy(copy, 2 * bytes, frame.generation);
+                // The same NDS instance publishing the same nonzero generation
+                // at the same extent means the owned pixels already match.
+                const std::uint64_t cached = screenGeneration;
+                const bool reusable = cached != 0 &&
+                    cached == frame.generation &&
+                    screenGenerationNDS == nds &&
+                    screenGenerationTop == frame.top;
+                if (reusable)
+                {
+                    RenderCost.RecordCopy(RenderCost.Start(), 0, frame.generation);
+                }
+                else
+                {
+                    std::uint64_t copy = RenderCost.Enabled ? RenderCostNowNs() : 0;
+                    memcpy(screen[0].scanLine(0), frame.top, bytes);
+                    memcpy(screen[1].scanLine(0), frame.bottom, bytes);
+                    RenderCost.RecordCopy(copy, 2 * bytes, frame.generation);
+                    // Publish validity only after the copy completes.
+                    screenGenerationNDS = nds;
+                    screenGenerationTop = frame.top;
+                    screenGeneration = frame.generation;
+                }
             }
         }
         bufferLock.unlock();
@@ -1044,6 +1080,8 @@ bool ScreenPanelGL::createContext()
     // No worker or core owns this new context yet. Dispose of a failed handoff
     // on its creating GUI thread and use the existing native fallback.
     if (glContext && !glContext->DoneCurrent()) glContext.reset();
+    // A new context means new texture objects; nothing uploaded survives.
+    invalidatePresentedFrame();
     return glContext != nullptr;
 }
 
@@ -1115,6 +1153,7 @@ bool ScreenPanelGL::initOpenGL()
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, 256, 192, 2, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
     screenTextureWidth = 256;
     screenTextureHeight = 192;
+    screenTextureGeneration = 0;
 
 
     if (!OpenGL::CompileVertexFragmentProgram(osdShader,
@@ -1211,6 +1250,7 @@ bool ScreenPanelGL::deinitOpenGL()
     osdMutex.unlock();
 
     lastScreenWidth = lastScreenHeight = -1;
+    screenTextureGeneration = 0;
     glInited = false;
     if (!glContext->DoneCurrent()) return false;
     glOwned = false;
@@ -1226,6 +1266,11 @@ bool ScreenPanelGL::releaseGL()
 {
     // A successful deinit already released this panel's worker ownership.
     return !glOwned || !glContext || glContext->DoneCurrent();
+}
+
+void ScreenPanelGL::invalidatePresentedFrame()
+{
+    screenTextureGeneration = 0;
 }
 
 void ScreenPanelGL::osdRenderItem(OSDItem* item)
@@ -1335,6 +1380,7 @@ bool ScreenPanelGL::drawScreen()
                     {
                         // Do not upload using uncommitted dimensions after a failed
                         // resize. The caller owns presentation fallback/recovery.
+                        screenTextureGeneration = 0;
                         RenderCost.Add(RenderCost.AccIssue, issue);
                         RenderCost.Gpu.End(span);
                         RenderCost.FrameEnd();
@@ -1342,19 +1388,42 @@ bool ScreenPanelGL::drawScreen()
                     }
                     screenTextureWidth = frameWidth;
                     screenTextureHeight = frameHeight;
+                    // Reallocation discards the previously uploaded pixels.
+                    screenTextureGeneration = 0;
                 }
-                std::uint64_t upl = RenderCost.UploadStart();
-                glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, frameWidth, frameHeight, 1, GL_BGRA,
-                                GL_UNSIGNED_BYTE, frame.top);
-                glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, frameWidth, frameHeight, 1, GL_BGRA,
-                                GL_UNSIGNED_BYTE, frame.bottom);
-                RenderCost.UploadEnd(upl, size_t(2) * frameWidth * frameHeight * 4);
+                // The same NDS instance publishing the same nonzero generation
+                // at the same extent means the texture already holds it.
+                const std::uint64_t cached = screenTextureGeneration;
+                const bool reusable = cached != 0 &&
+                    cached == frame.generation &&
+                    screenTextureGenerationNDS == nds &&
+                    screenTextureGenerationTop == frame.top;
+                if (reusable)
+                {
+                    RenderCost.UploadEnd(RenderCost.UploadStart(), 0);
+                }
+                else
+                {
+                    std::uint64_t upl = RenderCost.UploadStart();
+                    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, frameWidth, frameHeight, 1, GL_BGRA,
+                                    GL_UNSIGNED_BYTE, frame.top);
+                    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, frameWidth, frameHeight, 1, GL_BGRA,
+                                    GL_UNSIGNED_BYTE, frame.bottom);
+                    RenderCost.UploadEnd(upl, size_t(2) * frameWidth * frameHeight * 4);
+                    // Publish validity only after the upload is issued; 0
+                    // (preserved images) is never cacheable.
+                    screenTextureGenerationNDS = nds;
+                    screenTextureGenerationTop = frame.top;
+                    screenTextureGeneration = frame.generation;
+                }
             }
             else if (frame.kind == DisplayFrame::Kind::GLTexture2DArray)
             {
                 const GLuint texid = *static_cast<const GLuint*>(frame.top);
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D_ARRAY, texid);
+                // screenTexture no longer reflects any cached CpuBGRA frame.
+                screenTextureGeneration = 0;
             }
 
             screenSettingsLock.lock();

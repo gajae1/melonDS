@@ -20,6 +20,7 @@
 #define SCREEN_H
 
 #include <optional>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <array>
@@ -40,6 +41,8 @@
 
 class MainWindow;
 class EmuInstance;
+
+namespace melonDS { class NDS; }
 
 
 const struct { int id; float ratio; const char* label; } aspectRatios[] =
@@ -140,6 +143,11 @@ protected:
 
     virtual void setupScreenLayout();
 
+    // Drops any cached presentation pixels derived from the last DisplayFrame.
+    // Called whenever the layout or filter changes; subclasses holding a
+    // generation-keyed copy or upload override this.
+    virtual void invalidatePresentedFrame() {}
+
     void resizeEvent(QResizeEvent* event) override;
 
     void mousePressEvent(QMouseEvent* event) override;
@@ -192,6 +200,14 @@ private:
     QImage screen[2];
     QTransform screenTrans[kMaxScreenTransforms];
 
+    // Generation of the CpuBGRA frame already copied into screen[].
+    // Valid only while the NDS instance and payload identity match the
+    // re-queried frame; 0 means nothing reusable is cached.
+    void invalidatePresentedFrame() override;
+    const melonDS::NDS* screenGenerationNDS = nullptr;
+    const void* screenGenerationTop = nullptr;
+    std::uint64_t screenGeneration = 0;
+
     melonDS::RenderCostNativeMeter RenderCost;
 };
 
@@ -239,6 +255,16 @@ private:
     GLuint screenVertexBuffer = 0, screenVertexArray = 0;
     GLuint screenTexture = 0;
     int screenTextureWidth = 256, screenTextureHeight = 192;
+
+    // Generation of the CpuBGRA frame already stored in screenTexture.
+    // Cleared whenever the texture or its contents may no longer match the
+    // current frame (realloc, preserved image, context/panel recreation,
+    // renderer switch, layout or filter change).
+    void invalidatePresentedFrame() override;
+    const melonDS::NDS* screenTextureGenerationNDS = nullptr;
+    const void* screenTextureGenerationTop = nullptr;
+    std::uint64_t screenTextureGeneration = 0;
+
     GLuint screenShaderProgram = 0;
     GLint screenShaderTransformULoc, screenShaderScreenSizeULoc;
 
