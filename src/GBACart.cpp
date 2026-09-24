@@ -168,7 +168,9 @@ void CartGame::DoSavestate(Savestate* file, u8* extra, u32 extraLength)
             file->Error = true;
             return;
         }
-        try { if (length) restored = std::make_unique<u8[]>(length); }
+        // The payload fills the whole array and a rejected record drops it,
+        // so the staging array needs no zero fill.
+        try { if (length) restored = std::make_unique_for_overwrite<u8[]>(length); }
         catch (const std::bad_alloc&) { file->Error = true; return; }
     }
     if (length)

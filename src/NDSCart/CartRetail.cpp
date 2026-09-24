@@ -213,11 +213,12 @@ void CartRetail::DoSavestate(Savestate* file)
     {
         // Stage the save bytes and SPI latch until the full retail record is
         // valid, including the conditional profile and pending page payload.
-        try { if (fileLength) restored = std::make_unique<u8[]>(fileLength); }
+        // The serialized payload owns [0, length); only the preserved tail
+        // needs filling, and a rejected record drops the staging array.
+        try { if (fileLength) restored = std::make_unique_for_overwrite<u8[]>(fileLength); }
         catch (const std::bad_alloc&) { file->Error = true; return; }
-        if (SRAMFileLength) memcpy(restored.get(), SRAM.get(), SRAMFileLength);
-        if (fileLength > SRAMFileLength)
-            memset(restored.get() + SRAMFileLength, 0xFF, fileLength - SRAMFileLength);
+        if (SRAMFileLength > length)
+            memcpy(restored.get() + length, SRAM.get() + length, SRAMFileLength - length);
     }
     if (length) file->VarArray(file->Saving ? SRAM.get() : restored.get(), length);
     u32 pos = SRAMPos, addr = SRAMAddr, saveAddr = SRAMSaveAddr, saveLen = SRAMSaveLen;
