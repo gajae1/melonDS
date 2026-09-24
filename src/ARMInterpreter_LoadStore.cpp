@@ -506,20 +506,19 @@ void A_LDM(ARM* cpu)
 
     const bool user = (cpu->CurInstr & (1<<22)) && !(cpu->CurInstr & (1<<15));
 
-    for (int i = 0; i < 15; i++)
+    for (u32 regs = cpu->CurInstr & 0x7FFFu; regs; regs &= regs - 1)
     {
-        if (cpu->CurInstr & (1<<i))
+        u32 i = std::countr_zero(regs);
+
+        if (preinc) base += 4;
+        u32* dest = user ? &UserTransferReg(cpu, i) : &cpu->R[i];
+        if (!(first ? cpu->DataRead32(base, dest) : cpu->DataRead32S(base, dest)))
         {
-            if (preinc) base += 4;
-            u32* dest = user ? &UserTransferReg(cpu, i) : &cpu->R[i];
-            if (!(first ? cpu->DataRead32(base, dest) : cpu->DataRead32S(base, dest)))
-            {
-                RestoreTransferBase(cpu, baseid, oldbase, oldcpsr);
-                return;
-            }
-            first = false;
-            if (!preinc) base += 4;
+            RestoreTransferBase(cpu, baseid, oldbase, oldcpsr);
+            return;
         }
+        first = false;
+        if (!preinc) base += 4;
     }
 
     u32 pc = 0;
@@ -593,32 +592,31 @@ void A_STM(ARM* cpu)
             isbanked = (baseid >= 13 && baseid < 15);
     }
 
-    for (u32 i = 0; i < 16; i++)
+    for (u32 regs = cpu->CurInstr & 0xFFFFu; regs; regs &= regs - 1)
     {
-        if (cpu->CurInstr & (1<<i))
+        u32 i = std::countr_zero(regs);
+
+        if (preinc) base += 4;
+
+        u32 value;
+        if (i == baseid && !isbanked)
         {
-            if (preinc) base += 4;
-
-            u32 value;
-            if (i == baseid && !isbanked)
-            {
-                if ((cpu->Num == 0) || (!(cpu->CurInstr & ((1<<i)-1))))
-                    value = oldbase;
-                else
-                    value = base; // checkme
-            }
+            if ((cpu->Num == 0) || (!(cpu->CurInstr & ((1<<i)-1))))
+                value = oldbase;
             else
-            {
-                // ARM7 stores PC one pipeline stage later than its visible A+8.
-                value = ((cpu->CurInstr & (1<<22)) ? UserTransferReg(cpu, i) : cpu->R[i])
-                    + (i == 15 && cpu->Num == 1 ? 4 : 0);
-            }
-
-            if (!(first ? cpu->DataWrite32(base, value) : cpu->DataWrite32S(base, value))) return;
-            first = false;
-
-            if (!preinc) base += 4;
+                value = base; // checkme
         }
+        else
+        {
+            // ARM7 stores PC one pipeline stage later than its visible A+8.
+            value = ((cpu->CurInstr & (1<<22)) ? UserTransferReg(cpu, i) : cpu->R[i])
+                + (i == 15 && cpu->Num == 1 ? 4 : 0);
+        }
+
+        if (!(first ? cpu->DataWrite32(base, value) : cpu->DataWrite32S(base, value))) return;
+        first = false;
+
+        if (!preinc) base += 4;
     }
 
     if (cpu->CurInstr & (1<<21))
@@ -800,14 +798,13 @@ void T_PUSH(ARM* cpu)
     u32 base = cpu->R[13];
     base -= (nregs<<2);
 
-    for (int i = 0; i < 8; i++)
+    for (u32 regs = cpu->CurInstr & 0xFFu; regs; regs &= regs - 1)
     {
-        if (cpu->CurInstr & (1<<i))
-        {
-            if (!(first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]))) return;
-            first = false;
-            base += 4;
-        }
+        u32 i = std::countr_zero(regs);
+
+        if (!(first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]))) return;
+        first = false;
+        base += 4;
     }
 
     if (cpu->CurInstr & (1<<8))
@@ -824,14 +821,13 @@ void T_POP(ARM* cpu)
     u32 base = cpu->R[13];
     bool first = true;
 
-    for (int i = 0; i < 8; i++)
+    for (u32 regs = cpu->CurInstr & 0xFFu; regs; regs &= regs - 1)
     {
-        if (cpu->CurInstr & (1<<i))
-        {
-            if (!(first ? cpu->DataRead32(base, &cpu->R[i]) : cpu->DataRead32S(base, &cpu->R[i]))) return;
-            first = false;
-            base += 4;
-        }
+        u32 i = std::countr_zero(regs);
+
+        if (!(first ? cpu->DataRead32(base, &cpu->R[i]) : cpu->DataRead32S(base, &cpu->R[i]))) return;
+        first = false;
+        base += 4;
     }
 
     if (cpu->CurInstr & (1<<8))
@@ -864,14 +860,13 @@ void T_STMIA(ARM* cpu)
     }
     bool first = true;
 
-    for (int i = 0; i < 8; i++)
+    for (u32 regs = cpu->CurInstr & 0xFFu; regs; regs &= regs - 1)
     {
-        if (cpu->CurInstr & (1<<i))
-        {
-            if (!(first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]))) return;
-            first = false;
-            base += 4;
-        }
+        u32 i = std::countr_zero(regs);
+
+        if (!(first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]))) return;
+        first = false;
+        base += 4;
     }
 
     // TODO: check "Rb included in Rlist" case
@@ -899,18 +894,17 @@ void T_LDMIA(ARM* cpu)
     const u32 oldbase = base, oldcpsr = cpu->CPSR;
     bool first = true;
 
-    for (int i = 0; i < 8; i++)
+    for (u32 regs = cpu->CurInstr & 0xFFu; regs; regs &= regs - 1)
     {
-        if (cpu->CurInstr & (1<<i))
+        u32 i = std::countr_zero(regs);
+
+        if (!(first ? cpu->DataRead32(base, &cpu->R[i]) : cpu->DataRead32S(base, &cpu->R[i])))
         {
-            if (!(first ? cpu->DataRead32(base, &cpu->R[i]) : cpu->DataRead32S(base, &cpu->R[i])))
-            {
-                RestoreTransferBase(cpu, (cpu->CurInstr >> 8) & 0x7, oldbase, oldcpsr);
-                return;
-            }
-            first = false;
-            base += 4;
+            RestoreTransferBase(cpu, (cpu->CurInstr >> 8) & 0x7, oldbase, oldcpsr);
+            return;
         }
+        first = false;
+        base += 4;
     }
 
     if (!(cpu->CurInstr & (1<<((cpu->CurInstr >> 8) & 0x7))))

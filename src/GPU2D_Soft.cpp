@@ -124,6 +124,52 @@ static u32 CompositePixel(u32 val1, u32 val2, u32 blendCnt, u32 eva, u32 evb, u3
     return val1;
 }
 
+// Replaces the per-pixel coordinate scan in GPU2D::CalculateWindowMask.
+// The horizontal latch only changes at the x1/x2 events, so the masked
+// pixels form at most two intervals. The latch still updates while the
+// window is vertically inactive, and for x1 > x2 it survives the end of
+// the line (set at x1, cleared at x2). For x1 == x2 the clear at x2 runs
+// last, so no pixels are covered and the latch ends cleared.
+static void OverlayWindowInterval(u8* windowMask, u8 x1, u8 x2, u8& active, u8 winCnt)
+{
+    const bool latched = active == 0x3;
+    const bool covered = (active | 0x2) == 0x3; // vertically active
+    if (x1 < x2)
+    {
+        if (latched) memset(windowMask, winCnt, x1);
+        if (covered) memset(windowMask + x1, winCnt, x2 - x1);
+    }
+    else
+    {
+        if (latched) memset(windowMask, winCnt, x2);
+        if (x1 > x2 && covered) memset(windowMask + x1, winCnt, 256 - x1);
+    }
+    active = u8((active & ~0x2) | (x1 > x2 ? 0x2 : 0x0));
+}
+
+static void CalculateWindowMaskIntervals(GPU2D& gpu2D, u8* windowMask, const u8* objWindow)
+{
+    memset(windowMask, gpu2D.WinCnt[2], 256); // window outside
+
+    if (gpu2D.DispCnt & (1<<15))
+    {
+        // OBJ window
+        for (int i = 0; i < 256; i++)
+        {
+            if (objWindow[i])
+                windowMask[i] = gpu2D.WinCnt[3];
+        }
+    }
+
+    if (gpu2D.DispCnt & (1<<14))
+        OverlayWindowInterval(windowMask, gpu2D.Win1Coords[0], gpu2D.Win1Coords[1],
+            gpu2D.Win1Active, gpu2D.WinCnt[1]);
+
+    if (gpu2D.DispCnt & (1<<13))
+        OverlayWindowInterval(windowMask, gpu2D.Win0Coords[0], gpu2D.Win0Coords[1],
+            gpu2D.Win0Active, gpu2D.WinCnt[0]);
+}
+
 void SoftRenderer2D::Resolve3DPixel(int x, u32 color, u32& top, u32& second) const
 {
     if (((top >> 24) & 0xC0) == 0x40)
@@ -629,7 +675,7 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
     if (CaptureLayersActive) DisplayBackdrop = BGOBJLine[0];
 
     if (GPU2D.DispCnt & 0xE000)
-        GPU2D.CalculateWindowMask(WindowMask, OBJWindow);
+        CalculateWindowMaskIntervals(GPU2D, WindowMask, OBJWindow);
     else
         memset(WindowMask, 0xFF, 256);
 
