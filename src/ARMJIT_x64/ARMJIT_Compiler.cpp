@@ -491,11 +491,13 @@ void Compiler::SaveReg(int reg, X64Reg nativeReg)
 // invalidates RSCRATCH and RSCRATCH3
 Gen::FixupBranch Compiler::CheckCondition(u32 cond)
 {
-    // Permission-fault exits can make single ARM9 transfers exceed rel8 too.
-    const bool longBranch = !Thumb &&
-        ((CurInstr.Info.Kind == ARMInstrInfo::ak_LDM || CurInstr.Info.Kind == ARMInstrInfo::ak_STM)
-         || (Num == 0 && CurInstr.Info.Kind >= ARMInstrInfo::ak_STR_REG_LSL
-             && CurInstr.Info.Kind <= ARMInstrInfo::ak_STM));
+    // The compiled body of one instruction has no small upper bound: with
+    // fast memory a single transfer emits the region and data-timing guards
+    // plus, for a transfer that leaves the block, the whole exit sequence
+    // with a spill of every register the block still holds dirty. A short
+    // jump is truncated silently (the emitter only asserts) and lands inside
+    // that body, which the fault handler then reports as a bogus memory
+    // access. Always emit the rel32 form.
     if (cond >= 0x8)
     {
         static_assert(RSCRATCH3 == ECX, "RSCRATCH has to be equal to ECX!");
@@ -505,14 +507,14 @@ Gen::FixupBranch Compiler::CheckCondition(u32 cond)
         SHL(32, R(RSCRATCH), R(RSCRATCH3));
         TEST(32, R(RSCRATCH), Imm32(ARM::ConditionTable[cond]));
 
-        return J_CC(CC_Z, longBranch);
+        return J_CC(CC_Z, true);
     }
     else
     {
         // could have used a LUT, but then where would be the fun?
         TEST(32, R(RCPSR), Imm32(1 << (28 + ((~(cond >> 1) & 1) << 1 | (cond >> 2 & 1) ^ (cond >> 1 & 1)))));
 
-        return J_CC(cond & 1 ? CC_NZ : CC_Z, longBranch);
+        return J_CC(cond & 1 ? CC_NZ : CC_Z, true);
     }
 }
 
