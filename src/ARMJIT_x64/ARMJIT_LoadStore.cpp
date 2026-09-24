@@ -341,8 +341,12 @@ void Compiler::Comp_MemAccess(int rd, int rn, const Op2& op2, int size, int flag
         Comp_MemTimingGuard(R(finalAddr), size);
         Comp_MemPermission(R(finalAddr), flags & memop_Store);
     }
-    if (flags & memop_Store) Comp_AddCycles_CD();
-    else Comp_AddCycles_CDI();
+    // A compiled swap charges both accesses as one data access afterwards.
+    if (!(flags & memop_Swap))
+    {
+        if (flags & memop_Store) Comp_AddCycles_CD();
+        else Comp_AddCycles_CDI();
+    }
 
     if ((flags & memop_Writeback) && !(flags & memop_Post))
         MOV(32, rnMapped, R(finalAddr));
@@ -984,6 +988,97 @@ void Compiler::A_Comp_MemHalf()
         flags |= memop_Writeback;
 
     Comp_MemAccess(CurInstr.A_Reg(12), CurInstr.A_Reg(16), offset, size, flags);
+}
+
+// SWP/SWPB read and write the same location, in that order, and publish Rd only
+// after both accesses succeeded. CP15 charges a read and a write of the same
+// size from the same timing entry - byte transfers from [1], word transfers
+// from [2], TCM a single cycle each - so one access costs half of the data
+// cycles the interpreter accumulates, and one guard covers both accesses. The
+// read uses the regular transfer machinery, so fast memory, the exception
+// replay and the register cache behave exactly as they do for LDR. The store
+// takes its operands and its write path from the CPU object, because either
+// operand can be the register the read produces, and because an interpreted
+// store goes through the same helper.
+void Compiler::A_Comp_Swap()
+{
+    const u32 instr = CurInstr.Instr;
+    const int rd = (instr >> 12) & 0xF;
+    const int rn = (instr >> 16) & 0xF;
+    const int rm = instr & 0xF;
+    const int size = CurInstr.Info.Kind == ARMInstrInfo::ak_SWPB ? 8 : 32;
+
+    const auto* cpuv5 = static_cast<const ARMv5*>(CurCPU);
+    const u32 tracedAddr = CurInstr.DataRegion;
+    const s32 accessCycles = tracedAddr < cpuv5->ITCMSize
+        || (tracedAddr & cpuv5->DTCMMask) == cpuv5->DTCMBase
+        ? 1 : cpuv5->MemTimings[tracedAddr >> 12][size == 32 ? 2 : 1];
+
+    // An unconditional swap is always traced as executed, and the trace field
+    // is one byte wide, so the recorded total is the two accesses charged below.
+    assert(CurInstr.Cond() < 0xE || CurInstr.DataCycles == (u8)(accessCycles * 2));
+
+    // The store reads both of its operands from the CPU object, and a denied
+    // write must leave Rd as it was. Keep the live values of the operands
+    // there, and stop the exception exits from spilling the value the read
+    // produces into Rd.
+    if (AbortDirtyRegs & (1 << rd))
+    {
+        SaveReg(rd, RegCache.Mapping[rd]);
+        AbortDirtyRegs &= ~(1 << rd);
+    }
+    if (RegCache.DirtyRegs & (1 << rn)) SaveReg(rn, RegCache.Mapping[rn]);
+    if (RegCache.DirtyRegs & (1 << rm)) SaveReg(rm, RegCache.Mapping[rm]);
+
+    // The read replays through the interpreter if the current data timing of
+    // one access differs from the trace, so guard on a single access.
+    const u8 tracedDataCycles = CurInstr.DataCycles;
+    CurInstr.DataCycles = (u8)accessCycles;
+    Comp_MemAccess(rd, rn, Op2(0u), size, memop_Swap);
+    CurInstr.DataCycles = tracedDataCycles;
+
+    // Same order as the interpreter: read, then the write permission, then the
+    // store, and the value the read produced is published last. Rd can be the
+    // base or the stored value, and the store publishes that value itself, so
+    // both operands come from the CPU object.
+    MOV(32, R(RSCRATCH3), MDisp(RCPU, offsetof(ARM, R) + rn * 4));
+    Comp_MemPermission(R(RSCRATCH3), true);
+    // The permission check uses RSCRATCH2, which is ABI_PARAM3 on SysV, so
+    // fetch the stored value afterwards (still before Rd is written back).
+    MOV(32, R(ABI_PARAM3), MDisp(RCPU, offsetof(ARM, R) + rm * 4));
+
+    // The store calls into the interpreter, and the register cache treats a
+    // destination-only register as dead around such a call. The value the read
+    // produced has to survive it, so keep that value in the CPU object across
+    // the call and reload the register afterwards.
+    SaveReg(rd, RegCache.Mapping[rd]);
+
+    PushRegs(false, false);
+    if (ABI_PARAM1 != RSCRATCH3)
+        MOV(32, R(ABI_PARAM1), R(RSCRATCH3));
+    MOV(64, R(ABI_PARAM2), R(RCPU));
+    switch (size | NDS.ConsoleType)
+    {
+    case 32: ABI_CallFunction(&SlowWrite9<u32, 0>); break;
+    case 8: ABI_CallFunction(&SlowWrite9<u8, 0>); break;
+    case 33: ABI_CallFunction(&SlowWrite9<u32, 1>); break;
+    case 9: ABI_CallFunction(&SlowWrite9<u8, 1>); break;
+    }
+    PopRegs(false, false);
+
+    LoadReg(rd, RegCache.Mapping[rd]);
+
+    // ARMv5::AddCycles_CDI with the data cycles of both accesses. The combined
+    // value can exceed the one-byte trace field, so it is charged here instead
+    // of through Comp_AddCycles_CD.
+    const s32 numC = (R15 & 0x2) ? 0 : CurInstr.CodeCycles;
+    const s32 numD = accessCycles * 2;
+    const s32 cycles = std::max(numC + numD - 6, std::max(numC, numD));
+    IrregularCycles = cycles != numC;
+    if (IrregularCycles && CurInstr.Cond() < 0xE)
+        ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(cycles));
+    else
+        ConstantCycles += cycles;
 }
 
 void Compiler::T_Comp_MemReg()

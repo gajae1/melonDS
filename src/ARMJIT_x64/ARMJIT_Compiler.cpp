@@ -586,7 +586,7 @@ const Compiler::CompileFunc A_Comp[ARMInstrInfo::ak_Count] =
     // LDRSH
     F(A_Comp_MemHalf), F(A_Comp_MemHalf), F(A_Comp_MemHalf), F(A_Comp_MemHalf),
     // swap
-    NULL, NULL,
+    F(A_Comp_Swap), F(A_Comp_Swap),
     // LDM/STM
     F(A_Comp_LDM_STM), F(A_Comp_LDM_STM),
     // Branch
@@ -655,6 +655,19 @@ void Compiler::Reset()
 bool Compiler::IsJITFault(const u8* addr)
 {
     return (u64)addr >= (u64)ResetStart && (u64)addr < (u64)ResetStart + CodeMemSize;
+}
+
+// Every program counter encoding keeps the interpreter helper, and so do ARM7
+// swaps: their data-cycle charge reads the runtime code region, which a
+// compiled block does not maintain.
+static bool CompilableSwap(const FetchedInstr& instr, u32 num)
+{
+    const u32 op = instr.Instr;
+    const int rd = (op >> 12) & 0xF;
+    const int rn = (op >> 16) & 0xF;
+    const int rm = op & 0xF;
+
+    return num == 0 && rd != 15 && rn != 15 && rm != 15;
 }
 
 void Compiler::Comp_SpecialBranchBehaviour(bool taken)
@@ -740,8 +753,13 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
         if (emptyTransfer)
             comp = nullptr;
 
+        const bool isSwap = !Thumb
+            && (CurInstr.Info.Kind == ARMInstrInfo::ak_SWP || CurInstr.Info.Kind == ARMInstrInfo::ak_SWPB);
+        if (isSwap && !CompilableSwap(CurInstr, Num))
+            comp = nullptr;
+
         bool isConditional = Thumb ? CurInstr.Info.Kind == ARMInstrInfo::tk_BCOND : CurInstr.Cond() < 0xE;
-        // SWP/SWPB use interpreter helpers and are classified as loads.
+        // A swap stores, so its block re-checks for a remapped memory map.
         const bool canRemap = comp == nullptr || CurInstr.Info.SpecialKind == ARMInstrInfo::special_WriteMem;
         if (canRemap || comp == NULL || (CurInstr.BranchFlags & branch_FollowCondTaken) || (i == instrsCount - 1 && (!CurInstr.Info.Branches() || isConditional)))
         {

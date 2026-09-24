@@ -35,6 +35,66 @@ int TestSchedulerExecution(NDSArgs&& args);
 int TestDSiHLESavestate(NDSArgs&& args);
 int TestGBAFlashBus(NDSArgs&& args);
 
+// SWP/SWPB with every operand aliasing the JIT has to preserve: the stored
+// value is the original Rm, the address the original Rn, and Rd receives the
+// rotated word or the byte. A condition-failed swap has no effect.
+static int TestSwapExecution(NDSArgs&& args)
+{
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    constexpr u32 data = 0x02000300;
+    constexpr u32 code[] = {
+        0xE1002091, // swp r2, r1, [r0]
+        0xE1500000, // cmp r0, r0
+        0x11082099, // swpne r2, r9, [r8] (not executed)
+        0xE1043093, // swp r3, r3, [r4]
+        0xE1055096, // swp r5, r6, [r5]
+        0xE107A099, // swp r10, r9, [r7] (unaligned)
+        0xE14BC09C, // swpb r12, r12, [r11]
+        0xE5882040, // str r2, [r8, #0x40]
+        0xE5883044, // str r3, [r8, #0x44]
+        0xE5885048, // str r5, [r8, #0x48]
+        0xE588A04C, // str r10, [r8, #0x4c]
+        0xE588C050, // str r12, [r8, #0x50]
+        0xEAFFFFFE  // b self
+    };
+    for (unsigned i = 0; i < std::size(code); ++i) nds->ARM9Write32(0x02000000 + 4 * i, code[i]);
+    nds->ARM9Write32(0x02000200, 0xEAFFFFFE);
+    nds->ARM7.JumpTo(0x02000200);
+    nds->Start();
+    const struct { u32 addr, value; } expected[] = {
+        {data + 0x0, 0x11111111}, {data + 0x4, 0x22222222}, {data + 0x8, 0x33333333},
+        {data + 0xC, 0x55555555}, {data + 0x10, 0x8877EE55},
+        {data + 0x40, 0xAAAAAAAA}, {data + 0x44, 0xBBBBBBBB}, {data + 0x48, 0xCCCCCCCC},
+        {data + 0x4C, 0x11443322}, {data + 0x50, 0x00000066},
+    };
+    // The JIT traces a block on its first execution and runs compiled code on
+    // later entries, so repeat the same sequence from a fresh state.
+    for (int run = 0; run < 3; ++run)
+    {
+        nds->ARM9Write32(data + 0x0, 0xAAAAAAAA);
+        nds->ARM9Write32(data + 0x4, 0xBBBBBBBB);
+        nds->ARM9Write32(data + 0x8, 0xCCCCCCCC);
+        nds->ARM9Write32(data + 0xC, 0x44332211);
+        nds->ARM9Write32(data + 0x10, 0x88776655);
+        const u32 regs[] = {data, 0x11111111, 0x0BADF00D, 0x22222222, data + 0x4, data + 0x8, 0x33333333,
+            data + 0xD, data, 0x55555555, 0, data + 0x11, 0x000000EE};
+        for (unsigned i = 0; i < std::size(regs); ++i) nds->ARM9.R[i] = regs[i];
+        nds->ARM9.JumpTo(0x02000000);
+        nds->RunFrame();
+        for (const auto& e : expected)
+        {
+            const u32 got = nds->ARM9Read32(e.addr);
+            if (got != e.value)
+            {
+                std::fprintf(stderr, "swap mismatch in run %d at %08x: %08x, expected %08x\n", run, e.addr, got, e.value);
+                return 1;
+            }
+        }
+    }
+    return nds->IsRunning() ? 0 : 2;
+}
+
 static int TestSchedulerSavestate(NDSArgs&& args)
 {
     struct SchedulerFixture : NDS
@@ -770,6 +830,8 @@ int main(int argc, char** argv) {
         return TestCacheMPUDisabled(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-data-abort") == 0)
         return TestMPUDataAbort(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "swap") == 0)
+        return TestSwapExecution(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "mpu-multiple-abort") == 0)
         return TestMPUMultipleAbort(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-overlap") == 0)

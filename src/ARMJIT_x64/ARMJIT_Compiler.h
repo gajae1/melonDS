@@ -129,6 +129,7 @@ public:
 
     void A_Comp_MemWB();
     void A_Comp_MemHalf();
+    void A_Comp_Swap();
     void A_Comp_LDM_STM();
 
     void A_Comp_BranchImm();
@@ -169,7 +170,8 @@ public:
         memop_Post = 1 << 1,
         memop_SignExtend = 1 << 2,
         memop_Store = 1 << 3,
-        memop_SubtractOffset = 1 << 4
+        memop_SubtractOffset = 1 << 4,
+        memop_Swap = 1 << 5
     };
     u16 AbortDirtyRegs = 0;
     void Comp_MemPermission(const Gen::OpArg& address, bool store);
