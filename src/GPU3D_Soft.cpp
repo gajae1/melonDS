@@ -19,6 +19,7 @@
 #include "GPU3D_Soft.h"
 
 #include <algorithm>
+#include <bit>
 #include <stdio.h>
 #include <string.h>
 #include "NDS.h"
@@ -1387,16 +1388,51 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
     rp->XR = rp->SlopeR.Step();
 }
 
-void SoftRenderer3D::RenderScanline(s32 y, int npolys)
+void SoftRenderer3D::SetupPolygonRows(int npolys)
 {
+    std::fill(std::begin(ActivePolygonMask), std::end(ActivePolygonMask), 0);
+    std::fill(std::begin(PolygonRowStart), std::end(PolygonRowStart), -1);
+    std::fill(std::begin(PolygonRowEnd), std::end(PolygonRowEnd), -1);
+
     for (int i = 0; i < npolys; i++)
     {
-        RendererPolygon* rp = &PolygonList[i];
-        Polygon* polygon = rp->PolyData;
+        const Polygon* polygon = PolygonList[i].PolyData;
 
-        if (y >= polygon->YTop && (y < polygon->YBottom || (y == polygon->YTop && polygon->YBottom == polygon->YTop)))
+        // A polygon is drawn on rows [YTop, YBottom); a flat one only on YTop.
+        s64 start = polygon->YTop, end;
+        if (polygon->YBottom > polygon->YTop) end = polygon->YBottom;
+        else if (polygon->YBottom == polygon->YTop) end = start + 1;
+        else continue;
+
+        start = std::max<s64>(start, 0);
+        end = std::min<s64>(end, 192);
+        if (start >= end) continue;
+
+        PolygonStartNext[i] = PolygonRowStart[start];
+        PolygonRowStart[start] = i;
+        if (end < 192)
         {
-            if (polygon->IsShadowMask)
+            PolygonEndNext[i] = PolygonRowEnd[end];
+            PolygonRowEnd[end] = i;
+        }
+    }
+}
+
+void SoftRenderer3D::RenderScanline(s32 y, int npolys)
+{
+    for (s16 i = PolygonRowEnd[y]; i >= 0; i = PolygonEndNext[i])
+        ActivePolygonMask[i >> 6] &= ~(u64(1) << (i & 63));
+    for (s16 i = PolygonRowStart[y]; i >= 0; i = PolygonStartNext[i])
+        ActivePolygonMask[i >> 6] |= u64(1) << (i & 63);
+
+    const int words = (npolys + 63) >> 6;
+    for (int word = 0; word < words; word++)
+    {
+        for (u64 bits = ActivePolygonMask[word]; bits; bits &= bits - 1)
+        {
+            RendererPolygon* rp = &PolygonList[(word << 6) + std::countr_zero(bits)];
+
+            if (rp->PolyData->IsShadowMask)
                 RenderShadowMaskScanline(rp, y);
             else
                 RenderPolygonScanline(rp, y);
@@ -1710,6 +1746,7 @@ void SoftRenderer3D::RenderPolygons(bool threaded, Polygon** polygons, int npoly
         if (polygons[i]->Degenerate) continue;
         SetupPolygon(&PolygonList[j++], polygons[i]);
     }
+    SetupPolygonRows(j);
 
     RenderScanline(0, j);
 

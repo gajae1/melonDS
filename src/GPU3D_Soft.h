@@ -462,6 +462,14 @@ private:
     };
 
     RendererPolygon PolygonList[2048];
+    // Rows on which each PolygonList entry is drawn. Scanlines visit the active
+    // entries in ascending index order, matching the full list scan.
+    u64 ActivePolygonMask[2048 / 64];
+    s16 PolygonRowStart[192];
+    s16 PolygonRowEnd[192];
+    s16 PolygonStartNext[2048];
+    s16 PolygonEndNext[2048];
+    void SetupPolygonRows(int npolys);
     void TextureLookup(u32 texparam, u32 texpal, s16 s, s16 t, u16* color, u8* alpha) const;
     u32 RenderPixel(const Polygon* polygon, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const;
     void PlotTranslucentPixel(u32 pixeladdr, u32 color, u32 z, u32 polyattr, u32 shadow);
