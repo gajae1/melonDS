@@ -60,10 +60,36 @@ public:
     ARM* ExecutingCPU = nullptr;
     bool ExecutingNative = false;
 
+    // Local address of a write for the regions that dominate this path, computed
+    // inline: their mapping is a constant bit-mask of the address, so the
+    // out-of-line ARMJIT_Memory::LocaliseAddress call is not needed here. Regions
+    // whose mapping depends on the current memory mapping (SharedWRAM, NWRAM) and
+    // the remaining ones still go through LocaliseAddress, which stays the single
+    // implementation of those mappings. NDS is a template parameter because this
+    // header is included by NDS.h before NDS is a complete type.
+    template <u32 num, int region, typename TNDS>
+    static u32 LocaliseWriteAddressImpl(TNDS& nds, ARMJIT_Memory& memory, u32 addr) noexcept
+    {
+        if constexpr (region == ARMJIT_Memory::memregion_MainRAM)
+            return (addr & nds.MainRAMMask) | (region << 27);
+        else if constexpr (region == ARMJIT_Memory::memregion_VRAM)
+            return (addr & 0xFFFFF) | (region << 27);
+        else if constexpr (region == ARMJIT_Memory::memregion_WRAM7)
+            return (addr & (ARM7WRAMSize - 1)) | (region << 27);
+        else
+            return memory.LocaliseAddress(region, num, addr);
+    }
+
+    template <u32 num, int region>
+    u32 LocaliseWriteAddress(u32 addr) noexcept
+    {
+        return LocaliseWriteAddressImpl<num, region>(NDS, Memory, addr);
+    }
+
     template <u32 num, int region>
     void CheckAndInvalidate(u32 addr) noexcept
     {
-        u32 localAddr = Memory.LocaliseAddress(region, num, addr);
+        u32 localAddr = LocaliseWriteAddress<num, region>(addr);
         if (CompilingBlock)
             CompileWriteAddrs.Add(localAddr);
         if (CodeMemRegions[region][(localAddr & 0x7FFFFFF) / 512].Code & (1 << ((localAddr & 0x1FF) / 16)))
