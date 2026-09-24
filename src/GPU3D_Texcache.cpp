@@ -203,6 +203,20 @@ template void ConvertCompressedTexture<outputFmt_RGB6A5>(u32, u32, u32*, u32, u3
 template <int outputFmt, int X, int Y>
 void ConvertAXIYTexture(u32 width, u32 height, u32* output, u32 addr, u32 palAddr, GPU& gpu)
 {
+    // convert each palette entry once per decode: at most 32 colors
+    // for at least 64 pixels
+    u32 convertedColors[1 << Y];
+    for (u32 i = 0; i < (1 << Y); i++)
+    {
+        u16 color = gpu.ReadVRAMFlat_TexPal<u16>(palAddr + i * 2);
+        switch (outputFmt)
+        {
+        case outputFmt_RGB6A5: convertedColors[i] = ConvertRGB5ToRGB6(color); break;
+        case outputFmt_RGBA8: convertedColors[i] = ConvertRGB5ToRGB8(color); break;
+        case outputFmt_BGRA8: convertedColors[i] = ConvertRGB5ToBGR8(color); break;
+        }
+    }
+
     for (int y = 0; y < height; y++)
     {
         for (int x = 0; x < width; x++)
@@ -211,7 +225,6 @@ void ConvertAXIYTexture(u32 width, u32 height, u32* output, u32 addr, u32 palAdd
 
             u32 idx = val & ((1 << Y) - 1);
 
-            u16 color = gpu.ReadVRAMFlat_TexPal<u16>(palAddr + idx * 2);
             u32 alpha = (val >> Y) & ((1 << X) - 1);
             if (X != 5)
                 alpha = alpha * 4 + alpha / 2;
@@ -219,10 +232,10 @@ void ConvertAXIYTexture(u32 width, u32 height, u32* output, u32 addr, u32 palAdd
             u32 res;
             switch (outputFmt)
             {
-            case outputFmt_RGB6A5: res = ConvertRGB5ToRGB6(color) | alpha << 24; break;
+            case outputFmt_RGB6A5: res = convertedColors[idx] | alpha << 24; break;
             // make sure full alpha == 255
-            case outputFmt_RGBA8: res = ConvertRGB5ToRGB8(color) | (alpha << 27 | (alpha & 0x1C) << 22); break;
-            case outputFmt_BGRA8: res = ConvertRGB5ToBGR8(color) | (alpha << 27 | (alpha & 0x1C) << 22); break;
+            case outputFmt_RGBA8: res = convertedColors[idx] | (alpha << 27 | (alpha & 0x1C) << 22); break;
+            case outputFmt_BGRA8: res = convertedColors[idx] | (alpha << 27 | (alpha & 0x1C) << 22); break;
             }
             output[x + y * width] = res;
         }
@@ -235,6 +248,33 @@ template void ConvertAXIYTexture<outputFmt_RGB6A5, 3, 5>(u32, u32, u32*, u32, u3
 template <int outputFmt, int colorBits>
 void ConvertNColorsTexture(u32 width, u32 height, u32* output, u32 addr, u32 palAddr, bool color0Transparent, GPU& gpu)
 {
+    auto convert = [&](u32 index)
+    {
+        u16 color = gpu.ReadVRAMFlat_TexPal<u16>(palAddr + index * 2);
+
+        bool transparent = color0Transparent && index == 0;
+        u32 res;
+        switch (outputFmt)
+        {
+        case outputFmt_RGB6A5: res = ConvertRGB5ToRGB6(color)
+            | (transparent ? 0 : 0x1F000000); break;
+        case outputFmt_RGBA8: res = ConvertRGB5ToRGB8(color)
+            | (transparent ? 0 : 0xFF000000); break;
+        case outputFmt_BGRA8: res = ConvertRGB5ToBGR8(color)
+            | (transparent ? 0 : 0xFF000000); break;
+        }
+        return res;
+    };
+
+    // converting the whole palette once is cheaper than converting per pixel
+    // whenever it has no more entries than the texture has pixels; for small
+    // 8-bit textures keep the scalar path instead
+    bool useTable = (1 << colorBits) <= 16 || width * height >= (u32)(1 << colorBits);
+    u32 convertedColors[1 << colorBits];
+    if (useTable)
+        for (u32 i = 0; i < (1 << colorBits); i++)
+            convertedColors[i] = convert(i);
+
     for (int y = 0; y < height; y++)
     {
         for (int x = 0; x < width / (16 / colorBits); x++)
@@ -246,20 +286,9 @@ void ConvertNColorsTexture(u32 width, u32 height, u32* output, u32 addr, u32 pal
             {
                 u32 index = val & ((1 << colorBits) - 1);
                 val >>= colorBits;
-                u16 color = gpu.ReadVRAMFlat_TexPal<u16>(palAddr + index * 2);
 
-                bool transparent = color0Transparent && index == 0;
-                u32 res;
-                switch (outputFmt)
-                {
-                case outputFmt_RGB6A5: res = ConvertRGB5ToRGB6(color)
-                    | (transparent ? 0 : 0x1F000000); break;
-                case outputFmt_RGBA8: res = ConvertRGB5ToRGB8(color)
-                    | (transparent ? 0 : 0xFF000000); break;
-                case outputFmt_BGRA8: res = ConvertRGB5ToBGR8(color)
-                    | (transparent ? 0 : 0xFF000000); break;
-                }
-                output[x * (16 / colorBits) + y * width + i] = res;
+                output[x * (16 / colorBits) + y * width + i] =
+                    useTable ? convertedColors[index] : convert(index);
             }
         }
     }
