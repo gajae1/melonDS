@@ -95,6 +95,120 @@ static int TestSwapExecution(NDSArgs&& args)
     return nds->IsRunning() ? 0 : 2;
 }
 
+// A CP15 write in user mode is undefined: the interpreter helper enters the
+// exception vector, so a compiled block must leave there instead of running
+// the following instructions. The system mode encoding is a no-op that keeps
+// the same helper, so both paths share one block shape.
+static int TestCP15UserUND(NDSArgs&& args, bool jit)
+{
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    NDS::Current = nds.get();
+    constexpr u32 mark = 0x02009000;
+    constexpr u32 sentinel = 0x11110000, stack = 0x02009100, link = 0x22223333;
+    constexpr u32 undStack = 0x33334444, undLink = 0x44445555, undSpsr = 0x55556666;
+    ARM& cpu = nds->ARM9;
+    // Explicit model: one cycle per access, so the exception path costs
+    // exactly its two vector fetches.
+    for (u32 t = 0; t < 4; ++t)
+    {
+        nds->ARM9.MemTimings[0x02008000 >> 12][t] = 1;
+        nds->ARM9.MemTimings[mark >> 12][t] = 1;
+        nds->ARM9.MemTimings[cpu.ExceptionBase >> 12][t] = 1;
+    }
+    constexpr u32 program[] = {
+        0xE2933001, // adds r3,r3,#1   (runs before the exception)
+        0xEE070F9A, // mcr p15,0,r0,c7,c10,4 (c7 no-op write; UND in user mode)
+        0xE2944001, // adds r4,r4,#1   (must not run after the exception)
+        0xE5865000, // str r5,[r6]     (must not run after the exception)
+        0xEAFFFFFE  // b self
+    };
+    unsigned checks = 0, failures = 0;
+    for (unsigned user : {1u, 0u})
+    {
+        // Each mode traces its own block: the first JIT entry interprets while
+        // compiling, later entries run the compiled block.
+        const u32 code = user ? 0x02008000 : 0x02008400;
+        const u32 before = user ? 0xF00000D0 : 0xF00000DF;
+        for (unsigned i = 0; i < std::size(program); ++i)
+            nds->ARM9Write32(code + 4 * i, program[i]);
+        for (unsigned run = 0; run < 3; ++run)
+        {
+            for (u32 r = 0; r < 13; ++r) cpu.R[r] = sentinel + r;
+            cpu.R[3] = 0x40000000;
+            cpu.R[6] = mark;
+            cpu.R[13] = stack;
+            cpu.R[14] = link;
+            cpu.R_UND[0] = undStack;
+            cpu.R_UND[1] = undLink;
+            cpu.R_UND[2] = undSpsr;
+            nds->ARM9Write32(mark, 0x5A5A5A5A);
+            cpu.CPSR = before;
+            cpu.Halted = 0;
+            cpu.JumpTo(code);
+            cpu.Cycles = 0; // Exclude the pipeline refill.
+            auto& timestamp = nds->ARM9Timestamp;
+            auto& target = nds->ARM9Target;
+            timestamp = 0;
+            target = user ? 3 : 8;
+            bool measured = true;
+#ifdef JIT_ENABLED
+            if (jit && run == 0 && user)
+            {
+                // A user mode trace runs the instructions past the exception
+                // in UND mode, which is a separate tracer issue; assert only
+                // the compiled runs.
+                nds->ARM9.Execute<CPUExecuteMode::JIT>();
+                measured = false;
+            }
+            else if (jit && run == 0)
+            {
+                nds->ARM9.Execute<CPUExecuteMode::JIT>();
+            }
+            else if (jit)
+            {
+                auto& blocks = nds->JIT.JitBlocks9;
+                if (!blocks.contains(code)) return 3;
+                ARM_Dispatch(&cpu, blocks.at(code)->EntryPoint);
+                timestamp = cpu.Cycles;
+            }
+            else
+#endif
+                nds->ARM9.Execute<CPUExecuteMode::Interpreter>();
+            const u64 cycles = timestamp;
+            // User mode: adds r3 costs one C cycle, A_MCR takes the undefined
+            // vector for two fetch cycles, and the block must stop there.
+            // System mode: the write is a no-op, so the whole sequence runs.
+            const bool ok = user
+                ? (cycles == 3 && cpu.R[3] == 0x40000001 && cpu.R[4] == sentinel + 4
+                    && cpu.R[5] == sentinel + 5 && nds->ARM9Read32(mark) == 0x5A5A5A5A
+                    && cpu.CPSR == 0x000000DB && cpu.R[15] == cpu.ExceptionBase + 8
+                    && cpu.R[14] == code + 8 && cpu.R[13] == undStack
+                    && cpu.R_UND[0] == stack && cpu.R_UND[1] == link
+                    && cpu.R_UND[2] == 0x000000D0)
+                : (cpu.R[3] == 0x40000001 && cpu.R[4] == sentinel + 5
+                    && cpu.R[5] == sentinel + 5 && nds->ARM9Read32(mark) == sentinel + 5
+                    && cpu.CPSR == 0x000000DF && cpu.R[15] == code + 20
+                    && cpu.R[13] == stack && cpu.R[14] == link
+                    && cpu.R_UND[0] == undStack && cpu.R_UND[1] == undLink
+                    && cpu.R_UND[2] == undSpsr);
+            if (measured)
+            {
+                ++checks;
+                failures += !ok;
+            }
+            std::printf("%s cp15-user-und user=%u run=%u: %s cycles=%llu cpsr=%08X pc=%08X lr=%08X spsr=%08X r3=%08X r4=%08X mark=%08X%s\n",
+                jit ? (measured ? "jit" : "jit-trace") : "interpreter", user, run,
+                ok ? "PASS" : "FAIL", static_cast<unsigned long long>(cycles), cpu.CPSR,
+                cpu.R[15], cpu.R[14], cpu.R_UND[2], cpu.R[3], cpu.R[4],
+                nds->ARM9Read32(mark), measured ? "" : " (unmeasured)");
+        }
+    }
+    std::printf("cp15 user undefined: %u checks, %u failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
+
+
 static int TestSchedulerSavestate(NDSArgs&& args)
 {
     struct SchedulerFixture : NDS
@@ -832,6 +946,8 @@ int main(int argc, char** argv) {
         return TestMPUDataAbort(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "swap") == 0)
         return TestSwapExecution(std::move(args));
+    if (argc > 2 && std::strcmp(argv[2], "cp15-user-und") == 0)
+        return TestCP15UserUND(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-multiple-abort") == 0)
         return TestMPUMultipleAbort(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "mpu-overlap") == 0)
