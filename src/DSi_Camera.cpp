@@ -588,16 +588,29 @@ int DSi_Camera::TransferScanline(u32* buffer, int maxlen, int& nlines)
     if (FrameReadMode & (1<<1))
         sy = 479 - sy;
 
+    // the source X for output word dx is (dx * 640) / FrameWidth, i.e. a constant
+    // quotient/remainder step: accumulate it instead of dividing for every word
+    const int sxstep = 640 / FrameWidth;
+    const int sxrem = 640 % FrameWidth;
+    u32* frameline = &FrameBuffer[sy*320];
+    int sx = 0;
+    int sxacc = 0;
+
     if (FrameReadMode & (1<<0))
     {
         for (int dx = 0; dx < retlen; dx++)
         {
             if (dx >= maxlen) break;
 
-            int sx = (dx * 640) / FrameWidth;
+            buffer[dx] = frameline[sx];
 
-            u32 val = FrameBuffer[sy*320 + sx];
-            buffer[dx] = val;
+            sxacc += sxrem;
+            sx += sxstep;
+            if (sxacc >= FrameWidth)
+            {
+                sxacc -= FrameWidth;
+                sx++;
+            }
         }
     }
     else
@@ -606,10 +619,17 @@ int DSi_Camera::TransferScanline(u32* buffer, int maxlen, int& nlines)
         {
             if (dx >= maxlen) break;
 
-            int sx = 319 - ((dx * 640) / FrameWidth);
+            u32 val = frameline[319 - sx];
 
-            u32 val = FrameBuffer[sy*320 + sx];
             buffer[dx] = (val & 0xFF00FF00) | ((val >> 16) & 0xFF) | ((val & 0xFF) << 16);
+
+            sxacc += sxrem;
+            sx += sxstep;
+            if (sxacc >= FrameWidth)
+            {
+                sxacc -= FrameWidth;
+                sx++;
+            }
         }
     }
 
