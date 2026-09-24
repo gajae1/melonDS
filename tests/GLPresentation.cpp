@@ -155,6 +155,9 @@ public:
     unsigned int preservedFrameNumber = 0;
     GLuint screenVertexBuffer = 0, screenVertexArray = 0, screenTexture = 0, screenShaderProgram = 0;
     int screenTextureWidth = 256, screenTextureHeight = 192;
+    const void* screenTextureGenerationNDS = nullptr;
+    const void* screenTextureGenerationTop = nullptr;
+    std::uint64_t screenTextureGeneration = 0;
     GLint screenShaderTransformULoc = 0, screenShaderScreenSizeULoc = 0;
     QMutex screenSettingsLock;
     WindowInfo windowInfo{};

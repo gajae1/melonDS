@@ -69,6 +69,9 @@ public:
     std::unique_ptr<Vulkan::Presenter> vulkan;
     QImage vulkanFrame, screen[2]; QMutex bufferLock, osdMutex;
     bool hasBuffers = true, filter = false, osdEnabled = false;
+    const void* screenGenerationNDS = nullptr;
+    const void* screenGenerationTop = nullptr;
+    std::uint64_t screenGeneration = 0;
     void* topBuffer = nullptr; void* bottomBuffer = nullptr;
     int bufferWidth = 256, bufferHeight = 192, numScreens = 1;
     int screenKind[2]{0,1}; QTransform screenTrans[2];

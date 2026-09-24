@@ -251,6 +251,7 @@ public:
     MainWindow* parentWidget() { return Window; }
     std::optional<WindowInfo> getWindowInfo() { return WindowInfo{}; }
     GL::Context* getContext() { return glContext.get(); }
+    void invalidatePresentedFrame() {}
 private:
     MainWindow* Window;
     std::unique_ptr<GL::Context> glContext;
