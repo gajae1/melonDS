@@ -99,6 +99,7 @@ struct AudioOutput::Impl
     SDL_AudioStream* sdl = nullptr;
     SDL_AudioDeviceID sdlPhysical = 0; // opened physical device; 0 = default
     std::vector<uint8_t> sdlScratch;
+    std::atomic<bool> resumeFailed{false};
 #else
     SDL_AudioDeviceID sdl = 0;
 #endif
@@ -324,7 +325,8 @@ bool AudioOutput::NeedsRecovery() const
     if (!impl) return true;
 #ifdef MELONDS_SDL3
     // A specific physical device that disappeared leaves the stream silent.
-    if (impl->sdl) return impl->sdlPhysical && !PlaybackDevicePresent(impl->sdlPhysical);
+    if (impl->sdl) return impl->resumeFailed.load(std::memory_order_relaxed) ||
+                          (impl->sdlPhysical && !PlaybackDevicePresent(impl->sdlPhysical));
 #else
     // SDL updates enabled on removal, but this wrapper's last Start cannot
     // observe it. Querying status reads SDL's atomic enabled/paused flags.
@@ -565,12 +567,18 @@ bool AudioOutput::Start(std::string& error)
             error = "Audio output device disconnected";
             return false;
         }
-        impl->ResumeCallbacks();
         if (!impl->running.load(std::memory_order_relaxed))
         {
-            SDL_ResumeAudioStreamDevice(impl->sdl);
+            if (!SDL_ResumeAudioStreamDevice(impl->sdl))
+            {
+                impl->resumeFailed.store(true, std::memory_order_relaxed);
+                error = SDL_GetError();
+                return false;
+            }
             impl->running.store(true, std::memory_order_relaxed);
+            impl->resumeFailed.store(false, std::memory_order_relaxed);
         }
+        impl->ResumeCallbacks();
         return true;
 #else
         if (SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_STOPPED)

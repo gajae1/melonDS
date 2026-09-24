@@ -912,6 +912,35 @@ int ClipPolygon(GPU3D& gpu, Vertex* vertices, int nverts, int clipstart)
     // some vertices that should get Y=-0x1000 get Y=0x1000 for some reason on hardware. it doesn't make sense.
     // clipping seems to process the Y plane before the X plane.
 
+    // Fully inside polygons need no clipping copies, but still receive the
+    // same color quantization. Reused strip vertices precede clipstart.
+    if constexpr (attribs)
+    {
+        bool inside = true;
+        for (int i = clipstart; i < nverts; i++)
+        {
+            const s32* p = vertices[i].Position;
+            if (p[3] < 0 ||
+                p[2] > p[3] || p[2] < -p[3] ||
+                p[1] > p[3] || p[1] < -p[3] ||
+                p[0] > p[3] || p[0] < -p[3])
+            {
+                inside = false;
+                break;
+            }
+        }
+        if (inside)
+        {
+            for (int i = 0; i < nverts; i++)
+            {
+                vertices[i].Color[0] |= 0xFFF;
+                vertices[i].Color[1] |= 0xFFF;
+                vertices[i].Color[2] |= 0xFFF;
+            }
+            return nverts;
+        }
+    }
+
     // Z clipping
     nverts = ClipAgainstPlane<2, attribs>(gpu, vertices, nverts, clipstart);
 
