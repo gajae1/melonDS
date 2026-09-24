@@ -128,6 +128,17 @@ private:
 
     } FileIndexEntry;
 
+    // Guest export decisions from the preflight that immediately precedes an
+    // export pass in the same mount. Cleared once that pass has run.
+    typedef struct
+    {
+        u64 Size;
+        u32 LastModifiedInternal;
+
+    } UnchangedGuestEntry;
+
+    std::map<std::string, UnchangedGuestEntry> UnchangedGuests;
+
     std::map<std::string, DirIndexEntry> DirIndex;
     std::map<std::string, FileIndexEntry> FileIndex;
 };

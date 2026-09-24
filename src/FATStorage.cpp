@@ -601,7 +601,14 @@ bool FATStorage::CheckPendingExports(const std::string& path, const std::string&
         }
         bool needed;
         if (!FileNeedsExport(fullpath, info, needed)) { safe = false; break; }
-        if (!needed) continue;
+        if (!needed)
+        {
+            // The export pass this preflight may trigger reads the same
+            // unchanged payload. Keep the decision, with the metadata it was
+            // made against, so that content is not hashed twice in this mount.
+            UnchangedGuests[fullpath] = {info.fsize, static_cast<u32>((info.fdate << 16) | info.ftime)};
+            continue;
+        }
 
         pending = true;
         const auto previous = FileIndex.find(fullpath);
@@ -669,7 +676,14 @@ bool FATStorage::ExportDirectory(const std::string& path, const std::string& out
         {
             const u32 lastmod = (info.fdate << 16) | info.ftime;
             bool doexport;
-            if (!FileNeedsExport(fullpath, info, doexport)) { complete = false; continue; }
+            const auto preflight = UnchangedGuests.find(fullpath);
+            if (preflight != UnchangedGuests.end() && preflight->second.Size == info.fsize &&
+                preflight->second.LastModifiedInternal == lastmod)
+            {
+                // This content was already verified by the preflight.
+                doexport = false;
+            }
+            else if (!FileNeedsExport(fullpath, info, doexport)) { complete = false; continue; }
             if (doexport)
             {
                 std::string hash;
@@ -1321,6 +1335,8 @@ bool FATStorage::Load(const std::string& filename, u64 size, const std::optional
                 const bool indexed = SaveIndex();
                 synced = exported && indexed;
             }
+            // Preflight decisions are valid only for the export pass above.
+            UnchangedGuests.clear();
             if (!synced)
                 Log(LogLevel::Error, "SD sync refused: pending guest exports conflict with host changes or could not be saved; preserve the image, host directory and index before resolving\n");
         }
