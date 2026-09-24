@@ -194,44 +194,68 @@ void SoftRenderer2D::ColorComposite(u32* dst) const
             return;
         }
     }
-    else if (!(control & 0x3F00) && (control & 0x3F) == 0x3F)
+    else if (!(control & 0x3F00))
     {
         if (!Scaled3DActive)
         {
-            // No target2 blend and every target1 selected: only the top flag
-            // and effect window matter. A masked row avoids restarting the
-            // whole composite when one pixel has no effect, and can vectorize.
+            if ((control & 0x3F) == 0x3F)
+            {
+                // No target2 blend and every target1 selected: only the top flag
+                // and effect window matter. A masked row avoids restarting the
+                // whole composite when one pixel has no effect, and can vectorize.
+                for (int x = 0; x < 256; ++x)
+                {
+                    const u32 top = BGOBJLine[x];
+                    const u32 bright = effect == 2 ? ColorBrightnessUp(top, evy, 0x8)
+                                                  : ColorBrightnessDown(top, evy, 0x7);
+                    const bool enabled = ((top >> 24) != 0) & ((WindowMask[x] & 0x20) != 0);
+                    dst[x] = enabled ? bright : top;
+                }
+                return;
+            }
+            // With no target2 blend selected the second sample never takes part
+            // in CompositePixel, so brightness is the only possible effect and
+            // it applies exactly when the pixel's target1 bit is selected: a
+            // subset of the layers composites as one masked row as well. The
+            // flag byte maps onto its target bit the same way CompositePixel
+            // maps it (bitmap/semi-transparent OBJ onto the OBJ target, the
+            // remaining 0x40 cases onto BG0).
             for (int x = 0; x < 256; ++x)
             {
                 const u32 top = BGOBJLine[x];
                 const u32 bright = effect == 2 ? ColorBrightnessUp(top, evy, 0x8)
                                               : ColorBrightnessDown(top, evy, 0x7);
-                const bool enabled = ((top >> 24) != 0) & ((WindowMask[x] & 0x20) != 0);
+                const u32 flag = top >> 24;
+                const u32 target = (flag & 0x80) ? 0x10 : (flag & 0x40) ? 0x01 : flag;
+                const bool enabled = ((control & target) != 0) & ((WindowMask[x] & 0x20) != 0);
                 dst[x] = enabled ? bright : top;
             }
             return;
         }
-        // With no target2 blend and every target1 layer selected, brightness
-        // applies to any non-null top flag. Keep the per-pixel checks so a
-        // closed effect window or an unusual zero flag still takes the generic path.
-        bool fallback = false;
-        for (int x = 0; x < 256; ++x)
+        if ((control & 0x3F) == 0x3F)
         {
-            u32 top = BGOBJLine[x];
-            if (Scaled3DActive)
+            // With no target2 blend and every target1 layer selected, brightness
+            // applies to any non-null top flag. Keep the per-pixel checks so a
+            // closed effect window or an unusual zero flag still takes the generic path.
+            bool fallback = false;
+            for (int x = 0; x < 256; ++x)
             {
-                u32 second = BGOBJLine[x + 256];
-                Resolve3DPixel(x, Parent.Output3D[x], top, second);
+                u32 top = BGOBJLine[x];
+                if (Scaled3DActive)
+                {
+                    u32 second = BGOBJLine[x + 256];
+                    Resolve3DPixel(x, Parent.Output3D[x], top, second);
+                }
+                if (!(top >> 24) || !(WindowMask[x] & 0x20))
+                {
+                    fallback = true;
+                    break;
+                }
+                dst[x] = effect == 2 ? ColorBrightnessUp(top, evy, 0x8)
+                                     : ColorBrightnessDown(top, evy, 0x7);
             }
-            if (!(top >> 24) || !(WindowMask[x] & 0x20))
-            {
-                fallback = true;
-                break;
-            }
-            dst[x] = effect == 2 ? ColorBrightnessUp(top, evy, 0x8)
-                                 : ColorBrightnessDown(top, evy, 0x7);
+            if (!fallback) return;
         }
-        if (!fallback) return;
     }
     for (int x = 0; x < 256; ++x)
     {
@@ -1619,6 +1643,11 @@ void SoftRenderer2D::ApplySpriteMosaicX()
 void SoftRenderer2D::InterleaveSprites(u32 prio)
 {
     u32 attrmask = (prio << 16) | OBJ_IsOpaque;
+    // The row mask is a superset of the priorities that can match below, so a
+    // priority this line does not contain costs a test instead of a 256-pixel scan.
+    if (!(OBJOpaquePrio & (1u << prio)))
+        return;
+
     u16* pal = (u16*)&GPU.Palette[GPU2D.Num ? 0x600 : 0x200];
     u16* extpal = GPU2D.GetOBJExtPal();
 
@@ -1676,6 +1705,7 @@ void SoftRenderer2D::DrawSprites(u32 line)
     NumSprites = 0;
     memset(OBJLine, 0, sizeof(OBJLine));
     memset(OBJWindow, 0, sizeof(OBJWindow));
+    OBJOpaquePrio = 0;
     CaptureOBJScale = 0;
     CaptureOBJActive = false;
     CaptureOBJMosaic = false;
@@ -1718,6 +1748,11 @@ void SoftRenderer2D::DrawSprites(u32 line)
 
         u16 sprtype = (attrib[0] >> 8) & 0x3;
         if (sprtype == 2) // disabled
+            continue;
+
+        // The largest sprite bound is 128 pixels (64 doubled), so a line outside
+        // that window can be rejected before the size lookup below.
+        if (((line - (attrib[0] & 0xFF)) & 0xFF) >= 128)
             continue;
 
         bool iswin = (((attrib[0] >> 10) & 0x3) == 2);
@@ -1777,7 +1812,7 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 cap
     }
     else
     {
-        const auto merge = [pixelattr](u32& oldpixel, int sample) {
+        const auto merge = [this, pixelattr](u32& oldpixel, int sample) {
             if (sample == OBJ_Outside) return false;
             const bool oldisopaque = !!(oldpixel & OBJ_IsOpaque);
             const bool newisopaque = (sample != -1);
@@ -1785,6 +1820,7 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 cap
             if (newisopaque && (!oldisopaque || priocheck))
             {
                 oldpixel = sample | pixelattr;
+                OBJOpaquePrio |= 1u << ((pixelattr >> 16) & 0x3);
                 return true;
             }
             else if (!newisopaque && !oldisopaque)

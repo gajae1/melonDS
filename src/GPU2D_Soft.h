@@ -96,6 +96,9 @@ private:
 
     alignas(8) u32 OBJLine[256];
     alignas(8) u8 OBJWindow[256];
+    // Row-level superset of the OBJ priorities holding an opaque pixel. It only
+    // skips interleave passes that provably cannot match anything on this row.
+    u32 OBJOpaquePrio = 0;
     // Display-only, current-scanline OBJ winners. Merge every native candidate
     // so a captured transparent origin cannot discard a lower OBJ prematurely.
     std::vector<u32> CaptureOBJLine;
