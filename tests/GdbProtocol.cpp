@@ -108,7 +108,8 @@ static int CloseSocket(TestSocket socket)
 }
 
 #ifndef _WIN32
-static int Poll(pollfd* descriptors, nfds_t count, int timeout)
+// Not named Poll: inside GdbStub members that name resolves to GdbStub::Poll.
+static int PollSocket(pollfd* descriptors, nfds_t count, int timeout)
 {
     if (count != 1 || descriptors[0].fd != fakeSocket)
     {
@@ -136,7 +137,7 @@ static int BindLoopback(TestSocket socket, const sockaddr* address, socklen_t le
 #define select Select
 #define bind BindLoopback
 #ifndef _WIN32
-#define poll Poll
+#define poll PollSocket
 #endif
 #ifdef _WIN32
 #define closesocket CloseSocket

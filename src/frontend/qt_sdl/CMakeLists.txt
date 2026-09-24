@@ -13,7 +13,6 @@ endif()
 
 add_library(melonds-audio-output STATIC AudioOutput.cpp AudioOutput.h)
 target_include_directories(melonds-audio-output PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" PRIVATE ../..)
-target_link_libraries(melonds-audio-output PRIVATE ${MELONDS_FRONTEND_SDL} Threads::Threads)
 if (ENABLE_SDL3)
     target_compile_definitions(melonds-audio-output PRIVATE MELONDS_SDL3)
 endif()
@@ -126,6 +125,9 @@ pkg_check_modules(Zstd REQUIRED IMPORTED_TARGET libzstd)
 pkg_check_modules(Faad REQUIRED IMPORTED_TARGET faad2)
 
 fix_interface_includes(${MELONDS_FRONTEND_SDL} PkgConfig::LibArchive)
+# Linked here: MELONDS_FRONTEND_SDL is only defined once pkg-config has run, and
+# platforms without SDL headers in a default include path need its include dirs.
+target_link_libraries(melonds-audio-output PRIVATE ${MELONDS_FRONTEND_SDL} Threads::Threads)
 
 add_compile_definitions(ARCHIVE_SUPPORT_ENABLED)
 

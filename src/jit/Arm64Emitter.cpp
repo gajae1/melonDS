@@ -398,7 +398,7 @@ void ARM64XEmitter::FlushIcacheSection(u8* start, u8* end)
   sys_cache_control(kCacheFunctionPrepareForExecution, start, end - start);
 #elif defined(_WIN32)
   FlushInstructionCache(GetCurrentProcess(), start, end - start);
-#else
+#elif defined(__aarch64__)
   // Don't rely on GCC's __clear_cache implementation, as it caches
   // icache/dcache cache line sizes, that can vary between cores on
   // big.LITTLE architectures.
@@ -427,6 +427,9 @@ void ARM64XEmitter::FlushIcacheSection(u8* start, u8* end)
 
   __asm__ volatile("dsb ish" : : : "memory");
   __asm__ volatile("isb" : : : "memory");
+#else
+  // Non-ARM64 hosts only encode A64 bytes (emitter tests); nothing executes them.
+  __builtin___clear_cache(reinterpret_cast<char*>(start), reinterpret_cast<char*>(end));
 #endif
 }
 
