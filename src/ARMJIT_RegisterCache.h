@@ -119,6 +119,28 @@ public:
         LiteralsLoaded = 0;
     }
 
+    // Folds one instruction into the remaining-use mask, which describes the
+    // instructions from the cursor onwards.
+    void AddSuffixUses(int j)
+    {
+        BitSet16 regsNeeded((Instrs[j].Info.SrcRegs & ~(1 << 15)) | Instrs[j].Info.DstRegs);
+        for (int reg : regsNeeded)
+            SuffixLastUse[reg] = (u8)j;
+        SuffixNeeded |= regsNeeded.m_val;
+    }
+
+    // Removes one instruction which has just been prepared. A register stays in
+    // the mask until the last instruction using it has been reached.
+    void DropSuffixUses(int j)
+    {
+        BitSet16 regsNeeded((Instrs[j].Info.SrcRegs & ~(1 << 15)) | Instrs[j].Info.DstRegs);
+        for (int reg : regsNeeded)
+        {
+            if (SuffixLastUse[reg] == j)
+                SuffixNeeded &= (u16)~(1 << reg);
+        }
+    }
+
     void Prepare(bool thumb, int i)
     {
         FetchedInstr instr = Instrs[i];
@@ -130,18 +152,23 @@ public:
         for (int reg : invalidedLiterals)
             UnloadLiteral(reg);
 
-        u16 futureNeeded = 0;
-        int ranking[16];
-        for (int j = 0; j < 16; j++)
-            ranking[j] = 0;
-        for (int j = i; j < InstrsCount; j++)
+        // The mask only describes the instructions which are still ahead of the
+        // cursor, so preparing an instruction removes its own uses rather than
+        // rescanning the rest of the block. Prepare is called with ascending
+        // indices and Flush skips indices without resetting the mask.
+        if (SuffixCursor < 0)
         {
-            BitSet16 regsNeeded((Instrs[j].Info.SrcRegs & ~(1 << 15)) | Instrs[j].Info.DstRegs);
-            futureNeeded |= regsNeeded.m_val;
-            regsNeeded &= BitSet16(~Instrs[j].Info.NotStrictlyNeeded);
-            for (int reg : regsNeeded)
-                ranking[reg]++;
+            SuffixNeeded = 0;
+            for (int j = 0; j < InstrsCount; j++)
+                AddSuffixUses(j);
+            SuffixCursor = 0;
         }
+        assert(i >= SuffixCursor);
+        for (int j = SuffixCursor; j < i; j++)
+            DropSuffixUses(j);
+        SuffixCursor = i;
+
+        u16 futureNeeded = SuffixNeeded;
 
         // we'll unload all registers which are never used again
         BitSet16 neverNeededAgain(LoadedRegs & ~futureNeeded);
@@ -154,23 +181,39 @@ public:
         {
             int neededCount = needToBeLoaded.Count();
             BitSet16 loadedSet(LoadedRegs);
-            while (loadedSet.Count() + neededCount > NativeRegsAvailable)
+            if (loadedSet.Count() + neededCount > NativeRegsAvailable)
             {
-                int leastReg = -1;
-                int rank = 1000;
-                for (int reg : loadedSet)
+                // Ranking is only consulted to pick eviction victims, so it is
+                // calculated here instead of for every instruction.
+                int ranking[16];
+                for (int reg = 0; reg < 16; reg++)
+                    ranking[reg] = 0;
+                for (int j = i; j < InstrsCount; j++)
                 {
-                    if (!((1 << reg) & necessaryRegs) && ranking[reg] < rank)
-                    {
-                        leastReg = reg;
-                        rank = ranking[reg];
-                    }
+                    BitSet16 regsNeeded((Instrs[j].Info.SrcRegs & ~(1 << 15)) | Instrs[j].Info.DstRegs);
+                    regsNeeded &= BitSet16(~Instrs[j].Info.NotStrictlyNeeded);
+                    for (int reg : regsNeeded)
+                        ranking[reg]++;
                 }
 
-                assert(leastReg != -1);
-                UnloadRegister(leastReg);
+                while (loadedSet.Count() + neededCount > NativeRegsAvailable)
+                {
+                    int leastReg = -1;
+                    int rank = 1000;
+                    for (int reg : loadedSet)
+                    {
+                        if (!((1 << reg) & necessaryRegs) && ranking[reg] < rank)
+                        {
+                            leastReg = reg;
+                            rank = ranking[reg];
+                        }
+                    }
 
-                loadedSet.m_val = LoadedRegs;
+                    assert(leastReg != -1);
+                    UnloadRegister(leastReg);
+
+                    loadedSet.m_val = LoadedRegs;
+                }
             }
 
             // we don't need to load a value which is always going to be overwritten
@@ -209,6 +252,13 @@ public:
     u32 NativeRegsUsed = 0;
     u16 LoadedRegs = 0;
     u16 DirtyRegs = 0;
+
+    // remaining uses for the instructions from SuffixCursor on; SuffixLastUse
+    // holds one instruction index per register, filled by the first pass before
+    // any entry is read (blocks are far shorter than the 256 the byte can hold)
+    u16 SuffixNeeded = 0;
+    int SuffixCursor = -1;
+    u8 SuffixLastUse[16];
 
     u16 PCAllocatableAsSrc = 0;
 
