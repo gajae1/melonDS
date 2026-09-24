@@ -1160,6 +1160,132 @@ void SoftRenderer2D::DrawBG_Extended(u32 line, u32 bgnum)
 
         tilemapaddr = ((bgcnt & 0x1F00) << 6);
 
+        if (rotA == 0x100 && rotC == 0 &&
+            GPU2D.BGRotB[bgnum-2] == 0 && GPU2D.BGRotD[bgnum-2] == 0x100)
+        {
+            // identity affine matrix: finalX = rotX + i*0x100, finalY = rotY
+            if ((bgcnt & (1<<2)) && CaptureLayersActive && !(bgcnt & (1u << 6)))
+                BitmapLines[bgnum - 2] = {true, bgcnt, rotX, rotY, rotA,
+                    GPU2D.BGRotB[bgnum - 2], rotC, GPU2D.BGRotD[bgnum - 2]};
+
+            if (!(rotY & ofymask))
+            {
+                const u32 flag = 0x01000000 << bgnum;
+                const u32 ypart = (((u32)rotY & ymask) >> 8) << yshift;
+                const u32 xwmask = xmask >> 8;
+                const u32 xidx0 = ((u32)rotX & xmask) >> 8;
+
+                if (bgcnt & (1<<2))
+                {
+                    // direct color bitmap
+                    u16 color;
+
+                    if constexpr (mosaic)
+                    {
+                        for (int i = 0; i < 256; i++)
+                        {
+                            if (WindowMask[i] & (1<<bgnum))
+                            {
+                                s32 finalX = rotX - ((int)CurBGXMosaicTable[i] << 8);
+
+                                if (!(finalX & ofxmask))
+                                {
+                                    color = *(u16*)&bgvram[(tilemapaddr + ((ypart + (((u32)finalX & xmask) >> 8)) << 1)) & bgvrammask];
+
+                                    if (color & 0x8000)
+                                        DrawPixel(&BGOBJLine[i], color & 0x7FFF, flag);
+                                }
+                            }
+
+                            rotX += 0x100;
+                        }
+                    }
+                    else
+                    {
+                        // in-bounds iff 0 <= rotX + i*0x100 <= xmask
+                        int iLo = 0, iHi = 255;
+                        if (ofxmask)
+                        {
+                            iLo = (int)((-(s64)rotX + 255) >> 8);
+                            iHi = (int)(((s64)xmask - rotX) >> 8);
+                            if (iLo < 0) iLo = 0;
+                            if (iHi > 255) iHi = 255;
+                        }
+
+                        u32 xidx = (xidx0 + (u32)iLo) & xwmask;
+                        for (int i = iLo; i <= iHi; i++)
+                        {
+                            if (WindowMask[i] & (1<<bgnum))
+                            {
+                                color = *(u16*)&bgvram[(tilemapaddr + ((ypart + xidx) << 1)) & bgvrammask];
+
+                                if (color & 0x8000)
+                                    DrawPixel(&BGOBJLine[i], color & 0x7FFF, flag);
+                            }
+
+                            xidx = (xidx + 1) & xwmask;
+                        }
+                    }
+                }
+                else
+                {
+                    // 256-color bitmap
+                    if (GPU2D.Num) pal = (u16*)&GPU.Palette[0x400];
+                    else           pal = (u16*)&GPU.Palette[0];
+
+                    u8 color;
+
+                    if constexpr (mosaic)
+                    {
+                        for (int i = 0; i < 256; i++)
+                        {
+                            if (WindowMask[i] & (1<<bgnum))
+                            {
+                                s32 finalX = rotX - ((int)CurBGXMosaicTable[i] << 8);
+
+                                if (!(finalX & ofxmask))
+                                {
+                                    color = bgvram[(tilemapaddr + ypart + (((u32)finalX & xmask) >> 8)) & bgvrammask];
+
+                                    if (color)
+                                        DrawPixel(&BGOBJLine[i], pal[color], flag);
+                                }
+                            }
+
+                            rotX += 0x100;
+                        }
+                    }
+                    else
+                    {
+                        int iLo = 0, iHi = 255;
+                        if (ofxmask)
+                        {
+                            iLo = (int)((-(s64)rotX + 255) >> 8);
+                            iHi = (int)(((s64)xmask - rotX) >> 8);
+                            if (iLo < 0) iLo = 0;
+                            if (iHi > 255) iHi = 255;
+                        }
+
+                        u32 xidx = (xidx0 + (u32)iLo) & xwmask;
+                        for (int i = iLo; i <= iHi; i++)
+                        {
+                            if (WindowMask[i] & (1<<bgnum))
+                            {
+                                color = bgvram[(tilemapaddr + ypart + xidx) & bgvrammask];
+
+                                if (color)
+                                    DrawPixel(&BGOBJLine[i], pal[color], flag);
+                            }
+
+                            xidx = (xidx + 1) & xwmask;
+                        }
+                    }
+                }
+            }
+
+            return;
+        }
+
         if (bgcnt & (1<<2))
         {
             // direct color bitmap
