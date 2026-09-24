@@ -215,6 +215,36 @@ def load_supplement(path):
     return document['packages']
 
 
+def x64_pe(path):
+    # Fast accept for ordinary x64 PE images: objdump -f's pei-x86-64 verdict is
+    # decided by the MZ/PE signatures, machine 0x8664, an optional header no
+    # larger than the x64 target's 0xF0 bytes, and enough file bytes for the
+    # declared section table. Anything else still defers to objdump below, so
+    # unusual or corrupt inputs keep the same error path and diagnostics.
+    try:
+        with path.open('rb') as stream:
+            head = stream.read(64)
+            if len(head) < 64 or head[:2] != b'MZ':
+                return False
+            offset = int.from_bytes(head[0x3C:0x40], 'little')
+            if offset < 0x40:
+                return False
+            stream.seek(offset)
+            header = stream.read(24)
+            if len(header) < 24 or header[:4] != b'PE\0\0':
+                return False
+            if int.from_bytes(header[4:6], 'little') != 0x8664:
+                return False
+            sections = int.from_bytes(header[6:8], 'little')
+            optional = int.from_bytes(header[20:22], 'little')
+            if optional > 0xF0:
+                return False
+            stream.seek(0, os.SEEK_END)
+            return stream.tell() >= offset + 24 + optional + sections * 40
+    except OSError:
+        return False
+
+
 def copy_inputs(plan, runtime, manifest):
     files = {}
     for relative, source, expected in sorted(plan.values()):
@@ -283,7 +313,8 @@ def deploy(build, runtime, prefix, manifest, license_supplement=None):
             add_input(plan, source.name, source)
         binaries = {source for _, source, _ in plan.values()}
         for binary in sorted(binaries):
-            if not re.search(r'file format pei-x86-64\b', run_tool([prefix / 'bin/objdump.exe', '-f', binary])):
+            if not (x64_pe(binary) or
+                    re.search(r'file format pei-x86-64\b', run_tool([prefix / 'bin/objdump.exe', '-f', binary]))):
                 raise ValueError(f'Expected an x64 PE binary: {binary}')
         licenses, packages = license_inputs(prefix, binaries - {executable}, supplement)
         for relative, source, expected in licenses:
