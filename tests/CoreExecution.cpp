@@ -32,6 +32,7 @@ int TestDMASlotTiming(NDSArgs&& args);
 int TestDSiResetI2C(NDSArgs&& args);
 int TestDSiBTDMP(NDSArgs&& args);
 int TestSchedulerExecution(NDSArgs&& args);
+int TestCanonicalSavestate(NDSArgs&& args);
 int TestDSiHLESavestate(NDSArgs&& args);
 int TestGBAFlashBus(NDSArgs&& args);
 
@@ -956,6 +957,8 @@ int main(int argc, char** argv) {
         return TestMPUExecution(std::move(args), jit);
     if (argc > 2 && std::strcmp(argv[2], "device-execution") == 0)
         return TestDeviceExecution(std::move(args), jit);
+    if (argc > 2 && std::strcmp(argv[2], "savestate-canonical") == 0)
+        return TestCanonicalSavestate(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "savestate-scheduler") == 0)
         return TestSchedulerSavestate(std::move(args));
     if (argc > 2 && std::strcmp(argv[2], "savestate-keyinput") == 0)

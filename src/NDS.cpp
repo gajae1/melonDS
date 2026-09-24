@@ -741,6 +741,16 @@ bool NDS::DoSavestate(Savestate* file)
         auto& state = schedState[i];
         state = {evt.Timestamp, evt.FuncID, evt.Param};
 
+        // ROM transfers are always scheduled nonperiodically, and no cart
+        // code reads their expired deadline. Unlike periodic clocks (or SPI
+        // completion timestamps), this is only dispatch history once inactive.
+        // Canonicalize the saved value, keeping live events and old readers
+        // unchanged. Do not apply this to arbitrary inactive scheduler slots.
+        if (file->Saving && !(schedMask & (1u << i)) &&
+            (i == Event_CartROMTransfer9 || i == Event_CartROMTransfer7 ||
+             i == Event_DSi_Cart2ROMTransfer9 || i == Event_DSi_Cart2ROMTransfer7))
+            state.Timestamp = 0;
+
         file->Var64(&state.Timestamp);
         file->Var32(&state.FuncID);
         file->Var32(&state.Param);

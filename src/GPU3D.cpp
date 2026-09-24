@@ -304,7 +304,19 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
 {
     file->Section("GP3D");
 
-    CmdFIFO.DoSavestate(file);
+    // The command FIFO is read only while occupied (CmdFIFORead); its empty
+    // cursor and consumed entries cannot affect future commands, DMA or IRQs.
+    // Direct-to-pipe writes can leave different ring histories after a JIT
+    // reset. Save the unique empty representation without mutating the live
+    // queue. Keep the same layout and accept old states with stale history.
+    // This must not change FIFO::DoSavestate globally: IPC exposes underflow.
+    if (file->Saving && CmdFIFO.IsEmpty())
+    {
+        decltype(CmdFIFO) empty {};
+        empty.DoSavestate(file);
+    }
+    else
+        CmdFIFO.DoSavestate(file);
     CmdPIPE.DoSavestate(file);
 
     file->Var32(&NumCommands);
