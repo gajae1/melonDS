@@ -196,6 +196,21 @@ void SoftRenderer2D::ColorComposite(u32* dst) const
     }
     else if (!(control & 0x3F00) && (control & 0x3F) == 0x3F)
     {
+        if (!Scaled3DActive)
+        {
+            // No target2 blend and every target1 selected: only the top flag
+            // and effect window matter. A masked row avoids restarting the
+            // whole composite when one pixel has no effect, and can vectorize.
+            for (int x = 0; x < 256; ++x)
+            {
+                const u32 top = BGOBJLine[x];
+                const u32 bright = effect == 2 ? ColorBrightnessUp(top, evy, 0x8)
+                                              : ColorBrightnessDown(top, evy, 0x7);
+                const bool enabled = ((top >> 24) != 0) & ((WindowMask[x] & 0x20) != 0);
+                dst[x] = enabled ? bright : top;
+            }
+            return;
+        }
         // With no target2 blend and every target1 layer selected, brightness
         // applies to any non-null top flag. Keep the per-pixel checks so a
         // closed effect window or an unusual zero flag still takes the generic path.
