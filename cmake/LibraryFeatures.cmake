@@ -1,7 +1,9 @@
 # melonDS uses std::stop_token/std::jthread in the core and Qt frontend.
 # libc++ older than 20 only exposes them when the compiler driver is told to
 # enable the experimental library, so probe for the types and turn that flag on
-# when it is the only way to get them.
+# when it is the only way to get them. Where libc++experimental itself is not
+# installed (FreeBSD/OpenBSD base), the header-only types are still reachable
+# through _LIBCPP_ENABLE_EXPERIMENTAL, which is tried last.
 include(CheckCXXSourceCompiles)
 
 set(_stop_token_source "
@@ -32,8 +34,18 @@ if (NOT MELONDS_HAS_STD_STOP_TOKEN)
         message(STATUS "std::stop_token requires -fexperimental-library on this toolchain: enabling it for compile and link")
         add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fexperimental-library>")
         add_link_options(-fexperimental-library)
+    else()
+        set(_saved_required_definitions "${CMAKE_REQUIRED_DEFINITIONS}")
+        list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_LIBCPP_ENABLE_EXPERIMENTAL)
+        check_cxx_source_compiles("${_stop_token_source}" MELONDS_HAS_STD_STOP_TOKEN_EXPERIMENTAL_MACRO)
+        set(CMAKE_REQUIRED_DEFINITIONS "${_saved_required_definitions}")
+        if (MELONDS_HAS_STD_STOP_TOKEN_EXPERIMENTAL_MACRO)
+            message(STATUS "std::stop_token requires _LIBCPP_ENABLE_EXPERIMENTAL on this toolchain: defining it")
+            add_compile_definitions(_LIBCPP_ENABLE_EXPERIMENTAL)
+        endif()
     endif()
 endif()
 
 unset(_stop_token_source)
 unset(_saved_required_flags)
+unset(_saved_required_definitions)
