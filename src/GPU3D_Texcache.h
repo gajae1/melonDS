@@ -214,12 +214,12 @@ public:
 
         u32 fmt = (texParam >> 26) & 0x7;
         u64 key = texParam;
+        // Only formats 2/3/4 decode the color-zero-transparent flag; for the
+        // other formats the bit is ignored and must not split the identity.
+        if (fmt == 1 || fmt == 5 || fmt == 6 || fmt == 7)
+            key &= ~((u64)1 << 29);
         if (fmt != 7)
-        {
             key |= (u64)palBase << 32;
-            if (fmt == 5)
-                key &= ~((u64)1 << 29);
-        }
         //printf("%" PRIx64 " %" PRIx32 " %" PRIx32 "\n", key, texParam, palBase);
 
         assert(fmt != 0 && "no texture is not a texture format!");
