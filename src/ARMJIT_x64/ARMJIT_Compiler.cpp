@@ -710,6 +710,197 @@ void Compiler::CreateMethod(const char* namefmt, void* start, ...)
 }
 #endif
 
+// The successor identity the branch compilers derived for a target: the address
+// and ISA of the block the dispatcher will look up, and the pipelined PC the
+// branch stores in R15.
+static void ChainSuccessor(u32 target, bool thumb, u32& lookupAddr, bool& succThumb, u32& takenPC)
+{
+    succThumb = thumb;
+    if ((target & 0x1) && !thumb)
+        succThumb = true;
+    else if (!(target & 0x1) && thumb)
+        succThumb = false;
+
+    lookupAddr = (target & 0x1) ? (target & ~0x1u) : (target & ~0x3u);
+    takenPC = lookupAddr + (succThumb ? 2 : 4);
+}
+
+// True when this instruction is a direct branch whose target is a compile time
+// constant, recomputed exactly as the matching Comp_* function derives it. Only
+// the last instruction of a block reaches the tail, where its cycle cost has
+// already been folded into ConstantCycles.
+static bool StaticTailBranchTarget(bool thumb, u32 num, const FetchedInstr& instr, u32& target, bool& conditional)
+{
+    using namespace ARMInstrInfo;
+    const u32 op = instr.Instr;
+
+    if (thumb)
+    {
+        switch (instr.Info.Kind)
+        {
+        case tk_B:
+            conditional = false;
+            target = (instr.Addr + 4) + (((s32)((op & 0x7FF) << 21) >> 20) + 1);
+            return true;
+        case tk_BCOND:
+            conditional = true;
+            target = (instr.Addr + 4) + (((s32)(op << 24) >> 23) + 1);
+            return true;
+        case tk_BL_LONG:
+        {
+            // merged BL, see T_Comp_BL_Merged
+            conditional = false;
+            const u32 upperPart = op >> 16;
+            target = (instr.Addr + 4) + ((s32)((op & 0x7FF) << 21) >> 9);
+            target += (upperPart & 0x7FF) << 1;
+            if (num == 1 || (upperPart & (1 << 12)))
+                target |= 1;
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+    switch (instr.Info.Kind)
+    {
+    case ak_B:
+    case ak_BL:
+        if (instr.Cond() == 0xE)
+            conditional = false;
+        else if (instr.Cond() < 0xE)
+            conditional = true;
+        else
+            return false;
+        target = (instr.Addr + 8) + ((s32)(op << 8) >> 6);
+        return true;
+    case ak_BLX_IMM:
+        // always executed, see A_Comp_BranchImm's cond == 0xF path: the H bit
+        // (bit 24) selects the Thumb halfword, and bit 0 carries the marker.
+        conditional = false;
+        target = (instr.Addr + 8) + ((s32)(op << 8) >> 6) + (((op >> 24) & 1) << 1) + 1;
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool Compiler::EmitChainTail(const FetchedInstr& instr)
+{
+    if (!NDS.JIT.ChainEnabled)
+        return false;
+
+    u32 target;
+    bool conditional;
+    if (!StaticTailBranchTarget(Thumb, Num, instr, target, conditional))
+        return false;
+
+    // A followed not-taken branch shares this tail with the taken path, which
+    // leaves through its own exit, so the tail then always runs with the
+    // sequential PC and cannot be chained.
+    if (instr.BranchFlags & branch_FollowCondNotTaken)
+        return false;
+
+    u32 lookupAddr;
+    bool succThumb;
+    u32 takenPC;
+    ChainSuccessor(target, Thumb, lookupAddr, succThumb, takenPC);
+
+    // the ordinary tail call, retargeted once the successor block exists
+    u8* jump = GetWritableCodePtr();
+    ABI_TailCall(ARM_Ret);
+    const ptrdiff_t jumpLen = GetWritableCodePtr() - jump;
+    u8 jumpForm;
+    if (jumpLen == 5 && jump[0] == 0xE9)
+        jumpForm = 0; // E9 rel32 to ARM_Ret
+    else if (jumpLen == 12 && jump[0] == 0x48 && jump[1] == 0xB8
+        && jump[10] == 0xFF && jump[11] == 0xE0)
+        jumpForm = 1; // mov rax, imm64; jmp rax
+    else
+        return true;
+
+    // The guard repeats the checks the dispatcher performs between two blocks,
+    // so entering the successor here is equivalent to returning to Execute and
+    // dispatching it, which is where every failure path below leads.
+    u8* guard = GetWritableCodePtr();
+    std::vector<FixupBranch> fails;
+
+    if (conditional)
+    {
+        // only the taken path has the static target in R15
+        CMP(32, MDisp(RCPU, offsetof(ARM, R[15])), Imm32(takenPC));
+        fails.push_back(J_CC(CC_NE, true));
+    }
+
+    CMP(32, MDisp(RCPU, offsetof(ARM, JITPipelineDrain)), Imm8(0));
+    fails.push_back(J_CC(CC_NE, true));
+    CMP(32, MDisp(RCPU, offsetof(ARM, StopExecution)), Imm8(0));
+    fails.push_back(J_CC(CC_NE, true));
+
+    // Timestamp += Cycles and the budget test, without committing either
+    MOV(64, R(RSCRATCH), MDisp(RCPU, offsetof(ARM, NDS)));
+    MOVSX(64, 32, RSCRATCH2, MDisp(RCPU, offsetof(ARM, Cycles)));
+    MOV(64, R(RSCRATCH3), MDisp(RSCRATCH,
+        Num ? offsetof(melonDS::NDS, ARM7Timestamp) : offsetof(melonDS::NDS, ARM9Timestamp)));
+    ADD(64, R(RSCRATCH3), R(RSCRATCH2));
+    CMP(64, R(RSCRATCH3), MDisp(RSCRATCH,
+        Num ? offsetof(melonDS::NDS, ARM7Target) : offsetof(melonDS::NDS, ARM9Target)));
+    fails.push_back(J_CC(CC_AE, true));
+
+    if (Num == 0)
+    {
+        // the ARM9 checks the execution permission of every block it enters
+        MOV(64, R(RSCRATCH2), MDisp(RCPU, offsetof(ARMv5, PU_Map)));
+        TEST(8, MDisp(RSCRATCH2, lookupAddr >> 12), Imm8(0x04));
+        fails.push_back(J_CC(CC_Z, true));
+    }
+
+    // the fast block lookup, exactly as the dispatcher performs it
+    MOV(32, R(RSCRATCH2), MDisp(RCPU, offsetof(ARM, FastBlockLookupStart)));
+    MOV(32, R(RSCRATCH4), Imm32(lookupAddr));
+    SUB(32, R(RSCRATCH4), R(RSCRATCH2));
+    CMP(32, R(RSCRATCH4), MDisp(RCPU, offsetof(ARM, FastBlockLookupSize)));
+    fails.push_back(J_CC(CC_AE, true));
+    MOV(64, R(RSCRATCH2), MDisp(RCPU, offsetof(ARM, FastBlockLookup)));
+    LEA(64, RSCRATCH2, MComplex(RSCRATCH2, RSCRATCH4, SCALE_4, 0));
+    u8* expectedPatch = GetWritableCodePtr();
+    CMP(32, MDisp(RSCRATCH2, 0), Imm32(0xCCCCCCCC));
+    u8* expectedEnd = GetWritableCodePtr();
+    fails.push_back(J_CC(CC_NE, true));
+    CMP(32, MDisp(RSCRATCH2, 4), Imm32(u32(MakeLookupTag(lookupAddr, Num, succThumb))));
+    fails.push_back(J_CC(CC_NE, true));
+
+    // commit the boundary the way ARM_Ret and the dispatcher's loop do
+    MOV(32, MDisp(RCPU, offsetof(ARM, CPSR)), R(RCPSR));
+    MOV(64, MDisp(RSCRATCH,
+        Num ? offsetof(melonDS::NDS, ARM7Timestamp) : offsetof(melonDS::NDS, ARM9Timestamp)), R(RSCRATCH3));
+    MOV(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(0));
+
+    u8* entryPatch = GetWritableCodePtr();
+    // A value the emitter cannot shorten keeps this a 10 byte movabs, which is
+    // what makes the immediate patchable.
+    MOV(64, R(RSCRATCH), Imm64(0x8000000000000000ull));
+    u8* entryEnd = GetWritableCodePtr();
+    JMPptr(R(RSCRATCH));
+
+    for (FixupBranch& fail : fails)
+        SetJumpTarget(fail);
+    ABI_TailCall(ARM_Ret);
+
+    // Only sites whose patchable operands were emitted in the expected form are
+    // registered; otherwise the plain tail call above stays in effect.
+    const bool offsetPatchable = expectedEnd - expectedPatch == 6
+        && expectedPatch[0] == 0x81 && expectedPatch[1] == 0x3A;
+    const bool entryPatchable = entryEnd - entryPatch == 10
+        && entryPatch[0] == 0x48 && entryPatch[1] == 0xB8;
+    if (offsetPatchable && entryPatchable)
+    {
+        NDS.JIT.AddChainSite(jump, guard, (u32*)(expectedPatch + 2),
+            (JitBlockEntry*)(entryPatch + 2), Num, succThumb, lookupAddr, jumpForm);
+    }
+    return true;
+}
+
 JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[], int instrsCount, bool hasMemoryInstr)
 {
     if (NearSize - (GetCodePtr() - NearStart) < 1024 * 32) // guess...
@@ -903,7 +1094,8 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
 
     if (ConstantCycles)
         ADD(32, MDisp(RCPU, offsetof(ARM, Cycles)), Imm32(ConstantCycles));
-    ABI_TailCall(ARM_Ret);
+    if (!EmitChainTail(CurInstr))
+        ABI_TailCall(ARM_Ret);
 
 #ifdef JIT_PROFILING_ENABLED
     CreateMethod("JIT_Block_%d_%d_%08X", (void*)res, Num, Thumb, instrs[0].Addr);

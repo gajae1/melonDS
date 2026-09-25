@@ -44,6 +44,32 @@ enum
     branch_StaticTarget = 1 << 3,
 };
 
+// Lookup entries hold the tag in their high half and the block offset in the
+// low half. Address bit 1 is already distinguished by the halfword table
+// index, so it is reused for the CPU and the alignment bit for ARM/Thumb.
+inline u32 MakeLookupTag(u32 addr, u32 num, bool thumb) noexcept
+{
+    return (addr & ~3u) | (num << 1) | u32(thumb);
+}
+
+// A patchable jump at the end of a compiled block that ends in a branch with a
+// compile time target. It starts out as the ordinary ARM_Ret tail call; once a
+// block exists at the target address the jump is retargeted at Guard, which
+// repeats the checks the C++ dispatcher performs at that boundary and then
+// enters the successor block directly.
+struct JitChainSite
+{
+    u8* Jump;                // the block's tail jump (see JumpForm)
+    u8* Guard;               // guard code, entered once the site is linked
+    u32* ExpectedOffset;     // low half of the expected lookup entry (patched)
+    JitBlockEntry* EntryImm; // successor entry point (patched)
+    JitBlockEntry Entry {};  // null while unlinked
+    u32 LookupAddr {};       // successor block start address
+    u8 Num {};
+    u8 Thumb {};
+    u8 JumpForm {};          // 0: E9 rel32 at +1, 1: mov rax, imm64 at +2
+};
+
 struct FetchedInstr
 {
     u32 A_Reg(int pos) const

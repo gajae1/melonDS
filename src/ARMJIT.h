@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <optional>
 #include <memory>
+#include <vector>
 #include "types.h"
 #include "MemConstants.h"
 #include "Args.h"
@@ -59,6 +60,16 @@ public:
     void NotifyException() noexcept;
     ARM* ExecutingCPU = nullptr;
     bool ExecutingNative = false;
+
+    // Direct block-to-block chaining (see JitChainSite). Disabling it emits the
+    // plain dispatcher tail again, so tests can compare both forms in one build.
+    bool ChainEnabled = true;
+    JitChainSite* AddChainSite(u8* jump, u8* guard, u32* expectedOffset,
+        JitBlockEntry* entryImm, u32 num, bool thumb, u32 lookupAddr, u8 jumpForm) noexcept;
+    void LinkChainSites(u32 num, bool thumb, u32 addr, JitBlockEntry entry) noexcept;
+    void ClearChainSites() noexcept;
+    u32 ChainSiteCount() const noexcept { return u32(ChainSites.size()); }
+    u32 LinkedChainSiteCount() const noexcept;
 
     // Local address of a write for the regions that dominate this path, computed
     // inline: their mapping is a constant bit-mask of the address, so the
@@ -143,6 +154,9 @@ public:
     Compiler JITCompiler;
     std::unordered_map<u32, JitBlock*> JitBlocks9 {};
     std::unordered_map<u32, JitBlock*> JitBlocks7 {};
+
+    std::vector<std::unique_ptr<JitChainSite>> ChainSites {};
+    std::unordered_map<u32, std::vector<JitChainSite*>> ChainSitesByTarget[2] {};
 
     std::unordered_map<u64, JitBlock*> RestoreCandidates {};
 

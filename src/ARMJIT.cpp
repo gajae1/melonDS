@@ -537,13 +537,6 @@ void ARMJIT::SetFastMemory(bool enabled) noexcept
     SetJITArgs(JITArgs{static_cast<unsigned>(MaxBlockSize), LiteralOptimizations, BranchOptimizations, enabled});
 }
 
-static u32 MakeLookupTag(u32 addr, u32 num, bool thumb) noexcept
-{
-    // Address bit 1 is already distinguished by the halfword table index.
-    // Reuse it for the CPU, and the unused alignment bit for ARM/Thumb.
-    return (addr & ~3u) | (num << 1) | u32(thumb);
-}
-
 static u32 PrefetchedInstructions(const ARM* cpu) noexcept
 {
     // ARM9 fetches Thumb instructions in word pairs. NextInstr[1] can
@@ -1106,6 +1099,9 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     *entry = u64(MakeLookupTag(blockAddr, cpu->Num, thumb)) << 32;
     *entry |= JITCompiler.SubEntryOffset(block->EntryPoint);
 
+    // The block compiled here may be the successor of a chained block tail.
+    LinkChainSites(cpu->Num, thumb, blockAddr, block->EntryPoint);
+
     // A trace may have overwritten its own opcodes before being published.
     // Replay only invalidation, not stores, now that its code ranges exist.
     // This also covers every word of block stores and physical aliases.
@@ -1368,7 +1364,79 @@ void ARMJIT::ResetBlockCache() noexcept
     JitBlocks9.clear();
     JitBlocks7.clear();
 
+    // the code these sites jump into is about to be overwritten
+    ClearChainSites();
+
     JITCompiler.Reset();
+}
+
+static u32 ChainSiteKey(u32 addr, bool thumb) noexcept
+{
+    return (addr >> 1) | (u32(thumb) << 31);
+}
+
+static void PatchChainSite(ARMJIT& jit, JitChainSite* site, JitBlockEntry entry) noexcept
+{
+    *site->ExpectedOffset = jit.JITCompiler.SubEntryOffset(entry);
+    memcpy(site->EntryImm, &entry, sizeof(entry));
+    site->Entry = entry;
+    // The guard only becomes reachable once it describes the successor.
+    if (site->JumpForm == 0)
+        *(u32*)(site->Jump + 1) = (u32)(site->Guard - (site->Jump + 5));
+    else
+        memcpy(site->Jump + 2, &site->Guard, sizeof(site->Guard));
+}
+
+JitChainSite* ARMJIT::AddChainSite(u8* jump, u8* guard, u32* expectedOffset,
+    JitBlockEntry* entryImm, u32 num, bool thumb, u32 lookupAddr, u8 jumpForm) noexcept
+{
+    JitChainSite* site = ChainSites.emplace_back(std::make_unique<JitChainSite>()).get();
+    site->Jump = jump;
+    site->Guard = guard;
+    site->ExpectedOffset = expectedOffset;
+    site->EntryImm = entryImm;
+    site->Num = u8(num);
+    site->Thumb = u8(thumb);
+    site->LookupAddr = lookupAddr;
+    site->JumpForm = jumpForm;
+    ChainSitesByTarget[num][ChainSiteKey(lookupAddr, thumb)].push_back(site);
+
+    // the successor may already be compiled
+    auto& blocks = num == 0 ? JitBlocks9 : JitBlocks7;
+    auto it = blocks.find(lookupAddr | u32(thumb));
+    if (it != blocks.end())
+        PatchChainSite(*this, site, it->second->EntryPoint);
+    return site;
+}
+
+void ARMJIT::LinkChainSites(u32 num, bool thumb, u32 addr, JitBlockEntry entry) noexcept
+{
+    auto it = ChainSitesByTarget[num].find(ChainSiteKey(addr, thumb));
+    if (it == ChainSitesByTarget[num].end())
+        return;
+
+    JitEnableWrite();
+    for (JitChainSite* site : it->second)
+        PatchChainSite(*this, site, entry);
+    JitEnableExecute();
+}
+
+void ARMJIT::ClearChainSites() noexcept
+{
+    ChainSites.clear();
+    ChainSitesByTarget[0].clear();
+    ChainSitesByTarget[1].clear();
+}
+
+u32 ARMJIT::LinkedChainSiteCount() const noexcept
+{
+    u32 count = 0;
+    for (const auto& site : ChainSites)
+    {
+        if (site->Entry)
+            count++;
+    }
+    return count;
 }
 
 void ARMJIT::JitEnableWrite() noexcept

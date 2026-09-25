@@ -535,6 +535,14 @@ if (MELONDS_TEST_GPU)
     endforeach()
 endif()
 
+# Direct block-to-block chaining is an x86-64 JIT feature.
+if (TARGET core AND ENABLE_JIT AND ARCHITECTURE STREQUAL "x86_64")
+    add_executable(CoreJITChainLink CoreJITChainLink.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_link_libraries(CoreJITChainLink PRIVATE core Threads::Threads)
+    add_test(NAME core-jit-chain-link COMMAND CoreJITChainLink)
+    set_tests_properties(core-jit-chain-link PROPERTIES TIMEOUT 60)
+endif()
+
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/CLZMethod.inc"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ExtractFunction.py"
