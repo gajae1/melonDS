@@ -657,8 +657,19 @@ static void Scenario(const QString& name)
     {
         auto* interpolation = Widget<QComboBox>(*dialog, "cbInterpolation");
         auto* description = Widget<QLabel>(*dialog, "lblInterpolationInfo");
-        Require(interpolation->count() == 6 && interpolation->currentIndex() == 3,
+        Require(interpolation->count() == 7 && interpolation->currentIndex() == 3,
                 "Interpolation choices or existing selection changed");
+        if (name == "interpolation-sinc-accept")
+        {
+            interpolation->setCurrentIndex(6);
+            Require(instance.activeInterpolation == 6 && cfg.GetInt("Audio.Interpolation") == 6,
+                    "Sinc selection was not applied");
+            Finish(*dialog, QDialogButtonBox::Ok);
+            Config::GetGlobalTable().SetInt("Audio.Interpolation", 0);
+            Require(Config::Load() && Config::GetGlobalTable().GetInt("Audio.Interpolation") == 6,
+                    "Sinc mode did not survive config reload");
+            return;
+        }
         if (name == "interpolation-failure")
         {
             instance.failInterpolation = 5;

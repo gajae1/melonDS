@@ -26,7 +26,7 @@
 
 #define SAVESTATE_MAJOR 14
 #define SAVESTATE_MINOR 2
-#define SAVESTATE_MAX_MINOR 14
+#define SAVESTATE_MAX_MINOR 15
 
 // bitmask for the savestate config word
 enum
@@ -93,6 +93,7 @@ public:
     // a pending T9HX subsector/bulk erase or its opcode needs 14.12.
     // a suspended Slot-1 flash power state needs 14.13;
     // a non-default KeyInput (held keys, touch pen, or lid latch) needs 14.14.
+    // per-channel sinc history needs 14.15.
     void RequireMinorVersion(u16 minor);
 
     // TODO rewinds the stream

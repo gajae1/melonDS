@@ -66,6 +66,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     ui->cbInterpolation->addItem("Cubic");
     ui->cbInterpolation->addItem("Gaussian (SNES)");
     ui->cbInterpolation->addItem(tr("Minimum-phase (high quality)"));
+    ui->cbInterpolation->addItem(tr("Sinc (sharp)"));
     {
         const QSignalBlocker blocker(ui->cbInterpolation);
         ui->cbInterpolation->setCurrentIndex(oldInterp);
@@ -308,7 +309,7 @@ void AudioSettingsDialog::on_cbBitDepth_currentIndexChanged(int idx)
 void AudioSettingsDialog::on_cbInterpolation_currentIndexChanged(int idx)
 {
     // prevent a spurious change
-    if (ui->cbInterpolation->count() < 6) return;
+    if (ui->cbInterpolation->count() < 7) return;
 
     QString error;
     if (!applyInterpolation(idx, error))

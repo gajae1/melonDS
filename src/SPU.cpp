@@ -222,6 +222,7 @@ SPU::SPU(melonDS::NDS& nds, AudioBitDepth bitdepth, AudioInterpolation interpola
     OutputBufferReadPos = 0;
     OutputBufferWritePos = 0;
 
+    if (interpolation == AudioInterpolation::Sinc) SincOutput.emplace();
     SetSampleRate(AudioSampleRate::_32KHz);
 }
 
@@ -268,6 +269,7 @@ void SPU::Stop()
     blip_clear(BlipLeft);
     blip_clear(BlipRight);
     BlipTimer = 0;
+    if (SincOutput) SincOutput->Reset();
 
     OutputBufferReadPos = 0;
     OutputBufferWritePos = 0;
@@ -280,6 +282,11 @@ void SPU::ResetOutputHistory()
     // Call on the emulation thread after a committed timeline change. A failed
     // load/rollback must retain the old queue and resampler history instead.
     Stop();
+    if (SincOutput)
+    {
+        SincOutput->SetRates(double(INTERNAL_SAMPLE_RATE) * OutputSkew / (MixInterval >> 1), OutputSampleRate);
+        return;
+    }
     // Mix() adds deltas relative to the restored last sample. Rebase the empty
     // resampler without changing that serialized sample or the guest clock.
     blip_add_delta(BlipLeft, 0, OutputLastSamples[0]);
@@ -290,6 +297,7 @@ void SPU::ResetOutputHistory()
 void SPU::PrepareSavestate(Savestate* file) const
 {
     if (!file->Saving) return;
+    if (GetInterpolation() == AudioInterpolation::Sinc) file->RequireMinorVersion(15);
     for (const SPUChannel& channel : Channels)
     {
         // Older readers infer inactive output from format/repeat/position.
@@ -322,6 +330,28 @@ void SPU::DoSavestate(Savestate* file)
 
     for (SPUCaptureUnit& capture : Capture)
         capture.DoSavestate(file);
+
+    // Keep all older SPU sections byte-identical. Only states using sinc need
+    // the additional history, and loading one does not change the user mode.
+    if (file->IsAtLeastVersion(14, 15))
+    {
+        for (auto& channel : Channels)
+        {
+            bool present = channel.Sinc.has_value();
+            file->VarBool(&present);
+            if (present)
+            {
+                if (!channel.Sinc) channel.Sinc.emplace();
+                channel.Sinc->DoSavestate(file);
+            }
+            else if (channel.Sinc) channel.Sinc->Reset();
+        }
+    }
+    else if (!file->Saving)
+    {
+        for (auto& channel : Channels)
+            if (channel.Sinc) channel.Sinc->Reset(channel.CurSample);
+    }
 }
 
 
@@ -343,6 +373,8 @@ void SPU::SetSampleRate(AudioSampleRate rate)
     }
 
     // Preserve the last submitted sample across a guest rate change.
+    if (SincOutput)
+        SincOutput->SetRates(double(INTERNAL_SAMPLE_RATE) * OutputSkew / (MixInterval >> 1), OutputSampleRate);
 }
 
 
@@ -354,18 +386,44 @@ AudioInterpolation SPU::GetInterpolation() const
 void SPU::SetInterpolation(AudioInterpolation type)
 {
     if (GetInterpolation() == type) return;
+    std::optional<AudioSincOutput> prepared;
+    if (type == AudioInterpolation::Sinc)
+    {
+        // Allocate before publishing the new mode, like MinimumPhase.
+        for (auto& channel : Channels)
+            if (!channel.Sinc) channel.Sinc.emplace();
+        for (auto& channel : Channels) channel.Sinc->Reset(channel.CurSample);
+        prepared.emplace();
+        prepared->SetRates(double(INTERNAL_SAMPLE_RATE) * OutputSkew / (MixInterval >> 1), OutputSampleRate);
+    }
     if (type == AudioInterpolation::MinimumPhase)
     {
         SetInterpolationRenderer(AudioInterpolationRenderer::Prepare());
         return;
     }
     SetInterpolationRenderer(nullptr);
+    if (prepared)
+    {
+        BufferAudio();
+        blip_clear(BlipLeft);
+        blip_clear(BlipRight);
+        SincOutput = std::move(prepared);
+    }
     for (SPUChannel& channel : Channels)
         channel.InterpType = type;
 }
 
 void SPU::SetInterpolationRenderer(std::unique_ptr<AudioInterpolationRenderer> renderer)
 {
+    if (SincOutput)
+    {
+        BufferAudio();
+        SincOutput.reset();
+        blip_clear(BlipLeft);
+        blip_clear(BlipRight);
+        blip_add_delta(BlipLeft, 0, OutputLastSamples[0]);
+        blip_add_delta(BlipRight, 0, OutputLastSamples[1]);
+    }
     // Returning to the legacy path must keep its delta baseline paired with
     // the still-live blip integrator. Do not flush queued PCM during a switch.
     if (InterpolationRenderer)
@@ -427,10 +485,12 @@ SPUChannel::SPUChannel(u32 num, melonDS::NDS& nds, AudioInterpolation interpolat
     Num(num),
     InterpType(interpolation == AudioInterpolation::MinimumPhase ? AudioInterpolation::None : interpolation)
 {
+    if (interpolation == AudioInterpolation::Sinc) Sinc.emplace();
 }
 
 void SPUChannel::Reset()
 {
+    if (Sinc) Sinc->Reset();
     KeyOn = false;
     CurSample = 0;
     PrevSample[0] = PrevSample[1] = PrevSample[2] = 0;
@@ -559,6 +619,7 @@ T SPUChannel::FIFO_ReadData()
 
 void SPUChannel::Start()
 {
+    if (Sinc) Sinc->Reset((Cnt & (1<<15)) ? CurSample : 0);
     Timer = TimerReload;
 
     if (((Cnt >> 29) & 0x3) == 3)
@@ -743,7 +804,8 @@ s32 SPUChannel::Run(u32 cycles)
     // https://problemkaputt.de/gbatek.htm#dssoundnotes
     if (!(Cnt & (1<<31)) && CurSample == 0 &&
         (InterpType == AudioInterpolation::None ||
-         (PrevSample[0] == 0 && PrevSample[1] == 0 && PrevSample[2] == 0))) return 0;
+         (PrevSample[0] == 0 && PrevSample[1] == 0 && PrevSample[2] == 0 &&
+          (InterpType != AudioInterpolation::Sinc || Sinc->Empty())))) return 0;
 
     if ((Cnt & (1<<31)) && (type < 3) && ((Length+LoopPos) < 16)) return 0;
 
@@ -776,6 +838,7 @@ s32 SPUChannel::Run(u32 cycles)
         if (!(Cnt & (1<<31)))
         {
             if (!(Cnt & (1<<15))) CurSample = 0;
+            if (type < 3 && InterpType == AudioInterpolation::Sinc) Sinc->Push(CurSample);
             if (quality) quality->Observe(*this, point);
             continue;
         }
@@ -788,6 +851,7 @@ s32 SPUChannel::Run(u32 cycles)
         case 3: NextSample_PSG(); break;
         case 4: NextSample_Noise(); break;
         }
+        if (type < 3 && InterpType == AudioInterpolation::Sinc) Sinc->Push(CurSample);
         if (quality) quality->Observe(*this, point);
 
     }
@@ -802,6 +866,9 @@ s32 SPUChannel::Run(u32 cycles)
 
         switch (InterpType)
         {
+        case AudioInterpolation::Sinc:
+            val = Sinc->Output(Timer - TimerReload, 0x10000 - TimerReload, NDS.SPU.MixInterval >> 1);
+            break;
         case AudioInterpolation::Linear:
             val = ((val           * samplepos) +
                    (PrevSample[0] * (0xFF-samplepos))) >> 8;
@@ -1140,10 +1207,19 @@ void SPU::Mix(u32 spucycles)
     }
     BlipTimer += spucycles;
 
-    if (delivered[0] != previous[0])
-        blip_add_delta(BlipLeft, BlipTimer, (int) delivered[0] - previous[0]);
-    if (delivered[1] != previous[1])
-        blip_add_delta(BlipRight, BlipTimer, (int) delivered[1] - previous[1]);
+    if (SincOutput)
+    {
+        // The initial scheduled event has zero elapsed cycles, so it must not
+        // advance the host resampling clock by a whole mixer sample.
+        if (spucycles) SincOutput->Push(delivered);
+    }
+    else
+    {
+        if (delivered[0] != previous[0])
+            blip_add_delta(BlipLeft, BlipTimer, (int) delivered[0] - previous[0]);
+        if (delivered[1] != previous[1])
+            blip_add_delta(BlipRight, BlipTimer, (int) delivered[1] - previous[1]);
+    }
 
     previous[0] = delivered[0]; previous[1] = delivered[1];
     OutputLastSamples[0] = output[0];
@@ -1157,6 +1233,14 @@ void SPU::Mix(u32 spucycles)
 
 void SPU::BufferAudio()
 {
+    if (SincOutput)
+    {
+        const auto samples = SincOutput->Samples();
+        if (!samples.empty()) WriteOutput(samples.data(), samples.size()/2);
+        SincOutput->ClearSamples();
+        BlipTimer = 0;
+        return;
+    }
     blip_end_frame(BlipLeft, BlipTimer);
     blip_end_frame(BlipRight, BlipTimer);
     BlipTimer = 0;
@@ -1169,6 +1253,11 @@ void SPU::BufferAudio()
     blip_read_samples(BlipLeft, temp, avail, true);
     blip_read_samples(BlipRight, temp + 1, avail, true);
 
+    WriteOutput(temp, avail);
+}
+
+void SPU::WriteOutput(const s16* temp, int avail)
+{
     Platform::Mutex_Lock(AudioLock);
     const u32 capacity = 2 * OutputBufferSize;
     const u32 mask = capacity - 1;
@@ -1217,6 +1306,12 @@ void SPU::InitOutput()
 
     blip_set_rates(BlipLeft, INTERNAL_SAMPLE_RATE * OutputSkew, OutputSampleRate);
     blip_set_rates(BlipRight, INTERNAL_SAMPLE_RATE * OutputSkew, OutputSampleRate);
+    if (SincOutput)
+    {
+        SincOutput->SetRates(double(INTERNAL_SAMPLE_RATE) * OutputSkew / (MixInterval >> 1), OutputSampleRate);
+        SincOutput->Reset();
+        BlipTimer = 0;
+    }
 
     u32 needSamples = (u32) ceil(INTERNAL_SAMPLE_RATE / 60 / INTERNAL_SAMPLE_RATE * OutputSampleRate);
     u32 newBufferSize = 512;
@@ -1329,6 +1424,8 @@ void SPU::SetOutputSampleRate(double rate)
 void SPU::SetOutputSkew(double skew)
 {
     if (OutputSkew == skew) return;
+    if (SincOutput)
+        SincOutput->SetRates(double(INTERNAL_SAMPLE_RATE) * skew / (MixInterval >> 1), OutputSampleRate);
     blip_set_rates(BlipLeft, INTERNAL_SAMPLE_RATE * skew, OutputSampleRate);
     blip_set_rates(BlipRight, INTERNAL_SAMPLE_RATE * skew, OutputSampleRate);
     OutputSkew = skew;

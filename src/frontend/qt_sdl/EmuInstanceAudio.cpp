@@ -328,7 +328,7 @@ bool EmuInstance::changeAudioOutput(int frames, int backend, const QString& devi
 bool EmuInstance::changeAudioInterpolation(int mode, QString& error)
 {
     error.clear();
-    if (mode < 0 || mode > int(AudioInterpolation::MinimumPhase))
+    if (mode < 0 || mode > int(AudioInterpolation::Sinc))
     {
         error = QObject::tr("Unknown interpolation mode");
         return false;

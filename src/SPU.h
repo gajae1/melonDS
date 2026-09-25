@@ -21,7 +21,9 @@
 
 #include "Savestate.h"
 #include "Platform.h"
+#include "AudioSinc.h"
 #include <memory>
+#include <optional>
 
 struct blip_t;
 
@@ -53,7 +55,8 @@ enum class AudioInterpolation
     Cosine,
     Cubic,
     SNESGaussian,
-    MinimumPhase
+    MinimumPhase,
+    Sinc
 };
 
 class SPUChannel
@@ -72,6 +75,7 @@ public:
     // audio interpolation is an improvement upon the original hardware
     // (which performs no interpolation)
     AudioInterpolation InterpType = AudioInterpolation::None;
+    std::optional<AudioSinc> Sinc;
 
     const u32 Num;
 
@@ -133,6 +137,7 @@ public:
             KeyOn = false;
             CurSample = 0;
             PrevSample[0] = PrevSample[1] = PrevSample[2] = 0;
+            if (Sinc) Sinc->Reset();
         }
     }
 
@@ -298,6 +303,8 @@ private:
     friend class DSi_I2S;
     void ObserveDSPOutput(u16 control, const s16* samples);
     std::unique_ptr<AudioInterpolationRenderer> InterpolationRenderer;
+    std::optional<AudioSincOutput> SincOutput;
+    void WriteOutput(const s16* samples, int frames);
 
     u32 OutputBufferSize = 0;
     double OutputSampleRate;

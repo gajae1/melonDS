@@ -4,6 +4,7 @@ add_library(core STATIC
     ARCodeFile.cpp
     ARDatabaseDAT.cpp
     AudioInterpolationBank.cpp
+    AudioSinc.cpp
     AudioInterpolationRenderer.cpp
     AudioInterpolationRenderer.h
     AudioInterpolationStream.h

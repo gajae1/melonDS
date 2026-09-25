@@ -52,7 +52,7 @@ struct SmokeAudio
         if (interpolation)
         {
             type = std::strtol(interpolation, &end, 10);
-            if (!*interpolation || *end || type < 0 || type > int(melonDS::AudioInterpolation::MinimumPhase)) return false;
+            if (!*interpolation || *end || type < 0 || type > int(melonDS::AudioInterpolation::Sinc)) return false;
             nds->SPU.SetInterpolation(static_cast<melonDS::AudioInterpolation>(type));
             std::printf("audio_interpolation=%ld\n", type);
         }

@@ -34,6 +34,15 @@ int main()
         for (unsigned i = 0; i < 16; ++i)
             if (m[i] != double(i) + 0.5 * a[i]) return 3;
     }
+    alignas(32) float source[49], weights[49];
+    float expected = 0;
+    for (unsigned i = 1; i < 49; ++i)
+    {
+        source[i] = float(i);
+        weights[i] = i & 1 ? 0.25f : -0.5f;
+        expected += source[i]*weights[i];
+    }
+    if (melonDS::AudioInterpolationMath::DotFloat(source+1, weights+1, 48) != expected) return 4;
     std::puts("Interpolation build gate and dispatched arithmetic PASS");
     return 0;
 }

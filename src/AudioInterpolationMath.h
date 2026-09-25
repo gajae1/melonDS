@@ -16,6 +16,9 @@
 #endif
 
 #include <cstdlib>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace melonDS::AudioInterpolationMath
 {
@@ -67,6 +70,54 @@ inline double Dot(const double* a, const double* b) noexcept
     if (supported && !ForcedScalar()) return DotAVX2(a, b);
 #endif
     return DotScalar(a, b);
+}
+
+// Sinc uses floats and a variable support; keep the existing double kernels
+// untouched so MinimumPhase retains its exact arithmetic and PCM output.
+inline float DotFloatScalar(const float* a, const float* b, unsigned count) noexcept
+{
+    float sum = 0;
+    for (unsigned i = 0; i < count; ++i) sum += a[i] * b[i];
+    return sum;
+}
+
+#ifdef MELONDS_INTERPOLATION_AVX2
+__attribute__((target("avx2,fma"))) inline float DotFloatAVX2(
+    const float* a, const float* b, unsigned count) noexcept
+{
+    __m256 sum = _mm256_setzero_ps();
+    for (unsigned i = 0; i < count; i += 8)
+        sum = _mm256_fmadd_ps(_mm256_loadu_ps(a+i), _mm256_loadu_ps(b+i), sum);
+    __m128 pair = _mm_add_ps(_mm256_castps256_ps128(sum), _mm256_extractf128_ps(sum, 1));
+    pair = _mm_hadd_ps(pair, pair);
+    return _mm_cvtss_f32(_mm_hadd_ps(pair, pair));
+}
+#endif
+
+// count is a multiple of 16 in both the fixed and cutoff-scaled sinc paths.
+inline float DotFloat(const float* a, const float* b, unsigned count) noexcept
+{
+    if (ForcedScalar()) return DotFloatScalar(a, b, count);
+#ifdef MELONDS_INTERPOLATION_NEON
+    float32x4_t sum = vdupq_n_f32(0);
+    for (unsigned i = 0; i < count; i += 4)
+        sum = vfmaq_f32(sum, vld1q_f32(a+i), vld1q_f32(b+i));
+    return vaddvq_f32(sum);
+#else
+#ifdef MELONDS_INTERPOLATION_AVX2
+    static const bool supported = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    if (supported) return DotFloatAVX2(a, b, count);
+#endif
+#if defined(__SSE2__)
+    __m128 sum = _mm_setzero_ps();
+    for (unsigned i = 0; i < count; i += 4)
+        sum = _mm_add_ps(sum, _mm_mul_ps(_mm_loadu_ps(a+i), _mm_loadu_ps(b+i)));
+    sum = _mm_add_ps(sum, _mm_movehl_ps(sum, sum));
+    return _mm_cvtss_f32(_mm_add_ss(sum, _mm_shuffle_ps(sum, sum, 1)));
+#else
+    return DotFloatScalar(a, b, count);
+#endif
+#endif
 }
 }
 #endif

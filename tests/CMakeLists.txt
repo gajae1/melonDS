@@ -931,3 +931,5 @@ if(TARGET core)
         endif()
     endforeach()
 endif()
+
+include(AudioSinc.cmake)
