@@ -5,6 +5,7 @@
 #include <bit>
 #include <cmath>
 #include <stdexcept>
+#include <thread>
 
 namespace melonDS
 {
@@ -49,6 +50,12 @@ AudioInterpolationBank::Moment MakeWeights(unsigned offset, unsigned interval)
         result[k] = 2 * x * result[k - 1] - result[k - 2];
     return result;
 }
+
+// Sparse responses are sampled on up to this many workers. The fill is a
+// streaming write of ~91 MB over both rates and reaches memory bandwidth well
+// before this cap, and a smaller host reports a smaller hardware_concurrency
+// (which may also be 0 when restricted).
+constexpr unsigned MaxFillWorkers = 8;
 }
 
 std::shared_ptr<const AudioInterpolationBank> AudioInterpolationBank::Create(std::span<const u8> data)
@@ -73,6 +80,20 @@ AudioInterpolationBank::AudioInterpolationBank(std::span<const u8> data)
         for (unsigned i = 0; i < weights.size(); ++i) weights[i] = MakeWeights(i, 256);
         return weights;
     }();
+
+    // Sparse responses are sampled after the whole blob has been validated.
+    // Every sampled point depends only on its own record's packed rows and the
+    // shared knot table, so the evaluations are independent per record and run
+    // on several workers. The tables stay byte-identical: the same Dot calls in
+    // the same order, only spread over threads. Rows are kept until their
+    // record has been filled. The hot path (StepPosition reading Values) is
+    // untouched and always sees a completed table.
+    struct SparseJob
+    {
+        Record* Target;
+        std::unique_ptr<Moment[]> Rows;
+    };
+    std::vector<SparseJob> sparse;
 
     for (unsigned period = 1; period <= Interval; ++period)
     {
@@ -109,11 +130,43 @@ AudioInterpolationBank::AudioInterpolationBank(std::span<const u8> data)
         }
 
         record.Values = std::make_unique_for_overwrite<double[]>(record.Length);
-        for (unsigned i = 0; i + 1 < record.Length; ++i)
-            record.Values[i] = AudioInterpolationMath::Dot(coefficients[i / 256].data(), knotWeights[i % 256].data());
-        record.Values[record.Length - 1] = 0;
+        sparse.push_back({&record, std::move(coefficients)});
     }
     if (!reader.Empty()) throw std::invalid_argument("Trailing interpolation bank data");
+
+    if (!sparse.empty())
+    {
+        const unsigned cpus = std::thread::hardware_concurrency();
+        const unsigned workers = std::min(std::clamp(cpus ? cpus : 1, 1u, MaxFillWorkers),
+                                          unsigned(sparse.size()));
+        // knotWeights is a function-local static: no capture is needed.
+        const auto fill = [&sparse](unsigned first, unsigned step)
+        {
+            for (size_t job = first; job < sparse.size(); job += step)
+            {
+                const unsigned length = sparse[job].Target->Length;
+                double* values = sparse[job].Target->Values.get();
+                const auto* rows = sparse[job].Rows.get();
+                for (unsigned i = 0; i + 1 < length; ++i)
+                    values[i] = AudioInterpolationMath::Dot(rows[i / 256].data(), knotWeights[i % 256].data());
+                values[length - 1] = 0;
+            }
+        };
+        std::vector<std::thread> helpers;
+        helpers.reserve(workers - 1);
+        try
+        {
+            for (unsigned w = 1; w < workers; ++w) helpers.emplace_back(fill, w, workers);
+        }
+        catch (...)
+        {
+            // A thread that never started must not leave a joinable thread.
+            for (auto& helper : helpers) helper.join();
+            throw;
+        }
+        fill(0, workers);
+        for (auto& helper : helpers) helper.join();
+    }
 }
 
 std::span<const AudioInterpolationBank::Moment> AudioInterpolationBank::Coefficients(unsigned period) const
