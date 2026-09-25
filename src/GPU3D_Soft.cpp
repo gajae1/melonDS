@@ -81,6 +81,8 @@ void SoftRenderer3D::EnableRenderThread()
     if (Threaded && Sema_RenderStart)
     {
         FinishRendering();
+        // Discard permits from the replaced frame before submitting new work.
+        Platform::Semaphore_Reset(Sema_ScanlineCount);
         RenderPending = true;
         Platform::Semaphore_Post(Sema_RenderStart);
     }

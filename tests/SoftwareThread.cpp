@@ -160,6 +160,35 @@ int main(int argc, char** argv)
             ReadFrame(three, 0x1F00003F);
         }
     }
+    else if (mode == "stale")
+    {
+        // GPU::PostSavestate and NDS::DoSavestate submit two frames back to back.
+        // Permits left unread by the superseded frame must not let a read escape
+        // before the job submitted for the current frame starts.
+        three.SetThreaded(true);
+        ReadFrame(three, 0x1F00003F);
+        Savestate saved(0x2000000);
+        Require(nds->DoSavestate(&saved) && !saved.Error, "save before load");
+        saved.Finish();
+        ReadFrame(three, 0x1F00003F);
+        Savestate loaded(saved.Buffer(), saved.Length(), false);
+        Require(nds->DoSavestate(&loaded) && !loaded.Error, "load before next frame");
+        ReadFrame(three, 0x1F00003F);
+        gpu.RenderClearAttr1 = 0x001F03E0;
+        gpu.RenderFrameIdentical = false;
+        Gate.Arm(three.Sema_RenderStart, true);
+        three.RenderFrame();
+        Gate.Wait();
+        auto reader = std::async(std::launch::async, [&] { return three.GetLine(0)[0]; });
+        Require(reader.wait_for(250ms) == std::future_status::timeout,
+                "load left stale scanline permits: read escaped before current frame started");
+        Gate.Release();
+        Require(reader.wait_for(5s) == std::future_status::ready && reader.get() == 0x1F003F00,
+                "current frame did not become readable after worker release");
+        for (int y = 1; y < 192; ++y) three.GetLine(y);
+        three.FinishRendering();
+        three.SetThreaded(false);
+    }
     else
     {
         const bool afterDone = mode == "after-done";
