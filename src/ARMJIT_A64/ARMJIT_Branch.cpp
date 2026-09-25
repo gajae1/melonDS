@@ -21,9 +21,6 @@
 
 using namespace Arm64Gen;
 
-// hack
-const int kCodeCacheTiming = 3;
-
 namespace melonDS
 {
 
@@ -166,166 +163,44 @@ void Compiler::Comp_JumpTo(u32 addr, bool forceNonConstantCycles)
 }
 
 
-void* Compiler::Gen_JumpTo9(int kind)
-{
-    AlignCode16();
-    void* res = GetRXPtr();
-
-    LSR(W1, W0, 12);
-    ADDI2R(W1, W1, offsetof(ARMv5, MemTimings), W2);
-    LDRB(W1, RCPU, W1);
-
-    LDR(INDEX_UNSIGNED, W2, RCPU, offsetof(ARMv5, ITCMSize));
-
-    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARMv5, RegionCodeCycles));
-
-    CMP(W1, 0xFF);
-    MOVI2R(W3, kCodeCacheTiming);
-    CSEL(W1, W3, W1, CC_EQ);
-    CMP(W0, W2);
-    CSINC(W1, W1, WZR, CC_HS);
-
-    FixupBranch switchToThumb;
-    if (kind == 0)
-        switchToThumb = TBNZ(W0, 0);
-
-    if (kind == 0 || kind == 1)
-    {
-        // ARM
-        if (kind == 0)
-            ANDI2R(RCPSR, RCPSR, ~0x20);
-
-        ANDI2R(W0, W0, ~3);
-        ADD(W0, W0, 4);
-        STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARMv5, R[15]));
-
-        ADD(W1, W1, W1);
-        ADD(RCycles, RCycles, W1);
-        RET();
-    }
-
-    if (kind == 0 || kind == 2)
-    {
-        // Thumb
-        if (kind == 0)
-        {
-            SetJumpTarget(switchToThumb);
-            ORRI2R(RCPSR, RCPSR, 0x20);
-        }
-
-        ANDI2R(W0, W0, ~1);
-        ADD(W0, W0, 2);
-        STR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARMv5, R[15]));
-
-        ADD(W2, W1, W1);
-        TSTI2R(W0, 0x2);
-        CSEL(W1, W1, W2, CC_EQ);
-        ADD(RCycles, RCycles, W1);
-        RET();
-    }
-
-    return res;
-}
-
-void* Compiler::Gen_JumpTo7(int kind)
-{
-    void* res = GetRXPtr();
-
-    LSR(W1, W0, 24);
-    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, CodeRegion));
-    LSR(W1, W0, 15);
-    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, CodeCycles));
-
-    MOVP2R(X2, NDS.ARM7MemTimings);
-    LDR(W3, X2, ArithOption(W1, true));
-
-    FixupBranch switchToThumb;
-    if (kind == 0)
-        switchToThumb = TBNZ(W0, 0);
-    
-    if (kind == 0 || kind == 1)
-    {
-        UBFX(W2, W3, 0, 8);
-        UBFX(W3, W3, 8, 8);
-        ADD(W2, W3, W2);
-        ADD(RCycles, RCycles, W2);
-
-        ANDI2R(W0, W0, ~3);
-
-        if (kind == 0)
-            ANDI2R(RCPSR, RCPSR, ~0x20);
-
-        ADD(W3, W0, 4);
-        STR(INDEX_UNSIGNED, W3, RCPU, offsetof(ARM, R[15]));
-
-        RET();
-    }
-    if (kind == 0 || kind == 2)
-    {
-        if (kind == 0)
-        {
-            SetJumpTarget(switchToThumb);
-
-            ORRI2R(RCPSR, RCPSR, 0x20);
-        }
-
-        UBFX(W2, W3, 16, 8);
-        UBFX(W3, W3, 24, 8);
-        ADD(W2, W3, W2);
-        ADD(RCycles, RCycles, W2);
-
-        ANDI2R(W0, W0, ~1);
-
-        ADD(W3, W0, 2);
-        STR(INDEX_UNSIGNED, W3, RCPU, offsetof(ARM, R[15]));
-
-        RET();
-    }
-
-    return res;
-}
-
 void Compiler::Comp_JumpTo(Arm64Gen::ARM64Reg addr, bool switchThumb, bool restoreCPSR)
 {
     IrregularCycles = true;
 
-    if (!restoreCPSR)
-    {
-        if (switchThumb)
-            CPSRDirty = true;
-        MOV(W0, addr);
-        BL((Num ? JumpToFuncs7 : JumpToFuncs9)[switchThumb ? 0 : (Thumb + 1)]);
-    }
+    // ARM::JumpTo is the jump the interpreter itself performs: it charges the
+    // target region's pipeline refill, switches the instruction set from the
+    // address bit and stores R[15]. The hand written trampolines this used to
+    // call for a constant CPSR approximated all of that (MemTimings was read
+    // without its element size, non ITCM targets were charged an extra code
+    // cycle and Thumb always paid two fetches), so a taken PC write drifted
+    // from the interpreter. Take the route the x64 backend takes.
+    bool cpsrDirty = CPSRDirty;
+    SaveCPSR();
+    SaveCycles();
+    PushRegs(restoreCPSR, true);
+
+    if (switchThumb)
+        MOV(W1, addr);
     else
     {
-        
-        bool cpsrDirty = CPSRDirty;
-        SaveCPSR();
-        SaveCycles();
-        PushRegs(restoreCPSR, true);
-
-        if (switchThumb)
-            MOV(W1, addr);
+        if (Thumb)
+            ORRI2R(W1, addr, 1);
         else
-        {
-            if (Thumb)
-                ORRI2R(W1, addr, 1);
-            else
-                ANDI2R(W1, addr, ~1);
-        }
-        MOV(X0, RCPU);
-        MOVI2R(W2, restoreCPSR);
-        if (Num == 0)
-            QuickCallFunction(X3, JumpToTrampoline<ARMv5>);
-        else
-            QuickCallFunction(X3, JumpToTrampoline<ARMv4>);
-
-        PopRegs(restoreCPSR, true);
-        LoadCycles();
-        LoadCPSR();
-        if (CurInstr.Cond() < 0xE)
-            CPSRDirty = cpsrDirty;
+            ANDI2R(W1, addr, ~1);
     }
+    MOV(X0, RCPU);
+    MOVI2R(W2, restoreCPSR);
+    if (Num == 0)
+        QuickCallFunction(X3, JumpToTrampoline<ARMv5>);
+    else
+        QuickCallFunction(X3, JumpToTrampoline<ARMv4>);
+
+    PopRegs(restoreCPSR, true);
+    LoadCycles();
+    LoadCPSR();
+    // A skipped conditional jump leaves the CPU's CPSR untouched.
+    if (CurInstr.Cond() < 0xE)
+        CPSRDirty = cpsrDirty;
 }
 
 void Compiler::A_Comp_BranchImm()

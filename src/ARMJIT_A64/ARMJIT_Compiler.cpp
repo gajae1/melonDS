@@ -255,12 +255,6 @@ Compiler::Compiler(melonDS::NDS& nds) : Arm64Gen::ARM64XEmitter(), NDS(nds)
 #endif
     SetCodePtr(0);
 
-    for (int i = 0; i < 3; i++)
-    {
-        JumpToFuncs9[i] = Gen_JumpTo9(i);
-        JumpToFuncs7[i] = Gen_JumpTo7(i);
-    }
-
     /*
         W4 - whether the register was written to
         W5 - mode
@@ -786,6 +780,7 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
             else
             {
                 IrregularCycles = comp == NULL;
+                const u32 constantCyclesBefore = ConstantCycles;
 
                 FixupBranch skipExecute;
                 if (cond < 0xE)
@@ -818,7 +813,11 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
 
                         if (IrregularCycles)
                         {
-                            Comp_AddCycles_C(true);
+                            // A conditional transfer can defer its regular C cost
+                            // before a PC load marks the instruction irregular.
+                            // That deferred cost is shared by both paths.
+                            if (ConstantCycles == constantCyclesBefore)
+                                Comp_AddCycles_C(true);
                             // The common fallback reload must preserve this untaken charge.
                             if (comp == NULL)
                                 SaveCycles();

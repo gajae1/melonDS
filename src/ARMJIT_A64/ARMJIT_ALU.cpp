@@ -437,9 +437,13 @@ void Compiler::Comp_Compare(int op, ARM64Reg rn, Op2 op2)
 // also counts cycles!
 void Compiler::A_Comp_GetOp2(bool S, Op2& op2)
 {
+    // Conditional PC writes get a separate failed-condition fetch in CompileBlock.
+    // Keep their executed-path fetch out of the shared ConstantCycles total.
+    const bool conditionalPCWrite = CurInstr.Cond() < 0xE && (CurInstr.Info.DstRegs & (1 << 15));
+
     if (CurInstr.Instr & (1 << 25))
     {
-        Comp_AddCycles_C();
+        Comp_AddCycles_C(conditionalPCWrite);
 
         u32 shift = (CurInstr.Instr >> 7) & 0x1E;
         u32 imm = melonDS::ROR(CurInstr.Instr & 0xFF, shift);
@@ -473,7 +477,7 @@ void Compiler::A_Comp_GetOp2(bool S, Op2& op2)
         }
         else
         {
-            Comp_AddCycles_C();
+            Comp_AddCycles_C(conditionalPCWrite);
 
             int amount = (CurInstr.Instr >> 7) & 0x1F;
             Comp_RegShiftImm(op, amount, S, op2);

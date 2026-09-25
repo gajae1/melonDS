@@ -31,6 +31,38 @@ extern "C" void ARM_Ret();
 namespace melonDS
 {
 
+static u32 CurrentBlockDataCycles(const ARMv5* cpu, u32 firstAddr, u32 count)
+{
+    u32 cycles = 0;
+    for (u32 i = 0; i < count; ++i)
+    {
+        const u32 addr = (firstAddr + i * 4) & ~3u;
+        if (addr < cpu->ITCMSize || (addr & cpu->DTCMMask) == cpu->DTCMBase)
+            ++cycles;
+        else
+            cycles += cpu->MemTimings[addr >> 12][i ? 3 : 2];
+    }
+    return cycles;
+}
+
+static u32 CurrentARM7BlockDataCycles(const NDS* nds, u32 firstAddr, u32 count)
+{
+    u32 cycles = 0;
+    for (u32 i = 0; i < count; ++i)
+        cycles += nds->ARM7MemTimings[((firstAddr + i * 4) & ~3u) >> 15][i ? 3 : 2];
+    return cycles;
+}
+
+static void AdjustBlockLoadPCCycles(ARMv5* cpu, s32 tracedCycles, s32 dataCycles)
+{
+    // The interpreter refills the branch target before charging LDM's data
+    // access. The JIT's earlier charge used the instruction's code timing.
+    const s32 codeCycles = (cpu->R[15] & 0x2) ? 0 : cpu->CodeCycles;
+    const s32 actualCycles = std::max(codeCycles + dataCycles - 6,
+                                      std::max(codeCycles, dataCycles));
+    cpu->Cycles += actualCycles - tracedCycles;
+}
+
 bool Compiler::IsJITFault(const u8* pc)
 {
     return (u64)pc >= (u64)GetRXBase() && (u64)pc - (u64)GetRXBase() < (JitMemMainSize + JitMemSecondarySize);
@@ -97,6 +129,108 @@ void Compiler::Comp_MemPermission(ARM64Reg address, bool store)
     SetJumpTarget(allowed);
 }
 
+void Compiler::Comp_MemTimingGuard(ARM64Reg address, int size)
+{
+    // Native memory instructions bake in the data timing observed while the
+    // block is traced. A register address can later move between TCM and RAM
+    // (or between pages with different timings) without changing the code.
+    FixupBranch mismatch[3];
+    int mismatches = 0;
+
+    if (Num == 1)
+    {
+        // ARM7 data timing also depends on the runtime address. In particular,
+        // a cached block can move from WRAM to main RAM without changing code.
+        MOV(W1, address);
+        LSR(W1, W1, 24);
+        CMPI2R(W1, 0x02, W2);
+        mismatch[mismatches++] = B((CurInstr.DataRegion >> 24) == 0x02 ? CC_NEQ : CC_EQ);
+
+        MOV(W1, address);
+        LSR(W1, W1, 15);
+        LSL(W1, W1, 2); // ARM7MemTimings rows hold four entries
+        if (size == 32)
+            ADD(W1, W1, 2);
+        MOVP2R(X2, &NDS.ARM7MemTimings[0][0]);
+        LDRB(W1, X2, ArithOption(X1));
+        CMPI2R(W1, CurInstr.DataCycles, W2);
+        mismatch[mismatches++] = B(CC_NEQ);
+    }
+    else
+    {
+        const auto* cpu = static_cast<const ARMv5*>(CurCPU);
+        const bool tracedITCM = CurInstr.DataRegion < cpu->ITCMSize;
+        const bool tracedDTCM = !tracedITCM
+            && (CurInstr.DataRegion & cpu->DTCMMask) == cpu->DTCMBase;
+
+        MOV(W1, address);
+        if (tracedITCM)
+        {
+            LDR(INDEX_UNSIGNED, W2, RCPU, offsetof(ARMv5, ITCMSize));
+            CMP(W1, W2);
+            mismatch[mismatches++] = B(CC_HS);
+        }
+        else if (tracedDTCM)
+        {
+            LDR(INDEX_UNSIGNED, W2, RCPU, offsetof(ARMv5, DTCMMask));
+            AND(W1, W1, W2);
+            LDR(INDEX_UNSIGNED, W2, RCPU, offsetof(ARMv5, DTCMBase));
+            CMP(W1, W2);
+            mismatch[mismatches++] = B(CC_NEQ);
+        }
+        else
+        {
+            LDR(INDEX_UNSIGNED, W2, RCPU, offsetof(ARMv5, ITCMSize));
+            CMP(W1, W2);
+            mismatch[mismatches++] = B(CC_LO);
+
+            MOV(W1, address);
+            LDR(INDEX_UNSIGNED, W2, RCPU, offsetof(ARMv5, DTCMMask));
+            AND(W1, W1, W2);
+            LDR(INDEX_UNSIGNED, W2, RCPU, offsetof(ARMv5, DTCMBase));
+            CMP(W1, W2);
+            mismatch[mismatches++] = B(CC_EQ);
+
+            MOV(W1, address);
+            LSR(W1, W1, 12);
+            LSL(W1, W1, 2); // MemTimings rows hold four entries
+            ADD(W1, W1, size == 32 ? 2 : 1);
+            // W3 can hold the Thumb PC base, so it must survive the guard.
+            ADDI2R(X2, RCPU, offsetof(ARMv5, MemTimings), W2);
+            LDRB(W1, X2, ArithOption(X1));
+            CMPI2R(W1, CurInstr.DataCycles, W2);
+            mismatch[mismatches++] = B(CC_NEQ);
+        }
+    }
+
+    // The checks above fall through when the timing still matches: skip the
+    // replay body in that case.
+    FixupBranch timingMatched = B();
+    for (int i = 0; i < mismatches; i++)
+        SetJumpTarget(mismatch[i]);
+
+    // Replay this instruction with the current data timing. Earlier native
+    // instructions in the block are already committed to the register cache.
+    RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);
+    SaveCPSR(false);
+    MOVI2R(W1, R15);
+    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, R[15]));
+    MOVI2R(W1, CurInstr.Instr);
+    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, CurInstr));
+    MOVI2R(W1, CurInstr.CodeCycles);
+    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, CodeCycles));
+    if (ConstantCycles)
+        ADD(RCycles, RCycles, ConstantCycles);
+    SaveCycles();
+    MOV(X0, RCPU);
+    QuickCallFunction(X1, Thumb ? InterpretTHUMB[CurInstr.Info.Kind] : InterpretARM[CurInstr.Info.Kind]);
+    LoadCycles();
+    LDR(INDEX_UNSIGNED, RCPSR, RCPU, offsetof(ARM, CPSR));
+    QuickTailCall(X0, ARM_Ret);
+
+    SetJumpTarget(timingMatched);
+}
+
 bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
 {
     u32 localAddr = NDS.JIT.LocaliseCodeAddress(Num, addr);
@@ -110,6 +244,7 @@ bool Compiler::Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr)
 
     if (Num == 0) {
         MOVI2R(W0, addr);
+        Comp_MemTimingGuard(W0, size);
         Comp_MemPermission(W0, false);
     }
     Comp_AddCycles_CDI();
@@ -167,7 +302,12 @@ void Compiler::Comp_MemAccess(int rd, int rn, Op2 offset, int size, int flags)
 
     if (Thumb && rn == 15)
     {
-        ANDI2R(W3, rnMapped, ~2);
+        // The PC is part of the register cache only when the instruction lists
+        // it as a source, and its trace time value is the same for every
+        // execution of this instruction. Masking the mapped register instead
+        // reads whatever happens to be in it: the PC slot is not loaded for a
+        // Thumb literal load, which made the transfer read address zero.
+        MOVI2R(W3, R15 & ~0x2);
         rnMapped = W3;
     }
 
@@ -183,6 +323,7 @@ void Compiler::Comp_MemAccess(int rd, int rn, Op2 offset, int size, int flags)
         Comp_MemPermission(rnMapped, flags & memop_Store);
         finalAddr = rnMapped;
         MOV(W0, rnMapped);
+        Comp_MemTimingGuard(W0, size);
     }
 
     bool addrIsStatic = NDS.JIT.LiteralOptimizationsEnabled()
@@ -220,7 +361,11 @@ void Compiler::Comp_MemAccess(int rd, int rn, Op2 offset, int size, int flags)
             ADD(finalAddr, rnMapped, offset.Reg.Rm, offset.ToArithOption());
     }
 
-    if (!(flags & memop_Post)) Comp_MemPermission(W0, flags & memop_Store);
+    if (!(flags & memop_Post))
+    {
+        Comp_MemTimingGuard(W0, size);
+        Comp_MemPermission(W0, flags & memop_Store);
+    }
     if (flags & memop_Store) Comp_AddCycles_CD();
     else Comp_AddCycles_CDI();
 
@@ -543,6 +688,74 @@ void Compiler::Comp_MemBlockPermission(int rn, int count, bool store, bool prein
     SetJumpTarget(allowed);
 }
 
+void Compiler::Comp_MemBlockTimingGuard(int rn, int count, bool preinc, bool decrement)
+{
+    // The block transfer sums the data timings of every accessed word, so the
+    // cached charge is only valid while the address keeps the same timings.
+    FixupBranch mismatch[2];
+    int mismatches = 0;
+
+    const s32 firstOffset = decrement ? -4*count + (preinc ? 0 : 4) : (preinc ? 4 : 0);
+    if (firstOffset)
+        ADDI2R(W1, MapReg(rn), firstOffset, W2);
+    else
+        MOV(W1, MapReg(rn));
+    ANDI2R(W1, W1, ~3u);
+
+    if (Num == 1)
+    {
+        // ARM7's memory/code overlap also depends on whether the first word
+        // is in main RAM, even when the total transfer cost happens to match.
+        MOV(W2, W1);
+        LSR(W2, W2, 24);
+        CMPI2R(W2, 0x02, W3);
+        mismatch[mismatches++] = B((CurInstr.DataRegion >> 24) == 0x02 ? CC_NEQ : CC_EQ);
+    }
+
+    PushRegs(false, false);
+    MOVI2R(W2, count);
+    if (Num == 1)
+    {
+        MOVP2R(X0, &NDS);
+        QuickCallFunction(X3, &CurrentARM7BlockDataCycles);
+    }
+    else
+    {
+        MOV(X0, RCPU);
+        QuickCallFunction(X3, &CurrentBlockDataCycles);
+    }
+    PopRegs(false, false);
+    CMPI2R(W0, CurInstr.DataCycles, W3);
+    mismatch[mismatches++] = B(CC_NEQ);
+
+    // The checks above fall through when the timing still matches: skip the
+    // replay body in that case.
+    FixupBranch timingMatched = B();
+    for (int i = 0; i < mismatches; i++)
+        SetJumpTarget(mismatch[i]);
+
+    // Replay this instruction with the current data timing. Earlier native
+    // instructions in the block are already committed to the register cache.
+    RegCache.PrepareExit(AbortDirtyRegs & RegCache.LoadedRegs);
+    SaveCPSR(false);
+    MOVI2R(W1, R15);
+    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, R[15]));
+    MOVI2R(W1, CurInstr.Instr);
+    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, CurInstr));
+    MOVI2R(W1, CurInstr.CodeCycles);
+    STR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, CodeCycles));
+    if (ConstantCycles)
+        ADD(RCycles, RCycles, ConstantCycles);
+    SaveCycles();
+    MOV(X0, RCPU);
+    QuickCallFunction(X1, Thumb ? InterpretTHUMB[CurInstr.Info.Kind] : InterpretARM[CurInstr.Info.Kind]);
+    LoadCycles();
+    LDR(INDEX_UNSIGNED, RCPSR, RCPU, offsetof(ARM, CPSR));
+    QuickTailCall(X0, ARM_Ret);
+
+    SetJumpTarget(timingMatched);
+}
+
 s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc, bool decrement, bool usermode, bool skipLoadingRn)
 {
     IrregularCycles = true;
@@ -554,7 +767,10 @@ s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc
 
     Comp_MemBlockPermission(rn, regsCount, store, preinc, decrement);
     int firstReg = *regs.begin();
-    if (regsCount == 1 && !usermode && RegCache.LoadedRegs & (1 << firstReg) && !(firstReg == rn && skipLoadingRn))
+    // A single register transfer to PC keeps the pipeline refill accounting of
+    // the block path, so it must not take the plain load/store shortcut.
+    if (regsCount == 1 && !usermode && !(Num == 0 && firstReg == 15)
+        && RegCache.LoadedRegs & (1 << firstReg) && !(firstReg == rn && skipLoadingRn))
     {
         int flags = 0;
         if (store)
@@ -567,6 +783,8 @@ s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc
 
         return decrement ? -4 : 4;
     }
+
+    Comp_MemBlockTimingGuard(rn, regsCount, preinc, decrement);
 
     if (store)
         Comp_AddCycles_CD();
@@ -861,6 +1079,23 @@ s32 Compiler::Comp_MemAccessBlock(int rn, BitSet16 regs, bool store, bool preinc
     {
         ARM64Reg mapped = MapReg(15);
         Comp_JumpTo(mapped, Num == 0, usermode);
+        if (Num == 0)
+        {
+            // The interpreter refills the branch target before charging LDM's
+            // data access, but the block charged the instruction's code timing.
+            const s32 codeCycles = (R15 & 0x2) ? 0 : CurInstr.CodeCycles;
+            const s32 dataCycles = CurInstr.DataCycles;
+            const s32 tracedCycles = std::max(codeCycles + dataCycles - 6,
+                                              std::max(codeCycles, dataCycles));
+            PushRegs(false, false);
+            SaveCycles();
+            MOV(X0, RCPU);
+            MOVI2R(W1, (u32)tracedCycles);
+            MOVI2R(W2, (u32)dataCycles);
+            QuickCallFunction(X3, &AdjustBlockLoadPCCycles);
+            LoadCycles();
+            PopRegs(false, false);
+        }
     }
 
     return regsCount * 4 * (decrement ? -1 : 1);
