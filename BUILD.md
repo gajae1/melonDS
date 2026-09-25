@@ -37,16 +37,39 @@ runtime compatibility. Use a new build directory when switching compilers.
 * [Windows](#windows)
 * [macOS](#macos)
 
+## SDL3 (default) or SDL2
+
+The Qt frontend is built against **SDL3** by default on Windows, where the
+release runtime ships `SDL3.dll`. Everywhere else it builds against SDL3 only
+when `pkg-config` can find it, because many distributions still package only
+SDL2:
+
+* Windows: `ENABLE_SDL3=ON` unless `-DENABLE_SDL3=OFF` is passed.
+* Linux, BSD and macOS: `ENABLE_SDL3=OFF` unless `pkg-config --exists sdl3`
+  succeeds.
+* An explicit `-DENABLE_SDL3=ON` or `-DENABLE_SDL3=OFF` always wins over the
+  detected default.
+
+Both versions build from one source tree: call sites whose SDL semantics changed
+carry a real `#ifdef MELONDS_SDL3` implementation, and
+`src/frontend/qt_sdl/SDLCompat.h` maps the shared names back to SDL2 for the SDL2
+build. Installed SDL2 development files are still required for the GPU and
+frontend test targets, so keep the SDL2 package from the lists below even when
+the frontend itself is built against SDL3.
+
 ## Linux
 1. Install dependencies:
    * Ubuntu:
      * All versions: `sudo apt install cmake extra-cmake-modules libcurl4-gnutls-dev libpcap0.8-dev libsdl2-dev libarchive-dev libenet-dev libzstd-dev libfaad-dev`
+       Add `libsdl3-dev` to build the frontend against SDL3 (see above).
      * 24.04: `sudo apt install qt6-{base,base-private,multimedia,svg}-dev`
      * 22.04: `sudo apt install qt6-base-dev qt6-base-private-dev qt6-multimedia-dev libqt6svg6-dev`
      * Older versions: `sudo apt install qtbase5-dev qtbase5-private-dev qtmultimedia5-dev libqt5svg5-dev`  
        Also add `-DUSE_QT6=OFF` to the first CMake command below.
-   * Fedora: `sudo dnf install gcc-c++ cmake extra-cmake-modules SDL2-devel libarchive-devel enet-devel libzstd-devel faad2-devel qt6-{qtbase,qtbase-private,qtmultimedia,qtsvg}-devel wayland-devel`
-   * Arch Linux: `sudo pacman -S base-devel cmake extra-cmake-modules git libpcap sdl2 qt6-{base,multimedia,svg} libarchive enet zstd faad2`
+   * Fedora: `sudo dnf install gcc-c++ cmake extra-cmake-modules SDL2-devel libarchive-devel enet-devel libzstd-devel faad2-devel qt6-{qtbase,qtbase-private,qtmultimedia,qtsvg}-devel wayland-devel`  
+     Add `SDL3-devel` to build the frontend against SDL3 (see above).
+   * Arch Linux: `sudo pacman -S base-devel cmake extra-cmake-modules git libpcap sdl2 qt6-{base,multimedia,svg} libarchive enet zstd faad2`  
+     Add `sdl3` to build the frontend against SDL3 (see above).
 2. Download the melonDS repository and prepare:
    ```bash
    git clone https://github.com/gajae1/melonDS
@@ -73,8 +96,10 @@ runtime compatibility. Use a new build directory when switching compilers.
 5. Install dependencies:  
    Replace `<prefix>` below with `mingw-w64-ucrt-x86_64` on x64 systems, or `mingw-w64-clang-aarch64` on ARM64 systems.
    ```bash
-   pacman -S <prefix>-{toolchain,cmake,SDL2,libarchive,enet,zstd,faad2}
+   pacman -S <prefix>-{toolchain,cmake,SDL2,sdl3,libarchive,enet,zstd,faad2}
    ```
+   On ARM64 systems the SDL3 package is `mingw-w64-clang-aarch64-sdl3`; pass
+   `-DENABLE_SDL3=OFF` if only SDL2 is available.
 6. Install Qt and configure the build directory
    * Dynamic builds (with DLLs)
      1. Install Qt: `pacman -S <prefix>-{qt6-base,qt6-svg,qt6-multimedia,qt6-tools}`
