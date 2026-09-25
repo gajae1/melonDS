@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <chrono>
 #include <cstdio>
 #include "frontend/glad/glad.h"
 #include "frontend/graphics/window_info.h"
@@ -101,7 +102,9 @@ struct NativeContext
 #endif
     }
 };
-struct EmuThread { bool active = false; bool emuIsActive() const { return active; } };
+struct EmuThread { bool active = false; bool running = false;
+    bool emuIsActive() const { return active; }
+    bool emuIsRunning() const { return running; } };
 struct PresentationWindow { int getWindowID() const { return 0; } };
 struct EmuInstance
 {
@@ -151,6 +154,12 @@ public:
     std::unique_ptr<NativeContext> glContext;
     bool glInited = false, glOwned = false;
     std::optional<int> pendingSwapInterval;
+    int appliedSwapInterval = 1;
+    std::chrono::steady_clock::time_point lastPresentTime;
+    // Settable stand-in for the production QScreen refresh-rate lookup; the
+    // other cases leave it at zero, which never throttles.
+    std::chrono::steady_clock::duration presentInterval = std::chrono::steady_clock::duration::zero();
+    std::chrono::steady_clock::duration hostDisplayInterval() const { return presentInterval; }
     std::array<QImage, 2> preservedFrame;
     unsigned int preservedFrameNumber = 0;
     GLuint screenVertexBuffer = 0, screenVertexArray = 0, screenTexture = 0, screenShaderProgram = 0;
@@ -314,6 +323,7 @@ public:
     int Width = 256, Height = 192;
     bool Available = true;
     std::array<std::vector<u32>, 2> Frames;
+    void Invalidate() { InvalidateDisplayFrame(); }
     void Resize(int scale)
     {
         InvalidateDisplayFrame();
@@ -359,6 +369,101 @@ void APIENTRY Upload(GLenum target, GLint level, GLint x, GLint y, GLint z,
     ++uploads;
     upload(target, level, x, y, z, width, height, depth, format, type, pixels);
 }
+}
+
+// With the swap interval at 0 the panel presents at most once per host display
+// interval; the emulated frames in between still upload on the next present.
+bool PresentThrottle(ScreenPanelGL& panel)
+{
+    NDSArgs args; args.JIT = std::nullopt;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    auto display = std::make_unique<DisplayFixture>(*nds);
+    auto* frame = display.get();
+    nds->SetRenderer(std::move(display));
+    panel.emuInstance->console = nds.get();
+    panel.emuInstance->thread.active = true;
+    panel.emuInstance->thread.running = true;
+    if (!panel.initOpenGL()) return false;
+    frame->Resize(1);
+    panel.numScreens = 2;
+    for (int screen = 0; screen < 2; ++screen)
+    {
+        panel.screenKind[screen] = screen;
+        const float matrix[6] = {0.5f, 0, 0, 0.5f, float(screen * 128), 0};
+        std::copy_n(matrix, 6, panel.screenMatrix[screen]);
+    }
+    bool passed = true;
+    unsigned presents = 0;
+    const auto draw = [&] {
+        const int before = panel.glContext->swaps;
+        const bool ok = panel.drawScreen();
+        presents += panel.glContext->swaps - before;
+        return ok;
+    };
+
+    // Vsync on: every emulated frame presents, exactly as before.
+    panel.pendingSwapInterval = 1;
+    for (int i = 0; i < 8; ++i) passed &= draw();
+    passed &= presents == 8 && panel.appliedSwapInterval == 1;
+    std::printf("ff-throttle vsync-on: presents=%u/8 interval=%d\n", presents, panel.appliedSwapInterval);
+
+    // Swap interval 0 presents again once a display interval has passed since
+    // the last present, and skips the emulated frames inside one interval.
+    presents = 0;
+    panel.pendingSwapInterval = 0;
+    panel.presentInterval = std::chrono::seconds(3600);
+    panel.lastPresentTime = std::chrono::steady_clock::now() - std::chrono::seconds(3600);
+    passed &= draw() && presents == 1 && panel.appliedSwapInterval == 0;
+    for (int i = 0; i < 12; ++i) passed &= draw();
+    std::printf("ff-throttle interval-0: presents=%u/13\n", presents);
+    passed &= presents == 1;
+
+    // A frame the throttle skipped is not lost: the next present uploads the
+    // newest produced image instead of repainting a cached one.
+    std::fill(frame->Frames[0].begin(), frame->Frames[0].end(), 0xFF112233u);
+    std::fill(frame->Frames[1].begin(), frame->Frames[1].end(), 0xFF445566u);
+    frame->Invalidate();
+    const unsigned beforeUpload = presents;
+    passed &= draw();
+    passed &= presents == beforeUpload; // still inside the interval
+    panel.presentInterval = std::chrono::microseconds(1); // the interval has passed
+    passed &= draw();
+    passed &= presents == beforeUpload + 1;
+    std::vector<u32> pixels(256u * 192u * 2u);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, panel.screenTexture);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels.data());
+    passed &= glGetError() == GL_NO_ERROR &&
+        pixels[0] == 0xFF112233u && pixels[256u * 192u] == 0xFF445566u;
+
+    // Paused/frame-step iterations present every time: the user asked to look
+    // at exactly this frame.
+    panel.emuInstance->thread.running = false;
+    presents = 0;
+    for (int i = 0; i < 3; ++i) passed &= draw();
+    std::printf("ff-throttle paused: presents=%u/3\n", presents);
+    passed &= presents == 3;
+
+    // At ordinary emulation speed each frame lands at least one display
+    // interval after the previous present, so nothing is skipped.
+    panel.emuInstance->thread.running = true;
+    panel.presentInterval = std::chrono::nanoseconds(16666666);
+    presents = 0;
+    for (int i = 0; i < 20; ++i)
+    {
+        QThread::msleep(20);
+        passed &= draw();
+    }
+    std::printf("ff-throttle cadence-60hz: presents=%u/20\n", presents);
+    passed &= presents == 20;
+
+    panel.emuInstance->thread.active = false;
+    panel.emuInstance->thread.running = false;
+    panel.emuInstance->console = nullptr;
+    passed &= panel.deinitOpenGL();
+    return passed;
 }
 
 bool ScaledUpload(ScreenPanelGL& panel)
@@ -736,6 +841,7 @@ int main(int argc, char** argv)
         auto worker = std::unique_ptr<QThread>(QThread::create([&] {
             if (!std::strncmp(argv[1], "frame-lifetime-", 15)) passed = DisplayFrameLifecycle(panel, argv[1] + 15);
             else if (!std::strcmp(argv[1], "scaled-display")) passed = ScaledUpload(panel);
+            else if (!std::strcmp(argv[1], "ff-throttle")) passed = PresentThrottle(panel);
             else if (!std::strncmp(argv[1], "fail-", 5)) passed = InitFailure::Check(panel, argv[1]);
             else if (!std::strcmp(argv[1], "osd-reinit")) passed = InitFailure::OSD(panel);
             else if (!std::strcmp(argv[1], "runtime-current")) passed = RuntimeFailure(panel, true);

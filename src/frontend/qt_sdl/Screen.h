@@ -21,6 +21,7 @@
 
 #include <optional>
 #include <cstdint>
+#include <chrono>
 #include <deque>
 #include <map>
 #include <array>
@@ -269,6 +270,15 @@ private:
     const melonDS::NDS* screenTextureGenerationNDS = nullptr;
     const void* screenTextureGenerationTop = nullptr;
     std::uint64_t screenTextureGeneration = 0;
+
+    // Present pacing for swap interval 0 (fast-forward, FPS limit off, vsync
+    // disabled). EmuThread draws once per emulated frame, but the host shows
+    // at most one present per display interval; the frames in between would
+    // each pay a window-sized clear and swap the user never sees, which caps
+    // fast-forward speed on weak GPUs.
+    int appliedSwapInterval = 1;
+    std::chrono::steady_clock::time_point lastPresentTime;
+    std::chrono::steady_clock::duration hostDisplayInterval() const;
 
     GLuint screenShaderProgram = 0;
     GLint screenShaderTransformULoc, screenShaderScreenSizeULoc;

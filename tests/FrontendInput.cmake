@@ -1018,6 +1018,8 @@ Path(sys.argv[2]).write_text(body, encoding="utf-8")
     endif()
     add_test(NAME gl-presentation-scaled-display COMMAND GLPresentation scaled-display)
     set_tests_properties(gl-presentation-scaled-display PROPERTIES TIMEOUT 20 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
+    add_test(NAME gl-presentation-ff-throttle COMMAND GLPresentation ff-throttle)
+    set_tests_properties(gl-presentation-ff-throttle PROPERTIES TIMEOUT 20 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
     target_include_directories(GLPresentation PRIVATE "${CMAKE_SOURCE_DIR}/src"
         "${CMAKE_SOURCE_DIR}/src/frontend" "${CMAKE_CURRENT_BINARY_DIR}")
     target_link_libraries(GLPresentation PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)

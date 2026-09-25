@@ -1464,17 +1464,33 @@ bool ScreenPanelGL::drawScreen()
 
     if (!glContext->MakeCurrent()) return false;
 
-    RenderCost.FrameBegin();
-    const int span = RenderCost.Gpu.Begin(RenderCost.GpuPresent);
-    std::uint64_t issue = RenderCost.Start();
-
     // WGL/EGL apply the interval to the current window. Settings can be
     // broadcast while another panel is current, so apply them when drawing.
     if (pendingSwapInterval)
     {
         glContext->SetSwapInterval(*pendingSwapInterval);
+        appliedSwapInterval = *pendingSwapInterval;
         pendingSwapInterval.reset();
     }
+
+    // Swap interval 0 means no vsync and no pacing: EmuThread still draws once
+    // per emulated frame, but the host can only surface one present per display
+    // interval. The frames in between would each pay a window-sized clear and
+    // swap nobody sees, which is what caps fast-forward speed on weak GPUs.
+    // Vsync (interval 1+) still presents every frame, and paused or frame-step
+    // iterations present the frame the user asked to look at.
+    if (appliedSwapInterval == 0 && emuThread->emuIsRunning())
+    {
+        // The allowance keeps a frame landing a hair before the interval from
+        // dropping every other present at ordinary speed.
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastPresentTime + std::chrono::microseconds(500) < hostDisplayInterval())
+            return true;
+    }
+
+    RenderCost.FrameBegin();
+    const int span = RenderCost.Gpu.Begin(RenderCost.GpuPresent);
+    std::uint64_t issue = RenderCost.Start();
 
     int w = windowInfo.surface_width;
     int h = windowInfo.surface_height;
@@ -1689,6 +1705,7 @@ bool ScreenPanelGL::drawScreen()
 
     std::uint64_t wait = RenderCost.Start();
     bool ret = glContext->SwapBuffers();
+    if (ret) lastPresentTime = std::chrono::steady_clock::now();
     RenderCost.Add(RenderCost.AccWait, wait);
 
     RenderCost.FrameEnd();
@@ -1709,6 +1726,15 @@ qreal ScreenPanelGL::devicePixelRatioFromScreen() const
         screen_for_ratio = QGuiApplication::primaryScreen();
 
     return screen_for_ratio ? screen_for_ratio->devicePixelRatio() : static_cast<qreal>(1);
+}
+
+std::chrono::steady_clock::duration ScreenPanelGL::hostDisplayInterval() const
+{
+    // EmuThread calls this; the rate is sampled with the rest of windowInfo on
+    // the GUI thread. An unknown rate paces presents at the nominal 60 Hz.
+    const double hz = windowInfo.surface_refresh_rate > 1.0f ? windowInfo.surface_refresh_rate : 60.0;
+    return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1.0 / hz));
 }
 
 int ScreenPanelGL::scaledWindowWidth() const
@@ -1781,6 +1807,9 @@ std::optional<WindowInfo> ScreenPanelGL::getWindowInfo()
     wi.surface_width = static_cast<u32>(scaledWindowWidth());
     wi.surface_height = static_cast<u32>(scaledWindowHeight());
     wi.surface_scale = static_cast<float>(devicePixelRatioFromScreen());
+    const QWidget* top = window();
+    const QScreen* host = top && top->windowHandle() ? top->windowHandle()->screen() : QGuiApplication::primaryScreen();
+    wi.surface_refresh_rate = host ? static_cast<float>(host->refreshRate()) : 0.0f;
 
     return wi;
 }

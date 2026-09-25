@@ -455,6 +455,12 @@ are injected; physical context loss is not exercised. See
 [1.1.24](../plans/releases/1.1.24.md) for separate full Qt generated-guest runs
 covering root/secondary errors, close refusal, paused images, frame steps and keys.
 
+`gl-presentation-ff-throttle` drives the production drawScreen through a settable
+display-interval stand-in: with the swap interval at 0, presents are capped at one
+per host display interval while emulation runs, still happen every time when
+paused or frame-stepping and at ordinary cadence, and the frames the cap skips do
+not keep the newest produced image from being uploaded on the next present.
+
 `gl-loader-release-failure|release-nested` checks failed release before GUI/loader
 entry, partial-loan cleanup, outer-loan retention and retry using real Qt waits.
 `gl-loader-release-created-root|release-created-shared` checks creation handoff
