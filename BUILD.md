@@ -39,16 +39,12 @@ runtime compatibility. Use a new build directory when switching compilers.
 
 ## SDL3 (default) or SDL2
 
-The Qt frontend is built against **SDL3** by default on Windows, where the
-release runtime ships `SDL3.dll`. Everywhere else it builds against SDL3 only
-when `pkg-config` can find it, because many distributions still package only
-SDL2:
-
-* Windows: `ENABLE_SDL3=ON` unless `-DENABLE_SDL3=OFF` is passed.
-* Linux, BSD and macOS: `ENABLE_SDL3=OFF` unless `pkg-config --exists sdl3`
-  succeeds.
-* An explicit `-DENABLE_SDL3=ON` or `-DENABLE_SDL3=OFF` always wins over the
-  detected default.
+The Qt frontend is built against **SDL3** whenever `pkg-config` can find it
+(the MSYS2 setup below installs it, and the Windows release runtime ships
+`SDL3.dll`). Many distributions and the vcpkg manifest still provide only
+SDL2, so without SDL3 the build falls back to SDL2. An explicit
+`-DENABLE_SDL3=ON` or `-DENABLE_SDL3=OFF` always wins over the detected
+default.
 
 Both versions build from one source tree: call sites whose SDL semantics changed
 carry a real `#ifdef MELONDS_SDL3` implementation, and

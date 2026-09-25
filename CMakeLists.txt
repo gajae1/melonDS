@@ -164,22 +164,17 @@ endif()
 
 option(BUILD_QT_SDL "Build Qt/SDL frontend" ON)
 
-# SDL3 is the maintained Qt frontend target on Windows, where the release
-# package ships SDL3.dll. Elsewhere SDL2 is still the common system package, so
-# SDL3 is chosen only when pkg-config can find it. -DENABLE_SDL3=ON/OFF forces
-# either choice. See the SDL3 section in BUILD.md.
-if (WIN32)
+# SDL3 is the maintained Qt frontend target and is used whenever pkg-config can
+# find it; many distributions and the vcpkg manifest still provide only SDL2.
+# -DENABLE_SDL3=ON/OFF forces either choice. See the SDL3 section in BUILD.md.
+find_package(PkgConfig QUIET)
+if (PkgConfig_FOUND)
+    pkg_check_modules(MELONDS_SDL3_PROBE QUIET sdl3)
+endif()
+if (MELONDS_SDL3_PROBE_FOUND)
     set(MELONDS_SDL3_BY_DEFAULT ON)
 else()
-    find_package(PkgConfig QUIET)
-    if (PkgConfig_FOUND)
-        pkg_check_modules(MELONDS_SDL3_PROBE QUIET sdl3)
-    endif()
-    if (MELONDS_SDL3_PROBE_FOUND)
-        set(MELONDS_SDL3_BY_DEFAULT ON)
-    else()
-        set(MELONDS_SDL3_BY_DEFAULT OFF)
-    endif()
+    set(MELONDS_SDL3_BY_DEFAULT OFF)
 endif()
 option(ENABLE_SDL3 "Build the Qt frontend against SDL3 instead of SDL2" ${MELONDS_SDL3_BY_DEFAULT})
 option(MELONDS_BUILD_TESTS "Build focused regression and core integration tests" OFF)
