@@ -112,6 +112,9 @@ public:
 
     JitBlockEntry CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[], int instrsCount, bool hasMemInstr);
 
+    bool EmitChainTail(const FetchedInstr& instr);
+    void PatchChainSite(JitChainSite* site, JitBlockEntry entry) noexcept;
+
     bool CanCompile(bool thumb, u16 kind);
 
     bool FlagsNZNeeded() const

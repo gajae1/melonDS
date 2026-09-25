@@ -672,6 +672,215 @@ void Compiler::Comp_BranchSpecialBehaviour(bool taken)
     }
 }
 
+// The successor identity the branch compilers derived for a target: the address
+// and ISA of the block the dispatcher will look up, and the pipelined PC the
+// branch stores in R15.
+static void ChainSuccessor(u32 target, bool thumb, u32& lookupAddr, bool& succThumb, u32& takenPC)
+{
+    succThumb = thumb;
+    if ((target & 0x1) && !thumb)
+        succThumb = true;
+    else if (!(target & 0x1) && thumb)
+        succThumb = false;
+
+    lookupAddr = (target & 0x1) ? (target & ~0x1u) : (target & ~0x3u);
+    takenPC = lookupAddr + (succThumb ? 2 : 4);
+}
+
+// True when this instruction is a direct branch whose target is a compile time
+// constant, recomputed exactly as the matching Comp_* function derives it. Only
+// the last instruction of a block reaches the tail, where its cycle cost has
+// already been folded into ConstantCycles.
+static bool StaticTailBranchTarget(bool thumb, u32 num, const FetchedInstr& instr, u32& target, bool& conditional)
+{
+    using namespace ARMInstrInfo;
+    const u32 op = instr.Instr;
+
+    if (thumb)
+    {
+        switch (instr.Info.Kind)
+        {
+        case tk_B:
+            conditional = false;
+            target = (instr.Addr + 4) + (((s32)((op & 0x7FF) << 21) >> 20) + 1);
+            return true;
+        case tk_BCOND:
+            conditional = true;
+            target = (instr.Addr + 4) + (((s32)(op << 24) >> 23) + 1);
+            return true;
+        case tk_BL_LONG:
+        {
+            // merged BL, see T_Comp_BL_Merged
+            conditional = false;
+            const u32 upperPart = op >> 16;
+            target = (instr.Addr + 4) + ((s32)((op & 0x7FF) << 21) >> 9);
+            target += (upperPart & 0x7FF) << 1;
+            if (num == 1 || (upperPart & (1 << 12)))
+                target |= 1;
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+    switch (instr.Info.Kind)
+    {
+    case ak_B:
+    case ak_BL:
+        if (instr.Cond() == 0xE)
+            conditional = false;
+        else if (instr.Cond() < 0xE)
+            conditional = true;
+        else
+            return false;
+        target = (instr.Addr + 8) + ((s32)(op << 8) >> 6);
+        return true;
+    case ak_BLX_IMM:
+        // always executed, see A_Comp_BranchImm's cond == 0xF path: the H bit
+        // (bit 24) selects the Thumb halfword, and bit 0 carries the marker.
+        conditional = false;
+        target = (instr.Addr + 8) + ((s32)(op << 8) >> 6) + (((op >> 24) & 1) << 1) + 1;
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool Compiler::EmitChainTail(const FetchedInstr& instr)
+{
+    if (!NDS.JIT.ChainEnabled)
+        return false;
+
+    u32 target;
+    bool conditional;
+    if (!StaticTailBranchTarget(Thumb, Num, instr, target, conditional))
+        return false;
+
+    // A followed not-taken branch shares this tail with the taken path, which
+    // leaves through its own exit, so the tail then always runs with the
+    // sequential PC and cannot be chained.
+    if (instr.BranchFlags & branch_FollowCondNotTaken)
+        return false;
+
+    u32 lookupAddr;
+    bool succThumb;
+    u32 takenPC;
+    ChainSuccessor(target, Thumb, lookupAddr, succThumb, takenPC);
+
+    const u8* const codeBase = GetRXBase();
+
+    // the ordinary tail call, retargeted once the successor block exists
+    const ptrdiff_t jumpOffset = GetCodeOffset();
+    QuickTailCall(X0, ARM_Ret);
+
+    // The guard repeats the checks the dispatcher performs between two blocks,
+    // so entering the successor here is equivalent to returning to Execute and
+    // dispatching it, which is where every failed check below leads.
+    const ptrdiff_t guardOffset = GetCodeOffset();
+    FixupBranch fails[8];
+    int failsCount = 0;
+
+    if (conditional)
+    {
+        // only the taken path has the static target in R15
+        MOVI2R(W0, takenPC);
+        LDR(INDEX_UNSIGNED, W1, RCPU, offsetof(ARM, R[15]));
+        CMP(W1, W0);
+        fails[failsCount++] = B(CC_NEQ);
+    }
+
+    LDR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, JITPipelineDrain));
+    fails[failsCount++] = CBNZ(W0);
+    LDR(INDEX_UNSIGNED, W0, RCPU, offsetof(ARM, StopExecution));
+    fails[failsCount++] = CBNZ(W0);
+
+    // Timestamp += Cycles and the budget test, without committing either yet.
+    // These fields sit past the scaled 12 bit load displacement, so their
+    // addresses are computed rather than encoded in the load itself.
+    LDR(INDEX_UNSIGNED, X0, RCPU, offsetof(ARM, NDS));
+    ADDI2R(X1, X0, Num ? offsetof(melonDS::NDS, ARM7Timestamp) : offsetof(melonDS::NDS, ARM9Timestamp), X9);
+    LDR(INDEX_UNSIGNED, X2, X1, 0);
+    ADDI2R(X3, X0, Num ? offsetof(melonDS::NDS, ARM7Target) : offsetof(melonDS::NDS, ARM9Target), X9);
+    LDR(INDEX_UNSIGNED, X4, X3, 0);
+    SXTW(X5, RCycles);
+    ADD(X2, X2, X5);
+    CMP(X2, X4);
+    fails[failsCount++] = B(CC_CS);
+
+    if (Num == 0)
+    {
+        // the ARM9 checks the execution permission of every block it enters
+        LDR(INDEX_UNSIGNED, X3, RCPU, offsetof(ARMv5, PU_Map));
+        MOVI2R(W4, lookupAddr >> 12);
+        LDRB(W5, X3, ArithOption(X4));
+        fails[failsCount++] = TBZ(W5, 2);
+    }
+
+    // the fast block lookup, exactly as the dispatcher performs it
+    LDR(INDEX_UNSIGNED, W4, RCPU, offsetof(ARM, FastBlockLookupStart));
+    MOVI2R(W5, lookupAddr);
+    SUB(W5, W5, W4);
+    LDR(INDEX_UNSIGNED, W6, RCPU, offsetof(ARM, FastBlockLookupSize));
+    CMP(W5, W6);
+    fails[failsCount++] = B(CC_CS);
+    LDR(INDEX_UNSIGNED, X3, RCPU, offsetof(ARM, FastBlockLookup));
+    LSR(W5, W5, 1); // one u64 entry covers two addresses
+    ADD(X3, X3, X5, ArithOption(X5, ST_LSL, 3));
+
+    // The entry offset is patched by PatchChainSite: it is both the lookup
+    // entry the guard expects and the code address it enters.
+    const ptrdiff_t expectedOffset = GetCodeOffset();
+    MOVZ(W4, 0xCCCC);
+    MOVK(W4, 0xCCCC, SHIFT_16);
+    LDR(INDEX_UNSIGNED, W5, X3, 0);
+    CMP(W5, W4);
+    fails[failsCount++] = B(CC_NEQ);
+    MOVI2R(W6, u32(MakeLookupTag(lookupAddr, Num, succThumb)));
+    LDR(INDEX_UNSIGNED, W5, X3, 4);
+    CMP(W5, W6);
+    fails[failsCount++] = B(CC_NEQ);
+
+    // commit the boundary the way ARM_Ret and the dispatcher's loop do
+    STR(INDEX_UNSIGNED, RCPSR, RCPU, offsetof(ARM, CPSR));
+    STR(INDEX_UNSIGNED, X2, X1, 0);
+    STR(INDEX_UNSIGNED, WZR, RCPU, offsetof(ARM, Cycles));
+    MOV(RCycles, WZR);
+
+    // enter the successor the way LookUpBlock and AddEntryOffset would
+    MOVI2R(X5, (u64)codeBase);
+    ADD(X4, X5, X4);
+    BR(X4);
+
+    for (int i = 0; i < failsCount; i++)
+        SetJumpTarget(fails[i]);
+    QuickTailCall(X0, ARM_Ret);
+
+    // Only sites whose patchable operands were emitted in the expected form are
+    // registered; otherwise the plain tail call above stays in effect.
+    NDS.JIT.AddChainSite((u8*)(codeBase + jumpOffset), (u8*)(codeBase + guardOffset),
+        (u32*)(codeBase + expectedOffset), nullptr, Num, succThumb, lookupAddr, 2);
+    return true;
+}
+
+void Compiler::PatchChainSite(JitChainSite* site, JitBlockEntry entry) noexcept
+{
+    const ptrdiff_t savedOffset = GetCodeOffset();
+    const u8* const rxBase = GetRXBase();
+
+    SetCodePtrUnsafe(site->Jump - rxBase);
+    B(site->Guard);
+    SetCodePtrUnsafe((u8*)site->ExpectedOffset - rxBase);
+    const u32 entryOffset = SubEntryOffset(entry);
+    MOVZ(W4, entryOffset & 0xFFFF);
+    MOVK(W4, entryOffset >> 16, SHIFT_16);
+    SetCodePtrUnsafe(savedOffset);
+
+    // Both patch locations are covered by one range: the retargeted tail is the
+    // instruction right before the guard.
+    FlushIcacheSection(site->Jump, (u8*)site->ExpectedOffset + 8);
+}
+
 JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[], int instrsCount, bool hasMemInstr)
 {
     if (JitMemMainSize - GetCodeOffset() < 1024 * 16)
@@ -875,7 +1084,8 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
 
     if (ConstantCycles)
         ADD(RCycles, RCycles, ConstantCycles);
-    QuickTailCall(X0, ARM_Ret);
+    if (!EmitChainTail(CurInstr))
+        QuickTailCall(X0, ARM_Ret);
 
     FlushIcache();
 

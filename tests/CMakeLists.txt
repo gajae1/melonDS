@@ -535,8 +535,8 @@ if (MELONDS_TEST_GPU)
     endforeach()
 endif()
 
-# Direct block-to-block chaining is an x86-64 JIT feature.
-if (TARGET core AND ENABLE_JIT AND ARCHITECTURE STREQUAL "x86_64")
+# Direct block-to-block chaining is an x86-64 and AArch64 JIT feature.
+if (TARGET core AND ENABLE_JIT AND (ARCHITECTURE STREQUAL "x86_64" OR ARCHITECTURE STREQUAL "ARM64"))
     add_executable(CoreJITChainLink CoreJITChainLink.cpp PlatformSync.cpp PlatformHeadless.cpp)
     target_link_libraries(CoreJITChainLink PRIVATE core Threads::Threads)
     add_test(NAME core-jit-chain-link COMMAND CoreJITChainLink)

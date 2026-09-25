@@ -17,7 +17,7 @@ using namespace melonDS;
 
 namespace
 {
-#if defined(JIT_ENABLED) && defined(__x86_64__)
+#if defined(JIT_ENABLED) && (defined(__x86_64__) || defined(__aarch64__))
 
 // Two blocks in different 4 KB pages: the trace cannot inline the forward
 // branch across the page boundary, so each block ends in a static branch whose
@@ -168,7 +168,7 @@ NDSArgs MakeArgs()
 
 int main()
 {
-#if defined(JIT_ENABLED) && defined(__x86_64__)
+#if defined(JIT_ENABLED) && (defined(__x86_64__) || defined(__aarch64__))
     try
     {
         auto nds = std::make_unique<NDS>(MakeArgs());
@@ -319,7 +319,7 @@ int main()
         return 1;
     }
 #else
-    std::printf("SKIP: block chaining is x86-64 JIT only\n");
+    std::printf("SKIP: block chaining needs an x86-64 or AArch64 JIT\n");
     return 77;
 #endif
 }

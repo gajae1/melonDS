@@ -59,6 +59,9 @@ public:
     ptrdiff_t OtherCodeRegion = JitMemMainSize;
     ARM64Reg MapReg(int reg) { return RegCache.Mapping[reg]; }
     JitBlockEntry CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[], int instrsCount, bool hasMemInstr);
+    // Chaining needs the dispatcher and a lookup table this fixture does not
+    // model, so the block bodies below are emitted with it switched off.
+    bool EmitChainTail(const FetchedInstr&) { return false; }
     void Comp_BranchSpecialBehaviour(bool taken);
     FixupBranch CheckCondition(u32 cond);
     void Comp_AddCycles_C(bool forceNonConstant = false);

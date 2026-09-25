@@ -901,6 +901,17 @@ bool Compiler::EmitChainTail(const FetchedInstr& instr)
     return true;
 }
 
+void Compiler::PatchChainSite(JitChainSite* site, JitBlockEntry entry) noexcept
+{
+    *site->ExpectedOffset = SubEntryOffset(entry);
+    memcpy(site->EntryImm, &entry, sizeof(entry));
+    // The guard only becomes reachable once it describes the successor.
+    if (site->JumpForm == 0)
+        *(u32*)(site->Jump + 1) = (u32)(site->Guard - (site->Jump + 5));
+    else
+        memcpy(site->Jump + 2, &site->Guard, sizeof(site->Guard));
+}
+
 JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[], int instrsCount, bool hasMemoryInstr)
 {
     if (NearSize - (GetCodePtr() - NearStart) < 1024 * 32) // guess...

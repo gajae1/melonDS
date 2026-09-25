@@ -90,6 +90,7 @@ public:
 
     JitBlockEntry CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[], int instrsCount, bool hasMemoryInstr);
     bool EmitChainTail(const FetchedInstr& instr);
+    void PatchChainSite(JitChainSite* site, JitBlockEntry entry) noexcept;
 
     void LoadReg(int reg, Gen::X64Reg nativeReg);
     void SaveReg(int reg, Gen::X64Reg nativeReg);

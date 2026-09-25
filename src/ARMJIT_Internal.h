@@ -57,17 +57,24 @@ inline u32 MakeLookupTag(u32 addr, u32 num, bool thumb) noexcept
 // block exists at the target address the jump is retargeted at Guard, which
 // repeats the checks the C++ dispatcher performs at that boundary and then
 // enters the successor block directly.
+//
+// JumpForm and the patchable operands are backend specific:
+//   0  x86-64: E9 rel32 at Jump + 1
+//   1  x86-64: mov rax, imm64 at Jump + 2
+//   2  AArch64: B imm26 at Jump
+// Only AArch64 enters the successor through the lookup entry it validated, so
+// it patches ExpectedOffset alone and leaves EntryImm unused.
 struct JitChainSite
 {
     u8* Jump;                // the block's tail jump (see JumpForm)
     u8* Guard;               // guard code, entered once the site is linked
-    u32* ExpectedOffset;     // low half of the expected lookup entry (patched)
-    JitBlockEntry* EntryImm; // successor entry point (patched)
+    u32* ExpectedOffset;     // expected lookup-entry offset (patched)
+    JitBlockEntry* EntryImm; // x86-64: successor entry point (patched)
     JitBlockEntry Entry {};  // null while unlinked
     u32 LookupAddr {};       // successor block start address
     u8 Num {};
     u8 Thumb {};
-    u8 JumpForm {};          // 0: E9 rel32 at +1, 1: mov rax, imm64 at +2
+    u8 JumpForm {};          // see above
 };
 
 struct FetchedInstr

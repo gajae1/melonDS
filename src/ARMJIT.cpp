@@ -1377,14 +1377,10 @@ static u32 ChainSiteKey(u32 addr, bool thumb) noexcept
 
 static void PatchChainSite(ARMJIT& jit, JitChainSite* site, JitBlockEntry entry) noexcept
 {
-    *site->ExpectedOffset = jit.JITCompiler.SubEntryOffset(entry);
-    memcpy(site->EntryImm, &entry, sizeof(entry));
+    // The patchable bytes are backend specific, so their layout and the
+    // stores that rewrite them live in the compiler that emitted them.
+    jit.JITCompiler.PatchChainSite(site, entry);
     site->Entry = entry;
-    // The guard only becomes reachable once it describes the successor.
-    if (site->JumpForm == 0)
-        *(u32*)(site->Jump + 1) = (u32)(site->Guard - (site->Jump + 5));
-    else
-        memcpy(site->Jump + 2, &site->Guard, sizeof(site->Guard));
 }
 
 JitChainSite* ARMJIT::AddChainSite(u8* jump, u8* guard, u32* expectedOffset,
