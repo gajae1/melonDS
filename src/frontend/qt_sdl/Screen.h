@@ -183,6 +183,7 @@ public:
 
     bool drawScreen() override;
     bool initVulkan();
+    void deinitVulkan();
     bool usesVulkan() const { return bool(vulkan); }
 
 protected:
@@ -194,6 +195,10 @@ private:
 
     std::unique_ptr<Vulkan::Presenter> vulkan;
     QImage vulkanFrame;
+#ifdef VULKANRENDERER_ENABLED
+    void paintVulkan();
+    std::weak_ptr<melonDS::Vulkan::Device> vulkanAttempt;
+#endif
     QMutex bufferLock;
     bool hasBuffers;
 

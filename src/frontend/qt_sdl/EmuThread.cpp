@@ -364,6 +364,7 @@ void EmuThread::run()
                 const auto runFrame = [&] {
 #ifdef VULKANRENDERER_ENABLED
                     auto* renderer = dynamic_cast<VulkanRenderer*>(&emuInstance->nds->GetRenderer());
+                    QMutexLocker renderLocker(renderer ? &emuInstance->renderLock : nullptr);
                     auto* cost = renderer ? renderer->Costs() : nullptr;
                     u32 lines;
                     {
@@ -656,6 +657,7 @@ bool EmuThread::clearRendererCacheOnThread()
     if (emuInstance->nds)
         if (auto* renderer = dynamic_cast<VulkanRenderer*>(&emuInstance->nds->GetRenderer()))
         {
+            QMutexLocker renderLocker(&emuInstance->renderLock);
             renderer->ClearPipelineCache();
             return true;
         }
@@ -763,7 +765,9 @@ void EmuThread::handleMessages()
             break;
 
         case msg_EmuStop:
+        {
             emuInstance->audioDisable();
+            QMutexLocker renderLocker(emuInstance->vulkanRenderLock());
             if (msg.param.value<bool>())
                 emuInstance->nds->Stop();
             emuStatus = emuStatus_Paused;
@@ -771,6 +775,7 @@ void EmuThread::handleMessages()
 
             emit windowEmuStop();
             break;
+        }
 
         case msg_EmuFrameStep:
             if (stateRecoveryFailed) break;
@@ -1515,6 +1520,16 @@ void EmuThread::setComputeSupport(int supported)
     emit videoSettingsStatusChanged();
 }
 
+void EmuThread::setVulkanDisplayStatus(const QString& status)
+{
+    {
+        QMutexLocker locker(&videoSettingsMutex);
+        if (videoStatus.vulkanDisplay == status) return;
+        videoStatus.vulkanDisplay = status;
+    }
+    emit videoSettingsStatusChanged();
+}
+
 void EmuThread::updateVideoSettings()
 {
     {
@@ -1534,9 +1549,13 @@ void EmuThread::publishVideoSettings(bool failed)
         videoStatus.compiling = emuInstance->nds->GetRenderer().NeedsShaderCompile();
         videoStatus.failed = failed;
         videoStatus.gpuName.clear();
+        videoStatus.vulkanDisplay.clear();
 #ifdef VULKANRENDERER_ENABLED
         if (const auto* renderer = dynamic_cast<const VulkanRenderer*>(&emuInstance->nds->GetRenderer()))
+        {
             videoStatus.gpuName = QString::fromStdString(renderer->DeviceName());
+            videoStatus.vulkanDisplay = QString::fromStdString(renderer->DirectDisplayStatus());
+        }
 #endif
     }
     emit videoSettingsStatusChanged();

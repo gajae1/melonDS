@@ -131,6 +131,7 @@ struct CartLoader
     NDS* nds;
     FixtureSettings globalCfg, localCfg;
     QMutex renderLock;
+    QMutex* vulkanRenderLock() { return nullptr; }
     FixtureThread thread;
     FixtureThread* emuThread = &thread;
     int consoleType = 0, audioFreq = 48000;

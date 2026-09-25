@@ -60,6 +60,16 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
     if (scale < 1 || scale > ComputeShader::VulkanMaxScale) return false;
     try
     {
+        if (scale != DisplayScale)
+        {
+            ReadbackDisplay(0);
+            ReadbackDisplay(1);
+            ResidentImages = {};
+            ResidentCPUValid = {};
+            DirectDisplay = false;
+            DirectDisplayFailed = false;
+            DisplayStatus = scale == 1 ? "RAM display (1x)" : "RAM display (Vulkan output inactive)";
+        }
         auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
         DisplayBuffers next;
         DisplayStorage nextStorage;
@@ -135,6 +145,8 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
 void VulkanRenderer::Reset()
 {
     DiscardDisplayComposition();
+    ResidentImages = {};
+    ResidentCPUValid = {};
     SoftRenderer::Reset();
     DisplayCaptures = {};
     for (auto& buffer : ScaledBuffers)
@@ -144,6 +156,8 @@ void VulkanRenderer::Reset()
 void VulkanRenderer::Stop()
 {
     DiscardDisplayComposition();
+    ResidentImages = {};
+    ResidentCPUValid = {};
     SoftRenderer::Stop();
     DisplayCaptures = {};
     for (auto& buffer : ScaledBuffers)
@@ -160,6 +174,8 @@ void VulkanRenderer::DrawScanline(u32 line)
         SoftRenderer::DrawScanline(line);
     }
     if (DisplayScale == 1) return;
+    ChangedDisplayRows[line] = true;
+    if (DirectDisplay) CompositionPending = true;
     RenderCostVulkanScope display(Costs(), Cost::CpuDisplay);
     const int scale = DisplayScale, width = 256 * scale;
     const u32 vcount = GPU.VCount;
@@ -222,6 +238,7 @@ void VulkanRenderer::DrawScanline(u32 line)
 void VulkanRenderer::DiscardDisplayComposition()
 {
     CompositionPending = false;
+    ChangedDisplayRows.fill(false);
     for (auto& lines : CompositionLines)
         for (auto& line : lines) line.mode = CompositionLine::Keep;
 }
@@ -243,13 +260,29 @@ void VulkanRenderer::FinishDisplayComposition() noexcept
         try
         {
             for (u32 screen = 0; screen < 2; ++screen)
-                if (pending(CompositionLines[screen]))
+                if (DirectDisplay)
+                {
+                    ResidentImages[BackBuffer][screen] = rasterizer.Compositor->ComposeResident(
+                        BackBuffer * 2 + screen, CompositionLines[screen], rasterizer.RenderedImage,
+                        rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen],
+                        ResidentImages[BackBuffer][screen] ? std::span<const bool>(ChangedDisplayRows) : std::span<const bool>{});
+                    ResidentCPUValid[BackBuffer][screen] = false;
+                }
+                else if (pending(CompositionLines[screen]))
+                {
+                    ReadbackDisplay(BackBuffer);
                     rasterizer.Compositor->Compose(screen, CompositionLines[screen], rasterizer.RenderedImage,
                         rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen], ScaledMemory[BackBuffer][screen].get());
+                    ResidentImages[BackBuffer][screen].reset();
+                }
         }
         catch (const std::exception& error)
         {
             rasterizer.Compositor.reset();
+            DirectDisplay = false;
+            DirectDisplayFailed = true;
+            ResidentImages = {};
+            DisplayStatus = std::string("RAM display (composition failed: ") + error.what() + ")";
             replay = true;
             Platform::Log(Platform::LogLevel::Warn, "Vulkan composition falling back to CPU: %s\n", error.what());
         }
@@ -300,11 +333,79 @@ bool VulkanRenderer::GetDisplayFrame(DisplayFrame& frame)
 {
     if (DisplayScale == 1) return Renderer::GetDisplayFrame(frame);
     frame = {};
+    try { ReadbackDisplay(BackBuffer ^ 1); }
+    catch (const std::exception& error)
+    {
+        static_cast<VulkanRenderer3D&>(*Rend3D).Failed = true;
+        Platform::Log(Platform::LogLevel::Error, "Vulkan display readback failed: %s\n", error.what());
+        return false;
+    }
     const auto& buffers = ScaledBuffers[BackBuffer ^ 1];
     if (buffers[0].empty() || buffers[1].empty()) return false;
     const u32 width = 256 * DisplayScale, height = 192 * DisplayScale;
     frame = {DisplayFrame::Kind::CpuBGRA, buffers[0].data(), buffers[1].data(),
         width, height, GetDisplayFrameGeneration(width, height)};
+    return true;
+}
+
+std::shared_ptr<Vulkan::Device> VulkanRenderer::DisplayDevice() const
+{
+    return static_cast<const VulkanRenderer3D&>(*Rend3D).Device;
+}
+
+bool VulkanRenderer::EnableDirectDisplay()
+{
+    if (DisplayScale == 1)
+    {
+        DisplayStatus = "RAM display (1x)";
+        return false;
+    }
+    const auto& rasterizer = static_cast<const VulkanRenderer3D&>(*Rend3D);
+    if (DirectDisplayFailed) return false;
+    if (!rasterizer.Compositor || !rasterizer.Device || !rasterizer.Device->PresentationSupported())
+    {
+        DisableDirectDisplay("Vulkan presentation unavailable");
+        return false;
+    }
+    DirectDisplay = true;
+    DisplayStatus = "GPU display (Vulkan)";
+    return true;
+}
+
+void VulkanRenderer::DisableDirectDisplay(const std::string& reason, bool permanent)
+{
+    // Resolve any in-progress composition before switching to CPU publication.
+    FinishDisplayComposition();
+    try { ReadbackDisplay(0); ReadbackDisplay(1); }
+    catch (const std::exception& error)
+    {
+        static_cast<VulkanRenderer3D&>(*Rend3D).Failed = true;
+        Platform::Log(Platform::LogLevel::Error, "Vulkan fallback readback failed: %s\n", error.what());
+    }
+    ResidentImages = {};
+    DirectDisplay = false;
+    DirectDisplayFailed = permanent;
+    DisplayStatus = "RAM display (" + reason + ")";
+}
+
+void VulkanRenderer::ReadbackDisplay(u32 buffer)
+{
+    auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
+    for (u32 screen = 0; screen < 2; ++screen)
+        if (ResidentImages[buffer][screen] && !ResidentCPUValid[buffer][screen])
+        {
+            rasterizer.Compositor->ReadbackResident(buffer * 2 + screen, ScaledBuffers[buffer][screen]);
+            ResidentCPUValid[buffer][screen] = true;
+        }
+}
+
+bool VulkanRenderer::GetResidentFrame(ResidentFrame& frame)
+{
+    frame = {};
+    const auto& images = ResidentImages[BackBuffer ^ 1];
+    if (!DirectDisplay || !images[0] || !images[1]) return false;
+    const u32 width = 256 * DisplayScale, height = 192 * DisplayScale;
+    frame = {images, width, height, GetDisplayFrameGeneration(width, height)};
     return true;
 }
 

@@ -220,6 +220,7 @@ void VideoSettingsDialog::refreshRendererStatus()
     };
     QString text = tr("Selected: %1. Active: %2.").arg(name(selected), name(status.renderer));
     if (!status.gpuName.isEmpty()) text += tr("\nActive rendering GPU: %1").arg(status.gpuName);
+    if (!status.vulkanDisplay.isEmpty()) text += "\n" + status.vulkanDisplay;
     if (thread->hasGLFailure())
         text += tr("\nOpenGL display failed. Rendering is paused until recovery succeeds.");
     else if (status.pending)

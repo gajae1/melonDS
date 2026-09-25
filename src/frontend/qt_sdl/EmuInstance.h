@@ -182,6 +182,8 @@ public:
     int micReadInput(melonDS::s16* data, int maxlength);
 
     QMutex renderLock;
+    // renderLock while the Vulkan renderer is active, otherwise null.
+    QMutex* vulkanRenderLock();
 
 private:
     static int lastSep(const std::string& path);

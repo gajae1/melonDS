@@ -13,7 +13,7 @@ void ComposeDisplayCPU(std::span<const SoftRenderer2D::ScaledLineContext> lines,
 
 class DisplayCompositor final {
 public:
-    DisplayCompositor(std::shared_ptr<Device> device, std::span<const u32> shader, u32 scale);
+    DisplayCompositor(std::shared_ptr<Device> device, std::span<const u32> shader, u32 scale, u32 buffers = 1);
     ~DisplayCompositor();
     DisplayCompositor(const DisplayCompositor&) = delete;
     DisplayCompositor& operator=(const DisplayCompositor&) = delete;
@@ -25,7 +25,21 @@ public:
     void Compose(u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines,
         const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
         const Device::Buffer* direct = nullptr);
+    // Complete GPU image in GENERAL layout, with the same packed BGRA words as
+    // Compose. CPU rows are read only for Keep/CaptureOverride; no GPU->host
+    // transfer or CPU pixel conversion occurs. The returned image is borrowed
+    // until the next composition of this screen. Copy/consume it before reuse.
+    std::shared_ptr<Device::Image> ComposeResident(u32 screen,
+        std::span<const SoftRenderer2D::ScaledLineContext> lines,
+        const std::shared_ptr<Device::Image>& image3D, u32 sourceScale,
+        std::span<u32> cpuRows, std::span<const bool> changedRows = {});
+    // Explicit CPU demand (screenshot/fallback). Valid only after this screen's
+    // latest successful ComposeResident and before it is overwritten.
+    void ReadbackResident(u32 screen, std::span<u32> destination);
 private:
+    void ComposeImpl(u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines,
+        const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
+        const Device::Buffer* direct, bool resident, std::span<const bool> changedRows = {});
     void Init(std::span<const u32> shader);
     void Cleanup();
     std::shared_ptr<Device> owner;
@@ -38,7 +52,9 @@ private:
     VkPipelineLayout layout{};
     VkPipeline pipeline{};
     std::shared_ptr<Device::Buffer> contexts, readback;
-    std::array<std::shared_ptr<Device::Image>, 2> outputs;
+    std::shared_ptr<Device::Buffer> overrides;
+    std::vector<std::shared_ptr<Device::Image>> outputs;
+    std::vector<bool> residentValid;
     std::shared_ptr<Device::Image> blank3D;
 };
 }

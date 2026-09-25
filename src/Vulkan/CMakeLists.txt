@@ -54,7 +54,11 @@ add_custom_command(OUTPUT "${embedded_shaders}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedShaders.cmake"
     DEPENDS ${vulkan_spirv_files} EmbedShaders.cmake VERBATIM)
 set(display_spirv_files)
-foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend)
+foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend Present.vert Present.frag)
+    set(source "${name}.comp")
+    if (name MATCHES "\\.")
+        set(source "${name}")
+    endif()
     set(spirv "${vulkan_shader_dir}/${name}.spv")
     set(validate_command)
     if (MELONDS_SPIRV_VAL)
@@ -63,9 +67,9 @@ foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend)
     add_custom_command(OUTPUT "${spirv}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${vulkan_shader_dir}"
         COMMAND "${MELONDS_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
-            "${CMAKE_CURRENT_SOURCE_DIR}/${name}.comp" -o "${spirv}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/${source}" -o "${spirv}"
         ${validate_command}
-        DEPENDS "${name}.comp" VERBATIM)
+        DEPENDS "${source}" VERBATIM)
     list(APPEND display_spirv_files "${spirv}")
 endforeach()
 set(embedded_display_shaders "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedDisplayShaders.cpp")
@@ -80,6 +84,9 @@ target_include_directories(vulkan-compute PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..
 target_include_directories(vulkan-compute SYSTEM PUBLIC "${MELONDS_VULKAN_HEADERS}" "${MELONDS_VOLK_HEADERS}"
     PRIVATE "${MELONDS_VOLK_SOURCE}")
 target_compile_features(vulkan-compute PUBLIC cxx_std_26)
+if (WIN32)
+    target_compile_definitions(vulkan-compute PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+endif()
 target_link_libraries(vulkan-compute PRIVATE ${CMAKE_DL_LIBS})
 target_sources(core PRIVATE ../GPU_Vulkan.cpp ../GPU_VulkanCapture.cpp ../GPU3D_Vulkan.cpp)
 target_link_libraries(core PUBLIC vulkan-compute)

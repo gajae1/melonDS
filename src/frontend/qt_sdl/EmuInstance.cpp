@@ -40,12 +40,16 @@
 #include "ROMPreparation.h"
 #endif
 #include "EmuInstance.h"
+#include "Screen.h"
 #include "Config.h"
 #include "Platform.h"
 #include "Net.h"
 #include "MPInterface.h"
 
 #include "NDS.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "GPU_Vulkan.h"
+#endif
 #include "AudioInterpolationRenderer.h"
 #include "DSi.h"
 #include "SPI.h"
@@ -271,6 +275,10 @@ bool EmuInstance::deleteWindow(int id, bool close)
         ScopedGLWorkers workers(emuThread, false);
         if (workers)
         {
+            // The last window outlives its EmuInstance until Qt deletes it.
+            // Retire a shared Vulkan presenter while its render lock is alive.
+            if (!win->hasOpenGL())
+                static_cast<ScreenPanelNative*>(win->panel)->deinitVulkan();
             emuThread->detachWindow(win);
             windowList[id] = nullptr;
             numWindows--;
@@ -529,8 +537,18 @@ int EmuInstance::releaseGL()
 }
 
 
+QMutex* EmuInstance::vulkanRenderLock()
+{
+#ifdef VULKANRENDERER_ENABLED
+    // The Vulkan renderer shares its queue and images with the presenter.
+    if (nds && dynamic_cast<VulkanRenderer*>(&nds->GetRenderer())) return &renderLock;
+#endif
+    return nullptr;
+}
+
 int EmuInstance::drawScreen()
 {
+    QMutexLocker renderLocker(vulkanRenderLock());
     for (int i = 0; i < kMaxWindows; i++)
     {
         if (windowList[i] && !windowList[i]->drawScreen()) return i;
@@ -904,6 +922,7 @@ StateLoadResult EmuInstance::loadState(const std::string& filename)
 
 StateLoadResult EmuInstance::applyState(Savestate& state, bool undo)
 {
+    QMutexLocker renderLocker(vulkanRenderLock());
     if (state.Error) return StateLoadResult::Failed;
     // Successful undo releases the buffer referenced by state below.
     const bool legacy = state.MajorVersion() == 13;
@@ -962,6 +981,7 @@ StateLoadResult EmuInstance::applyState(Savestate& state, bool undo)
 
 bool EmuInstance::saveState(const std::string& filename)
 {
+    QMutexLocker renderLocker(vulkanRenderLock());
     Savestate state;
     if (state.Error) return false;
 
@@ -1679,6 +1699,7 @@ bool EmuInstance::reset(const AssetIdentity::Selection& dsAssets, const AssetIde
     }
     if (!updateConsole(!baseROMName.empty() && globalCfg.GetBool("Emu.DirectBoot"))) return false;
 
+    QMutexLocker renderLocker(vulkanRenderLock());
     if (consoleType == 1) ejectGBACart();
 
     nds->Reset();
@@ -1741,6 +1762,7 @@ bool EmuInstance::bootToMenu(QString& errorstr)
         return false;
     }
 
+    QMutexLocker renderLocker(vulkanRenderLock());
     initFirmwareSaveManager();
     nds->Reset();
     setBatteryLevels();
@@ -2128,6 +2150,7 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr, c
             return false;
         }
 
+        QMutexLocker renderLocker(vulkanRenderLock());
         initFirmwareSaveManager();
         if (consoleType == 1) ejectGBACart();
         nds->Reset();

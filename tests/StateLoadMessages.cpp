@@ -17,6 +17,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QMutex>
+#include <QMutexLocker>
 #include <QSemaphore>
 #include <QWaitCondition>
 #include <QQueue>
@@ -123,6 +124,7 @@ public:
     std::vector<EmuThread::CartLoadRequest> cartLoads;
     std::vector<bool> cartResets;
     QMutex renderLock;
+    QMutex* vulkanRenderLock() { return nullptr; }
 
     EmuInstance() { console.audio = &audio; }
     void audioDisable() { audio = false; }

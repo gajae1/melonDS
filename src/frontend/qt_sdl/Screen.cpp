@@ -36,6 +36,9 @@
 #include "GPU.h"
 #include "GPU3D_Soft.h"
 #include "GPU3D_OpenGL.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "GPU_Vulkan.h"
+#endif
 #include "Platform.h"
 #include "Config.h"
 
@@ -768,6 +771,8 @@ ScreenPanelNative::ScreenPanelNative(QWidget* parent) : ScreenPanel(parent)
 
     screen[0] = QImage(256, 192, QImage::Format_RGB32);
     screen[1] = QImage(256, 192, QImage::Format_RGB32);
+    screen[0].fill(Qt::black);
+    screen[1].fill(Qt::black);
 
     screenTrans[0].reset();
     screenTrans[1].reset();
@@ -775,6 +780,7 @@ ScreenPanelNative::ScreenPanelNative(QWidget* parent) : ScreenPanel(parent)
 
 ScreenPanelNative::~ScreenPanelNative()
 {
+    deinitVulkan();
     if (RenderCost.Enabled && RenderCost.Paints)
     {
         char line[1536];
@@ -783,10 +789,22 @@ ScreenPanelNative::~ScreenPanelNative()
     }
 }
 
+void ScreenPanelNative::deinitVulkan()
+{
+    if (!vulkan) return;
+    QMutexLocker lock(&emuInstance->renderLock);
+#ifdef VULKANRENDERER_ENABLED
+    if (auto* nds = emuInstance->getNDS())
+        if (auto* renderer = dynamic_cast<VulkanRenderer*>(&nds->GetRenderer()))
+            renderer->DisableDirectDisplay("RAM presenter", false);
+#endif
+    vulkan.reset();
+}
+
 bool ScreenPanelNative::initVulkan()
 {
     std::string error;
-    vulkan = Vulkan::Presenter::Create(reinterpret_cast<void*>(winId()), error,
+    vulkan = ::Vulkan::Presenter::Create(reinterpret_cast<void*>(winId()), error,
         emuInstance->getGlobalConfig().GetString("Video.GPU"));
     if (!vulkan) {
         Platform::Log(Platform::LogLevel::Warn, "Vulkan output unavailable: %s\n", error.c_str());
@@ -845,6 +863,16 @@ bool ScreenPanelNative::drawScreen()
         return true;
     }
     preservedFrame = {};
+#ifdef VULKANRENDERER_ENABLED
+    // Native Vulkan borrows the current images only while paint holds renderLock.
+    // Querying CpuBGRA here would download a frame that paint can consume directly.
+    if (dynamic_cast<VulkanRenderer*>(&nds->GetRenderer()))
+    {
+        hasBuffers = true;
+        bufferLock.unlock();
+        return true;
+    }
+#endif
     melonDS::Renderer::DisplayFrame frame;
     hasBuffers = nds->GetRenderer().GetDisplayFrame(frame) &&
         frame.kind == melonDS::Renderer::DisplayFrame::Kind::CpuBGRA;
@@ -852,8 +880,133 @@ bool ScreenPanelNative::drawScreen()
     return true;
 }
 
+#ifdef VULKANRENDERER_ENABLED
+void ScreenPanelNative::paintVulkan()
+{
+    const auto paintStart = RenderCost.Start();
+    const float ratio = devicePixelRatioF();
+    const QSize pixels = (QSizeF(size()) * ratio).toSize();
+    auto* thread = emuInstance->getEmuThread();
+    std::vector<::Vulkan::Presenter::Texture> textures;
+    std::vector<::Vulkan::Presenter::Quad> quads;
+    std::vector<QImage> overlays;
+    std::string error;
+    bool failed = false;
+    {
+        // Shared-device queue access and borrowed framebuffer publication both
+        // require the same lock as RunFrame and renderer replacement.
+        QMutexLocker renderLocker(&emuInstance->renderLock);
+        QMutexLocker bufferLocker(&bufferLock);
+        auto* nds = emuInstance->getNDS();
+        auto* renderer = nds ? dynamic_cast<VulkanRenderer*>(&nds->GetRenderer()) : nullptr;
+        bool resident = false;
+        if (thread->emuIsActive() && renderer && preservedFrame[0].isNull())
+        {
+            auto device = renderer->DisplayDevice();
+            if (device && vulkanAttempt.lock() != device)
+            {
+                vulkanAttempt = device;
+                auto replacement = ::Vulkan::Presenter::CreateShared(reinterpret_cast<void*>(winId()), device, error);
+                if (replacement) vulkan = std::move(replacement);
+                else renderer->DisableDirectDisplay(error);
+            }
+            if (vulkan->UsesDevice(device) && renderer->EnableDirectDisplay())
+            {
+                VulkanRenderer::ResidentFrame frame;
+                if (renderer->GetResidentFrame(frame))
+                {
+                    for (const auto& image : frame.images)
+                        textures.push_back({nullptr, frame.width, frame.height, 0, image});
+                    resident = true;
+                }
+            }
+            thread->setVulkanDisplayStatus(QString::fromStdString(renderer->DirectDisplayStatus()));
+        }
+        if (thread->emuIsActive())
+        {
+            if (!resident)
+            {
+                melonDS::Renderer::DisplayFrame frame;
+                if (hasBuffers && nds && nds->GetRenderer().GetDisplayFrame(frame) &&
+                    frame.kind == melonDS::Renderer::DisplayFrame::Kind::CpuBGRA && frame.top && frame.bottom)
+                {
+                    textures.push_back({frame.top, frame.width, frame.height, frame.width * 4, {}});
+                    textures.push_back({frame.bottom, frame.width, frame.height, frame.width * 4, {}});
+                }
+                else
+                    for (const auto& image : screen)
+                        textures.push_back({image.constBits(), uint32_t(image.width()), uint32_t(image.height()), uint32_t(image.bytesPerLine()), {}});
+            }
+            for (int i = 0; i < numScreens; ++i)
+            {
+                const auto& m = screenMatrix[i];
+                quads.push_back({uint32_t(screenKind[i]), {m[0]*256*ratio, m[1]*256*ratio,
+                    m[2]*192*ratio, m[3]*192*ratio, m[4]*ratio, m[5]*ratio}, filter});
+            }
+        }
+        bufferLocker.unlock();
+        osdUpdate();
+        QMutexLocker osdLocker(&osdMutex);
+        const auto overlay = [&](const QImage& image, QPoint position, QSize size) {
+            if (image.isNull()) return;
+            overlays.push_back(image.convertToFormat(QImage::Format_ARGB32_Premultiplied));
+            const auto& converted = overlays.back();
+            quads.push_back({uint32_t(textures.size()), {size.width()*ratio, 0, 0, size.height()*ratio,
+                position.x()*ratio, position.y()*ratio}, false});
+            textures.push_back({converted.constBits(), uint32_t(converted.width()), uint32_t(converted.height()), uint32_t(converted.bytesPerLine()), {}});
+        };
+        if (!thread->emuIsActive())
+        {
+            overlay(splashLogo.toImage(), splashPos[3], QSize(kLogoWidth, kLogoWidth));
+            for (int i = 0; i < 3; ++i) overlay(splashText[i].bitmap, splashPos[i], splashText[i].bitmap.size());
+        }
+        if (osdEnabled)
+        {
+            int y = kOSDMargin;
+            for (const auto& item : osdItems)
+            {
+                overlay(item.bitmap, QPoint(kOSDMargin, y), item.bitmap.size());
+                y += item.bitmap.height();
+            }
+        }
+        const auto presentStart = RenderCost.Start();
+        const auto before = vulkan->GetDiagnostics();
+        failed = vulkan->Present(pixels.width(), pixels.height(), textures, quads, error) == ::Vulkan::Presenter::Result::Failed;
+        RenderCost.RecordPresent(presentStart, pixels.width(), pixels.height(), before, vulkan->GetDiagnostics());
+        if (failed)
+        {
+            if (renderer)
+            {
+                renderer->DisableDirectDisplay(error);
+                thread->setVulkanDisplayStatus(QString::fromStdString(renderer->DirectDisplayStatus()));
+            }
+            vulkan.reset();
+        }
+    }
+    if (failed)
+    {
+        Platform::Log(Platform::LogLevel::Warn, "Vulkan output lost: %s\n", error.c_str());
+        setAttribute(Qt::WA_PaintOnScreen, false);
+        setAttribute(Qt::WA_OpaquePaintEvent, false);
+        osdAddMessage(0xFF8080, "Vulkan output failed; using native display");
+        update();
+    }
+    RenderCost.PaintEnd(paintStart);
+    if (RenderCost.TakeReport())
+    {
+        char line[1536];
+        RenderCost.Report(line, sizeof(line), mainWindow->getWindowID());
+        Platform::Log(Platform::LogLevel::Info, "%s\n", line);
+    }
+}
+#endif
+
+
 void ScreenPanelNative::paintEvent(QPaintEvent* event)
 {
+#ifdef VULKANRENDERER_ENABLED
+    if (vulkan) { paintVulkan(); return; }
+#endif
     const auto paintStart = RenderCost.Start();
     std::uint64_t painterTime = RenderCost.Start();
     // Vulkan's first stage presents the existing Software composition. CPU
@@ -1004,12 +1157,12 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
     if (vulkan) {
         std::string error;
         const auto presentStart = RenderCost.Start();
-        const auto before = presentStart ? vulkan->GetDiagnostics() : Vulkan::Presenter::Diagnostics{};
+        const auto before = presentStart ? vulkan->GetDiagnostics() : ::Vulkan::Presenter::Diagnostics{};
         const auto result = vulkan->Present(composed.constBits(), composed.width(),
                                              composed.height(), composed.bytesPerLine(), error);
         if (presentStart) RenderCost.RecordPresent(presentStart, composed.width(), composed.height(),
             before, vulkan->GetDiagnostics());
-        if (result == Vulkan::Presenter::Result::Failed) {
+        if (result == ::Vulkan::Presenter::Result::Failed) {
             Platform::Log(Platform::LogLevel::Warn, "Vulkan output lost: %s\n", error.c_str());
             vulkan.reset();
             setAttribute(Qt::WA_PaintOnScreen, false);

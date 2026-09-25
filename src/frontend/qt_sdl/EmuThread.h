@@ -168,8 +168,10 @@ public:
         bool failed = false;
         int vulkanSupport = -1; // Probed on the emulation thread, independent of GL.
         QString gpuName;
+        QString vulkanDisplay;
     };
     VideoSettingsStatus videoSettingsStatus();
+    void setVulkanDisplayStatus(const QString& status);
 
     QWaitCondition glBorrowCond;
     QMutex glBorrowMutex;

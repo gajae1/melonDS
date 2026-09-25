@@ -12,6 +12,7 @@
 #include <vector>
 #include <QCoreApplication>
 #include <QFile>
+#include <QMutexLocker>
 #include <QTemporaryDir>
 #include <SDL2/SDL.h>
 #include "ARM.h"
@@ -124,6 +125,7 @@ struct StateReader
     void audioResetOutput();
     void audioReportDiagnostics();
     static void audioCallback(void*, Uint8*, int);
+    QMutex* vulkanRenderLock() { return nullptr; }
     bool openAudio()
     {
         const auto callback = [](void* data, Uint8* stream, int len) {

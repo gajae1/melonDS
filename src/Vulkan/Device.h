@@ -11,8 +11,8 @@
 
 namespace melonDS { class RenderCostVulkanMeter; }
 namespace melonDS::Vulkan {
-// A core compute device, independent of Qt, windows and the presentation device.
-// One rendering thread owns command recording/submission for each Device.
+// A core compute device, independent of Qt. A frontend sharing its queue must
+// serialize command recording/submission with the rendering thread.
 class Device final : public std::enable_shared_from_this<Device> {
 public:
     class Buffer {
@@ -44,6 +44,10 @@ public:
         Image& operator=(const Image&) = delete;
         VkImage Handle() const { return image; }
         VkImageView View() const { return view; }
+        uint32_t Width() const { return width; }
+        uint32_t Height() const { return height; }
+        VkFormat Format() const { return format; }
+        VkImageUsageFlags Usage() const { return usage; }
         bool BelongsTo(const Device& device) const { return owner.get()==&device; }
     private:
         friend class Device;
@@ -52,10 +56,13 @@ public:
         VkImage image{};
         VkImageView view{};
         VkDeviceMemory memory{};
+        uint32_t width{}, height{};
+        VkFormat format{};
+        VkImageUsageFlags usage{};
     };
     struct Adapter { std::string id, name; VkPhysicalDeviceType type; };
     static std::vector<Adapter> Enumerate(std::string& error);
-    static std::shared_ptr<Device> Create(std::string& error, const std::string& preferred = {});
+    static std::shared_ptr<Device> Create(std::string& error, const std::string& preferred = {}, bool requestPresentation = false);
     const std::string& Id() const { return id; }
     ~Device();
     Device(const Device&) = delete;
@@ -63,6 +70,10 @@ public:
     VkDevice Handle() const { return device; }
     const volk::VolkDeviceTable& Functions() const { return functions; }
     const VkPhysicalDeviceProperties& Properties() const { return properties; }
+    bool PresentationSupported() const { return presentation; }
+    VkInstance Instance() const { return instance; }
+    VkPhysicalDevice PhysicalDevice() const { return physical; }
+    uint32_t QueueFamily() const { return queueFamily; }
     // additionalRequired is strict, including on allocation retry. Display
     // backing requires HOST_CACHED rather than accepting an uncached fallback.
     std::shared_ptr<Buffer> CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible,
@@ -94,7 +105,9 @@ public:
     void TrimPipelineCache();
 private:
     Device() = default;
-    void Init(const std::string& preferred, std::vector<Adapter>* adapters = nullptr);
+    void Init(const std::string& preferred, std::vector<Adapter>* adapters = nullptr, bool requestPresentation = false);
+    bool presentation = false;
+    uint32_t queueFamily = 0;
     std::string id;
     uint32_t MemoryType(uint32_t bits,VkMemoryPropertyFlags required,
         VkMemoryPropertyFlags preferred = 0) const;

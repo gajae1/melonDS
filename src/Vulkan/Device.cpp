@@ -32,16 +32,16 @@ std::vector<Device::Adapter> Device::Enumerate(std::string& error)
     return adapters;
 }
 
-std::shared_ptr<Device> Device::Create(std::string& error, const std::string& preferred)
+std::shared_ptr<Device> Device::Create(std::string& error, const std::string& preferred, bool requestPresentation)
 {
     error.clear();
     try {
         auto result=std::shared_ptr<Device>(new Device);
-        result->Init(preferred);return result;
+        result->Init(preferred, nullptr, requestPresentation);return result;
     }catch(const std::exception& failure){error=failure.what();return nullptr;}
 }
 
-void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters)
+void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters, bool requestPresentation)
 {
     if (!adapters && RenderCostEnabled())
         costs.reset(new (std::nothrow) RenderCostVulkanMeter);
@@ -57,10 +57,21 @@ void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters)
     std::vector<VkExtensionProperties> extensions(count);
     Check(volk::vkEnumerateInstanceExtensionProperties(nullptr,&count,extensions.data()),"Instance extensions");
     const bool portability=std::any_of(extensions.begin(),extensions.end(),[](const auto& e){return !std::strcmp(e.extensionName,VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);});
-    const char* extension=VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+    std::vector<const char*> instanceExtensions;
+    if (portability) instanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#ifdef _WIN32
+    const char* presentationExtensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+        VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME};
+    presentation = requestPresentation && std::all_of(std::begin(presentationExtensions), std::end(presentationExtensions),
+        [&](const char* name) { return std::any_of(extensions.begin(), extensions.end(),
+            [&](const auto& e) { return !std::strcmp(e.extensionName, name); }); });
+    if (presentation) instanceExtensions.insert(instanceExtensions.end(), std::begin(presentationExtensions), std::end(presentationExtensions));
+#endif
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};app.pApplicationName="melonDS compute";app.apiVersion=VK_API_VERSION_1_1;
     VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};info.pApplicationInfo=&app;
-    if(portability){info.flags=VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;info.enabledExtensionCount=1;info.ppEnabledExtensionNames=&extension;}
+    if(portability) info.flags=VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    info.enabledExtensionCount=static_cast<uint32_t>(instanceExtensions.size());
+    info.ppEnabledExtensionNames=instanceExtensions.data();
     Check(volk::vkCreateInstance(&info,nullptr,&instance),"Create compute instance");
     volk::volkLoadInstanceTable(&instanceFunctions,instance);
     auto& f=instanceFunctions;
@@ -117,12 +128,33 @@ void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters)
     extensions.resize(count);Check(f.vkEnumerateDeviceExtensionProperties(physical,nullptr,&count,extensions.data()),"Device extensions");
     // Portability subset is mandatory to enable when advertised (e.g. MoltenVK).
     for(const auto& e:extensions)portabilitySubset|=!std::strcmp(e.extensionName,"VK_KHR_portability_subset");
-    extension="VK_KHR_portability_subset";
+    std::vector<const char*> enabledExtensions;
+    if (portabilitySubset) enabledExtensions.push_back("VK_KHR_portability_subset");
+    const auto has = [&](const char* name) {
+        return std::any_of(extensions.begin(), extensions.end(), [&](const auto& e) { return !std::strcmp(e.extensionName, name); });
+    };
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
+    if (presentation && has(VK_KHR_SWAPCHAIN_EXTENSION_NAME) && has(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        features.pNext = &maintenance;
+        f.vkGetPhysicalDeviceFeatures2(physical, &features);
+        f.vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
+        std::vector<VkQueueFamilyProperties> queues(count);
+        f.vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, queues.data());
+        presentation = maintenance.swapchainMaintenance1 && (queues[family].queueFlags & VK_QUEUE_GRAPHICS_BIT);
+        if (presentation) {
+            enabledExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+            enabledExtensions.push_back(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+        }
+    } else presentation = false;
+    queueFamily = family;
     VkPhysicalDeviceFeatures enabled{};enabled.shaderStorageImageExtendedFormats=VK_TRUE;
     const float priority=1;
     VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};queueInfo.queueFamilyIndex=family;queueInfo.queueCount=1;queueInfo.pQueuePriorities=&priority;
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};deviceInfo.queueCreateInfoCount=1;deviceInfo.pQueueCreateInfos=&queueInfo;deviceInfo.pEnabledFeatures=&enabled;
-    if(portabilitySubset){deviceInfo.enabledExtensionCount=1;deviceInfo.ppEnabledExtensionNames=&extension;}
+    deviceInfo.enabledExtensionCount=static_cast<uint32_t>(enabledExtensions.size());
+    deviceInfo.ppEnabledExtensionNames=enabledExtensions.data();
+    if (presentation) deviceInfo.pNext = &maintenance;
     Check(f.vkCreateDevice(physical,&deviceInfo,nullptr,&device),"Create compute device");
     volk::volkLoadDeviceTable(&functions,device);
     functions.vkGetDeviceQueue(device,family,0,&queue);
@@ -231,6 +263,7 @@ std::shared_ptr<Device::Image> Device::CreateImage(uint32_t width,uint32_t heigh
     VkFormat format,VkImageUsageFlags usage,bool arrayView)
 {
     auto image=std::shared_ptr<Image>(new Image(shared_from_this()));
+    image->width=width; image->height=height; image->format=format; image->usage=usage;
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};info.imageType=VK_IMAGE_TYPE_2D;info.extent={width,height,1};
     info.mipLevels=1;info.arrayLayers=layers;info.format=format;info.tiling=VK_IMAGE_TILING_OPTIMAL;info.samples=VK_SAMPLE_COUNT_1_BIT;info.usage=usage;
     Check(functions.vkCreateImage(device,&info,nullptr,&image->image),"Create compute image");

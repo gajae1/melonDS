@@ -21,7 +21,7 @@ public:
     RenderCostVulkanMeter* Costs() const;
     std::string DeviceName() const;
     // Rendering-thread 3D upload/render diagnostic, retaining its original
-    // scope. Total includes the new final-display submissions on the same device.
+    // scope. Total includes display composition; the presenter counts WSI submits.
     u64 SubmissionCount() const;
     u64 TotalSubmissionCount() const;
     static bool IsAvailable(std::string& error);
@@ -35,6 +35,20 @@ public:
     void AllocCapture(u32 bank, u32 start, u32 size) override;
     void InvalidateDisplayCapture(u32 bank, u32 start) override { DisplayCaptures[bank * 4 + start] = {}; }
     bool GetDisplayFrame(DisplayFrame& frame) override;
+    struct ResidentFrame
+    {
+        std::array<std::shared_ptr<Vulkan::Device::Image>, 2> images;
+        u32 width = 0, height = 0;
+        u64 generation = 0;
+    };
+    // Callers serialize these with emulation and retain images until their
+    // submission completes. GetDisplayFrame materializes CPU pixels on demand.
+    std::shared_ptr<Vulkan::Device> DisplayDevice() const;
+    int DisplayScaleFactor() const { return DisplayScale; }
+    bool EnableDirectDisplay();
+    void DisableDirectDisplay(const std::string& reason, bool permanent = true);
+    const std::string& DirectDisplayStatus() const { return DisplayStatus; }
+    bool GetResidentFrame(ResidentFrame& frame);
 
 private:
     friend class VulkanRenderer3D;
@@ -48,6 +62,13 @@ private:
     DisplayStorage ScaledStorage;
     DisplayMemory ScaledMemory;
     int DisplayScale = 1;
+    std::array<std::array<std::shared_ptr<Vulkan::Device::Image>, 2>, 2> ResidentImages;
+    std::array<std::array<bool, 2>, 2> ResidentCPUValid{};
+    std::array<bool, 192> ChangedDisplayRows{};
+    bool DirectDisplay = false;
+    bool DirectDisplayFailed = false;
+    std::string DisplayStatus = "RAM display (Vulkan output inactive)";
+    void ReadbackDisplay(u32 buffer);
     using CompositionLine = SoftRenderer2D::ScaledLineContext;
     std::array<std::vector<CompositionLine>, 2> CompositionLines;
     bool CompositionPending = false;

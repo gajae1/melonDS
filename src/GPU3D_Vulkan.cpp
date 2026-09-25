@@ -99,7 +99,7 @@ bool VulkanRenderer3D::Init()
     try
     {
         std::string error;
-        Device = Vulkan::Device::Create(error, PreferredDevice);
+        Device = Vulkan::Device::Create(error, PreferredDevice, true);
         if (!Device) throw std::runtime_error(error);
         DisplaySubmissions = 0;
         Pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders());
@@ -147,7 +147,7 @@ bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
                 {
                     Pipeline->EnableNativeReadback(Vulkan::EmbeddedNativeReadback());
                     Compositor = std::make_unique<Vulkan::DisplayCompositor>(Device,
-                        Vulkan::EmbeddedDisplayCompose(), scale);
+                        Vulkan::EmbeddedDisplayCompose(), scale, 2);
                 }
                 catch (const std::exception& error)
                 {
