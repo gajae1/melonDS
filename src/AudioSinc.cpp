@@ -11,6 +11,20 @@ namespace melonDS
 {
 namespace
 {
+// libc++ has no std::cyl_bessel_i. The power series of I0 converges to double
+// precision within a few dozen terms for the Kaiser window's arguments.
+double BesselI0(double x)
+{
+    const double quarter = x * x / 4;
+    double sum = 1, term = 1;
+    for (int k = 1; term > sum * 1e-17; ++k)
+    {
+        term *= quarter / (double(k) * k);
+        sum += term;
+    }
+    return sum;
+}
+
 template<unsigned Taps>
 struct SincTables
 {
@@ -21,12 +35,12 @@ struct SincTables
 
     SincTables()
     {
-        const double scale = std::cyl_bessel_i(0.0, Beta);
+        const double scale = BesselI0(Beta);
         for (unsigned i = 0; i < Kernel.size(); ++i)
         {
             const double x = double(i) / AudioSinc::Phases;
             const double p = std::numbers::pi * Cutoff * x;
-            const double window = std::cyl_bessel_i(0.0, Beta * std::sqrt(
+            const double window = BesselI0(Beta * std::sqrt(
                 std::max(0.0, 1 - x*x/(Taps*Taps/4)))) / scale;
             Kernel[i] = (i ? std::sin(p)/p : 1.0) * Cutoff * window;
         }
