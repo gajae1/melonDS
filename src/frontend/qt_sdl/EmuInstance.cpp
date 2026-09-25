@@ -427,6 +427,9 @@ void EmuInstance::emuStop(StopReason reason)
 
 bool EmuInstance::usesOpenGL()
 {
+    // No GL context belongs to a Vulkan display; a failed initOpenGL() would
+    // otherwise be reported as a display failure.
+    if (RendererImpliesVulkanDisplay(globalCfg.GetInt("3D.Renderer"))) return false;
     return (!globalCfg.GetBool("Screen.UseVulkan") && globalCfg.GetBool("Screen.UseGL")) ||
            RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer"));
 }

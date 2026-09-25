@@ -37,7 +37,9 @@
 inline bool VideoSettingsDialog::UsesGL()
 {
     auto& cfg = emuInstance->getGlobalConfig();
-    return (!cfg.GetBool("Screen.UseVulkan") && cfg.GetBool("Screen.UseGL")) || RendererUsesOpenGL(cfg.GetInt("3D.Renderer"));
+    const int renderer = cfg.GetInt("3D.Renderer");
+    if (RendererImpliesVulkanDisplay(renderer)) return false;
+    return (!cfg.GetBool("Screen.UseVulkan") && cfg.GetBool("Screen.UseGL")) || RendererUsesOpenGL(renderer);
 }
 
 VideoSettingsDialog* VideoSettingsDialog::currentDlg = nullptr;
@@ -49,12 +51,23 @@ void VideoSettingsDialog::setEnabled()
 
     bool softwareRenderer = renderer == renderer3D_Software;
     const bool ramOutput = !RendererUsesOpenGL(renderer);
-    ui->cbGLDisplay->setEnabled(ramOutput && !cfg.GetBool("Screen.UseVulkan"));
+    // Vulkan 3D always presents through the Vulkan display here, so the OpenGL
+    // display is not offered for it.
+    const bool impliesVulkanDisplay = RendererImpliesVulkanDisplay(renderer);
+    ui->cbGLDisplay->setEnabled(ramOutput && !cfg.GetBool("Screen.UseVulkan") && !impliesVulkanDisplay);
 #ifdef Q_OS_WIN
-    ui->cbVulkanDisplay->setEnabled(ramOutput);
+    ui->cbVulkanDisplay->setEnabled(ramOutput && !impliesVulkanDisplay);
 #else
     ui->cbVulkanDisplay->setEnabled(false);
 #endif
+    {
+        // Show the display the selection actually uses. Stored preferences are
+        // not rewritten, so switching to another renderer restores them.
+        const QSignalBlocker glBlocker(ui->cbGLDisplay);
+        const QSignalBlocker vulkanBlocker(ui->cbVulkanDisplay);
+        ui->cbGLDisplay->setChecked(impliesVulkanDisplay ? false : cfg.GetBool("Screen.UseGL"));
+        ui->cbVulkanDisplay->setChecked(impliesVulkanDisplay ? true : cfg.GetBool("Screen.UseVulkan"));
+    }
     ui->cbSoftwareThreaded->setEnabled(softwareRenderer);
     ui->cbPixelConversion->setEnabled(ramOutput);
     const bool vulkanRenderer = renderer == renderer3D_Vulkan;
@@ -185,10 +198,6 @@ void VideoSettingsDialog::refreshRendererStatus()
     auto& cfg = emuInstance->getGlobalConfig();
     const int selected = cfg.GetInt("3D.Renderer");
     if (auto* button = grp3DRenderer->button(selected)) button->setChecked(true);
-    {
-        const QSignalBlocker blocker(ui->cbGLDisplay);
-        ui->cbGLDisplay->setChecked(cfg.GetBool("Screen.UseGL"));
-    }
 #if defined(OGLRENDERER_ENABLED) && !defined(__APPLE__)
     ui->rb3DCompute->setEnabled(status.computeSupport != 0);
 #endif
@@ -220,6 +229,8 @@ void VideoSettingsDialog::refreshRendererStatus()
     };
     QString text = tr("Selected: %1. Active: %2.").arg(name(selected), name(status.renderer));
     if (!status.gpuName.isEmpty()) text += tr("\nActive rendering GPU: %1").arg(status.gpuName);
+    if (RendererImpliesVulkanDisplay(selected))
+        text += tr("\nVulkan 3D presents through the Vulkan display; the OpenGL display option does not apply to it.");
     if (!status.vulkanDisplay.isEmpty()) text += "\n" + status.vulkanDisplay;
     if (thread->hasGLFailure())
         text += tr("\nOpenGL display failed. Rendering is paused until recovery succeeds.");

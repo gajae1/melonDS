@@ -52,6 +52,8 @@ struct Observation
     std::atomic<unsigned> Broadcasts{0};
     std::atomic<bool> BroadcastOnGUI{false};
     unsigned Roots = 0, Shared = 0, DoneCurrent = 0, SettingsUpdates = 0;
+    bool ExpectVulkanPath = false, FailVulkanInit = false;
+    unsigned VulkanInits = 0, OsdMessages = 0;
 } Observe;
 
 struct BoundedCondition
@@ -260,9 +262,14 @@ class ScreenPanelNative : public Panel
 {
 public:
     explicit ScreenPanelNative(MainWindow*) {}
-    bool initVulkan() { StopTest(1, "unexpected Vulkan path in GL-only fixture"); }
-    bool usesVulkan() const { return false; }
-    void osdAddMessage(unsigned, const char*, ...) {}
+    bool initVulkan()
+    {
+        if (!Observe.ExpectVulkanPath) StopTest(1, "unexpected Vulkan path in GL-only fixture");
+        ++Observe.VulkanInits;
+        return !Observe.FailVulkanInit;
+    }
+    bool usesVulkan() const { return Observe.ExpectVulkanPath && !Observe.FailVulkanInit; }
+    void osdAddMessage(unsigned, const char*, ...) { ++Observe.OsdMessages; }
 };
 namespace Platform { enum class LogLevel { Error }; }
 void Log(Platform::LogLevel, const char*, ...) {}
@@ -360,7 +367,8 @@ int main(int argc, char** argv)
     if (mode != "root" && mode != "replace" && mode != "shared" &&
         mode != "unregistered" && mode != "failure" && mode != "idle" && mode != "broadcast" &&
         mode != "release-failure" && mode != "release-nested" &&
-        mode != "release-created-root" && mode != "release-created-shared") return 2;
+        mode != "release-created-root" && mode != "release-created-shared" &&
+        mode != "vulkan-renderer") return 2;
 
     EmuInstance first, second, constructing;
     EmuThread a(first), b(second), c(constructing);
@@ -400,6 +408,13 @@ int main(int argc, char** argv)
         first.mainWindow->createScreenPanel();
         result = first.mainWindow;
     }
+    else if (mode == "vulkan-renderer")
+    {
+        first.Config.Renderer = renderer3D_Vulkan;
+        Observe.ExpectVulkanPath = true;
+        first.mainWindow->createScreenPanel();
+        result = first.mainWindow;
+    }
     else
     {
         constructing.createWindow(0); // c is not running or globally registered.
@@ -411,6 +426,45 @@ int main(int argc, char** argv)
         if (reader->isRunning()) reader->Drain();
     app.processEvents(); // Outside every loan: deliver queued worker broadcasts.
     bool passed = Observe.Overlap == 0 && Observe.Unpublished == 0 && result && result->panel;
+    if (mode == "vulkan-renderer")
+    {
+        // Where the Vulkan display is built, selecting the Vulkan renderer must
+        // take the native presenter instead of the configured OpenGL display.
+        const bool nativePanel = dynamic_cast<ScreenPanelNative*>(result->panel) != nullptr;
+#ifdef Q_OS_WIN
+        passed &= nativePanel && !result->hasOpenGL() && Observe.VulkanInits == 1 && Observe.OsdMessages == 0 &&
+                  Observe.Roots == 0 && Observe.Shared == 0;
+#else
+        passed &= !nativePanel && result->hasOpenGL() && Observe.VulkanInits == 0 &&
+                  Observe.Roots == 1 && Observe.Shared == 0;
+#endif
+        std::printf("vulkan renderer selection: native=%d has_ogl=%d vulkan_inits=%u osd=%u roots=%u result=%s\n",
+                    nativePanel ? 1 : 0, result->hasOpenGL() ? 1 : 0, Observe.VulkanInits, Observe.OsdMessages,
+                    Observe.Roots, passed ? "PASS" : "FAIL");
+
+        // An unavailable presenter keeps the native display, as before.
+        Observe.FailVulkanInit = true;
+        Observe.VulkanInits = 0;
+        Observe.OsdMessages = 0;
+        Observe.Roots = 0;
+        Observe.Shared = 0;
+        result->createScreenPanel();
+        const bool fallbackNative = dynamic_cast<ScreenPanelNative*>(result->panel) != nullptr;
+#ifdef Q_OS_WIN
+        passed &= fallbackNative && !result->hasOpenGL() && Observe.VulkanInits == 1 && Observe.OsdMessages == 1 &&
+                  Observe.Roots == 0;
+#else
+        passed &= !fallbackNative && result->hasOpenGL() && Observe.VulkanInits == 0 && Observe.Roots == 1;
+#endif
+        std::printf("unavailable Vulkan presenter: native=%d has_ogl=%d vulkan_inits=%u osd=%u result=%s\n",
+                    fallbackNative ? 1 : 0, result->hasOpenGL() ? 1 : 0, Observe.VulkanInits, Observe.OsdMessages,
+                    passed ? "PASS" : "FAIL");
+        Observe.Recording = false;
+        for (auto* reader : Observe.Readers) if (reader->isRunning()) reader->Finish();
+        for (auto* instance : {&first, &second, &constructing})
+            for (auto* window : instance->windowList) delete window;
+        return passed ? 0 : 1;
+    }
     if (mode == "release-failure" || mode == "release-nested")
     {
         passed = !result && !constructing.numWindows && Observe.Roots == 0 && Observe.Shared == 0 &&

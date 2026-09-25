@@ -126,6 +126,7 @@ DefaultList<bool> DefaultBools =
 {
     {"Audio.TimeStretch", false},
     {"Screen.Filter", true},
+    // Ignored for the Vulkan renderer on Windows; see RendererImpliesVulkanDisplay.
     {"Screen.UseVulkan", false},
     {"3D.Soft.Threaded", true},
     {"3D.GL.HiresCoordinates", true},

@@ -888,8 +888,11 @@ void MainWindow::createScreenPanel()
     panel = nullptr;
     if (oldpanel) delete oldpanel;
 
-    const bool wantsVulkan = globalCfg.GetBool("Screen.UseVulkan") &&
-                             !RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer"));
+    // A Vulkan presentation that cannot be created falls back to the native
+    // display as before.
+    const int renderer = globalCfg.GetInt("3D.Renderer");
+    const bool wantsVulkan = !RendererUsesOpenGL(renderer) &&
+                             (globalCfg.GetBool("Screen.UseVulkan") || RendererImpliesVulkanDisplay(renderer));
     hasOGL = (!wantsVulkan && globalCfg.GetBool("Screen.UseGL")) ||
             RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer"));
 

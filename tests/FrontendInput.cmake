@@ -1107,13 +1107,15 @@ add_executable(GLLoaderBoundary "${CMAKE_SOURCE_DIR}/tests/GLLoaderBoundary.cpp"
     ${gl_loader_methods} "${gl_loader_guard}" "${gl_borrow_handler}" "${gl_borrow_state}"
     "${gl_borrow_request}" "${gl_borrow_return}")
 target_include_directories(GLLoaderBoundary PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+# The panel-selection cases cover a Vulkan-enabled frontend build.
+target_compile_definitions(GLLoaderBoundary PRIVATE VULKANRENDERER_ENABLED)
 if (USE_QT6)
     target_link_libraries(GLLoaderBoundary PRIVATE Qt6::Core)
 else()
     target_link_libraries(GLLoaderBoundary PRIVATE Qt5::Core)
 endif()
 foreach(case IN ITEMS root replace shared unregistered failure idle broadcast release-failure release-nested
-        release-created-root release-created-shared)
+        release-created-root release-created-shared vulkan-renderer)
     add_test(NAME gl-loader-${case} COMMAND GLLoaderBoundary ${case})
     set_tests_properties(gl-loader-${case} PROPERTIES TIMEOUT 20)
 endforeach()

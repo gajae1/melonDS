@@ -198,6 +198,33 @@ int main(int argc, char** argv)
         clear->click(); emit worker.rendererCacheCleared(false); QApplication::processEvents();
         Require(dialog->findChild<QLabel*>("lblPipelineCacheStatus")->text().contains("unavailable"),
                 "failed cache request reported success");
+        // Where the Vulkan display is built, the Vulkan renderer implies it and
+        // the stored display preferences survive a renderer switch.
+        auto* glDisplay = dialog->findChild<QCheckBox*>("cbGLDisplay");
+        auto* vulkanDisplay = dialog->findChild<QCheckBox*>("cbVulkanDisplay");
+        cfg.SetBool("Screen.UseVulkan", false);
+        cfg.SetBool("Screen.UseGL", true);
+        publish();
+#ifdef Q_OS_WIN
+        Require(!glDisplay->isEnabled() && !glDisplay->isChecked() && !vulkanDisplay->isEnabled() &&
+                vulkanDisplay->isChecked() && !dialog->UsesGL() && label->text().contains("Vulkan display"),
+                "Vulkan 3D did not imply the Vulkan display");
+        Require(cfg.GetBool("Screen.UseGL"), "implying the Vulkan display rewrote the stored GL preference");
+        dialog->findChild<QRadioButton*>("rb3DOpenGL")->click(); QApplication::processEvents();
+        // The OpenGL renderer requires the OpenGL display, so the restored
+        // stored value shows checked with the option greyed out as before.
+        Require(glDisplay->isChecked() && !glDisplay->isEnabled() && dialog->UsesGL(),
+                "OpenGL 3D did not restore the stored OpenGL display");
+        dialog->findChild<QRadioButton*>("rb3DSoftware")->click(); QApplication::processEvents();
+        Require(glDisplay->isEnabled() && glDisplay->isChecked() && dialog->UsesGL(),
+                "leaving Vulkan 3D did not restore the stored OpenGL display");
+        dialog->findChild<QRadioButton*>("rb3DVulkan")->click(); QApplication::processEvents();
+        Require(!glDisplay->isEnabled() && !glDisplay->isChecked(),
+                "returning to Vulkan 3D kept the OpenGL display offered");
+#else
+        Require(glDisplay->isEnabled() && glDisplay->isChecked() && dialog->UsesGL(),
+                "Vulkan 3D dropped the OpenGL display off Windows");
+#endif
         worker.status.vulkanSupport = 0; publish();
         Require(!vulkan3D->isEnabled(), "unavailable Vulkan 3D remained selectable");
 #else
