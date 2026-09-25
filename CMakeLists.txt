@@ -149,7 +149,15 @@ endif()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-option(ENABLE_GDBSTUB "Enable GDB stub" ON)
+# The stub's libco context switch keeps machine code in .text as data, which
+# OpenBSD's execute-only text refuses to link, and its heap-allocated
+# coroutine stacks violate OpenBSD's MAP_STACK rule at run time.
+if (CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+    set(MELONDS_GDBSTUB_BY_DEFAULT OFF)
+else()
+    set(MELONDS_GDBSTUB_BY_DEFAULT ON)
+endif()
+option(ENABLE_GDBSTUB "Enable GDB stub" ${MELONDS_GDBSTUB_BY_DEFAULT})
 if (ENABLE_GDBSTUB)
     add_definitions(-DGDBSTUB_ENABLED)
 endif()

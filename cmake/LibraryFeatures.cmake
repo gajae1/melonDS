@@ -5,6 +5,10 @@
 # installed (FreeBSD/OpenBSD base), the header-only types are still reachable
 # through _LIBCPP_ENABLE_EXPERIMENTAL, which is tried last.
 include(CheckCXXSourceCompiles)
+# std::jthread needs the thread library at link time (FreeBSD libthr).
+find_package(Threads REQUIRED)
+set(_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
+list(APPEND CMAKE_REQUIRED_LIBRARIES Threads::Threads)
 
 set(_stop_token_source "
 #include <stop_token>
@@ -47,5 +51,7 @@ if (NOT MELONDS_HAS_STD_STOP_TOKEN)
 endif()
 
 unset(_stop_token_source)
+set(CMAKE_REQUIRED_LIBRARIES "${_saved_required_libraries}")
+unset(_saved_required_libraries)
 unset(_saved_required_flags)
 unset(_saved_required_definitions)
