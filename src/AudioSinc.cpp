@@ -73,6 +73,17 @@ const SincTables<Taps>& Tables()
     static const SincTables<Taps> tables;
     return tables;
 }
+
+// Same result as std::lround (half away from zero) for |value| < 2^22, where
+// the remainder after truncation is exact, without a CRT call per sample.
+s32 RoundSample(float value) noexcept
+{
+    const s32 truncated = s32(value);
+    const float remainder = value - float(truncated);
+    if (remainder >= 0.5f) return truncated + 1;
+    if (remainder <= -0.5f) return truncated - 1;
+    return truncated;
+}
 }
 
 AudioSinc::AudioSinc() : History(Capacity * 2)
@@ -127,7 +138,7 @@ s32 AudioSinc::Output(u32 elapsed, u32 period, u32 mixPeriod) const
         }
         value /= sum;
     }
-    return static_cast<s32>(std::lround(value));
+    return RoundSample(value);
 }
 
 void AudioSinc::DoSavestate(Savestate* file)
@@ -214,7 +225,7 @@ void AudioSincOutput::Push(const s16* stereo)
         {
             const float first = AudioInterpolationMath::DotFloat(history.data()+Head, a, Count);
             const float second = AudioInterpolationMath::DotFloat(history.data()+Head, b, Count);
-            Pending.push_back(s16(std::clamp(std::lround(first + fraction*(second-first)), -32768L, 32767L)));
+            Pending.push_back(s16(std::clamp(RoundSample(first + fraction*(second-first)), -32768, 32767)));
         }
         Position += Step;
     }
