@@ -69,7 +69,7 @@ static std::vector<melonDS::u8> Read(const char* name)
 int main(int argc, char** argv)
 {
     using namespace melonDS;
-    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute|vulkan frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM, MELONDS_SMOKE_SCALE, MELONDS_SMOKE_HIRES, MELONDS_SMOKE_VK_ADAPTER\n"); return 2; }
+    if (argc < 5 || argc > 7) { std::fprintf(stderr,"usage: ROMSmoke ROM|- software|opengl|compute|vulkan frames output.ppm [DSi NAND [firmware|firmware-cart]]; BIOS read from cwd\noptional env: MELONDS_SMOKE_BUILTIN_DS, MELONDS_SMOKE_STATE, MELONDS_SMOKE_FRAME_TIMES, MELONDS_SMOKE_PCM, MELONDS_SMOKE_SCALE, MELONDS_SMOKE_HIRES, MELONDS_SMOKE_VK_ADAPTER, MELONDS_SMOKE_GPU2D\n"); return 2; }
     const char* pcmPath = std::getenv("MELONDS_SMOKE_PCM");
     if (pcmPath && std::getenv("MELONDS_SMOKE_AUDIO_BUFFER")) {
         std::fprintf(stderr, "PCM export and device playback cannot consume the same queue\n");
@@ -215,7 +215,16 @@ int main(int argc, char** argv)
         }
         const bool hiresCoords = std::getenv("MELONDS_SMOKE_HIRES") != nullptr;
         RendererSettings settings{scale,false,hiresCoords,false};
+        settings.VulkanNative2D = std::getenv("MELONDS_SMOKE_GPU2D") != nullptr;
         if (!nds->GetRenderer().SetRenderSettings(settings)) return 5;
+#ifdef VULKANRENDERER_ENABLED
+        if (vulkan && settings.VulkanNative2D &&
+            !static_cast<VulkanRenderer&>(nds->GetRenderer()).Native2DActive())
+        {
+            std::fprintf(stderr, "Vulkan GPU 2D requested but unavailable\n");
+            return 5;
+        }
+#endif
         while (nds->GetRenderer().NeedsShaderCompile())
         {
             int step, total;

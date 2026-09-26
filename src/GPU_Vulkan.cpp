@@ -138,6 +138,20 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
                 Platform::Log(Platform::LogLevel::Warn, "Vulkan composition context unavailable: %s\n", error.what());
             }
         }
+        // Settings apply between frames: switch the 2D backend with the
+        // displayed frames and guest captures already published to the CPU.
+        if (settings.VulkanNative2D && !NativePipeline && !HasRenderFailure())
+        {
+            ReadbackDisplay(0);
+            ReadbackDisplay(1);
+            ResidentImages = {};
+            ResidentCPUValid = {};
+            DisplayCaptures = {};
+            if (!InitNative2D())
+                Platform::Log(Platform::LogLevel::Warn, "Vulkan GPU 2D unavailable; using CPU 2D\n");
+        }
+        else if (!settings.VulkanNative2D && NativePipeline)
+            DisableNative2D();
         return SoftRenderer::SetRenderSettings(settings);
     }
     catch (const std::exception& error)

@@ -55,6 +55,8 @@ public:
     // submission completes. GetDisplayFrame materializes CPU pixels on demand.
     std::shared_ptr<Vulkan::Device> DisplayDevice() const;
     int DisplayScaleFactor() const { return DisplayScale; }
+    // True while 2D composition, captures and final display run on the GPU.
+    bool Native2DActive() const { return NativePipeline != nullptr; }
     bool EnableDirectDisplay();
     void DisableDirectDisplay(const std::string& reason, bool permanent = true);
     const std::string& DirectDisplayStatus() const { return DisplayStatus; }
@@ -68,6 +70,7 @@ private:
     bool InitNative2D();
     void ResetNative2D();
     void MigrateNative2DScale(u32 scale);
+    void DisableNative2D();
     void DrawNativeSprites(u32 line);
     void DrawNativeLine(u32 line);
     void FinishNative2D() noexcept;

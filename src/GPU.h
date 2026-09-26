@@ -839,6 +839,8 @@ struct RendererSettings
     bool BetterPolygons;
     // Software output conversion; runtime dispatch keeps unsupported CPUs safe.
     PixelConvert::Backend PixelConversion = PixelConvert::Backend::Auto;
+    // Vulkan: compose 2D layers, captures and final display on the GPU.
+    bool VulkanNative2D = false;
 };
 
 class Renderer

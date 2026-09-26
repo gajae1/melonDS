@@ -104,6 +104,30 @@ void VulkanRenderer::MigrateNative2DScale(u32 scale)
         Platform::Log(Platform::LogLevel::Warn, "Vulkan high-resolution capture storage unavailable; using native pixels\n");
 }
 
+void VulkanRenderer::DisableNative2D()
+{
+    // Frontends apply settings after RunFrame returns at VBlank, where no OBJ
+    // prefetch is pending (none follows line 191; line 0's runs at VCOUNT 262).
+    // Publish displayed frames and GPU-only guest capture rows for CPU 2D.
+    if (!NativeQueue->Records().empty()) throw std::logic_error("Native 2D disable with queued rows");
+    ReadbackDisplay(0);
+    ReadbackDisplay(1);
+    for (u32 bank = 0; bank < 4; ++bank)
+        if (NativeCaptureDirty[bank].any()) SyncNativeCaptureRows(bank, 0, 512);
+    ResidentImages = {};
+    ResidentCPUValid = {};
+    NativeSource3D.reset();
+    NativeDisplay3D.reset();
+    NativeQueue.reset();
+    NativePipeline.reset();
+    NativeCapture.reset();
+    NativeCaptures.clear();
+    NativeCaptureDirty = {};
+    NativeHiresOwned = {};
+    NativeCaptureWriteThrough = false;
+    static_cast<VulkanRenderer3D&>(*Rend3D).SetNativeImageRetention(false);
+}
+
 void VulkanRenderer::BindNative3D()
 {
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
