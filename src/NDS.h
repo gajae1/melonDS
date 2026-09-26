@@ -516,6 +516,11 @@ public: // TODO: Encapsulate the rest of these members
 protected:
     void InitTimings();
     u32 SchedListMask;
+    // Earliest deadline among the events in SchedListMask, or UINT64_MAX when none is
+    // scheduled. ScheduleEventAt, CancelEvent, RunSystem, RunSystemSleep and savestate
+    // load keep it exact; code that rewrites SchedListMask or a scheduled Timestamp
+    // directly has to call RefreshEarliestEvent() afterwards.
+    u64 EarliestEventTimestamp = UINT64_MAX;
     u64 SysTimestamp;
     u8 WRAMCnt = 0xFF;
     u8 PostFlag9;
@@ -545,6 +550,7 @@ protected:
     u64 FrameStartTimestamp;
     u64 NextTarget();
     u64 NextTargetSleep();
+    void RefreshEarliestEvent();
     void CheckKeyIRQ(u32 cpu, u32 oldkey, u32 newkey);
     void Reschedule(u64 target);
     void RunSystemSleep(u64 timestamp);

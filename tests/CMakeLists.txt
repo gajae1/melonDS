@@ -701,7 +701,8 @@ foreach(pair IN ITEMS
         "UnregisterEventFuncs|void NDS::UnregisterEventFuncs(u32 id)"
         "Reschedule|void NDS::Reschedule(u64 target)"
         "RunSystem|void NDS::RunSystem(u64 timestamp)"
-        "CancelEvent|void NDS::CancelEvent(u32 id)")
+        "CancelEvent|void NDS::CancelEvent(u32 id)"
+        "RefreshEarliestEvent|void NDS::RefreshEarliestEvent()")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
     list(GET parts 1 signature)

@@ -8,6 +8,7 @@
 // Normal serial transactions follow the waveform of libnds rtcTransaction:
 // https://github.com/devkitPro/libnds/blob/v1.8.0/source/arm7/clock.c
 #include <array>
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -39,6 +40,7 @@ class NDS
 public:
     SchedEvent SchedList[Event_MAX] {};
     u32 SchedListMask = 0;
+    u64 EarliestEventTimestamp = UINT64_MAX;
     u64 SysTimestamp = 0, ARM9Timestamp = 0, ARM7Timestamp = 0;
     u64 ARM9Target = UINT64_MAX, ARM7Target = UINT64_MAX;
     u32 CurCPU = 1, ARM9ClockShift = 1;
@@ -54,6 +56,7 @@ public:
     void Reschedule(u64 target);
     void RunSystem(u64 timestamp);
     void CancelEvent(u32 id);
+    void RefreshEarliestEvent();
     void SetIRQ(u32 cpu, u32 irq)
     {
         if (cpu != 1 || irq != IRQ_RTC)
@@ -71,6 +74,7 @@ using Platform::LogLevel;
 #include "RTCReschedule.inc"
 #include "RTCRunSystem.inc"
 #include "RTCCancelEvent.inc"
+#include "RTCRefreshEarliestEvent.inc"
 }
 
 // Include the real RTC with the minimal NDS shell above, instead of pulling in

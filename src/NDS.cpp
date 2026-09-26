@@ -538,6 +538,7 @@ void NDS::Reset()
         evt.Param = 0;
     }
     SchedListMask = 0;
+    RefreshEarliestEvent();
 
     KeyInput = 0x007F03FF;
     KeyCnt[0] = 0;
@@ -897,6 +898,7 @@ bool NDS::DoSavestate(Savestate* file)
             SchedList[i].Param = schedState[i].Param;
         }
         SchedListMask = schedMask;
+        RefreshEarliestEvent();
 
         GPU.SetPowerCnt(PowerControl9);
         if (legacy) GPU.FinishLegacySavestateLoad(SchedListMask);
@@ -958,27 +960,32 @@ void NDS::SetARM9BIOS(const std::array<u8, ARM9BIOSSize>& bios) noexcept
     ARM9BIOSNative = CRC32(ARM9BIOS.data(), ARM9BIOS.size()) == ARM9BIOSCRC32;
 }
 
-u64 NDS::NextTarget()
+void NDS::RefreshEarliestEvent()
 {
-    u64 minEvent = UINT64_MAX;
+    u64 earliest = UINT64_MAX;
 
-    u32 mask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    // Bits at or above Event_MAX are ignored, as in NextTarget and RunSystem.
+    u32 mask = SchedListMask & ((1u << Event_MAX) - 1);
+    while (mask)
     {
-        if (!mask) break;
-        if (mask & 0x1)
-        {
-            if (SchedList[i].Timestamp < minEvent)
-                minEvent = SchedList[i].Timestamp;
-        }
+        const unsigned slot = std::countr_zero(mask);
+        mask &= mask - 1;
 
-        mask >>= 1;
+        if (SchedList[slot].Timestamp < earliest)
+            earliest = SchedList[slot].Timestamp;
     }
 
-    u64 max = SysTimestamp + kMaxIterationCycles;
+    EarliestEventTimestamp = earliest;
+}
 
-    if (minEvent < max + kIterationCycleMargin)
-        return minEvent;
+u64 NDS::NextTarget()
+{
+    const u64 max = SysTimestamp + kMaxIterationCycles;
+
+    // EarliestEventTimestamp is the earliest scheduled deadline, so the slot list is
+    // not walked here anymore. UINT64_MAX, i.e. nothing scheduled, never passes.
+    if (EarliestEventTimestamp < max + kIterationCycleMargin)
+        return EarliestEventTimestamp;
 
     return max;
 }
@@ -986,6 +993,10 @@ u64 NDS::NextTarget()
 void NDS::RunSystem(u64 timestamp)
 {
     SysTimestamp = timestamp;
+
+    // No scheduled event is due yet, so this call cannot dispatch anything.
+    if (timestamp < EarliestEventTimestamp)
+        return;
 
     u32 mask = SchedListMask;
     for (int i = 0; i < Event_MAX; i++)
@@ -1007,6 +1018,10 @@ void NDS::RunSystem(u64 timestamp)
 
         mask >>= 1;
     }
+
+    // Callbacks can dispatch, reschedule or cancel events anywhere in the slot list,
+    // including behind the walk, so the deadline is recomputed from the live state.
+    RefreshEarliestEvent();
 }
 
 u64 NDS::NextTargetSleep()
@@ -1060,6 +1075,9 @@ void NDS::RunSystemSleep(u64 timestamp)
 
         mask >>= 1;
     }
+
+    // Deadlines moved and events were dispatched, so the deadline is recomputed.
+    RefreshEarliestEvent();
 }
 
 template <CPUExecuteMode cpuMode>
@@ -1287,12 +1305,21 @@ void NDS::ScheduleEventAt(u32 id, u64 timestamp, u32 funcid, u32 param)
     evt.FuncID = funcid;
     evt.Param = param;
     SchedListMask |= (1u << id);
+    if (timestamp < EarliestEventTimestamp)
+        EarliestEventTimestamp = timestamp;
     Reschedule(timestamp);
 }
 
 void NDS::CancelEvent(u32 id)
 {
+    if (!(SchedListMask & (1u << id)))
+        return;
+
     SchedListMask &= ~(1<<id);
+
+    // Only the earliest deadline can disappear here.
+    if (SchedList[id].Timestamp == EarliestEventTimestamp)
+        RefreshEarliestEvent();
 }
 
 

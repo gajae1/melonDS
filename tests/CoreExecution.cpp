@@ -218,6 +218,7 @@ static int TestSchedulerSavestate(NDSArgs&& args)
         using NDS::NDS;
         using NDS::SchedListMask;
         using NDS::RunSystem;
+        using NDS::RefreshEarliestEvent;
         bool LateRegistration = false;
         unsigned LateCalls = 0;
 
@@ -265,6 +266,7 @@ static int TestSchedulerSavestate(NDSArgs&& args)
         event.FuncID = test.func;
         event.Timestamp = 1234;
         event.Param = 0x12345678;
+        nds.RefreshEarliestEvent();
 
         // Use the real serializer so only the scheduler metadata is malformed,
         // with no duplicated NDSG layout or hard-coded byte offsets.
@@ -279,6 +281,7 @@ static int TestSchedulerSavestate(NDSArgs&& args)
         nds.SchedListMask = divMask;
         nds.SchedList[Event_Div].Timestamp = 4321;
         nds.SchedList[Event_Div].Param = 0x87654321;
+        nds.RefreshEarliestEvent();
         const auto previous = nds.SchedList[Event_Div];
         Savestate load(saved.Buffer(), saved.Length(), false);
         if (load.Error)

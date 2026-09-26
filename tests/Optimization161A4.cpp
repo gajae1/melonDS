@@ -17,6 +17,7 @@ struct SchedulerProbe final : NDS
     using NDS::NextTargetSleep;
     using NDS::RunSystem;
     using NDS::SchedListMask;
+    using NDS::RefreshEarliestEvent;
     using NDS::SysTimestamp;
     u64 Calls = 0;
     u64 Trace = 0;
@@ -37,6 +38,15 @@ struct SchedulerProbe final : NDS
             SchedList[i].FuncID = 0;
             SchedList[i].Param = i;
         }
+        // The fixture writes the raw mask and timestamps, so the derived earliest
+        // deadline has to be recomputed from them, like the savestate load does.
+        RefreshEarliestEvent();
+    }
+
+    void SetDeadline(u32 id, u64 deadline)
+    {
+        SchedList[id].Timestamp = deadline;
+        RefreshEarliestEvent();
     }
 };
 
@@ -66,10 +76,10 @@ int main(int argc, char** argv)
         }
         nds->Prepare((1u << Event_DSi_Cart2Save) | 1u, 1071);
         check(nds->NextTarget() == 1071, "horizon margin includes near deadline");
-        nds->SchedList[0].Timestamp = 1072;
-        nds->SchedList[Event_DSi_Cart2Save].Timestamp = 1072;
+        nds->SetDeadline(0, 1072);
+        nds->SetDeadline(Event_DSi_Cart2Save, 1072);
         check(nds->NextTarget() == 1064, "horizon margin boundary");
-        nds->SchedList[Event_DSi_Cart2Save].Timestamp = 999;
+        nds->SetDeadline(Event_DSi_Cart2Save, 999);
         check(nds->NextTarget() == 999, "overdue high ID deadline");
         nds->Prepare(0xF8000000u, 1000);
         check(nds->NextTarget() == 1064, "out-of-range mask bits ignored");
@@ -102,6 +112,7 @@ int main(int argc, char** argv)
             else if (mode == 1)
             {
                 nds->SchedListMask = mask;
+                nds->RefreshEarliestEvent();
                 nds->RunSystem(1000);
             }
             else sum += nds->NextTargetSleep();
