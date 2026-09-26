@@ -376,6 +376,11 @@ void Device::CollectCosts() noexcept
 
 VkCommandBuffer Device::Begin(SubmitKind kind)
 {
+    if(pending&&pendingCompletion) {
+        const auto complete=std::move(pendingCompletion);
+        pendingCompletion=nullptr;
+        complete();
+    }
     if(failed)throw std::runtime_error("Compute device retired after submission failure");
     if(recording)throw std::logic_error("Compute command recording already active");
     if(pending)throw std::logic_error("Compute submission still pending");
@@ -415,6 +420,7 @@ void Device::Submit()
 void Device::WaitForSubmission()
 {
     if(!pending)throw std::logic_error("No compute submission to wait for");
+    pendingCompletion=nullptr;
     static constexpr Cost::HostStage waits[] = {Cost::WaitOther, Cost::WaitUpload, Cost::Wait3D,
         Cost::WaitFullReadback, Cost::WaitDisplay};
     try {

@@ -48,6 +48,13 @@ public:
     // Call Render when an independently owned snapshot is needed instead.
     enum class Readback { Full, Native, None };
     std::span<const uint32_t> RenderView(std::span<const Batch> batches, Readback mode=Readback::Full);
+    // RenderView split around the fence, for results first consumed later.
+    // SubmitView queues the frame and keeps its textures alive, so the batches
+    // may be released; CompleteView waits and returns what RenderView returns.
+    // Nothing may use this pipeline or its Device in between.
+    void SubmitView(std::span<const Batch> batches, Readback mode=Readback::Full);
+    std::span<const uint32_t> CompleteView();
+    bool ViewPending() const { return viewPending; }
     // Optional origin extraction shares the render submission. Failure to enable
     // it leaves the existing full-readback graph usable.
     void EnableNativeReadback(std::span<const uint32_t> shader);
@@ -102,6 +109,9 @@ private:
     std::span<const uint32_t> NativeReadbackPixels();
     void RecordFullReadback(VkCommandBuffer command);
     std::span<const uint32_t> FullReadbackPixels() const;
+    bool viewPending=false;
+    Readback pendingMode=Readback::None;
+    std::vector<std::shared_ptr<const Texture>> pendingTextures;
     void Bind(VkCommandBuffer command,unsigned shader,VkDescriptorSet storage,VkDescriptorSet image,
         VkDescriptorSet textures=VK_NULL_HANDLE);
     void Validate(const Batch& batch) const;

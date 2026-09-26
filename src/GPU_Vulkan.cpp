@@ -58,6 +58,7 @@ u64 VulkanRenderer::TotalSubmissionCount() const
 bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
 {
     FinishDisplayComposition();
+    static_cast<VulkanRenderer3D&>(*Rend3D).CompleteRender();
     InvalidateDisplayFrame();
     const int scale = settings.ScaleFactor;
     if (scale < 1 || scale > ComputeShader::VulkanMaxScale) return false;
@@ -282,6 +283,7 @@ void VulkanRenderer::FinishDisplayComposition() noexcept
     if (!CompositionPending) return;
     RenderCostVulkanScope display(Costs(), Cost::RecordDisplay);
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
+    rasterizer.CompleteRender();
     const auto pending = [](const auto& lines) {
         return std::any_of(lines.begin(), lines.end(), [](const auto& line) {
             return line.mode != CompositionLine::Keep && line.mode != CompositionLine::CaptureOverride;
@@ -428,6 +430,7 @@ void VulkanRenderer::ReadbackDisplay(u32 buffer)
     for (u32 screen = 0; screen < 2; ++screen)
         if (ResidentImages[buffer][screen] && !ResidentCPUValid[buffer][screen])
         {
+            rasterizer.CompleteRender();
             if (NativePipeline)
             {
                 const u64 before = rasterizer.TotalSubmissionCount();

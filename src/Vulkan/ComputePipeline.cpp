@@ -645,7 +645,14 @@ std::vector<uint32_t> ComputePipeline::Render(std::span<const Batch> batches)
 
 std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> batches,Readback mode)
 {
+    SubmitView(batches,mode);
+    return CompleteView();
+}
+
+void ComputePipeline::SubmitView(std::span<const Batch> batches,Readback mode)
+{
     RenderCostVulkanScope cost(owner->Costs(), Cost::Record3D);
+    if(viewPending)throw std::logic_error("Compute frame still pending");
     if(batches.empty())throw std::invalid_argument("Compute frame needs a clear batch");
     if(mode==Readback::Native&&!nativePipeline)throw std::logic_error("Native readback unavailable");
     size_t variantCount=0,polygonCount=0;
@@ -668,13 +675,18 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
     }
     Device::Check(f.vkResetDescriptorPool(device,texturePool,0),"Reset texture descriptors");
     std::vector<VkDescriptorSet> textures(variantCount);
+    pendingTextures.clear();
     if(variantCount) {
         std::vector<VkDescriptorSetLayout> layouts(variantCount,setLayouts[2]);
         VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         allocation.descriptorPool=texturePool;allocation.descriptorSetCount=variantCount;allocation.pSetLayouts=layouts.data();
         Device::Check(f.vkAllocateDescriptorSets(device,&allocation,textures.data()),"Allocate texture descriptors");
+        pendingTextures.reserve(variantCount);
         size_t index=0;
-        for(const auto& batch:batches)for(const auto& variant:batch.variants)WriteTextureSet(textures[index++],variant);
+        for(const auto& batch:batches)for(const auto& variant:batch.variants) {
+            WriteTextureSet(textures[index++],variant);
+            if(variant.texture)pendingTextures.push_back(variant.texture);
+        }
     }
     PrepareUploads();
     const auto command=owner->Begin(Device::SubmitKind::ThreeD);
@@ -709,8 +721,21 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT);
         if(mode==Readback::Native) RecordNativeReadback(command);
     }
-    owner->SubmitAndWait();
+    owner->Submit();
+    viewPending=true;
+    pendingMode=mode;
+}
+
+std::span<const uint32_t> ComputePipeline::CompleteView()
+{
+    if(!viewPending)throw std::logic_error("No compute frame pending");
+    viewPending=false;
+    // A failed wait retires the Device after draining it; like uploads, the
+    // textures are then released by the next frame or pipeline teardown.
+    owner->WaitForSubmission();
+    pendingTextures.clear();
     CompleteUploads();
+    const Readback mode=pendingMode;
     if(mode==Readback::None)return {};
     if(mode==Readback::Native) return NativeReadbackPixels();
     if(!(readback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT))

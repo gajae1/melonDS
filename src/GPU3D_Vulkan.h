@@ -21,6 +21,7 @@ public:
     void Reset() override;
     void RenderFrame() override;
     void RestartFrame() override;
+    void FinishRendering() override { CompleteRender(); }
     u32* GetLine(int line) override;
     void GetScaledLine(int line, int subline, int scale, u32* dst) const;
     bool HasFailed() const { return Failed; }
@@ -35,6 +36,11 @@ private:
     VulkanRenderer& Parent;
     std::span<const u32> GetScaledPixels() const;
     void EnsureNativePixels() const;
+    // Waits for a deferred render and converts its native pixels. Every CPU
+    // consumer and every other use of the device runs this first; a failed
+    // completion retires the backend with black native output.
+    void CompleteRender() const noexcept;
+    void StoreNativePixels(std::span<const u32> pixels) const;
     std::unique_ptr<Vulkan::DisplayCompositor> Compositor;
     // Retain the actual previous image through a settings change. Before its
     // pipeline is replaced, lazy CPU samples are materialized for capture/fallback.
@@ -60,6 +66,9 @@ private:
     // Native GPU consumers never require a host snapshot. A CPU request lazily
     // materializes the guest-visible NativeImage once per completed render.
     mutable bool NativePixelsValid = true;
+    // The common frame is only submitted in DrawFrame. Nothing reads its pixels
+    // before the next visible scanline, so the fence wait overlaps emulation.
+    mutable bool RenderPending = false;
     // Invalidating the view keeps the storage sized: conversion overwrites every
     // pixel, so a new frame needs no redundant clear/resize zero-fill pass.
     mutable std::vector<u32> ScaledColorStorage;

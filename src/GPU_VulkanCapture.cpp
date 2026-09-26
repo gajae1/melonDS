@@ -300,6 +300,7 @@ bool VulkanRenderer::CaptureBlendRow(u32 line, u32 scale, u32 eva, u32 evb,
         !raster.Device || !raster.Pipeline || int(scale) != raster.RenderedScale ||
         !raster.RenderedImage || raster.RenderedImage != raster.Pipeline->OutputImage())
         return false;
+    raster.CompleteRender();
     const auto& device = raster.Device;
     try
     {

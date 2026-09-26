@@ -5,6 +5,7 @@
 #endif
 #include <volk.h>
 #include <array>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -91,6 +92,10 @@ public:
     void Submit();
     void WaitForSubmission();
     void SubmitAndWait();
+    // An owner that leaves a submission pending past its own call registers how
+    // to finish it. The next Begin() runs that first, so other users of this
+    // device never observe the pending state. WaitForSubmission() clears it.
+    void SetPendingCompletion(std::function<void()> complete) { pendingCompletion = std::move(complete); }
     // Optional observations in the existing command buffer/fence lifetime.
     // A null meter is the default OFF path: no clocks, pools or query commands.
     RenderCostVulkanMeter* Costs() const { return costs.get(); }
@@ -126,6 +131,7 @@ private:
     bool pipelineCacheInitialized=false;
     bool recording=false;
     bool pending=false;
+    std::function<void()> pendingCompletion;
     bool failed=false;
     uint64_t submissionCount=0;
     std::unique_ptr<RenderCostVulkanMeter> costs;

@@ -93,7 +93,7 @@ Pipeline::Variant MakeVariant(const Polygon& polygon, u32 dispCnt, bool wbuffer,
 
 VulkanRenderer3D::VulkanRenderer3D(VulkanRenderer& parent, melonDS::GPU3D& gpu, const std::string& preferred)
     : Renderer3D(gpu), Parent(parent), PreferredDevice(preferred) {}
-VulkanRenderer3D::~VulkanRenderer3D() = default;
+VulkanRenderer3D::~VulkanRenderer3D() { CompleteRender(); }
 
 bool VulkanRenderer3D::Init()
 {
@@ -123,6 +123,7 @@ bool VulkanRenderer3D::SetNativeImageRetention(bool enabled)
 {
     if (enabled == RetainNativeImage) return true;
     if (enabled && Failed) return false;
+    CompleteRender();
     try
     {
         if (!enabled) EnsureNativePixels();
@@ -203,6 +204,7 @@ bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
 
 void VulkanRenderer3D::Reset()
 {
+    CompleteRender();
     if (Texcache) Texcache->Reset();
     ColorBuffer.fill(0);
     NativePixelsValid = true;
@@ -250,6 +252,7 @@ void VulkanRenderer3D::DrawFrame()
 {
     // The next 3D frame starts at VCount 215, before the display buffer swap.
     // Finish consumers of the old image BEFORE any render can reuse it.
+    CompleteRender();
     Parent.FinishDisplayComposition();
     if (Failed) return;
     RenderCostVulkanScope prepare(Device->Costs(), Cost::Prepare3D);
@@ -380,8 +383,27 @@ void VulkanRenderer3D::DrawFrame()
         NativeImage.reset();
         RenderedImage.reset();
     }
-    auto pixels = Pipeline->RenderView(batches, RetainNativeImage ? Pipeline::Readback::None :
-        gpuComposition ? Pipeline::Readback::Native : Pipeline::Readback::Full);
+    const auto readback = RetainNativeImage ? Pipeline::Readback::None :
+        gpuComposition ? Pipeline::Readback::Native : Pipeline::Readback::Full;
+    if (!RetainNativeImage && !hasCaptures && (ScaleFactor == 1 || gpuComposition))
+    {
+        // No second captured-texture render or CPU scaled copy needs this frame
+        // now; its first consumer is the next visible scanline (CompleteRender).
+        Pipeline->SubmitView(batches, readback);
+        RenderPending = true;
+        // Any other device user (capture, compositor setup, GPU 2D) completes
+        // this frame first instead of meeting a pending submission.
+        Device->SetPendingCompletion([this] { CompleteRender(); });
+        NativePixelsValid = false;
+        ScaledColorBuffer = {};
+        RenderedImage = Pipeline->OutputImage();
+        ++RenderedVersion;
+        RenderedScale = ScaleFactor;
+        HadCaptureTextures = false;
+        FrameDirty = false;
+        return;
+    }
+    auto pixels = Pipeline->RenderView(batches, readback);
     // Holding the native target forces a captured display render to another image.
     std::shared_ptr<Vulkan::Device::Image> nativeImage;
     if (RetainNativeImage) nativeImage = Pipeline->OutputImage();
@@ -433,12 +455,8 @@ void VulkanRenderer3D::DrawFrame()
     FrameDirty = false;
 }
 
-void VulkanRenderer3D::EnsureNativePixels() const
+void VulkanRenderer3D::StoreNativePixels(std::span<const u32> pixels) const
 {
-    if (NativePixelsValid) return;
-    // Display captures can produce a second image with different subpixel UVs.
-    // CPU guest bytes must come from the retained first render, never that image.
-    const auto pixels = Pipeline->ReadNativeView(NativeImage);
     RenderCostVulkanScope convert(Device->Costs(), Cost::NativeConvert);
     std::transform(pixels.begin(), pixels.end(), ColorBuffer.begin(), [](u32 pixel) {
         return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
@@ -446,8 +464,33 @@ void VulkanRenderer3D::EnsureNativePixels() const
     NativePixelsValid = true;
 }
 
+void VulkanRenderer3D::CompleteRender() const noexcept
+{
+    if (!RenderPending) return;
+    RenderPending = false;
+    // Deferred frames read back 256x192 native origins: Full at 1x, else Native.
+    try { StoreNativePixels(Pipeline->CompleteView()); }
+    catch (const std::exception& error)
+    {
+        Failed = true;
+        ColorBuffer.fill(0);
+        NativePixelsValid = true;
+        Platform::Log(Platform::LogLevel::Error, "Vulkan 3D frame failed: %s\n", error.what());
+    }
+}
+
+void VulkanRenderer3D::EnsureNativePixels() const
+{
+    CompleteRender();
+    if (NativePixelsValid) return;
+    // Display captures can produce a second image with different subpixel UVs.
+    // CPU guest bytes must come from the retained first render, never that image.
+    StoreNativePixels(Pipeline->ReadNativeView(NativeImage));
+}
+
 std::span<const u32> VulkanRenderer3D::GetScaledPixels() const
 {
+    CompleteRender();
     if (RenderedScale > 1 && RenderedImage && ScaledColorBuffer.empty())
     {
         if (RenderedImage != Pipeline->OutputImage())
