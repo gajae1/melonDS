@@ -34,12 +34,27 @@ jobs:
     steps:
     - name: Check out sources
       uses: actions/checkout@v6
+    - name: Identify runner image
+      id: runner-image
+      shell: pwsh
+      run: |
+        $runnerImageVersion = $env:ImageVersion
+        if ([string]::IsNullOrWhiteSpace($runnerImageVersion)) {
+          $runnerImageVersion = "run-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+        }
+        "version=$runnerImageVersion" >> $env:GITHUB_OUTPUT
     - name: Restore vcpkg cache
+      id: vcpkg-cache
       uses: actions/cache/restore@v4
       with:
         path: ${{ github.workspace }}/vcpkg_cache
-        key: vcpkg-${{ matrix.arch.name }}-windows-${{ hashFiles('vcpkg.json') }}
-        restore-keys: vcpkg-${{ matrix.arch.name }}-windows-
+        # Runner compiler/SDK changes can invalidate every package ABI even
+        # when vcpkg.json is unchanged. Give the rebuilt cache a new key.
+        key: vcpkg-v2-${{ matrix.arch.name }}-${{ matrix.arch.image }}-${{ steps.runner-image.outputs.version }}-${{ hashFiles('vcpkg.json', 'CMakePresets.json', 'cmake/overlay-ports/**', 'cmake/overlay-triplets/**') }}
+        restore-keys: |
+          vcpkg-v2-${{ matrix.arch.name }}-${{ matrix.arch.image }}-${{ steps.runner-image.outputs.version }}-
+          vcpkg-v2-${{ matrix.arch.name }}-${{ matrix.arch.image }}-
+          vcpkg-${{ matrix.arch.name }}-windows-
     - name: Set up vcpkg
       uses: lukka/run-vcpkg@v11
       with:
@@ -61,7 +76,8 @@ jobs:
         name: ${{ steps.version.outputs.version }}-melonDS-windows-${{ matrix.arch.name }}
         path: .\build\release-windows-${{ matrix.arch.name }}\melonDS.exe
     - name: Save vcpkg cache
+      if: steps.vcpkg-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: ${{ github.workspace }}/vcpkg_cache
-        key: vcpkg-${{ matrix.arch.name }}-windows-${{ hashFiles('vcpkg.json') }}
+        key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
