@@ -43,6 +43,9 @@ public:
     void ReadFrame(uint32_t buffer, uint32_t screen, std::span<uint32_t> destination,
         std::span<uint32_t> nativeDestination = {});
     uint32_t Scale() const { return displayScale; }
+    // Replace display-scale storage between batches. Guest OBJ history and
+    // descriptors survive; display frames must be read back first.
+    void SetScale(uint32_t scale);
 private:
     void Cleanup();
     void EnsureBuffer(std::shared_ptr<Device::Buffer>& buffer, size_t bytes,

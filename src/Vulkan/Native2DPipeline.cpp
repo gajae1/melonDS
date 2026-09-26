@@ -102,6 +102,21 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::span<const uint32_t> sha
 }
 
 Pipeline::~Pipeline() { Cleanup(); }
+
+void Pipeline::SetScale(uint32_t scale)
+{
+    Require(scale && scale <= owner->Properties().limits.maxImageDimension2D / 256, "Invalid native 2D display scale");
+    if (scale == displayScale) return;
+    decltype(outputs) next;
+    for (auto& image : next)
+        image = owner->CreateImage(256 * scale, 192 * scale, 1, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    outputs = std::move(next);
+    initialized.fill(false);
+    scaledRaw.reset();
+    scaledHistory.reset();
+    displayScale = scale;
+}
 void Pipeline::Cleanup()
 {
     const auto& f = owner->Functions(); const auto d = owner->Handle();
@@ -229,15 +244,11 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
     const size_t slotWords = size_t(256) * displayScale * displayScale + 9;
     std::vector<uint32_t> slotFields(lines.size(), 0);
     std::array<uint32_t, 2> persistentSource{0, 1};
-    bool fillScaledHistory = false;
+    // Slots 0/1 persist per engine; this batch's writers take slots 2.. in order.
+    std::shared_ptr<Device::Buffer> previousScaledHistory;
+    bool clearPersistentSlots = false;
     if (scaledObjects)
     {
-        if (!scaledHistory)
-        {
-            EnsureBuffer(scaledHistory, (MaxRecords + 2) * slotWords * sizeof(uint32_t),
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
-            fillScaledHistory = true;
-        }
         const auto drawn = [](const Record& line) {
             return line.layers.enabled && !line.layers.forcedBlank && line.finalDisplay.vcount < 192;
         };
@@ -266,8 +277,27 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
         for (uint32_t engine = 0; engine < 2; ++engine)
             if (lastRecord[engine] != ~0u)
                 persistentSource[engine] = resolve(value[lastRecord[engine]]);
+        std::vector<uint32_t> physical(lines.size() + 2);
+        physical[0] = 0; physical[1] = 1;
+        uint32_t slots = 2;
         for (uint32_t i = 0; i < lines.size(); ++i)
-            if (write[i]) slotFields[i] |= 1u << 31;
+            if (write[i]) physical[i + 2] = slots++;
+        for (uint32_t i = 0; i < lines.size(); ++i)
+        {
+            if (slotFields[i]) slotFields[i] = physical[slotFields[i] - 1] + 1;
+            if (write[i]) slotFields[i] |= (physical[i + 2] << 10) | (1u << 31);
+        }
+        for (auto& source : persistentSource) source = physical[source];
+        const VkDeviceSize slotBytes = slotWords * sizeof(uint32_t);
+        if (!scaledHistory || scaledHistory->Size() < slots * slotBytes)
+        {
+            previousScaledHistory = std::move(scaledHistory);
+            const uint32_t capacity = std::max<uint32_t>(slots, previousScaledHistory ?
+                uint32_t(previousScaledHistory->Size() / slotBytes) * 2 : 8u);
+            EnsureBuffer(scaledHistory, size_t(std::min<uint32_t>(capacity, MaxRecords + 2)) * slotBytes,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
+            clearPersistentSlots = !previousScaledHistory;
+        }
     }
     // All allocation/validation precedes Begin: a host-side exception never
     // leaves the device's shared command buffer partially recording.
@@ -320,7 +350,13 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
     VkClearColorValue zero{};
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (!historyInitialized) f.vkCmdFillBuffer(command, history->Handle(), 0, history->Size(), 0);
-    if (fillScaledHistory) f.vkCmdFillBuffer(command, scaledHistory->Handle(), 0, scaledHistory->Size(), 0);
+    if (clearPersistentSlots)
+        f.vkCmdFillBuffer(command, scaledHistory->Handle(), 0, 2 * slotWords * sizeof(uint32_t), 0);
+    else if (previousScaledHistory)
+    {
+        const VkBufferCopy persistent{0, 0, 2 * slotWords * sizeof(uint32_t)};
+        f.vkCmdCopyBuffer(command, previousScaledHistory->Handle(), scaledHistory->Handle(), 1, &persistent);
+    }
     if (!blankInitialized)
     {
         ImageBarrier(command, *blank3D, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,

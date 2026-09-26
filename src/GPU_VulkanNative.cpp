@@ -88,6 +88,22 @@ void VulkanRenderer::FailNative2D(const std::exception& error) noexcept
     Platform::Log(Platform::LogLevel::Error, "Vulkan native 2D failed: %s\n", error.what());
 }
 
+void VulkanRenderer::MigrateNative2DScale(u32 scale)
+{
+    // Called between batches after the displayed frames were read back. Old
+    // display-scale captures stop enhancing consumers, as legacy DisplayCaptures
+    // do at a different scale; guest captures, dirty ownership, the OBJ
+    // prefetch and guest OBJ history stay on the device.
+    if (!NativeQueue->Records().empty() || !NativeCaptures.empty())
+        throw std::logic_error("Native 2D scale change with queued rows");
+    NativeQueue->DropHires();
+    NativeHiresOwned = {};
+    NativeCapture->DisableHires();
+    NativePipeline->SetScale(scale);
+    if (scale > 1 && !NativeCapture->EnableHires(Vulkan::EmbeddedNative2DCaptureHires(), scale))
+        Platform::Log(Platform::LogLevel::Warn, "Vulkan high-resolution capture storage unavailable; using native pixels\n");
+}
+
 void VulkanRenderer::BindNative3D()
 {
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
@@ -128,7 +144,7 @@ void VulkanRenderer::FinishNative2D() noexcept
 
 void VulkanRenderer::DrawSprites(u32 line)
 {
-    if (NativePipeline) DrawNativeSprites(line);
+    if (NativePipeline && !HasRenderFailure()) DrawNativeSprites(line);
     else SoftRenderer::DrawSprites(line);
 }
 

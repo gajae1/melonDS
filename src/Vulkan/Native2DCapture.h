@@ -34,6 +34,8 @@ public:
     // Optional presentation-only derivative. Allocation/limit failure leaves
     // exact guest capture enabled. Configure once before submitting commands.
     bool EnableHires(std::span<const uint32_t> shader, uint32_t scale);
+    // Drop display-scale capture storage between batches (scale change).
+    void DisableHires();
     const std::shared_ptr<Device::Buffer>& Hires() const { return hires; }
     uint32_t HiresScale() const { return hiresScale; }
     uint32_t HiresPitch() const { return hiresPitch; }

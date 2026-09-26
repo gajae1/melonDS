@@ -61,9 +61,6 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
     InvalidateDisplayFrame();
     const int scale = settings.ScaleFactor;
     if (scale < 1 || scale > ComputeShader::VulkanMaxScale) return false;
-    // Native scale replacement and state migration are still being integrated.
-    // Never silently discard latched OBJ state by switching this path mid-frame.
-    if (NativePipeline && scale != DisplayScale) return false;
     try
     {
         if (scale != DisplayScale)
@@ -120,6 +117,9 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
         if (!static_cast<VulkanRenderer3D&>(*Rend3D).SetRenderSettings(scale, settings.HiresCoordinates)) return false;
         if (scale != DisplayScale)
         {
+            // Queued native rows were finished above; the OBJ prefetch and
+            // guest captures survive while display-scale storage is replaced.
+            if (NativePipeline) MigrateNative2DScale(u32(scale));
             ScaledBuffers.swap(next);
             ScaledStorage.swap(nextStorage);
             ScaledMemory.swap(nextMemory);
@@ -178,7 +178,9 @@ void VulkanRenderer::Stop()
 
 void VulkanRenderer::DrawScanline(u32 line)
 {
-    if (NativePipeline)
+    // After a native device failure the frontend replaces this backend at the
+    // frame boundary; until then draw the remaining rows with CPU 2D.
+    if (NativePipeline && !HasRenderFailure())
     {
         DrawNativeLine(line);
         return;

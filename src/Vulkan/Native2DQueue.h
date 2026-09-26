@@ -36,6 +36,9 @@ public:
     // Preserve a prefetched OBJ snapshot across the batch boundary; rendered
     // OBJ history was copied by Pipeline into its two persistent engine slots.
     void Retire();
+    // Display-scale captures were discarded (scale change): latched pages must
+    // no longer reference them. Guest views and the OBJ prefetch are kept.
+    void DropHires();
 private:
     struct PageSource {
         std::shared_ptr<Device::Buffer> source;

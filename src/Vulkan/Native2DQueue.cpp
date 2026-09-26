@@ -365,4 +365,10 @@ void Queue::Retire()
     }
     records.clear();
 }
+
+void Queue::DropHires()
+{
+    if (!records.empty()) throw std::logic_error("Native 2D hires pages are still queued");
+    for (auto& engine : engines) { engine.hiresBG = {}; engine.hiresOBJ = {}; }
+}
 }

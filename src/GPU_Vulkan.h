@@ -67,6 +67,7 @@ private:
     // without changing the released backend selection midway through this work.
     bool InitNative2D();
     void ResetNative2D();
+    void MigrateNative2DScale(u32 scale);
     void DrawNativeSprites(u32 line);
     void DrawNativeLine(u32 line);
     void FinishNative2D() noexcept;

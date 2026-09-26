@@ -178,11 +178,11 @@ void main() {
     state.numSprites=1u;
     bool drawn=state.enabled!=0u && state.forcedBlank==0u && records[recordIndex].finalDisplay.vcount<192u;
     // Scaled OBJ history slots are assigned by the pipeline (reserved2 bits
-    // 0-9: read slot + 1, bit 31: write this record's slot objectWrite/512).
+    // 0-9: read slot + 1, bits 10-19: write slot, bit 31: write enabled).
     uint slotWords=256u*pc.displayScale*pc.displayScale+9u;
     uint readSlot=(state.reserved2&0x3FFu)==0u ? 0u : ((state.reserved2&0x3FFu)-1u)*slotWords;
     bool writeSlot=pc.scaledHistoryBound!=0u && (state.reserved2>>31)!=0u;
-    uint writeBase=(records[recordIndex].objectWrite/512u)*slotWords;
+    uint writeBase=((state.reserved2>>10)&0x3FFu)*slotWords;
     bool enhancedOBJ=enhancedFresh;
     bool objMosaicActive=(objMosaic[0]|objMosaic[1]|objMosaic[2]|objMosaic[3])!=0u;
     if (!fresh && pc.scaledHistoryBound!=0u && (state.reserved2&0x3FFu)!=0u) {

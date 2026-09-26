@@ -85,6 +85,11 @@ std::shared_ptr<Device::Buffer> CapturePipeline::Snapshot() const {
     if(!initialized || previousBanks) throw std::logic_error("Native capture snapshot is not complete");
     return banks;
 }
+void CapturePipeline::DisableHires() {
+    if(!dispatches.empty()) throw std::logic_error("Native hires capture is still pending");
+    if(hiresPipeline) owner->Functions().vkDestroyPipeline(owner->Handle(),hiresPipeline,nullptr);
+    hiresPipeline=VK_NULL_HANDLE;hires.reset();hiresScale=0;hiresPitch=0;
+}
 void CapturePipeline::Cleanup() {
     const auto& f=owner->Functions(); const auto d=owner->Handle();
     if(pool) f.vkDestroyDescriptorPool(d,pool,nullptr);
