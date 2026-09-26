@@ -87,6 +87,8 @@ private:
     };
     void ReserveUpload(VkDeviceSize bytes,size_t images);
     void SubmitUploadsIfNeeded();
+    void RecordUploads(VkCommandBuffer command);
+    void CompleteUploads();
     void RecordImageUpload(VkCommandBuffer command,const ImageUpload& upload);
     void Barrier(VkCommandBuffer command);
     std::shared_ptr<Device> owner;

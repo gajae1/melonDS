@@ -222,11 +222,22 @@ void ComputePipeline::FlushUploads()
     if(pendingUploads.empty())return;
     RenderCostVulkanScope cost(owner->Costs(), Cost::TextureUpload);
     const auto command=owner->Begin(Device::SubmitKind::Upload);
-    for(const auto& upload:pendingUploads)RecordImageUpload(command,upload);
-    owner->Timestamp(Device::TimestampStage::Upload);
+    RecordUploads(command);
     // The Device drains on submission failure before throwing. Retain both
     // staging and images until this fence succeeds (or pipeline teardown).
     owner->SubmitAndWait();
+    CompleteUploads();
+}
+
+void ComputePipeline::RecordUploads(VkCommandBuffer command)
+{
+    if(pendingUploads.empty())return;
+    for(const auto& upload:pendingUploads)RecordImageUpload(command,upload);
+    owner->Timestamp(Device::TimestampStage::Upload);
+}
+
+void ComputePipeline::CompleteUploads()
+{
     if(clearBitmapPending)clearBitmapReady=true;
     clearBitmapPending=false;
     pendingUploads.clear();
@@ -364,7 +375,7 @@ void ComputePipeline::Barrier(VkCommandBuffer command)
 
 void ComputePipeline::Validate(const Batch& batch) const
 {
-    if((batch.meta.DispCnt&(1u<<14))&&!clearBitmapReady)throw std::invalid_argument("Clear bitmap not uploaded");
+    if((batch.meta.DispCnt&(1u<<14))&&!clearBitmapReady&&!clearBitmapPending)throw std::invalid_argument("Clear bitmap not uploaded");
     if(batch.polygons.size()>2048||batch.variants.size()>256||
         batch.indices.size()>Resources.MaxSpans||batch.edges.size()>12288||
         batch.meta.NumPolygons!=batch.polygons.size()||batch.meta.NumVariants!=batch.variants.size())throw std::invalid_argument("Invalid initial compute batch");
@@ -472,17 +483,23 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
     RenderCostVulkanScope cost(owner->Costs(), Cost::Record3D);
     if(batches.empty())throw std::invalid_argument("Compute frame needs a clear batch");
     if(mode==Readback::Native&&!nativePipeline)throw std::logic_error("Native readback unavailable");
-    FlushUploads(); // Complete copies before validation/dispatch can consume images.
     size_t variantCount=0,polygonCount=0;
-    for(const auto& batch:batches) {
-        Validate(batch);
-        if(batch.wbuffer!=batches.front().wbuffer||
-            std::memcmp(&batch.meta.AlphaRef,&batches.front().meta.AlphaRef,
-                sizeof(ComputeData::MetaUniform)-offsetof(ComputeData::MetaUniform,AlphaRef)))
-            throw std::invalid_argument("Compute frame state changed between batches");
-        variantCount+=batch.variants.size();polygonCount+=batch.polygons.size();
+    try {
+        for(const auto& batch:batches) {
+            Validate(batch);
+            if(batch.wbuffer!=batches.front().wbuffer||
+                std::memcmp(&batch.meta.AlphaRef,&batches.front().meta.AlphaRef,
+                    sizeof(ComputeData::MetaUniform)-offsetof(ComputeData::MetaUniform,AlphaRef)))
+                throw std::invalid_argument("Compute frame state changed between batches");
+            variantCount+=batch.variants.size();polygonCount+=batch.polygons.size();
+        }
+        if(variantCount>2048||polygonCount>2048)throw std::invalid_argument("Compute frame exceeds DS polygon capacity");
+    } catch(...) {
+        // Invalid frames still complete already queued uploads, as they did
+        // when every render began with a separate synchronous upload flush.
+        FlushUploads();
+        throw;
     }
-    if(variantCount>2048||polygonCount>2048)throw std::invalid_argument("Compute frame exceeds DS polygon capacity");
     Device::Check(f.vkResetDescriptorPool(device,texturePool,0),"Reset texture descriptors");
     std::vector<VkDescriptorSet> textures(variantCount);
     if(variantCount) {
@@ -494,6 +511,9 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
         for(const auto& batch:batches)for(const auto& variant:batch.variants)WriteTextureSet(textures[index++],variant);
     }
     const auto command=owner->Begin(Device::SubmitKind::ThreeD);
+    // Per-image transfer-to-compute barriers make the uploads visible to this
+    // render. Their resources remain retained through the same submission fence.
+    RecordUploads(command);
     size_t offset=0;
     bool first=true;
     for(const auto& batch:batches) {
@@ -532,6 +552,7 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
         }
     }
     owner->SubmitAndWait();
+    CompleteUploads();
     if(mode==Readback::None)return {};
     if(mode==Readback::Native) {
         if(nativeReadback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)

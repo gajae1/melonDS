@@ -11,9 +11,21 @@ namespace {
 PFN_vkCreateBuffer DriverCreate;
 PFN_vkAllocateMemory DriverAllocate;
 PFN_vkQueueSubmit DriverSubmit;
+PFN_vkWaitForFences DriverWait;
+VkResult FailWait = VK_SUCCESS;
+unsigned Waits = 0;
 std::vector<uint32_t> MemoryChoices;
 VkResult FailAllocation = VK_SUCCESS;
 unsigned Submissions = 0;
+VKAPI_ATTR VkResult VKAPI_CALL Wait(VkDevice device, uint32_t count, const VkFence* fences,
+    VkBool32 all, uint64_t timeout)
+{
+    ++Waits;
+    if (FailWait != VK_SUCCESS) {
+        const auto result = FailWait; FailWait = VK_SUCCESS; return result;
+    }
+    return DriverWait(device, count, fences, all, timeout);
+}
 VKAPI_ATTR VkResult VKAPI_CALL Allocate(VkDevice device, const VkMemoryAllocateInfo* info,
     const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory)
 {
@@ -45,10 +57,12 @@ struct Observe {
         DriverCreate = table.vkCreateBuffer; table.vkCreateBuffer = Create;
         DriverAllocate = table.vkAllocateMemory; table.vkAllocateMemory = Allocate;
         DriverSubmit = table.vkQueueSubmit; table.vkQueueSubmit = Submit;
+        DriverWait = table.vkWaitForFences; table.vkWaitForFences = Wait;
     }
     ~Observe() {
         table.vkCreateBuffer = DriverCreate; table.vkAllocateMemory = DriverAllocate;
         table.vkQueueSubmit = DriverSubmit; FailNext = false; FailAllocation = VK_SUCCESS;
+        table.vkWaitForFences = DriverWait; FailWait = VK_SUCCESS;
     }
 };
 }
@@ -158,6 +172,56 @@ int main()
                 "invalid clear pair damaged the previous images");
         pipeline.UploadTextureLayer(*small, 0, pixels);
         Require(pipeline.Render(batch) == expectedClear, "staging reuse corrupted clear images");
+        batch.meta.DispCnt &= ~(1u << 14);
+        batch.meta.ClearColor = 0x1F05152A;
+        const auto nextClear = pipeline.Render(batch);
+        pipeline.SetUploadBatching(true);
+        std::fill(clearColors.begin(), clearColors.end(), batch.meta.ClearColor);
+        pipeline.UploadClearBitmap(clearColors, clearDepths);
+        auto temporary = pipeline.UploadTexture(8, 8, 1, pixels, true);
+        std::weak_ptr<Device::Image> retainedImage = temporary->image;
+        temporary.reset();
+        std::fill(clearColors.begin(), clearColors.end(), 0);
+        std::fill(pixels.begin(), pixels.end(), 0);
+        batch.meta.DispCnt |= 1u << 14;
+        const auto fusedSubmits = Submissions, fusedWaits = Waits;
+        Require(!retainedImage.expired(), "queued render upload lost its image");
+        Require(pipeline.Render(batch) == nextClear, "fused clear upload lost its input snapshot");
+        Require(Submissions == fusedSubmits + 1 && Waits == fusedWaits + 1 && retainedImage.expired(),
+                "upload and render did not complete through one shared fence");
+        // Invalid frames still flush preceding uploads before reporting validation failure.
+        pipeline.UploadClearBitmap(clearColors, clearDepths);
+        batch.meta.NumPolygons = 1;
+        const auto invalidSubmits = Submissions;
+        bool frameRejected = false;
+        try { (void)pipeline.Render(batch); }
+        catch (const std::invalid_argument&) { frameRejected = true; }
+        Require(frameRejected && Submissions == invalidSubmits + 1,
+                "invalid render changed the queued upload completion boundary");
+        batch.meta.NumPolygons = 0;
+        pipeline.FlushUploads();
+        Require(Submissions == invalidSubmits + 1, "invalid render left already flushed uploads pending");
+
+        auto failedPipeline = std::make_unique<ComputePipeline>(device, EmbeddedShaders());
+        failedPipeline->SetUploadBatching(true);
+        temporary = failedPipeline->UploadTexture(8, 8, 1, pixels, true);
+        retainedImage = temporary->image;
+        temporary.reset();
+        batch.meta.DispCnt &= ~(1u << 14);
+        FailWait = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        bool waitFailed = false;
+        try { (void)failedPipeline->Render(batch); }
+        catch (const std::runtime_error&) { waitFailed = true; }
+        Require(waitFailed && FailWait == VK_SUCCESS && !retainedImage.expired(),
+                "failed fused wait released pending upload resources prematurely");
+        const auto retiredSubmits = Submissions;
+        bool retired = false;
+        try { failedPipeline->FlushUploads(); }
+        catch (const std::runtime_error&) { retired = true; }
+        Require(retired && Submissions == retiredSubmits, "failed fused work was resubmitted");
+        failedPipeline.reset();
+        Require(retainedImage.expired(), "retired upload image leaked after pipeline teardown");
+        std::puts("Vulkan fused upload/render: snapshot, one fence, invalid frame, failed wait and retirement PASS");
         std::puts("Vulkan staging reuse, growth failure/retry, memory choice and readback lifetime PASS");
         return 0;
     } catch (const std::exception& e) {

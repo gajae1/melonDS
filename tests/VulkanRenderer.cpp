@@ -1631,9 +1631,9 @@ void UploadBatching(int scale, bool enforceBatching)
             static_cast<unsigned long long>(hash), actual.size());
         if (enforceBatching)
         {
-            Require(submits <= 2, "texture/clear uploads were submitted per image instead of per phase");
+            Require(submits <= 1, "texture/clear uploads did not share the render submission");
             if (frame == 1) Require(submits == 1, "warm texture cache submitted redundant uploads");
-            if (frame == 18) Require(submits == 2, "same-byte remapping changed clear refresh/cache semantics");
+            if (frame == 18) Require(submits == 1, "same-byte remapping changed clear refresh/cache semantics");
             if (frame == 19) Require(submits == 0, "unchanged cached frame submitted redundant work");
         }
     }
