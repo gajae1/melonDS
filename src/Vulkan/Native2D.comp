@@ -1,0 +1,197 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=64) in;
+layout(std430,set=0,binding=0) readonly buffer Memory { uint data[]; };
+#include "Native2D/Scanline.glsl"
+uint objOAM16(uint index);
+uint objVRAM8(uint address);
+uint objVRAM16(uint address);
+#include "Native2D/ObjDecode.glsl"
+#include "Native2DFinal.glsl"
+struct NativeObjectState {
+    uint dispCnt, line, mosaicLine, enabled;
+    uint vramTable, vramMask, oamTable, historyRead;
+};
+struct NativeRecord {
+    ScanlineLine layers;
+    NativeObjectState object;
+    uint bgTable, paletteTable, physicalLine, screen;
+    uint source3DLine, source3DX, source3DAbort, source3DScale;
+    NativeFinalConfig finalDisplay;
+    uint objectWrite, rawOutput, hiresLCDC, scaledCapture;
+};
+layout(std430,set=0,binding=1) readonly buffer Records { NativeRecord records[]; };
+layout(std430,set=0,binding=2) writeonly buffer RawOutput { uint rawPixels[]; };
+layout(std430,set=0,binding=3) buffer ObjectHistory { uint history[]; };
+layout(rgba8,set=0,binding=4) uniform readonly image2D Image3D;
+layout(r32ui,set=0,binding=5) uniform writeonly uimage2D Top;
+layout(r32ui,set=0,binding=6) uniform writeonly uimage2D Bottom;
+layout(rgba8,set=0,binding=7) uniform readonly image2D Display3D;
+layout(std430,set=0,binding=8) writeonly buffer NativeFrames { uint nativeFrames[]; };
+layout(std430,set=0,binding=9) writeonly buffer ScaledCaptureA { uint scaledRaw[]; };
+layout(std430,set=0,binding=10) readonly buffer HiresCapture { uint hires[]; };
+layout(push_constant) uniform Dispatch { uint firstLine, lineCount, displayScale, outputBuffer; } pc;
+shared uint selectedOBJ[256], selectedWindow[256], objectWords[256], visibleObjects[4];
+uint recordIndex;
+#include "Native2D/HiresBG.glsl"
+
+uint memoryWord(uint table, uint byteAddress) {
+    return data[data[table+(byteAddress>>9)]+((byteAddress&511u)>>2)];
+}
+uint memory16(uint table,uint byteAddress) {
+    return (memoryWord(table,byteAddress)>>((byteAddress&2u)*8u))&0xFFFFu;
+}
+uint bgReadVRAM8(uint address,uint mask) {
+    uint a=address&mask;
+    return (memoryWord(records[recordIndex].bgTable,a)>>((a&3u)*8u))&255u;
+}
+uint bgReadVRAM16(uint address,uint mask) {
+    return memory16(records[recordIndex].bgTable,address&mask);
+}
+uint bgReadPalette(uint entry) {
+    return memory16(records[recordIndex].paletteTable,entry*2u);
+}
+uint nativeFinalReadWord(uint word) { return data[word]; }
+uint objOAM16(uint index) {
+    return (objectWords[index>>1]>>((index&1u)*16u))&0xFFFFu;
+}
+uint objVRAM8(uint address) {
+    uint a=address&records[recordIndex].object.vramMask;
+    return (memoryWord(records[recordIndex].object.vramTable,a)>>((a&3u)*8u))&255u;
+}
+uint objVRAM16(uint address) {
+    return memory16(records[recordIndex].object.vramTable,address&records[recordIndex].object.vramMask);
+}
+uint scanlineRawOBJ(uint lineIndex,uint x) { return selectedOBJ[x]; }
+uint scanlineOBJWindow(uint lineIndex,uint x) { return selectedWindow[x]; }
+uint nativeSample3D(uint lineIndex,uint x,uvec2 subpixel,bool enhanced) {
+    if (records[lineIndex].source3DAbort!=0u || records[lineIndex].source3DLine>=192u) return 0u;
+    uint sx=(x+records[lineIndex].source3DX)&511u;
+    if (sx>=256u) return 0u;
+    uvec2 xy=uvec2(sx,records[lineIndex].source3DLine)*records[lineIndex].source3DScale;
+    xy+=subpixel*records[lineIndex].source3DScale/pc.displayScale;
+    vec4 sampled=enhanced?imageLoad(Display3D,ivec2(xy)):imageLoad(Image3D,ivec2(xy));
+    uvec4 rgba=uvec4(sampled*255.0+0.5);
+    return (rgba.r>>2)|((rgba.g>>2)<<8)|((rgba.b>>2)<<16)|((rgba.a>>3)<<24);
+}
+uint scanlineResolved3D(uint lineIndex,uint x) { return nativeSample3D(lineIndex,x,uvec2(0u),false); }
+bool visibleOnLine(uint number,uint line) {
+    uint a0=objOAM16(number*4u),a1=objOAM16(number*4u+1u);
+    uint kind=(a0>>8)&3u;
+    if (kind==2u) return false;
+    uint size=(a0>>14)|((a1&0xC000u)>>12);
+    uint height=OBJ_HEIGHT[size]<<(kind==3u?1u:0u);
+    if (((line-(a0&255u))&255u)>=height) return false;
+    uint width=OBJ_WIDTH[size]<<(kind==3u?1u:0u);
+    int xpos=int((a1&511u)^256u)-256;
+    return xpos > -int(width);
+}
+void main() {
+    if (gl_WorkGroupID.y>=pc.lineCount) return;
+    recordIndex=pc.firstLine+gl_WorkGroupID.y;
+    uint lane=gl_LocalInvocationID.x;
+    bool fresh=records[recordIndex].object.historyRead==0xFFFFFFFFu;
+    bool enabled=records[recordIndex].object.enabled!=0u;
+    for (uint part=0u;part<4u;++part) {
+        uint index=lane+part*64u;
+        objectWords[index]=fresh&&enabled ? memoryWord(records[recordIndex].object.oamTable,index*4u):0u;
+    }
+    barrier();
+    if (lane<4u) {
+        uint bits=0u;
+        if (fresh&&enabled)
+            for (uint bit=0u;bit<32u;++bit)
+                if (visibleOnLine(lane*32u+bit,records[recordIndex].object.line)) bits|=1u<<bit;
+        visibleObjects[lane]=bits;
+    }
+    barrier();
+    for (uint part=0u;part<4u;++part) {
+        uint x=lane+part*64u,pixel=0u,window=0u;
+        if (!fresh) {
+            uint base=records[recordIndex].object.historyRead;
+            pixel=history[base+x]; window=history[base+256u+x];
+        } else if (enabled) {
+            ObjDecodeState state=ObjDecodeState(records[recordIndex].object.dispCnt,
+                records[recordIndex].object.line,records[recordIndex].object.mosaicLine,0u);
+            for (uint word=0u;word<4u;++word) {
+                uint remaining=visibleObjects[word];
+                while (remaining!=0u) {
+                    uint number=word*32u+uint(findLSB(remaining)); remaining&=remaining-1u;
+                    int sampleValue; uint attributes; bool isWindow;
+                    if (!objCandidate(state,number,x,sampleValue,attributes,isWindow)) continue;
+                    if (isWindow) { if (sampleValue>0) window=1u; }
+                    else objMerge(sampleValue,attributes,pixel);
+                }
+            }
+        }
+        selectedOBJ[x]=pixel; selectedWindow[x]=window;
+    }
+    barrier();
+    ScanlineLine state=records[recordIndex].layers;
+    // NumSprites is only an interleave gate: empty metadata cannot draw. No
+    // CPU sprite enumeration or selected pixel buffer is needed by this pass.
+    state.numSprites=1u;
+    bool drawn=state.enabled!=0u && state.forcedBlank==0u && records[recordIndex].finalDisplay.vcount<192u;
+    for (uint part=0u;part<4u;++part) {
+        uint x=lane+part*64u;
+        ScanlinePixelState pixelState=scanlinePreparePixel(state,recordIndex,x);
+        uint pixel=scanlineCompositePixel(state,pixelState);
+        rawPixels[records[recordIndex].rawOutput+x]=pixel;
+        uint base=records[recordIndex].objectWrite;
+        history[base+x]=drawn ? scanlineMosaicOBJ(state.objMosaicX,recordIndex,x):selectedOBJ[x];
+        history[base+256u+x]=selectedWindow[x];
+        uint finalPixel=nativeFinalPixel(records[recordIndex].finalDisplay,x,pixel);
+        nativeFrames[((pc.outputBuffer*2u+records[recordIndex].screen)*192u+
+            records[recordIndex].physicalLine)*256u+x]=finalPixel;
+        // Guest raw/history are already complete. Only eligible display layers
+        // change per subpixel; native decoding and window selection are shared.
+        bool scaled3D=pc.displayScale>1u && drawn && state.layers[0].isActive!=0u &&
+            state.layers[0].source.type==SCANLINE_TYPE_3D && (pixelState.window&1u)!=0u;
+        uint bgPage=state.reserved0==0u?0u:data[state.reserved0];
+        uint scaledBG=0u;
+        if (pc.displayScale>1u && drawn && bgPage!=0u)
+            for (uint bg=2u;bg<4u;++bg)
+                if (state.layers[bg].isActive!=0u && state.layers[bg].source.type==BG_TYPE_DIRECT &&
+                    (pixelState.window&data[bgPage+74u]&(1u<<bg))!=0u) scaledBG|=1u<<bg;
+        uint nativeBG[2]=uint[2](pixelState.layerColor[2],pixelState.layerColor[3]);
+        uint lastRaw=pixel;
+        for (uint sy=0u;sy<pc.displayScale;++sy)
+        for (uint sx=0u;sx<pc.displayScale;++sx) {
+            bool changed=false;
+            if (scaled3D) {
+                uint color=nativeSample3D(recordIndex,x,uvec2(sx,sy),true);
+                color=(color>>24)==0u?0u:color|0x40000000u;
+                if (color!=pixelState.layerColor[0]) {
+                    pixelState.layerColor[0]=color;
+                    changed=true;
+                }
+            }
+            for (uint bg=2u;bg<4u;++bg)
+                if ((scaledBG&(1u<<bg))!=0u) {
+                    uint color=hiresBGColor(state.layers[bg],bgPage,bg,x,uvec2(sx,sy),nativeBG[bg-2u]);
+                    if (color!=pixelState.layerColor[bg]) {
+                        pixelState.layerColor[bg]=color;
+                        changed=true;
+                    }
+                }
+            if (changed) lastRaw=scanlineCompositePixel(state,pixelState);
+            if (records[recordIndex].scaledCapture!=0u)
+                scaledRaw[(records[recordIndex].scaledCapture-1u)*256u*pc.displayScale*pc.displayScale+
+                    (sy*256u+x)*pc.displayScale+sx]=lastRaw;
+            NativeFinalConfig config=records[recordIndex].finalDisplay;
+            uint outputPixel=(scaled3D||scaledBG!=0u)?nativeFinalPixel(config,x,lastRaw):finalPixel;
+            if ((records[recordIndex].hiresLCDC&(1u<<(x>>7)))!=0u &&
+                config.screensEnabled!=0u && config.vcount<192u) {
+                uint bank=records[recordIndex].hiresLCDC>>2;
+                uint pitch=(pc.displayScale*pc.displayScale+1u)&~1u;
+                uint word=(bank*65536u+config.vcount*256u+x)*pitch+sy*pc.displayScale+sx;
+                uint value=(hires[word>>1]>>((word&1u)*16u))&65535u;
+                outputPixel=nativeFinalFinish(config,nativeFinalRGB555(value));
+            }
+            ivec2 xy=ivec2(x*pc.displayScale+sx,records[recordIndex].physicalLine*pc.displayScale+sy);
+            if (records[recordIndex].screen==0u) imageStore(Top,xy,uvec4(outputPixel));
+            else imageStore(Bottom,xy,uvec4(outputPixel));
+        }
+    }
+}

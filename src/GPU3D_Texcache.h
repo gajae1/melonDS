@@ -5,6 +5,7 @@
 #include "GPU.h"
 
 #include <assert.h>
+#include <concepts>
 #include <unordered_map>
 #include <vector>
 
@@ -71,7 +72,7 @@ public:
         : GPU(gpu), TexLoader(texloader) // probably better if this would be a move constructor???
     {}
 
-    u64 MaskedHash(u8* vram, u32 vramSize, u32 addr, u32 size)
+    u64 MaskedHash(const u8* vram, u32 vramSize, u32 addr, u32 size)
     {
         u64 hash = 0;
 
@@ -96,7 +97,7 @@ public:
         return hash;
     }
 
-    bool CheckInvalid(u32 start, u32 size, u64 oldHash, u64* dirty, u8* vram, u32 vramSize)
+    bool CheckInvalid(u32 start, u32 size, u64 oldHash, u64* dirty, const u8* vram, u32 vramSize)
     {
         u32 startBit = start / VRAMDirtyGranularity;
         u32 bitsCount = ((start + size + VRAMDirtyGranularity - 1) / VRAMDirtyGranularity) - startBit;
@@ -120,7 +121,15 @@ public:
 
     bool Update(u8& clrBitmapDirty)
     {
-        if (GPU.GPU3D.RenderDispCnt & 1)
+        // Optional native-GPU hooks: when captures are GPU-resident the loader
+        // reports a generation covering VRAMMap_Texture, owned banks and the
+        // completed capture revision, and supplies a stale-free byte baseline.
+        u64 generation = 0;
+        bool gpuOwned = false;
+        if constexpr (HasNativeTexHooks)
+            gpuOwned = TexLoader.BeginTextureUpdate(generation);
+
+        if (!gpuOwned && GPU.GPU3D.RenderDispCnt & 1)
         {
             for (u32 i = 0; i < GPU.GPU3D.RenderNumPolygons; ++i)
             {
@@ -144,9 +153,28 @@ public:
         bool textureChanged = GPU.MakeVRAMFlat_TextureCoherent(textureDirty);
         bool texPalChanged = GPU.MakeVRAMFlat_TexPalCoherent(texPalDirty);
 
-        clrBitmapDirty = 0;
+        TextureBytes = nullptr;
+        if constexpr (HasNativeTexHooks)
+            TextureBytes = TexLoader.TextureBytes(textureChanged);
+        if (!TextureBytes)
+            TextureBytes = GPU.VRAMFlat_Texture;
 
-        if (textureChanged || texPalChanged)
+        bool sourceChanged = generation != LastGeneration;
+        LastGeneration = generation;
+
+        clrBitmapDirty = 0;
+        if constexpr (HasNativeTexHooks)
+        {
+            if (sourceChanged)
+                for (u32 plane = 0; plane < 2; ++plane)
+                {
+                    const u64 stamp = TexLoader.TextureSource(0x40000 + plane * 0x20000, 0x20000);
+                    if (stamp != ClearSources[plane]) clrBitmapDirty |= 1u << plane;
+                    ClearSources[plane] = stamp;
+                }
+        }
+
+        if (textureChanged || texPalChanged || sourceChanged)
         {
             // check if slots 2 and 3 are dirty (for the clear bitmap)
             for (u32 j = (0x40000/(VRAMDirtyGranularity*64)); j < (0x60000/(VRAMDirtyGranularity*64)); j++)
@@ -170,6 +198,23 @@ public:
             for (auto it = Cache.begin(); it != Cache.end();)
             {
                 TexCacheEntry& entry = it->second;
+                // GPU source stamps before CPU hashes: a stamp change (new
+                // capture, ownership move, owned-bank remap) invalidates even
+                // when no CPU dirty bit was raised for the range.
+                if (sourceChanged)
+                {
+                    if constexpr (HasNativeTexHooks)
+                    {
+                        for (u32 i = 0; i < 2; i++)
+                        {
+                            if (entry.TextureRAMSize[i] &&
+                                    TexLoader.TextureSource(entry.TextureRAMStart[i],
+                                        entry.TextureRAMSize[i]) != entry.TextureSource[i])
+                                goto invalidate;
+                        }
+                    }
+                }
+
                 if (textureChanged)
                 {
                     for (u32 i = 0; i < 2; i++)
@@ -177,7 +222,7 @@ public:
                         if (CheckInvalid(entry.TextureRAMStart[i], entry.TextureRAMSize[i],
                                 entry.TextureHash[i],
                                 textureDirty.Data,
-                                GPU.VRAMFlat_Texture, sizeof(GPU.VRAMFlat_Texture)))
+                                TextureBytes, sizeof(GPU.VRAMFlat_Texture)))
                             goto invalidate;
                     }
                 }
@@ -252,7 +297,6 @@ public:
         {
             entry.TextureRAMSize[0] = width*height*2;
 
-            ConvertBitmapTexture<outputFmt_RGB6A5>(width, height, DecodingBuffer, addr, GPU);
         }
         else if (fmt == 5)
         {
@@ -267,7 +311,6 @@ public:
             // The last 4-byte palette offset can select four 16-bit colors.
             entry.TexPalSize = 0x10004;
 
-            ConvertCompressedTexture<outputFmt_RGB6A5>(width, height, DecodingBuffer, addr, slot1addr, entry.TexPalStart, GPU);
         }
         else
         {
@@ -292,22 +335,27 @@ public:
 
             //assert(entry.TexPalStart+entry.TexPalSize <= 128*1024*1024);
 
-            bool color0Transparent = texParam & (1 << 29);
+        }
 
-            switch (fmt)
+        const u8* textureBytes = TextureBytes ? TextureBytes : GPU.VRAMFlat_Texture;
+
+        // GPU source stamps: nonzero means the range is at least partly
+        // loader-owned, so the layer is decoded on-device instead of from
+        // the CPU baseline.
+        if constexpr (HasNativeTexHooks)
+        {
+            for (u32 i = 0; i < 2; i++)
             {
-            case 1: ConvertAXIYTexture<outputFmt_RGB6A5, 3, 5>(width, height, DecodingBuffer, addr, palAddr, GPU); break;
-            case 6: ConvertAXIYTexture<outputFmt_RGB6A5, 5, 3>(width, height, DecodingBuffer, addr, palAddr, GPU); break;
-            case 2: ConvertNColorsTexture<outputFmt_RGB6A5, 2>(width, height, DecodingBuffer, addr, palAddr, color0Transparent, GPU); break;
-            case 3: ConvertNColorsTexture<outputFmt_RGB6A5, 4>(width, height, DecodingBuffer, addr, palAddr, color0Transparent, GPU); break;
-            case 4: ConvertNColorsTexture<outputFmt_RGB6A5, 8>(width, height, DecodingBuffer, addr, palAddr, color0Transparent, GPU); break;
+                if (entry.TextureRAMSize[i])
+                    entry.TextureSource[i] = TexLoader.TextureSource(entry.TextureRAMStart[i],
+                        entry.TextureRAMSize[i]);
             }
         }
 
         for (int i = 0; i < 2; i++)
         {
             if (entry.TextureRAMSize[i])
-                entry.TextureHash[i] = MaskedHash(GPU.VRAMFlat_Texture, sizeof(GPU.VRAMFlat_Texture),
+                entry.TextureHash[i] = MaskedHash(textureBytes, sizeof(GPU.VRAMFlat_Texture),
                     entry.TextureRAMStart[i], entry.TextureRAMSize[i]);
         }
         if (entry.TexPalSize)
@@ -339,7 +387,27 @@ public:
 
         entry.Texture = storagePlace;
 
-        TexLoader.UploadTexture(storagePlace.TextureID, width, height, storagePlace.Layer, DecodingBuffer);
+        if (entry.TextureSource[0] || entry.TextureSource[1])
+        {
+            if constexpr (HasNativeTexHooks)
+                TexLoader.DecodeTexture(storagePlace.TextureID, storagePlace.Layer, texParam, palBase);
+        }
+        else
+        {
+            const u32 palAddr = entry.TexPalStart;
+            const bool color0Transparent = texParam & (1 << 29);
+            switch (fmt)
+            {
+            case 1: ConvertAXIYTexture<outputFmt_RGB6A5, 3, 5>(width, height, DecodingBuffer, addr, palAddr, GPU); break;
+            case 2: ConvertNColorsTexture<outputFmt_RGB6A5, 2>(width, height, DecodingBuffer, addr, palAddr, color0Transparent, GPU); break;
+            case 3: ConvertNColorsTexture<outputFmt_RGB6A5, 4>(width, height, DecodingBuffer, addr, palAddr, color0Transparent, GPU); break;
+            case 4: ConvertNColorsTexture<outputFmt_RGB6A5, 8>(width, height, DecodingBuffer, addr, palAddr, color0Transparent, GPU); break;
+            case 5: ConvertCompressedTexture<outputFmt_RGB6A5>(width, height, DecodingBuffer, addr, entry.TextureRAMStart[1], palAddr, GPU); break;
+            case 6: ConvertAXIYTexture<outputFmt_RGB6A5, 5, 3>(width, height, DecodingBuffer, addr, palAddr, GPU); break;
+            case 7: ConvertBitmapTexture<outputFmt_RGB6A5>(width, height, DecodingBuffer, addr, GPU); break;
+            }
+            TexLoader.UploadTexture(storagePlace.TextureID, width, height, storagePlace.Layer, DecodingBuffer);
+        }
         //printf("using storage place %d %d | %d %d (%d)\n", width, height, storagePlace.TexArrayIdx, storagePlace.LayerIdx, array.ImageDescriptor);
 
         textureHandle = storagePlace.TextureID;
@@ -347,8 +415,18 @@ public:
         helper = &Cache.emplace(std::make_pair(key, entry)).first->second.LastVariant;
     }
 
+    bool DecodeClearBitmap()
+    {
+        if constexpr (requires(TexLoaderT& loader) { { loader.DecodeClearBitmap() } -> std::convertible_to<bool>; })
+            return TexLoader.DecodeClearBitmap();
+        return false;
+    }
+
     void Reset()
     {
+        LastGeneration = 0;
+        ClearSources[0] = ClearSources[1] = 0;
+        TextureBytes = nullptr;
         for (u32 i = 0; i < 8; i++)
         {
             for (u32 j = 0; j < 8; j++)
@@ -364,6 +442,18 @@ public:
 
 private:
     melonDS::GPU& GPU;
+
+    // Complete optional loader hook set for native (GPU-resident) texture
+    // sources. Detected once at compile time; loaders without the full
+    // contract take the pure-CPU path untouched.
+    static constexpr bool HasNativeTexHooks = requires(TexLoaderT& loader,
+        const TexHandleT& handle, u64& generation)
+    {
+        { loader.BeginTextureUpdate(generation) } -> std::convertible_to<bool>;
+        { loader.TextureBytes(bool{}) } -> std::convertible_to<const u8*>;
+        { loader.TextureSource(u32{}, u32{}) } -> std::convertible_to<u64>;
+        { loader.DecodeTexture(handle, u32{}, u32{}, u32{}) };
+    };
 
     struct TexArrayEntry
     {
@@ -382,10 +472,19 @@ private:
 
         u64 TextureHash[2];
         u64 TexPalHash;
+        // Per-range GPU source stamps: recomputed via TextureSource on each
+        // generation change, independent of CPU dirty bits.
+        u64 TextureSource[2];
     };
     std::unordered_map<u64, TexCacheEntry> Cache;
 
     TexLoaderT TexLoader;
+
+    u64 LastGeneration = 0;
+    u64 ClearSources[2]{};
+    // Baseline for texture hashes and CPU decode input selection, refreshed
+    // by Update. Loader-provided assembled bytes or VRAMFlat_Texture.
+    const u8* TextureBytes = nullptr;
 
     std::vector<TexArrayEntry> FreeTextures[8][8];
     std::vector<TexHandleT> TexArrays[8][8];

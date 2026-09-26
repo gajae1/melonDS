@@ -1374,7 +1374,7 @@ void CapturedTexture(int scale)
                     // Recreate an allocated but only partially produced sidecar.
                     // Actual DrawScanline/DoCapture supplies the first 64 rows;
                     // no test-only injection into renderer storage is involved.
-                    nds->GetRenderer().InvalidateDisplayCapture(1, start);
+                    nds->GetRenderer().InvalidateDisplayCapture(1, start, 1);
                     nds->GetRenderer().AllocCapture(1, start, captureSize);
                     nds->GPU.CaptureCnt = control;
                     nds->GPU.CaptureEnable = true;
@@ -1388,7 +1388,7 @@ void CapturedTexture(int scale)
                 Require(!nds->GetRenderer().HasRenderFailure(), "capture texture producer failed");
                 nds->ARM9Write8(0x04000241, 0x83);
             }
-            reference->GetRenderer().InvalidateDisplayCapture(1, start);
+            reference->GetRenderer().InvalidateDisplayCapture(1, start, 1);
             guest.assign(vk->GPU.VRAM[1], vk->GPU.VRAM[1] + 131072);
             Require(std::equal(guest.begin(), guest.end(), reference->GPU.VRAM[1]),
                 "capture texture producer consoles disagree");
@@ -1535,7 +1535,7 @@ void CapturedTexture(int scale)
         check("invalid-row-and-valid-neighbor", {{24,72,0,0,edgeNative}, {64,72,0,0,0xFFFF0000}});
         quad(shortParam, 32 * 16 + 8, 40 * 16);
         check("valid-row-before-invalidation", {{24,72,0,0,0xFFFF0000}});
-        vk->GetRenderer().InvalidateDisplayCapture(1, start);
+        vk->GetRenderer().InvalidateDisplayCapture(1, start, 1);
         for (auto* nds : consoles) nds->GPU.GPU3D.RenderFrameIdentical = true;
         check("missing-sidecar-identical-frame", {}, true);
         vk->GetRenderer().AllocCapture(1, start, captureSize);

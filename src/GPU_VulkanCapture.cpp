@@ -6,6 +6,7 @@
 #include "RenderCost.h"
 #include "Vulkan/ComputePipeline.h"
 #include "Vulkan/EmbeddedShaders.h"
+#include "Vulkan/Native2DCapture.h"
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -13,6 +14,25 @@
 namespace melonDS
 {
 using Cost = RenderCostVulkanMeter;
+bool VulkanRenderer::CaptureTextureBank(u32 texparam, u32 scale, u32& bank) const
+{
+    if (!NativeCapture || !NativeCapture->Hires() || scale != NativeCapture->HiresScale()) return false;
+    int info[16];
+    GPU.GetCaptureInfo_Texture(info);
+    const int block = GetTextureCaptureBlock(texparam, info);
+    if (block < 0) return false;
+    const u32 address = (texparam & 0xFFFF) * 8, count = TextureWidth(texparam) * TextureHeight(texparam);
+    const u32 end = (address + count * 2 + 0x7FFF) >> 15;
+    for (u32 page = address >> 15; page < end; ++page)
+        if (info[page] != block) return false;
+    bank = u32(block) >> 2;
+    // Capture layouts cover whole 32KiB CBF blocks. The single capture above
+    // bounds the range; segment ownership additionally rejects unwritten rows.
+    for (u32 segment = address / 256; segment < (address + count * 2 + 255) / 256; ++segment)
+        if (!NativeHiresOwned[bank][segment & 511]) return false;
+    return true;
+}
+
 bool VulkanRenderer::CaptureTexturePixels(u32 texparam, u32 scale, std::vector<u32>& pixels) const
 {
     if (scale <= 1 || scale != u32(DisplayScale)) return false;
@@ -148,6 +168,12 @@ const u16* VulkanRenderer::CapturedMappedRow(u32 mask, u32 address, u32 subline,
 
 void VulkanRenderer::AllocCapture(u32 bank, u32 start, u32 size)
 {
+    if (NativePipeline)
+    {
+        NativeCaptureWriteThrough = false;
+        NativeCaptureControl = GPU.CaptureCnt;
+        return;
+    }
     if (DisplayScale == 1) { DisplayCaptures[bank * 4 + start] = {}; return; }
     // The GPU's existing provenance flags invalidate CPU/DMA-written captures.
     // Release obsolete slots so overlapping captures do not retain old images.
@@ -167,6 +193,14 @@ void VulkanRenderer::AllocCapture(u32 bank, u32 start, u32 size)
         capture = {};
         Platform::Log(Platform::LogLevel::Warn, "Vulkan capture enhancement unavailable: %s\n", error.what());
     }
+}
+
+void VulkanRenderer::InvalidateDisplayCapture(u32 bank, u32 start, u32 blocks)
+{
+    DisplayCaptures[bank * 4 + start] = {};
+    for (u32 block = 0; block < blocks; ++block)
+        for (u32 segment = 0; segment < 128; ++segment)
+            NativeHiresOwned[bank].reset(((start + block) & 3) * 128 + segment);
 }
 
 bool VulkanRenderer::ReadDisplayCapture(u32 bank, u32 word, u32 subx, u32 suby, u16& color) const

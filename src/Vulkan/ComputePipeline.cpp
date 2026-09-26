@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ComputePipeline.h"
+#include "EmbeddedShaders.h"
 #include "RenderCost.h"
 #include <algorithm>
 #include <cstring>
@@ -87,14 +88,74 @@ void ComputePipeline::EnableNativeReadback(std::span<const uint32_t> shader)
         VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         allocation.descriptorPool=nativePool;allocation.descriptorSetCount=1;allocation.pSetLayouts=&nativeBindings;
         Device::Check(f.vkAllocateDescriptorSets(device,&allocation,&nativeSet),"Allocate native readback descriptors");
-        VkDescriptorImageInfo imageInfo{VK_NULL_HANDLE,output->View(),VK_IMAGE_LAYOUT_GENERAL};
+        BindOutput();
         VkDescriptorBufferInfo bufferInfo{nativeReadback->Handle(),0,nativeReadback->Size()};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet=nativeSet;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;write.pImageInfo=&imageInfo;
-        f.vkUpdateDescriptorSets(device,1,&write,0,nullptr);
-        write.dstBinding=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pImageInfo=nullptr;write.pBufferInfo=&bufferInfo;
+        write.dstSet=nativeSet;write.dstBinding=1;write.descriptorCount=1;
+        write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pBufferInfo=&bufferInfo;
         f.vkUpdateDescriptorSets(device,1,&write,0,nullptr);
     } catch(...) { CleanupNativeReadback();throw; }
+}
+
+std::shared_ptr<Device::Image> ComputePipeline::CreateOutput() const
+{
+    return owner->CreateImage(Resources.config.ScreenWidth,Resources.config.ScreenHeight,1,VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+}
+
+void ComputePipeline::BindOutput()
+{
+    // The final pass and native-origin readback always address the selected output.
+    const VkDescriptorImageInfo image{VK_NULL_HANDLE,output->View(),VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[2]{};
+    for(auto& write:writes) {
+        write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;write.descriptorCount=1;
+        write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;write.pImageInfo=&image;
+    }
+    writes[0].dstSet=outputSet;writes[0].dstBinding=1;
+    writes[1].dstSet=nativeSet;writes[1].dstBinding=0;
+    f.vkUpdateDescriptorSets(device,nativeSet?2:1,writes,0,nullptr);
+}
+
+void ComputePipeline::BindNativeImage(const Device::Image& image)
+{
+    const VkDescriptorImageInfo info{VK_NULL_HANDLE,image.View(),VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet=nativeSet;write.dstBinding=0;write.descriptorCount=1;
+    write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;write.pImageInfo=&info;
+    f.vkUpdateDescriptorSets(device,1,&write,0,nullptr);
+}
+
+void ComputePipeline::SetOutputRetention(bool enabled)
+{
+    if(enabled==retainOutputs)return;
+    if(enabled) {
+        outputs.reserve(MaxRetainedOutputs);
+        outputs.push_back(output);
+    } else outputs.clear();
+    retainOutputs=enabled;
+}
+
+void ComputePipeline::SelectOutput()
+{
+    // Unretained: referenced only by the pool (and output while selected).
+    // Keep the current binding when possible; otherwise reuse or grow once.
+    if(output.use_count()==2)return;
+    auto next=std::find_if(outputs.begin(),outputs.end(),[](const auto& image){return image.use_count()==1;});
+    if(next==outputs.end()) {
+        if(outputs.size()>=MaxRetainedOutputs)throw std::logic_error("All retained Vulkan 3D outputs are still in use");
+        auto image=CreateOutput();
+        // Pool members are always GENERAL. No command is recording or pending
+        // before RenderView begins; deferred uploads are still host-side only.
+        const auto command=owner->Begin();
+        ImageBarrier(f,command,image->Handle(),VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,VK_ACCESS_SHADER_WRITE_BIT);
+        owner->SubmitAndWait();
+        next=outputs.insert(outputs.end(),std::move(image));
+    }
+    output=*next;
+    fullReadbackValid=false;
+    BindOutput();
 }
 
 void ComputePipeline::Init(const Shaders& shaders)
@@ -106,7 +167,7 @@ void ComputePipeline::Init(const Shaders& shaders)
     }
     readback=owner->CreateBuffer(Resources.Pixels*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,true,
         VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    output=owner->CreateImage(Resources.config.ScreenWidth,Resources.config.ScreenHeight,1,VK_FORMAT_R8G8B8A8_UNORM,VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    output=CreateOutput();
     clearColor=owner->CreateImage(256,256,1,VK_FORMAT_R32_UINT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     clearDepth=owner->CreateImage(256,256,1,VK_FORMAT_R32_UINT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     VkSamplerCreateInfo sampling{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};sampling.magFilter=sampling.minFilter=VK_FILTER_NEAREST;
@@ -170,8 +231,7 @@ void ComputePipeline::Init(const Shaders& shaders)
     }
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=indicesSet;write.dstBinding=0;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;write.pTexelBufferView=&indicesView;
     f.vkUpdateDescriptorSets(device,1,&write,0,nullptr);
-    VkDescriptorImageInfo image{VK_NULL_HANDLE,output->View(),VK_IMAGE_LAYOUT_GENERAL};write.dstBinding=1;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;write.pTexelBufferView=nullptr;write.pImageInfo=&image;
-    f.vkUpdateDescriptorSets(device,1,&write,0,nullptr);
+    BindOutput();
     const auto command=owner->Begin();
     for(auto target:{clearColor,clearDepth}) {
         ImageBarrier(f,command,target->Handle(),VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -221,6 +281,7 @@ void ComputePipeline::FlushUploads()
 {
     if(pendingUploads.empty())return;
     RenderCostVulkanScope cost(owner->Costs(), Cost::TextureUpload);
+    PrepareUploads();
     const auto command=owner->Begin(Device::SubmitKind::Upload);
     RecordUploads(command);
     // The Device drains on submission failure before throwing. Retain both
@@ -232,12 +293,15 @@ void ComputePipeline::FlushUploads()
 void ComputePipeline::RecordUploads(VkCommandBuffer command)
 {
     if(pendingUploads.empty())return;
+    if(decodePrepared)textureDecode->Record(command);
     for(const auto& upload:pendingUploads)RecordImageUpload(command,upload);
     owner->Timestamp(Device::TimestampStage::Upload);
 }
 
 void ComputePipeline::CompleteUploads()
 {
+    if(decodePrepared)textureDecode->Complete();
+    decodePrepared=false;decodeJobs.clear();decodeInputs={};decodeBytes=0;
     if(clearBitmapPending)clearBitmapReady=true;
     clearBitmapPending=false;
     pendingUploads.clear();
@@ -274,7 +338,18 @@ void ComputePipeline::RecordImageUpload(VkCommandBuffer command,const ImageUploa
         VkBufferImageCopy copy{};copy.bufferOffset=upload.offset;
         copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,upload.firstLayer,upload.layers};
         copy.imageExtent={upload.width,upload.height,1};
-        f.vkCmdCopyBufferToImage(command,uploadStaging->Handle(),image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
+        if (upload.source) {
+            VkBufferMemoryBarrier sourceBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            sourceBarrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceBarrier.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+            sourceBarrier.srcQueueFamilyIndex=sourceBarrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+            sourceBarrier.buffer=upload.source->Handle(); sourceBarrier.offset=upload.offset;
+            sourceBarrier.size=VkDeviceSize(upload.width)*upload.height*upload.layers*sizeof(uint32_t);
+            f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,1,&sourceBarrier,0,nullptr);
+        }
+        f.vkCmdCopyBufferToImage(command,upload.source?upload.source->Handle():uploadStaging->Handle(),
+            image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
         if (owner->Costs()) owner->Costs()->Transfer(Cost::ImageUploadBytes,
             uint64_t(upload.width) * upload.height * upload.layers * sizeof(uint32_t));
     }
@@ -311,12 +386,102 @@ std::shared_ptr<const ComputePipeline::Texture> ComputePipeline::CreateTexture(u
     return std::make_shared<Texture>(Texture{std::move(image),width,height,layers,false});
 }
 
+std::shared_ptr<const ComputePipeline::Texture> ComputePipeline::CreateCaptureTexture(
+    uint32_t texParam,uint32_t bank,uint32_t scale,const std::shared_ptr<Device::Buffer>& hires)
+{
+    const uint32_t width=(8u<<((texParam>>20)&7))*scale,height=(8u<<((texParam>>23)&7))*scale;
+    const auto& limits=owner->Properties().limits;
+    if(scale<2 || scale>11 || bank>=4 || ((texParam>>26)&7)!=7 || !hires ||
+        !hires->BelongsTo(*owner) || !(hires->Usage()&VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+        hires->Size()<VkDeviceSize(524288)*((scale*scale+1u)&~1u) ||
+        width>limits.maxImageDimension2D || height>limits.maxImageDimension2D)
+        throw std::invalid_argument("Invalid enhanced capture texture");
+    const VkDeviceSize bytes=VkDeviceSize(width)*height*4;
+    if(bytes>limits.maxStorageBufferRange)throw std::invalid_argument("Enhanced texture exceeds storage limit");
+    auto image=owner->CreateImage(width,height,1,VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,true);
+    auto result=std::make_shared<Texture>(Texture{image,width,height,1,true});
+    // Hires-only batches use the source itself as unused baseline/palette
+    // placeholders; no CPU staging allocation or capture readback is needed.
+    ReserveDecode(bytes,1,{hires,hires,hires});
+    pendingUploads.push_back({image,width,height,1,0,VK_IMAGE_LAYOUT_UNDEFINED,
+        0,false,{},uint32_t(decodeJobs.size())});
+    decodeJobs.push_back({texParam,(scale<<2)|bank,TextureDecode::Kind::HiresCapture});decodeBytes+=bytes;
+    SubmitUploadsIfNeeded();
+    return result;
+}
+
 void ComputePipeline::UploadTextureLayer(const Texture& texture,uint32_t layer,std::span<const uint32_t> pixels)
 {
     if(!texture.image||!texture.image->BelongsTo(*owner)||layer>=texture.layers||
         pixels.size()!=uint64_t(texture.width)*texture.height)
         throw std::invalid_argument("Invalid texture cache upload");
     UploadImage(texture.image,texture.width,texture.height,1,pixels,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,layer);
+}
+
+void ComputePipeline::UploadTextureLayerFromBuffer(const Texture& texture,uint32_t layer,
+    const std::shared_ptr<Device::Buffer>& source,uint32_t firstWord)
+{
+    const uint64_t words=uint64_t(texture.width)*texture.height;
+    if(!texture.image||!texture.image->BelongsTo(*owner)||layer>=texture.layers||texture.capture||
+        !(texture.image->Usage()&VK_IMAGE_USAGE_TRANSFER_DST_BIT)||!source||!source->BelongsTo(*owner)||
+        !(source->Usage()&VK_BUFFER_USAGE_TRANSFER_SRC_BIT)||uint64_t(firstWord)+words>source->Size()/4)
+        throw std::invalid_argument("Invalid GPU texture cache upload");
+    ReserveUpload(0,1);
+    pendingUploads.push_back({texture.image,texture.width,texture.height,1,layer,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VkDeviceSize(firstWord)*4,false,source});
+    SubmitUploadsIfNeeded();
+}
+
+void ComputePipeline::QueueTextureDecode(const Texture& texture,uint32_t layer,uint32_t texParam,uint32_t palBase,
+    const std::shared_ptr<Device::Buffer>& textures,const std::shared_ptr<Device::Buffer>& palettes,
+    const std::shared_ptr<Device::Buffer>& captured)
+{
+    const uint32_t width=8u<<((texParam>>20)&7),height=8u<<((texParam>>23)&7);
+    if(!texture.image||!texture.image->BelongsTo(*owner)||layer>=texture.layers||texture.capture||
+        texture.width!=width||texture.height!=height||!((texParam>>26)&7)||!captured)
+        throw std::invalid_argument("Invalid GPU texture decode destination");
+    const VkDeviceSize bytes=VkDeviceSize(width)*height*4;
+    ReserveDecode(bytes,1,{textures,palettes,captured});
+    pendingUploads.push_back({texture.image,width,height,1,layer,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        0,false,{},uint32_t(decodeJobs.size())});
+    decodeJobs.push_back({texParam,palBase});decodeBytes+=bytes;
+    SubmitUploadsIfNeeded();
+}
+
+void ComputePipeline::ReserveDecode(VkDeviceSize bytes,size_t images,
+    const std::array<std::shared_ptr<Device::Buffer>,3>& inputs)
+{
+    if(!decodeJobs.empty() && (inputs!=decodeInputs || decodeBytes+bytes>UploadBatchBytes))FlushUploads();
+    ReserveUpload(0,images);
+    if(!textureDecode)textureDecode=std::make_unique<TextureDecode>(owner,EmbeddedTextureDecode());
+    decodeJobs.reserve(decodeJobs.size()+images);decodeInputs=inputs;
+}
+
+void ComputePipeline::QueueClearBitmapDecode(const std::shared_ptr<Device::Buffer>& textures,
+    const std::shared_ptr<Device::Buffer>& palettes,const std::shared_ptr<Device::Buffer>& captured)
+{
+    if(!captured)throw std::invalid_argument("Missing captured clear bitmap input");
+    constexpr VkDeviceSize bytes=2*256*256*sizeof(uint32_t);
+    // Both planes enter one cohort, including an automatic capacity flush.
+    ReserveDecode(bytes,2,{textures,palettes,captured});
+    for(uint32_t plane=0;plane<2;++plane) {
+        pendingUploads.push_back({plane?clearDepth:clearColor,256,256,1,0,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            0,false,{},uint32_t(decodeJobs.size())});
+        decodeJobs.push_back({0,0,plane?TextureDecode::Kind::ClearDepth:TextureDecode::Kind::ClearColor});
+    }
+    decodeBytes+=bytes;clearBitmapReady=false;clearBitmapPending=true;
+    SubmitUploadsIfNeeded();
+}
+
+void ComputePipeline::PrepareUploads()
+{
+    if(decodeJobs.empty()||decodePrepared)return;
+    const auto slices=textureDecode->Prepare(decodeJobs,decodeInputs[0],decodeInputs[1],decodeInputs[2]);
+    for(auto& upload:pendingUploads)if(upload.decodeJob!=~0u) {
+        upload.source=textureDecode->Output();upload.offset=VkDeviceSize(slices[upload.decodeJob].word)*4;
+    }
+    decodePrepared=true;
 }
 
 void ComputePipeline::UploadClearBitmap(std::span<const uint32_t> colors,std::span<const uint32_t> depths)
@@ -494,6 +659,7 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
             variantCount+=batch.variants.size();polygonCount+=batch.polygons.size();
         }
         if(variantCount>2048||polygonCount>2048)throw std::invalid_argument("Compute frame exceeds DS polygon capacity");
+        if(retainOutputs)SelectOutput();
     } catch(...) {
         // Invalid frames still complete already queued uploads, as they did
         // when every render began with a separate synchronous upload flush.
@@ -510,6 +676,7 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
         size_t index=0;
         for(const auto& batch:batches)for(const auto& variant:batch.variants)WriteTextureSet(textures[index++],variant);
     }
+    PrepareUploads();
     const auto command=owner->Begin(Device::SubmitKind::ThreeD);
     // Per-image transfer-to-compute barriers make the uploads visible to this
     // render. Their resources remain retained through the same submission fence.
@@ -540,28 +707,12 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
     else {
         ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT);
-        if(mode==Readback::Native) {
-            f.vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,nativePipeline);
-            f.vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,nativeLayout,0,1,&nativeSet,0,nullptr);
-            f.vkCmdDispatch(command,32,24,1);
-            VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-            download.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-            f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
-            owner->Timestamp(Device::TimestampStage::NativeReadback);
-            if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeReadbackBytes, 256 * 192 * sizeof(uint32_t), 192);
-        }
+        if(mode==Readback::Native) RecordNativeReadback(command);
     }
     owner->SubmitAndWait();
     CompleteUploads();
     if(mode==Readback::None)return {};
-    if(mode==Readback::Native) {
-        if(nativeReadback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
-            return {static_cast<const uint32_t*>(nativeReadback->Data()),nativeHostReadback.size()};
-        RenderCostVulkanScope copy(owner->Costs(), Cost::NativeCopy);
-        std::memcpy(nativeHostReadback.data(),nativeReadback->Data(),nativeHostReadback.size()*sizeof(uint32_t));
-        if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeCopyBytes, nativeHostReadback.size()*sizeof(uint32_t));
-        return nativeHostReadback;
-    }
+    if(mode==Readback::Native) return NativeReadbackPixels();
     if(!(readback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
     {
         RenderCostVulkanScope copy(owner->Costs(), Cost::FullCopy);
@@ -570,6 +721,50 @@ std::span<const uint32_t> ComputePipeline::RenderView(std::span<const Batch> bat
     }
     fullReadbackValid=true;
     return FullReadbackPixels();
+}
+
+void ComputePipeline::RecordNativeReadback(VkCommandBuffer command)
+{
+    f.vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,nativePipeline);
+    f.vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,nativeLayout,0,1,&nativeSet,0,nullptr);
+    f.vkCmdDispatch(command,32,24,1);
+    VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    download.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+    f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
+    owner->Timestamp(Device::TimestampStage::NativeReadback);
+    if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeReadbackBytes, 256 * 192 * sizeof(uint32_t), 192);
+}
+
+std::span<const uint32_t> ComputePipeline::NativeReadbackPixels()
+{
+    if(nativeReadback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+        return {static_cast<const uint32_t*>(nativeReadback->Data()),nativeHostReadback.size()};
+    RenderCostVulkanScope copy(owner->Costs(), Cost::NativeCopy);
+    std::memcpy(nativeHostReadback.data(),nativeReadback->Data(),nativeHostReadback.size()*sizeof(uint32_t));
+    if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeCopyBytes, nativeHostReadback.size()*sizeof(uint32_t));
+    return nativeHostReadback;
+}
+
+std::span<const uint32_t> ComputePipeline::ReadNativeView(const std::shared_ptr<Device::Image>& image)
+{
+    if(!nativePipeline) throw std::logic_error("Native readback unavailable");
+    if(!image || !image->BelongsTo(*owner) || image->Format()!=VK_FORMAT_R8G8B8A8_UNORM ||
+        !(image->Usage()&VK_IMAGE_USAGE_STORAGE_BIT) || image->Width()<256 ||
+        image->Width()%256 || image->Height()%192 || image->Width()/256!=image->Height()/192)
+        throw std::invalid_argument("Invalid native readback image");
+    // All submissions are synchronous. Rebind only this extraction descriptor,
+    // then restore the current output before any subsequent RenderView can use it.
+    BindNativeImage(*image);
+    try {
+        const auto command=owner->Begin(Device::SubmitKind::FullReadback);
+        ImageBarrier(f,command,image->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT);
+        RecordNativeReadback(command);
+        owner->SubmitAndWait();
+    } catch(...) { BindNativeImage(*output); throw; }
+    BindNativeImage(*output);
+    return NativeReadbackPixels();
 }
 
 void ComputePipeline::RecordFullReadback(VkCommandBuffer command)

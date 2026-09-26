@@ -1,6 +1,6 @@
 # Emit the scale-independent optional display/native-readback compute shaders.
 file(WRITE "${OUTPUT_FILE}" "// Generated; do not edit.\n#include \"EmbeddedShaders.h\"\nnamespace melonDS::Vulkan {\n")
-foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend Present.vert Present.frag)
+foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend Native2D Native2DMerge Native2DCapture Native2DCaptureHires TextureDecode Present.vert Present.frag)
     file(READ "${SHADER_DIR}/${name}.spv" contents HEX)
     string(REGEX REPLACE "(..)(..)(..)(..)" "0x\\4\\3\\2\\1," contents "${contents}")
     string(REPLACE "." "_" symbol "${name}")

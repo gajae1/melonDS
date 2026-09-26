@@ -6,6 +6,9 @@
 #include "GPU_ColorOp.h"
 #include "Platform.h"
 #include "RenderCost.h"
+#include "Vulkan/Native2DPipeline.h"
+#include "Vulkan/Native2DQueue.h"
+#include "Vulkan/Native2DCapture.h"
 #include <algorithm>
 
 namespace melonDS
@@ -58,6 +61,9 @@ bool VulkanRenderer::SetRenderSettings(RendererSettings& settings)
     InvalidateDisplayFrame();
     const int scale = settings.ScaleFactor;
     if (scale < 1 || scale > ComputeShader::VulkanMaxScale) return false;
+    // Native scale replacement and state migration are still being integrated.
+    // Never silently discard latched OBJ state by switching this path mid-frame.
+    if (NativePipeline && scale != DisplayScale) return false;
     try
     {
         if (scale != DisplayScale)
@@ -148,24 +154,35 @@ void VulkanRenderer::Reset()
     ResidentImages = {};
     ResidentCPUValid = {};
     SoftRenderer::Reset();
+    ResetNative2D();
     DisplayCaptures = {};
+    NativeHiresOwned = {};
     for (auto& buffer : ScaledBuffers)
         for (auto& screen : buffer) std::fill(screen.begin(), screen.end(), 0);
 }
 
 void VulkanRenderer::Stop()
 {
+    FinishNative2D();
     DiscardDisplayComposition();
     ResidentImages = {};
     ResidentCPUValid = {};
     SoftRenderer::Stop();
+    // CPU black frames remain authoritative until a new native batch is drawn.
+    if (NativePipeline) NativePipeline->InvalidateFrames();
     DisplayCaptures = {};
+    NativeHiresOwned = {};
     for (auto& buffer : ScaledBuffers)
         for (auto& screen : buffer) std::fill(screen.begin(), screen.end(), 0);
 }
 
 void VulkanRenderer::DrawScanline(u32 line)
 {
+    if (NativePipeline)
+    {
+        DrawNativeLine(line);
+        return;
+    }
     const bool capturedDisplay = DrawCapturedDisplay(line);
     // Guest layers/capture run once; capture-aware layer output was latched
     // by each 2D compositor before native capture writes this scanline.
@@ -245,6 +262,7 @@ void VulkanRenderer::DiscardDisplayComposition()
 
 void VulkanRenderer::FinishDisplayComposition() noexcept
 {
+    FinishNative2D();
     if (!CompositionPending) return;
     RenderCostVulkanScope display(Costs(), Cost::RecordDisplay);
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
@@ -355,14 +373,14 @@ std::shared_ptr<Vulkan::Device> VulkanRenderer::DisplayDevice() const
 
 bool VulkanRenderer::EnableDirectDisplay()
 {
-    if (DisplayScale == 1)
+    if (DisplayScale == 1 && !NativePipeline)
     {
         DisplayStatus = "RAM display (1x)";
         return false;
     }
     const auto& rasterizer = static_cast<const VulkanRenderer3D&>(*Rend3D);
     if (DirectDisplayFailed) return false;
-    if (!rasterizer.Compositor || !rasterizer.Device || !rasterizer.Device->PresentationSupported())
+    if ((!rasterizer.Compositor && !NativePipeline) || !rasterizer.Device || !rasterizer.Device->PresentationSupported())
     {
         DisableDirectDisplay("Vulkan presentation unavailable");
         return false;
@@ -394,7 +412,20 @@ void VulkanRenderer::ReadbackDisplay(u32 buffer)
     for (u32 screen = 0; screen < 2; ++screen)
         if (ResidentImages[buffer][screen] && !ResidentCPUValid[buffer][screen])
         {
-            rasterizer.Compositor->ReadbackResident(buffer * 2 + screen, ScaledBuffers[buffer][screen]);
+            if (NativePipeline)
+            {
+                const u64 before = rasterizer.TotalSubmissionCount();
+                if (DisplayScale == 1)
+                    NativePipeline->ReadFrame(buffer, screen, {Framebuffer[buffer][screen], 256 * 192});
+                else
+                {
+                    NativePipeline->ReadFrame(buffer, screen, ScaledBuffers[buffer][screen],
+                        {Framebuffer[buffer][screen], 256 * 192});
+                }
+                rasterizer.DisplaySubmissions += rasterizer.TotalSubmissionCount() - before;
+            }
+            else
+                rasterizer.Compositor->ReadbackResident(buffer * 2 + screen, ScaledBuffers[buffer][screen]);
             ResidentCPUValid[buffer][screen] = true;
         }
 }

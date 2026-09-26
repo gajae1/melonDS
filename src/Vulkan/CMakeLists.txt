@@ -54,12 +54,17 @@ add_custom_command(OUTPUT "${embedded_shaders}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedShaders.cmake"
     DEPENDS ${vulkan_spirv_files} EmbedShaders.cmake VERBATIM)
 set(display_spirv_files)
-foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend Present.vert Present.frag)
+foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend Native2D Native2DMerge Native2DCapture Native2DCaptureHires TextureDecode Present.vert Present.frag)
     set(source "${name}.comp")
     if (name MATCHES "\\.")
         set(source "${name}")
     endif()
     set(spirv "${vulkan_shader_dir}/${name}.spv")
+    set(include_dependencies)
+    if (name STREQUAL "Native2D")
+        set(include_dependencies Native2D/BGDecode.glsl Native2D/Scanline.glsl
+            Native2D/ColorOps.glsl Native2D/ObjDecode.glsl Native2D/HiresBG.glsl Native2DFinal.glsl)
+    endif()
     set(validate_command)
     if (MELONDS_SPIRV_VAL)
         set(validate_command COMMAND "${MELONDS_SPIRV_VAL}" --target-env vulkan1.1 "${spirv}")
@@ -69,7 +74,7 @@ foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend Present.vert Pr
         COMMAND "${MELONDS_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
             "${CMAKE_CURRENT_SOURCE_DIR}/${source}" -o "${spirv}"
         ${validate_command}
-        DEPENDS "${source}" VERBATIM)
+        DEPENDS "${source}" ${include_dependencies} VERBATIM)
     list(APPEND display_spirv_files "${spirv}")
 endforeach()
 set(embedded_display_shaders "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedDisplayShaders.cpp")
@@ -78,6 +83,7 @@ add_custom_command(OUTPUT "${embedded_display_shaders}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedDisplayShaders.cmake"
     DEPENDS ${display_spirv_files} EmbedDisplayShaders.cmake VERBATIM)
 add_library(vulkan-compute STATIC Device.cpp Loader.cpp ComputePipeline.cpp DisplayCompositor.cpp
+    Native2DMemory.cpp Native2DState.cpp Native2DPipeline.cpp Native2DQueue.cpp Native2DCapture.cpp TextureDecode.cpp TextureCache.cpp
     "${embedded_shaders}" "${embedded_display_shaders}")
 target_include_directories(vulkan-compute PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.."
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -88,7 +94,7 @@ if (WIN32)
     target_compile_definitions(vulkan-compute PUBLIC VK_USE_PLATFORM_WIN32_KHR)
 endif()
 target_link_libraries(vulkan-compute PRIVATE ${CMAKE_DL_LIBS})
-target_sources(core PRIVATE ../GPU_Vulkan.cpp ../GPU_VulkanCapture.cpp ../GPU3D_Vulkan.cpp)
+target_sources(core PRIVATE ../GPU_Vulkan.cpp ../GPU_VulkanCapture.cpp ../GPU_VulkanNative.cpp ../GPU3D_Vulkan.cpp)
 target_link_libraries(core PUBLIC vulkan-compute)
 target_compile_definitions(core PUBLIC VULKANRENDERER_ENABLED)
 install(FILES LICENSE.volk DESTINATION share/licenses/melonDS/volk RENAME LICENSE)

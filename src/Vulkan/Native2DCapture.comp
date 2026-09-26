@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+layout(local_size_x=64) in;
+layout(std430,set=0,binding=0) readonly buffer Raw { uint pixels[]; };
+struct CaptureCommand {
+    uint control, line, rawFirst, sourceScale;
+    uint sourceX, sourceAbort, hasB, sourceWord;
+    uint gpuMask, hiresMask, scaledRawFirst, hiresWriteMask;
+    uint sourceB[128];
+};
+layout(std430,set=0,binding=1) readonly buffer Commands { CaptureCommand records[]; };
+layout(std430,set=0,binding=2) buffer Banks { uint captured[]; };
+layout(rgba8,set=0,binding=3) uniform readonly image2D Image3D;
+layout(push_constant) uniform Dispatch { uint firstRow, rowCount; } dispatch;
+uint recordIndex;
+#define p records[recordIndex]
+uint sourceA(uint x) {
+    if ((p.control & (1u<<24))==0u) return pixels[p.rawFirst+x];
+    uint sx=(x+p.sourceX)&511u;
+    if (p.sourceAbort!=0u || p.line>=192u || sx>=256u) return 0u;
+    uvec4 rgba=uvec4(imageLoad(Image3D,ivec2(uvec2(sx,p.line)*p.sourceScale))*255.0+0.5);
+    return (rgba.r>>2)|((rgba.g>>2)<<8)|((rgba.b>>2)<<16)|((rgba.a>>3)<<24);
+}
+uint capturePixel(uint x) {
+    uint mode=(p.control>>29)&3u;
+    uint b=0u;
+    if (p.hasB!=0u) {
+        uint packed=(p.gpuMask&(1u<<(x>>7)))!=0u ? captured[p.sourceWord+(x>>1)] : p.sourceB[x>>1];
+        b=(packed>>((x&1u)*16u))&65535u;
+    }
+    if (mode==1u) return b;
+    uint a=sourceA(x);
+    uvec3 rgbA=uvec3((a>>1)&31u,(a>>9)&31u,(a>>17)&31u);
+    uint alphaA=(a>>24)!=0u?1u:0u;
+    if (mode==0u) return rgbA.r|(rgbA.g<<5)|(rgbA.b<<10)|(alphaA<<15);
+    uint eva=min(p.control&31u,16u),evb=min((p.control>>8)&31u,16u);
+    uvec3 rgbB=uvec3(b&31u,(b>>5)&31u,(b>>10)&31u);
+    uint alphaB=b>>15;
+    uvec3 rgb=min((rgbA*(alphaA*eva)+rgbB*(alphaB*evb)+8u)>>4, uvec3(31u));
+    uint alpha=(eva!=0u?alphaA:0u)|(evb!=0u?alphaB:0u);
+    return rgb.r|(rgb.g<<5)|(rgb.b<<10)|(alpha<<15);
+}
+void main() {
+    if (gl_WorkGroupID.y>=dispatch.rowCount) return;
+    recordIndex=dispatch.firstRow+gl_WorkGroupID.y;
+    uint width=((p.control>>20)&3u)==0u?128u:256u;
+    uint x=gl_GlobalInvocationID.x*2u;
+    if (x>=width) return;
+    uint bank=(p.control>>16)&3u;
+    uint destination=((((p.control>>18)&3u)<<14)+p.line*width+x)&65535u;
+    captured[bank*32768u+(destination>>1)]=capturePixel(x)|(capturePixel(x+1u)<<16);
+}

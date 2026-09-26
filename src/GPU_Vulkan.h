@@ -8,6 +8,11 @@
 #include <span>
 #include <array>
 #include <vector>
+#include <bitset>
+#include <exception>
+
+namespace melonDS::Vulkan::Native2D { class Pipeline; class Queue; class CapturePipeline; struct CaptureCommand; }
+namespace melonDS::Vulkan { struct TextureLoader; }
 
 namespace melonDS
 {
@@ -15,6 +20,7 @@ namespace melonDS
 // brightness and capture in native RAM, including CPU access to capture VRAM.
 class VulkanRenderer final : public SoftRenderer
 {
+    friend struct Vulkan::TextureLoader;
 public:
     explicit VulkanRenderer(NDS& nds, const std::string& preferred = {});
     ~VulkanRenderer() override;
@@ -31,9 +37,13 @@ public:
     void Reset() override;
     void Stop() override;
     void DrawScanline(u32 line) override;
+    void DrawSprites(u32 line) override;
     void SwapBuffers() override;
+    void PreSavestate() override;
+    bool GetFramebuffers(void** top, void** bottom) override;
+    void SyncVRAMCapture(u32 bank, u32 start, u32 size, bool complete) override;
     void AllocCapture(u32 bank, u32 start, u32 size) override;
-    void InvalidateDisplayCapture(u32 bank, u32 start) override { DisplayCaptures[bank * 4 + start] = {}; }
+    void InvalidateDisplayCapture(u32 bank, u32 start, u32 blocks) override;
     bool GetDisplayFrame(DisplayFrame& frame) override;
     struct ResidentFrame
     {
@@ -52,7 +62,36 @@ public:
 
 private:
     friend class VulkanRenderer3D;
+    // Activated only once the native renderer's capture/scaled/lifecycle path is
+    // integrated. Keeping construction separate permits event-level acceptance
+    // without changing the released backend selection midway through this work.
+    bool InitNative2D();
+    void ResetNative2D();
+    void DrawNativeSprites(u32 line);
+    void DrawNativeLine(u32 line);
+    void FinishNative2D() noexcept;
+    void FailNative2D(const std::exception& error) noexcept;
+    void BindNative3D();
+    void CaptureNativeLine(u32 rawFirst);
+    void PrepareNativeCapture();
+    void SyncNativeCaptureRows(u32 bank, u32 first, u32 count);
+    void SyncNativeSources(bool sprites);
+    std::unique_ptr<Vulkan::Native2D::Pipeline> NativePipeline;
+    std::unique_ptr<Vulkan::Native2D::Queue> NativeQueue;
+    std::unique_ptr<Vulkan::Native2D::CapturePipeline> NativeCapture;
+    std::vector<Vulkan::Native2D::CaptureCommand> NativeCaptures;
+    std::shared_ptr<Vulkan::Device::Image> NativeSource3D;
+    std::shared_ptr<Vulkan::Device::Image> NativeDisplay3D;
+    u64 NativeSourceVersion = 0;
+    u32 NativeSourceScale = 1;
+    // One bit per 128 captured halfwords; only these ranges can replace RAM.
+    std::array<std::bitset<512>, 4> NativeCaptureDirty{};
+    // Presentation derivatives survive CPU reads but are revoked on writes.
+    std::array<std::bitset<512>, 4> NativeHiresOwned{};
+    bool NativeCaptureWriteThrough = false;
+    u32 NativeCaptureControl = 0;
     bool CaptureTexturePixels(u32 texparam, u32 scale, std::vector<u32>& pixels) const;
+    bool CaptureTextureBank(u32 texparam, u32 scale, u32& bank) const;
     using DisplayBuffers = std::array<std::array<std::span<u32>, 2>, 2>;
     using DisplayStorage = std::array<std::array<std::vector<u32>, 2>, 2>;
     using DisplayMemory = std::array<std::array<std::shared_ptr<Vulkan::Device::Buffer>, 2>, 2>;

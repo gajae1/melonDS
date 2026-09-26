@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+layout(local_size_x=64) in;
+layout(std430,set=0,binding=0) readonly buffer Raw { uint pixels[]; };
+struct CaptureCommand {
+    uint control, line, rawFirst, sourceScale;
+    uint sourceX, sourceAbort, hasB, sourceWord;
+    uint gpuMask, hiresMask, scaledRawFirst, hiresWriteMask;
+    uint sourceB[128];
+};
+layout(std430,set=0,binding=1) readonly buffer Commands { CaptureCommand records[]; };
+layout(std430,set=0,binding=2) readonly buffer Banks { uint captured[]; };
+layout(rgba8,set=0,binding=3) uniform readonly image2D Image3D;
+layout(std430,set=0,binding=4) buffer Hires { uint hires[]; };
+layout(std430,set=0,binding=5) readonly buffer Scaled { uint scaledRaw[]; };
+layout(rgba8,set=0,binding=6) uniform readonly image2D Display3D;
+layout(push_constant) uniform Dispatch { uint firstRow, rowCount, scale, pitch; } dispatch;
+uint recordIndex;
+#define p records[recordIndex]
+uint subA(uint guestX,uint subI) {
+    uint subX=subI%dispatch.scale, subY=subI/dispatch.scale;
+    if ((p.control&(1u<<24))==0u)
+        return scaledRaw[p.scaledRawFirst+(subY*256u+guestX)*dispatch.scale+subX];
+    uint scrollX=(guestX+p.sourceX)&511u;
+    if (p.sourceAbort!=0u || p.line>=192u || scrollX>=256u) return 0u;
+    uvec2 xy=uvec2(scrollX,p.line)*p.sourceScale+uvec2(subX,subY)*p.sourceScale/dispatch.scale;
+    uvec4 rgba=uvec4(imageLoad(Display3D,ivec2(xy))*255.0+0.5);
+    return (rgba.r>>2)|((rgba.g>>2)<<8)|((rgba.b>>2)<<16)|((rgba.a>>3)<<24);
+}
+uint subB(uint guestX,uint subI) {
+    if ((p.hiresMask&(1u<<(guestX>>7)))!=0u) {
+        uint sourceHalf=p.sourceWord*2u+guestX;
+        return (hires[(sourceHalf*dispatch.pitch+subI)>>1]>>((subI&1u)*16u))&65535u;
+    }
+    uint packedB=(p.gpuMask&(1u<<(guestX>>7)))!=0u
+        ? captured[p.sourceWord+(guestX>>1)] : p.sourceB[guestX>>1];
+    return (packedB>>((guestX&1u)*16u))&65535u;
+}
+uint subPixel(uint guestX,uint subI) {
+    if (subI>=dispatch.scale*dispatch.scale) return 0u;
+    uint mode=(p.control>>29)&3u;
+    uint b=0u;
+    if (p.hasB!=0u) b=subB(guestX,subI);
+    if (mode==1u) return b;
+    uint a=subA(guestX,subI);
+    uvec3 rgbA=uvec3((a>>1)&31u,(a>>9)&31u,(a>>17)&31u);
+    uint alphaA=(a>>24)!=0u?1u:0u;
+    if (mode==0u) return rgbA.r|(rgbA.g<<5)|(rgbA.b<<10)|(alphaA<<15);
+    uint eva=min(p.control&31u,16u),evb=min((p.control>>8)&31u,16u);
+    uvec3 rgbB=uvec3(b&31u,(b>>5)&31u,(b>>10)&31u);
+    uint alphaB=b>>15;
+    uvec3 rgb=min((rgbA*(alphaA*eva)+rgbB*(alphaB*evb)+8u)>>4, uvec3(31u));
+    uint alpha=(eva!=0u?alphaA:0u)|(evb!=0u?alphaB:0u);
+    return rgb.r|(rgb.g<<5)|(rgb.b<<10)|(alpha<<15);
+}
+void main() {
+    if (gl_WorkGroupID.y>=dispatch.rowCount) return;
+    recordIndex=dispatch.firstRow+gl_WorkGroupID.y;
+    uint width=((p.control>>20)&3u)==0u?128u:256u;
+    uint halfPitch=dispatch.pitch>>1;
+    uint idx=gl_GlobalInvocationID.x;
+    uint guestX=idx/halfPitch, subPair=idx%halfPitch;
+    if (guestX>=width || (p.hiresWriteMask&(1u<<(guestX>>7)))==0u) return;
+    uint bank=(p.control>>16)&3u;
+    uint dst=((((p.control>>18)&3u)<<14)+p.line*width+guestX)&65535u;
+    uint first=subPair*2u;
+    hires[((bank*65536u+dst)*dispatch.pitch>>1)+subPair]=
+        subPixel(guestX,first)|(subPixel(guestX,first+1u)<<16);
+}

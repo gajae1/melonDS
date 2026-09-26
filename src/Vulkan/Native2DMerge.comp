@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+layout(local_size_x = 64) in;
+// Same set/layout as Native2D; only binding 0 is declared, read/write.
+layout(std430, set = 0, binding = 0) buffer Memory { uint data[]; };
+layout(push_constant) uniform Merge { uint firstWord, count; } pc;
+
+// Caller bytes occupy data[0 .. firstWord); serialized 12B merge records
+// {sourceWord, destinationWord, words} follow at data[firstWord + y*3].
+// Stage inputs are disjoint from destination pages; concurrent merges into
+// one destination compose through atomicOr.
+void main()
+{
+    const uint record = gl_WorkGroupID.y;
+    if (record >= pc.count) return;
+    const uint base = pc.firstWord + record * 3u;
+    const uint sourceWord = data[base];
+    const uint destinationWord = data[base + 1u];
+    const uint words = data[base + 2u];
+    const uint x = gl_GlobalInvocationID.x; // dispatch x = 2 covers words <= 128
+    if (x < words)
+        atomicOr(data[destinationWord + x], data[sourceWord + x]);
+}

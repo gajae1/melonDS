@@ -4,6 +4,7 @@
 #include "GPU_Vulkan.h"
 #include "RenderCost.h"
 #include "Vulkan/EmbeddedShaders.h"
+#include "Vulkan/Native2DCapture.h"
 #include "Platform.h"
 #include <algorithm>
 #include <cassert>
@@ -104,7 +105,9 @@ bool VulkanRenderer3D::Init()
         DisplaySubmissions = 0;
         Pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders());
         Pipeline->SetUploadBatching(true);
-        Texcache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*Pipeline});
+        if (RetainNativeImage) Pipeline->EnableNativeReadback(Vulkan::EmbeddedNativeReadback());
+        Pipeline->SetOutputRetention(RetainNativeImage);
+        Texcache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*Pipeline, Parent, GPU});
         Platform::Log(Platform::LogLevel::Info, "Vulkan 3D: %s (256x192 compute)\n", Device->Properties().deviceName);
         return true;
     }
@@ -114,6 +117,31 @@ bool VulkanRenderer3D::Init()
         Failed = true;
         return false;
     }
+}
+
+bool VulkanRenderer3D::SetNativeImageRetention(bool enabled)
+{
+    if (enabled == RetainNativeImage) return true;
+    if (enabled && Failed) return false;
+    try
+    {
+        if (!enabled) EnsureNativePixels();
+        if (Pipeline)
+        {
+            if (enabled) Pipeline->EnableNativeReadback(Vulkan::EmbeddedNativeReadback());
+            Pipeline->SetOutputRetention(enabled);
+        }
+    }
+    catch (const std::exception& error)
+    {
+        Platform::Log(Platform::LogLevel::Warn, "Vulkan native 3D retention unavailable: %s\n", error.what());
+        return false;
+    }
+    RetainNativeImage = enabled;
+    // Without captures, the current display image is also the native render.
+    NativeImage = enabled && !HadCaptureTextures ? RenderedImage : nullptr;
+    if (enabled && !NativeImage) FrameDirty = true;
+    return true;
 }
 
 bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
@@ -129,16 +157,20 @@ bool VulkanRenderer3D::SetRenderSettings(int scale, bool hires)
         {
             // A paused resize keeps the prior display image/sample grid alive.
             // Its old pipeline owns the full-readback staging, so snapshot before replacement.
+            EnsureNativePixels();
             GetScaledPixels();
             auto pipeline = std::make_unique<Vulkan::ComputePipeline>(Device, Vulkan::EmbeddedShaders(scale), scale);
             pipeline->SetUploadBatching(true);
-            auto cache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*pipeline});
+            if (RetainNativeImage) pipeline->EnableNativeReadback(Vulkan::EmbeddedNativeReadback());
+            pipeline->SetOutputRetention(RetainNativeImage);
+            auto cache = std::make_unique<Vulkan::TextureCache>(GPU, Vulkan::TextureLoader{*pipeline, Parent, GPU});
             // Commit the pair only after successful initialization. Local destruction
             // releases the old cache before the pipeline its TextureLoader references.
             Texcache.swap(cache);
             Pipeline.swap(pipeline);
             ScaleFactor = scale;
             ClearBitmapDirty = 3;
+            ClearBitmapGPU = false;
             Compositor.reset();
             if (scale > 1)
             {
@@ -173,11 +205,14 @@ void VulkanRenderer3D::Reset()
 {
     if (Texcache) Texcache->Reset();
     ColorBuffer.fill(0);
+    NativePixelsValid = true;
     ScaledColorBuffer = {};
     ScaledColorStorage.clear();
     RenderedImage.reset();
+    NativeImage.reset();
     RenderedScale = 1;
     ClearBitmapDirty = 3;
+    ClearBitmapGPU = false;
     FrameDirty = true;
     HadCaptureTextures = false;
 }
@@ -201,9 +236,11 @@ void VulkanRenderer3D::RenderFrame()
         // replace it at the frame boundary; never claim a failed frame as GPU output.
         Failed = true;
         ColorBuffer.fill(0);
+        NativePixelsValid = true;
         ScaledColorBuffer = {};
         ScaledColorStorage.clear();
         RenderedImage.reset();
+        NativeImage.reset();
         RenderedScale = 1;
         Platform::Log(Platform::LogLevel::Error, "Vulkan 3D frame failed: %s\n", error.what());
     }
@@ -234,9 +271,18 @@ void VulkanRenderer3D::DrawFrame()
                 // Snapshot before Update: a DIFFERENT wrapping texture can
                 // SyncAllVRAMCaptures and retire the parent's sidecar. Keep
                 // that native ordering without losing this texture's detail.
-                if (!Parent.CaptureTexturePixels(key, ScaleFactor, pixels)) continue;
-                entry->second = Pipeline->UploadTexture(TextureWidth(key) * ScaleFactor,
-                    TextureHeight(key) * ScaleFactor, 1, pixels, true);
+                if (Parent.NativePipeline)
+                {
+                    u32 bank;
+                    if (!Parent.CaptureTextureBank(key, ScaleFactor, bank)) continue;
+                    entry->second = Pipeline->CreateCaptureTexture(key, bank, ScaleFactor, Parent.NativeCapture->Hires());
+                }
+                else
+                {
+                    if (!Parent.CaptureTexturePixels(key, ScaleFactor, pixels)) continue;
+                    entry->second = Pipeline->UploadTexture(TextureWidth(key) * ScaleFactor,
+                        TextureHeight(key) * ScaleFactor, 1, pixels, true);
+                }
                 hasCaptures = true;
             }
             catch (const std::exception& error)
@@ -258,8 +304,16 @@ void VulkanRenderer3D::DrawFrame()
     if (!texturesChanged && GPU3D.RenderFrameIdentical && !FrameDirty && !hasCaptures && !HadCaptureTextures) return;
     if ((GPU3D.RenderDispCnt & (1 << 14)) && ClearBitmapDirty)
     {
-        ComputeData::DecodeClearBitmap(GPU.VRAMFlat_Texture, ClearColor.data(), ClearDepth.data(), ClearBitmapDirty);
-        Pipeline->UploadClearBitmap(ClearColor, ClearDepth);
+        if (Texcache->DecodeClearBitmap()) ClearBitmapGPU = true;
+        else
+        {
+            // GPU decoding did not update these host arrays. Materialize both
+            // planes when returning to CPU ownership, even if only one is dirty.
+            ComputeData::DecodeClearBitmap(GPU.VRAMFlat_Texture, ClearColor.data(), ClearDepth.data(),
+                ClearBitmapGPU ? 3 : ClearBitmapDirty);
+            Pipeline->UploadClearBitmap(ClearColor, ClearDepth);
+            ClearBitmapGPU = false;
+        }
         ClearBitmapDirty = 0;
     }
 
@@ -317,14 +371,26 @@ void VulkanRenderer3D::DrawFrame()
     for (const auto& batch : prepared)
         batches.push_back({batch.Polygons, batch.Edges, batch.Indices, batch.Variants,
             ComputeData::PrepareMeta(GPU3D, batch.Polygons.size(), batch.Variants.size()), wbuffer});
-    // Consume the completed readback view before any subsequent render reuses it.
+    // The legacy CPU consumer reads during this render; native GPU consumers
+    // retain the image and materialize CPU pixels only on explicit demand.
     const bool gpuComposition = bool(Compositor);
-    auto pixels = Pipeline->RenderView(batches, gpuComposition ? Pipeline::Readback::Native : Pipeline::Readback::Full);
+    if (RetainNativeImage)
+    {
+        // Parent consumers finished above; copies still held elsewhere are skipped.
+        NativeImage.reset();
+        RenderedImage.reset();
+    }
+    auto pixels = Pipeline->RenderView(batches, RetainNativeImage ? Pipeline::Readback::None :
+        gpuComposition ? Pipeline::Readback::Native : Pipeline::Readback::Full);
+    // Holding the native target forces a captured display render to another image.
+    std::shared_ptr<Vulkan::Device::Image> nativeImage;
+    if (RetainNativeImage) nativeImage = Pipeline->OutputImage();
     // Sample native pixel origins without filtering RGB6/A5 or inventing
     // capture alpha. At 1x this is exactly the previous byte conversion.
     // Scaled edge coverage follows the shared compute rasterizer, not a
     // stretched native image. The clear VRAM bitmap remains 256x256.
     const u32 width = 256 * ScaleFactor;
+    if (!RetainNativeImage)
     {
         RenderCostVulkanScope convert(Device->Costs(), Cost::NativeConvert);
         for (u32 y = 0; y < 192; ++y)
@@ -335,8 +401,8 @@ void VulkanRenderer3D::DrawFrame()
         }
     }
     // Never derive guest pixels from captured subpixel UVs: even a native
-    // screen origin can address a fractional texel. The native result above
-    // must be consumed before RenderView reuses its readback allocation.
+    // screen origin can address a fractional texel. Consume eager CPU pixels
+    // before staging reuse, or retain the first image for a later CPU request.
     if (hasCaptures)
     {
         for (size_t i = 0; i < batches.size(); ++i)
@@ -345,9 +411,10 @@ void VulkanRenderer3D::DrawFrame()
             batches[i].variants = prepared[i].DisplayVariants;
             batches[i].meta.NumVariants = prepared[i].DisplayVariants.size();
         }
-        pixels = Pipeline->RenderView(batches, gpuComposition ? Pipeline::Readback::None : Pipeline::Readback::Full);
+        pixels = Pipeline->RenderView(batches, (gpuComposition || RetainNativeImage) ?
+            Pipeline::Readback::None : Pipeline::Readback::Full);
     }
-    if (ScaleFactor > 1 && !gpuComposition)
+    if (ScaleFactor > 1 && !gpuComposition && !RetainNativeImage)
     {
         RenderCostVulkanScope convert(Device->Costs(), Cost::ScaledConvert);
         ScaledColorStorage.resize(pixels.size());
@@ -358,9 +425,25 @@ void VulkanRenderer3D::DrawFrame()
     }
     else ScaledColorBuffer = {};
     RenderedImage = Pipeline->OutputImage();
+    NativeImage = std::move(nativeImage);
+    NativePixelsValid = !RetainNativeImage;
+    ++RenderedVersion;
     RenderedScale = ScaleFactor;
     HadCaptureTextures = hasCaptures;
     FrameDirty = false;
+}
+
+void VulkanRenderer3D::EnsureNativePixels() const
+{
+    if (NativePixelsValid) return;
+    // Display captures can produce a second image with different subpixel UVs.
+    // CPU guest bytes must come from the retained first render, never that image.
+    const auto pixels = Pipeline->ReadNativeView(NativeImage);
+    RenderCostVulkanScope convert(Device->Costs(), Cost::NativeConvert);
+    std::transform(pixels.begin(), pixels.end(), ColorBuffer.begin(), [](u32 pixel) {
+        return ((pixel >> 2) & 0x003F3F3F) | ((pixel >> 3) & 0x1F000000);
+    });
+    NativePixelsValid = true;
 }
 
 std::span<const u32> VulkanRenderer3D::GetScaledPixels() const
@@ -370,7 +453,8 @@ std::span<const u32> VulkanRenderer3D::GetScaledPixels() const
         if (RenderedImage != Pipeline->OutputImage())
             throw std::logic_error("Retained Vulkan image has no CPU snapshot");
         // Only enhanced capture or CPU fallback consumes this full image. The
-        // ordinary display path keeps it on-device and reads just native origins.
+        // ordinary display path keeps it on-device. CPU guest requests read only
+        // native origins from the separate NativeImage when retention is enabled.
         const auto pixels = Pipeline->ReadbackView();
         RenderCostVulkanScope convert(Device->Costs(), Cost::ScaledConvert);
         ScaledColorStorage.resize(pixels.size());
@@ -379,12 +463,13 @@ std::span<const u32> VulkanRenderer3D::GetScaledPixels() const
         });
         ScaledColorBuffer = ScaledColorStorage;
     }
+    if (ScaledColorBuffer.empty()) EnsureNativePixels();
     return ScaledColorBuffer.empty() ? std::span<const u32>(ColorBuffer) : std::span<const u32>(ScaledColorBuffer);
 }
 
 void VulkanRenderer3D::GetScaledLine(int line, int subline, int scale, u32* dst) const
 {
-    if (GPU3D.AbortFrame || line < 0 || line >= 192)
+    if (Failed || GPU3D.AbortFrame || line < 0 || line >= 192)
     {
         std::fill_n(dst, 256 * scale, 0);
         return;
@@ -430,9 +515,17 @@ void VulkanRenderer3D::GetScaledLine(int line, int subline, int scale, u32* dst)
 
 u32* VulkanRenderer3D::GetLine(int line)
 {
-    if (GPU3D.AbortFrame || line < 0 || line >= 192)
+    if (Failed || GPU3D.AbortFrame || line < 0 || line >= 192)
     {
         ScrolledLine.fill(0);
+        return ScrolledLine.data();
+    }
+    try { EnsureNativePixels(); }
+    catch (const std::exception& error)
+    {
+        Failed = true;
+        ScrolledLine.fill(0);
+        Platform::Log(Platform::LogLevel::Error, "Vulkan native readback failed: %s\n", error.what());
         return ScrolledLine.data();
     }
     u32* raw = ColorBuffer.data() + line * 256;

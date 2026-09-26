@@ -749,9 +749,18 @@ void GPU::MapVRAM_CD(u32 bank, u8 cnt) noexcept
     cnt &= 0x9F;
 
     u8 oldcnt = VRAMCNT[bank];
-    VRAMCNT[bank] = cnt;
-
     if (oldcnt == cnt) return;
+
+    if ((cnt & 0x87) == 0x82)
+    {
+        // ARM7 (including JIT fast memory) accesses these banks directly and
+        // cannot consult display-capture metadata. Publish while the old
+        // mapping is still valid, then invalidate the capture before exposing
+        // RAM. An unfinished capture switches to write-through in the renderer.
+        for (u32 block = 0; block < 4; ++block)
+            SyncVRAMCaptureBlock((bank << 2) | block, true);
+    }
+    VRAMCNT[bank] = cnt;
 
     VRAMSTAT &= ~(1 << (bank-2));
 
@@ -836,7 +845,6 @@ void GPU::MapVRAM_CD(u32 bank, u8 cnt) noexcept
         }
     }
 
-    // TODO sync capture blocks if we get mapped to ARM7?
 }
 
 void GPU::MapVRAM_E(u32 bank, u8 cnt) noexcept
@@ -1627,7 +1635,7 @@ void GPU::VRAMCBFlagsClear(u32 bank, u32 block)
     u32 start = flags & 0x3;
     u32 len = (flags >> 4) & 0x3;
 
-    Rend->InvalidateDisplayCapture(bank, start);
+    Rend->InvalidateDisplayCapture(bank, start, len);
     u32 b = start;
     for (u32 i = 0; i < len; i++)
     {

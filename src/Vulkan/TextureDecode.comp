@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Nintendo DS texture decode -> packed RGB6A5 words, replicating
+// GPU3D_Texcache.cpp outputFmt_RGB6A5 exactly for formats 1..7.
+// One invocation per output pixel; linear index over width*height.
+// Clear jobs replicate GPU3D_ComputeData.cpp DecodeClearBitmap instead: one
+// 256x256 plane each, the colour words at 0x40000 and the depth words 0x60000.
+// Captured bank data only supplies bytes the CPU baseline does not have; all
+// format math below is identical with or without it.
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer TextureVRAM { uint textureWords[]; };
+layout(std430, set = 0, binding = 1) readonly buffer TexturePal { uint paletteWords[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer Output { uint outputWords[]; };
+// Four 128KiB physical banks (512KiB total). Bound to a 4-byte placeholder and
+// never read while control bit 0 is 0.
+layout(std430, set = 0, binding = 3) readonly buffer CapturedBanks { uint capturedWords[]; };
+layout(push_constant) uniform Parameters {
+    uint texParam;
+    uint palBase;
+    uint outputWord;
+    // Bit 0: captured bank data is bound. Bits 1+: job kind (0 texture,
+    // 1 clear colour, 2 clear depth, 3 enhanced capture crop).
+    uint control;
+} p;
+
+// Flat VRAM reads: same masking as GPU::ReadVRAMFlat_Texture / _TexPal. The
+// 512KiB logical address is masked before every lookup. A captured word starts
+// from the CPU baseline word and ORs the physical banks its mask selects.
+uint texU32(uint addr)
+{
+    addr &= 0x7FFFFu;
+    uint value = textureWords[addr >> 2];
+    if ((p.control & 1u) != 0u)
+    {
+        // 2048 masks follow the 512KiB baseline, one per 256 logical bytes.
+        uint mask = textureWords[131072u + (addr >> 8)];
+        for (uint bank = 0u; bank < 4u; ++bank)
+        {
+            if ((mask & (1u << bank)) != 0u)
+                value |= capturedWords[bank * 32768u + ((addr & 0x1FFFFu) >> 2)];
+        }
+    }
+    return value;
+}
+uint texU8(uint addr)  { uint a = addr & 0x7FFFFu; return (texU32(a) >> ((a & 3u) << 3)) & 0xFFu; }
+uint texU16(uint addr) { uint a = addr & 0x7FFFFu; return (texU32(a) >> ((a & 2u) << 3)) & 0xFFFFu; }
+uint palU16(uint addr) { return (paletteWords[(addr & 0x1FFFFu) >> 2] >> ((addr & 2u) << 3)) & 0xFFFFu; }
+
+// ConvertRGB5ToRGB6: 5->6 bit is (v<<1), then +1 when nonzero.
+uint ConvertRGB5ToRGB6(uint val)
+{
+    uint r = (val & 0x1Fu) << 1;
+    uint g = (val & 0x3E0u) >> 4;
+    uint b = (val & 0x7C00u) >> 9;
+    if (r != 0u) r++;
+    if (g != 0u) g++;
+    if (b != 0u) b++;
+    return r | (g << 8) | (b << 16);
+}
+
+// ColorAvg / Color5of3 / Color3of5 interpolate masked RGB5 fields.
+uint ColorAvg(uint c0, uint c1)
+{
+    return ((c0 & 0x1Fu) + (c1 & 0x1Fu)) >> 1
+        | (((c0 & 0x3E0u) + (c1 & 0x3E0u)) >> 1) & 0x3E0u
+        | (((c0 & 0x7C00u) + (c1 & 0x7C00u)) >> 1) & 0x7C00u;
+}
+uint Color5of3(uint c0, uint c1)
+{
+    return (((c0 & 0x1Fu) * 5u + (c1 & 0x1Fu) * 3u) >> 3)
+        | ((((c0 & 0x3E0u) * 5u + (c1 & 0x3E0u) * 3u) >> 3) & 0x3E0u)
+        | ((((c0 & 0x7C00u) * 5u + (c1 & 0x7C00u) * 3u) >> 3) & 0x7C00u);
+}
+uint Color3of5(uint c0, uint c1)
+{
+    return (((c0 & 0x1Fu) * 3u + (c1 & 0x1Fu) * 5u) >> 3)
+        | ((((c0 & 0x3E0u) * 3u + (c1 & 0x3E0u) * 5u) >> 3) & 0x3E0u)
+        | ((((c0 & 0x7C00u) * 3u + (c1 & 0x7C00u) * 5u) >> 3) & 0x7C00u);
+}
+
+// ConvertNColorsTexture pixel path: indexed color, optional transparent index 0.
+uint NColorsPixel(uint index, uint palAddr, bool color0Transparent)
+{
+    uint color = palU16(palAddr + index * 2u);
+    bool transparent = color0Transparent && index == 0u;
+    return ConvertRGB5ToRGB6(color) | (transparent ? 0u : 0x1F000000u);
+}
+
+void main()
+{
+    uint kind = p.control >> 1u;
+    uint idx = gl_GlobalInvocationID.x;
+
+    if (kind == 3u)
+    {
+        uint scale=p.palBase>>2u,bank=p.palBase&3u;
+        uint width=8u<<((p.texParam>>20)&7u),height=8u<<((p.texParam>>23)&7u);
+        if (idx>=width*height*scale*scale) return;
+        uint x=idx%(width*scale),y=idx/(width*scale);
+        uint pitch=(scale*scale+1u)&~1u;
+        uint word=(((p.texParam&65535u)*4u+(y/scale)*width+x/scale)&65535u);
+        uint sampleIndex=(bank*65536u+word)*pitch+(y%scale)*scale+x%scale;
+        uint color=(capturedWords[sampleIndex>>1]>>((sampleIndex&1u)*16u))&65535u;
+        uvec3 rgb=uvec3(color&31u,(color>>5)&31u,(color>>10)&31u);
+        rgb=rgb*2u+uvec3(notEqual(rgb,uvec3(0u)));
+        // Capture sampling truncates UNORM*63; round upward like the legacy
+        // CPU crop so nonzero RGB5 channels recover the exact RGB6 value.
+        rgb=(rgb*255u+62u)/63u;
+        outputWords[p.outputWord+idx]=rgb.r|(rgb.g<<8)|(rgb.b<<16)|
+            ((color&0x8000u)!=0u?0xFF000000u:0u);
+        return;
+    }
+
+    if (kind != 0u)
+    {
+        // Clear planes are always 256x256 words.
+        if (idx >= 65536u) return;
+        if (kind == 1u)
+        {
+            // Direct A1RGB5, identical to the fmt 7 texture path.
+            uint value = texU16(0x40000u + idx * 2u);
+            outputWords[p.outputWord + idx] = ConvertRGB5ToRGB6(value) | (((value >> 15) & 1u) * 0x1Fu << 24);
+        }
+        else
+        {
+            // 15-bit depth widened with 0x1FF set, fog flag moved to bit 24.
+            uint value = texU16(0x60000u + idx * 2u);
+            outputWords[p.outputWord + idx] = ((value & 0x7FFFu) * 0x200u + 0x1FFu) | ((value & 0x8000u) << 9);
+        }
+        return;
+    }
+
+    uint width  = 8u << ((p.texParam >> 20) & 7u);
+    uint height = 8u << ((p.texParam >> 23) & 7u);
+    uint fmt    = (p.texParam >> 26) & 7u;
+    uint addr   = (p.texParam & 0xFFFFu) * 8u;
+
+    if (idx >= width * height) return;
+
+    uint x = idx % width;
+    uint y = idx / width;
+    uint res;
+
+    if (fmt == 7u)
+    {
+        // ConvertBitmapTexture: direct A1RGB5, alpha from bit 15.
+        uint value = texU16(addr + idx * 2u);
+        res = ConvertRGB5ToRGB6(value) | (((value >> 15) & 1u) * 0x1Fu << 24);
+    }
+    else if (fmt == 5u)
+    {
+        // ConvertCompressedTexture: 4x4 blocks, aux data in slot 1.
+        uint slot1addr = 0x20000u + ((addr & 0x1FFFCu) >> 1) + (addr >= 0x40000u ? 0x10000u : 0u);
+        uint bw = width / 4u;
+        uint bx = x / 4u, by = y / 4u;
+        uint data = texU32(addr + (bx + by * bw) * 4u);
+        uint auxData = texU16(slot1addr + (bx + by * bw) * 2u);
+
+        uint paletteOffset = p.palBase * 16u + (auxData & 0x3FFFu) * 4u;
+        uint color0 = palU16(paletteOffset) | 0x8000u;
+        uint color1 = palU16(paletteOffset + 2u) | 0x8000u;
+        uint color2 = palU16(paletteOffset + 4u) | 0x8000u;
+        uint color3 = palU16(paletteOffset + 6u) | 0x8000u;
+
+        uint mode = (auxData >> 14) & 3u;
+        if (mode == 0u) color3 = 0u;
+        else if (mode == 1u) { color2 = ColorAvg(color0, color1) | 0x8000u; color3 = 0u; }
+        else if (mode == 3u)
+        {
+            color2 = Color5of3(color0, color1) | 0x8000u;
+            color3 = Color3of5(color0, color1) | 0x8000u;
+        }
+
+        uint colorIdx = (data >> (2u * (x & 3u) + 8u * (y & 3u))) & 3u;
+        uint sel = colorIdx == 0u ? color0 : colorIdx == 1u ? color1 : colorIdx == 2u ? color2 : color3;
+        res = ConvertRGB5ToRGB6(sel) | (((sel >> 15) & 1u) * 0x1Fu << 24);
+    }
+    else if (fmt == 1u || fmt == 6u)
+    {
+        // ConvertAXIYTexture: fmt1 A3I5 (alpha scaled), fmt6 A5I3 (raw alpha).
+        uint palAddr = p.palBase * 16u;
+        uint val = texU8(addr + idx);
+        uint index, alpha;
+        if (fmt == 1u)
+        {
+            index = val & 0x1Fu;
+            alpha = val >> 5;
+            alpha = alpha * 4u + alpha / 2u;
+        }
+        else
+        {
+            index = val & 0x7u;
+            alpha = val >> 3;
+        }
+        res = ConvertRGB5ToRGB6(palU16(palAddr + index * 2u)) | (alpha << 24);
+    }
+    else
+    {
+        // ConvertNColorsTexture: fmt2 2bpp, fmt3 4bpp, fmt4 8bpp.
+        uint palAddr = p.palBase * 16u;
+        uint colorBits = fmt == 2u ? 2u : fmt == 3u ? 4u : 8u;
+        if (fmt == 2u) palAddr >>= 1;
+        bool color0Transparent = (p.texParam & (1u << 29)) != 0u;
+
+        uint perRow = width / (16u / colorBits);         // u16 words per row
+        uint word = texU16(addr + 2u * (x / (16u / colorBits) + y * perRow));
+        uint index = (word >> ((x % (16u / colorBits)) * colorBits)) & ((1u << colorBits) - 1u);
+        res = NColorsPixel(index, palAddr, color0Transparent);
+    }
+
+    outputWords[p.outputWord + idx] = res;
+}
