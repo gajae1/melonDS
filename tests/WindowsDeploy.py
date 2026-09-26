@@ -122,16 +122,17 @@ target_link_libraries(melonDS PRIVATE bridge)
                 self.assertTrue({'--dry-run', '--json', '--no-translations', '--no-patchqt'}.issubset(command))
                 return json.dumps({'files': self.qt})
             if name == 'pacman.exe':
+                owners = sorted([self.package] + ([self.extra_owner] if self.extra_owner else []))
+                inventories = {self.package: self.inventory, self.extra_owner: '/ucrt64/include/ignored.h\n'}
                 if command[1] == '-Qoq':
                     self.owned_queries.extend(command[2:])
-                    return '\n'.join([self.package] + ([self.extra_owner] if self.extra_owner else [])) + '\n'
+                    return '\n'.join(owners) + '\n'
                 if command[1] == '-Q':
-                    self.assertEqual(command[2], self.package)
-                    return self.package + ' ' + self.package_version + '\n'
-                if self.extra_owner and command[1:] == ['-Qlq', self.extra_owner]:
-                    return '/ucrt64/include/ignored.h\n'
-                self.assertEqual(command[1:], ['-Qlq', self.package])
-                return self.inventory
+                    self.assertEqual(command[2:], owners)
+                    return ''.join(name + ' ' + self.package_version + '\n' for name in command[2:])
+                self.assertEqual(command[1:], ['-Ql'] + owners)
+                return ''.join(name + ' ' + path + '\n' for name in command[2:]
+                               for path in inventories[name].splitlines())
             if name == 'cmake.exe':
                 command = [self.sdk / 'bin/cmake.exe', *command[1:]]
             return original_run(command)  # Real CMake and objdump, including failure cases.
@@ -274,7 +275,7 @@ target_link_libraries(melonDS PRIVATE bridge)
         for path in (icu_license, qt_license):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'generated package-specific notice')
-        versions = {provider: '6.11.2-1', backend: '6.11.2-1'}
+        versions = {icu: '78.3-1', provider: '6.11.2-1', backend: '6.11.2-1'}
         def record(package, base):
             path = self.prefix.parent / f'var/lib/pacman/local/{package}-{versions[package]}/desc'
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -286,10 +287,11 @@ target_link_libraries(melonDS PRIVATE bridge)
         def pacman(command):
             if command[1] == '-Qoq':
                 return '\n'.join((icu, provider, backend))
-            if command[1] == '-Qlq':
-                return inventories[command[2]]
+            if command[1] == '-Ql':
+                return ''.join(name + ' ' + path + '\n' for name in command[2:]
+                               for path in inventories[name].splitlines())
             self.assertEqual(command[1], '-Q')
-            return command[2] + ' ' + versions[command[2]] + '\n'
+            return ''.join(name + ' ' + versions[name] + '\n' for name in command[2:])
         with patch.object(deploy, 'run_tool', side_effect=pacman):
             inputs, packages = deploy.license_inputs(self.prefix, [self.prefix / 'bin/bridge.dll'], {})
             self.assertEqual(set(packages), {icu, provider, backend})

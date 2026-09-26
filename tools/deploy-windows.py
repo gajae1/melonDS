@@ -135,7 +135,8 @@ def license_inputs(prefix, binaries, supplement):
         raise ValueError('Binary owners do not match the MSYS2 UCRT64 package profile')
     if set(supplement) - set(packages):
         raise ValueError('License supplement contains packages outside the selected runtime')
-    inventories = {package: run_tool([pacman, '-Qlq', package]).splitlines() for package in packages}
+    inventories = package_inventories(pacman, packages)
+    versions = package_versions(pacman, packages)
     selected, missing = [], []
     marker = '/' + prefix.name + '/share/licenses/'
     for package in packages:
@@ -149,7 +150,7 @@ def license_inputs(prefix, binaries, supplement):
         # reusing that package's explicit inventory; unrelated licenses cannot fill a gap.
         provider = 'mingw-w64-ucrt-x86_64-qt6-multimedia'
         if not licenses and package == provider + '-ffmpeg' and provider in inventories:
-            if package_source(prefix, pacman, package) != package_source(prefix, pacman, provider):
+            if package_source(prefix, package, versions[package]) != package_source(prefix, provider, versions[provider]):
                 raise ValueError('Qt multimedia license provider source/version mismatch')
             licenses = [p for p in inventories[provider] if p.startswith(marker + 'qt6-multimedia/') and not p.endswith('/')]
         if not licenses and package not in supplement:
@@ -161,7 +162,7 @@ def license_inputs(prefix, binaries, supplement):
             selected.append(('third-party-licenses/' + relative, source, None))
         if package in supplement:
             entry = supplement[package]
-            if entry['version'] != package_version(pacman, package):
+            if entry['version'] != versions[package]:
                 raise ValueError(f'License supplement installed version mismatch: {package}')
             for filename, expected in entry['files'].items():
                 source = Path(filename)
@@ -172,17 +173,35 @@ def license_inputs(prefix, binaries, supplement):
     return selected, packages
 
 
-def package_version(pacman, package):
-    identity = run_tool([pacman, '-Q', package]).split()
-    if len(identity) != 2 or identity[0] != package:
+def package_inventories(pacman, packages):
+    # One -Ql lists the same installed paths as per-package -Qlq queries, with
+    # each line prefixed by the owning package name. Pacman only writes errors
+    # for unknown packages to stderr, so any other line shape or owner is
+    # unexpected output rather than a packaging fact.
+    inventories = {package: [] for package in packages}
+    for line in run_tool([pacman, '-Ql', *packages]).splitlines():
+        name, separator, path = line.partition(' ')
+        if not separator or not path or name not in inventories:
+            raise ValueError(f'Unexpected pacman -Ql output line: {line!r}')
+        inventories[name].append(path)
+    return inventories
+
+
+def package_versions(pacman, packages):
+    versions = {}
+    for line in run_tool([pacman, '-Q', *packages]).splitlines():
+        identity = line.split()
+        if len(identity) != 2 or identity[0] in versions:
+            raise ValueError('Cannot determine installed package version')
+        versions[identity[0]] = identity[1]
+    if set(versions) != set(packages):
         raise ValueError('Cannot determine installed package version')
-    return identity[1]
+    return versions
 
 
-def package_source(prefix, pacman, package):
+def package_source(prefix, package, version):
     # Read only the active installed DB record, including pkgbase, which -Qi
     # does not expose. This is the default MSYS2 package database.
-    version = package_version(pacman, package)
     database = prefix.parent / 'var/lib/pacman/local'
     path = source_file(database / f'{package}-{version}/desc', database)
     fields = dict(block.split('\n', 1) for block in path.read_text(encoding='utf-8').strip().split('\n\n'))
