@@ -1,14 +1,14 @@
-# 현재 개발 상태 — 1.1.188
+# 현재 개발 상태 — 1.1.189
 
-2026-09-27. 코드와 빌드의 기준 경로는 `F:/melonDS`다. [1.1.188 릴리스 기록](releases/1.1.188.md)에 소스 커밋·패키지 해시·검증 범위를 기록한다. SDL3·SDL2 패키지와 Windows·Ubuntu·macOS·BSD·Core regressions CI가 모두 통과했다.
+2026-09-27. 코드와 빌드의 기준 경로는 `F:/melonDS`다. [1.1.189 릴리스 기록](releases/1.1.189.md)에 소스 커밋·패키지 해시·검증 범위를 기록한다. SDL3·SDL2 패키지와 Windows·Ubuntu·macOS·BSD·Core regressions CI가 모두 통과했다.
 
-1.1.188은 Vulkan GPU 2D에 enhanced OBJ와 배율 변경 수명주기를 채우고 설정으로만 켜는 선택지를 추가했다. 실제 게임 3종에서 화면은 같았지만 모든 배율에서 CPU 2D보다 느려 기본값은 꺼져 있고, 기본 렌더러 동작은 1.1.187과 같다.
+1.1.189는 Vulkan 3D 프레임을 제출한 뒤 바로 기다리지 않고, 결과를 처음 쓰는 다음 화면 줄까지 에뮬레이션을 계속한다. 3D 비중이 큰 CoD·Solatorobo에서 프레임 시간 중앙값이 RTX 5080 기준 최대 13.1%, AMD 내장 GPU 기준 최대 14.1% 줄었고 화면·오디오는 1.1.188과 같다. 1.1.188의 GPU 2D는 여전히 기본 비활성이다.
 
 ## 최근 반영한 변경
 
 | 영역 | 현재 구현 | 확인하지 못했거나 남은 범위 |
 | --- | --- | --- |
-| Vulkan 전송 | 1.1.186은 대기 중인 텍스처·clear bitmap 업로드를 다음 렌더링과 같은 명령 버퍼·fence로 완료한다. 명시적 flush·캡처 경계·기본 동기 API는 유지한다. | 아래 고정 장면에서 제출 감소를 확인했다. native readback 대기 제거 또는 일반 FPS 향상을 뜻하지 않는다. |
+| Vulkan 전송 | 1.1.186은 대기 중인 텍스처·clear bitmap 업로드를 다음 렌더링과 같은 명령 버퍼·fence로 완료한다. 1.1.189는 캡처가 없는 일반 3D 프레임을 제출만 해 두고, GPU 대기를 결과를 처음 쓰는 다음 화면 줄까지 미뤄 VBlank 동안의 에뮬레이션과 겹친다. 같은 장치를 쓰는 다른 작업은 먼저 이 프레임을 완료한다. | 3D 비중이 큰 장면에서만 효과가 있다. 캡처가 있는 프레임은 기존처럼 즉시 기다리며, 모든 드라이버와 기기에서의 향상을 보장하지 않는다. |
 | Vulkan 표시 | [1.1.182](releases/1.1.182.md)부터 같은 Vulkan 장치의 GPU 이미지를 표시 셰이더가 직접 샘플링한다. [1.1.183](releases/1.1.183.md)은 Windows에서 Vulkan 렌더러가 이 표시 경로를 사용하도록 연결했다. | 1배율에서는 RAM 프레임버퍼를 올린다. 모든 2D·캡처 처리를 GPU로 옮긴 것은 아니다. 실제 다중 GPU·핫플러그·장기 장치 손실 검증은 남아 있다. |
 | Vulkan GPU 2D | 1.1.187의 native 2D 기반에 1.1.188이 enhanced OBJ, 배율 변경 이전, 장치 오류 시 CPU 2D 복귀, `RendererSettings::VulkanNative2D` 선택 설정(기본 false)을 더했다. 정확성 대조 20건이 기존 Vulkan과 exact이고 실제 게임 3종의 최종 화면이 같다. | 줄별 상태 스냅샷과 동기 제출 때문에 모든 배율에서 CPU 2D보다 느리다. 장치 VRAM 미러와 비동기 제출 없이는 활성화하지 않는다. CoD p95 급증과 내장 GPU 측정이 남아 있다. |
 | OpenGL | OpenGL 렌더러의 텍스처를 화면 출력에서 직접 사용한다. 팔레트 변경 구간 전송·중복 텍스처 설정 생략을 유지하며 1.1.183부터 수직동기가 꺼진 빨리 감기 표시를 모니터 주사율에 맞춰 제한한다. | 창의 픽셀 수에 비례하는 그리기·스왑 비용은 남는다. 모든 드라이버와 약한 내장 GPU에서의 성능을 보장하지 않는다. |
@@ -30,6 +30,8 @@
 - 1.1.187의 native 2D 기반은 활성화되지 않았다. 확인된 것은 private 진입점과 고정 코퍼스의 정확성 대조(AMD 1회)이며 FPS·일반 성능으로 확대하지 않는다. 근거: `local-docs/vulkan-2d-native-20260926/integration/result.md`, `hires-lcdc.json`, `hires-bg.json`, `hires-texture.json`.
 
 - 1.1.188 GPU 2D는 RTX 5080에서 Pokemon Black 1배율 중앙값 818→1256µs, Solatorobo 846→1442µs처럼 CPU 2D보다 느렸다. 그래서 기본값을 바꾸지 않았다. 근거: `local-docs/gpu2d-activation-20260927/result.md`.
+
+- 1.1.189 Vulkan 3D 대기 겹치기는 5라운드 교차 측정에서 CoD 1배율 RTX 1140→991µs, Radeon 2배율 2621→2252µs, Solatorobo 1배율 RTX 818→746µs로 줄었다. Pokemon Black처럼 3D가 적은 장면은 변동 범위 안이었다. 근거: `local-docs/vk1x-189-20260927/result.md`.
 
 ## 원본 README의 TODO 진행 상태
 
