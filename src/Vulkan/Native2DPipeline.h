@@ -61,6 +61,9 @@ private:
     // nativeFrames: four 256x192 guest frames, [buffer * 2 + screen].
     // scaledRaw: engine A display-scale composites for hires capture source A.
     std::shared_ptr<Device::Buffer> nativeFrames, scaledRaw;
+    // Display-scale OBJ words for lines that reuse an earlier OBJ state
+    // (MaxRecords + 2 slots, allocated on the first enhanced OBJ batch).
+    std::shared_ptr<Device::Buffer> scaledHistory;
     std::array<std::shared_ptr<Device::Image>, 4> outputs;
     std::array<bool, 4> initialized{};
     std::shared_ptr<Device::Image> blank3D;

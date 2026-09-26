@@ -63,7 +63,8 @@ foreach(name IN ITEMS DisplayCompose NativeReadback CaptureBlend Native2D Native
     set(include_dependencies)
     if (name STREQUAL "Native2D")
         set(include_dependencies Native2D/BGDecode.glsl Native2D/Scanline.glsl
-            Native2D/ColorOps.glsl Native2D/ObjDecode.glsl Native2D/HiresBG.glsl Native2DFinal.glsl)
+            Native2D/ColorOps.glsl Native2D/ObjDecode.glsl Native2D/HiresBG.glsl Native2D/HiresOBJ.glsl
+            Native2DFinal.glsl)
     endif()
     set(validate_command)
     if (MELONDS_SPIRV_VAL)

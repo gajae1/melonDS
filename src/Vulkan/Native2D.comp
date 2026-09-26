@@ -7,6 +7,7 @@ layout(std430,set=0,binding=0) readonly buffer Memory { uint data[]; };
 uint objOAM16(uint index);
 uint objVRAM8(uint address);
 uint objVRAM16(uint address);
+uint objVRAMMask();
 #include "Native2D/ObjDecode.glsl"
 #include "Native2DFinal.glsl"
 struct NativeObjectState {
@@ -31,8 +32,15 @@ layout(rgba8,set=0,binding=7) uniform readonly image2D Display3D;
 layout(std430,set=0,binding=8) writeonly buffer NativeFrames { uint nativeFrames[]; };
 layout(std430,set=0,binding=9) writeonly buffer ScaledCaptureA { uint scaledRaw[]; };
 layout(std430,set=0,binding=10) readonly buffer HiresCapture { uint hires[]; };
-layout(push_constant) uniform Dispatch { uint firstLine, lineCount, displayScale, outputBuffer; } pc;
+// Display-scale OBJ words kept for a later line that reuses this OBJ state:
+// per slot 256*S*S words ((sy*256+x)*S+sx), 8 provenance words, 1 flag word
+// (bit 0 enhanced, bit 1 a mosaic OBJ was prefetched).
+layout(std430,set=0,binding=11) buffer ScaledObjectHistory { uint scaledHistory[]; };
+layout(push_constant) uniform Dispatch { uint firstLine, lineCount, displayScale, outputBuffer, scaledHistoryBound; } pc;
+// objFlags bit 0: the native winner came from a captured bitmap origin; bit 1:
+// a bitmap OBJ candidate covers this pixel (its subpixels may differ).
 shared uint selectedOBJ[256], selectedWindow[256], objectWords[256], visibleObjects[4];
+shared uint objFlags[256], objMosaic[4];
 uint recordIndex;
 #include "Native2D/HiresBG.glsl"
 
@@ -63,6 +71,8 @@ uint objVRAM8(uint address) {
 uint objVRAM16(uint address) {
     return memory16(records[recordIndex].object.vramTable,address&records[recordIndex].object.vramMask);
 }
+uint objVRAMMask() { return records[recordIndex].object.vramMask; }
+#include "Native2D/HiresOBJ.glsl"
 uint scanlineRawOBJ(uint lineIndex,uint x) { return selectedOBJ[x]; }
 uint scanlineOBJWindow(uint lineIndex,uint x) { return selectedWindow[x]; }
 uint nativeSample3D(uint lineIndex,uint x,uvec2 subpixel,bool enhanced) {
@@ -87,27 +97,56 @@ bool visibleOnLine(uint number,uint line) {
     int xpos=int((a1&511u)^256u)-256;
     return xpos > -int(width);
 }
+// ApplySpriteMosaicX latch position for pixel x (see scanlineMosaicOBJ).
+uint objMosaicLatch(uint mosaicX,uint x) {
+    uint start=x-x%(mosaicX+1u),latch=start,latched=scanlineRawOBJ(recordIndex,start);
+    for (uint i=start+1u;i<=x;++i) {
+        uint cur=scanlineRawOBJ(recordIndex,i);
+        if ((cur&SCANLINE_OBJ_MOSAIC)==0u || (latched&SCANLINE_OBJ_MOSAIC)==0u ||
+            (cur&SCANLINE_OBJ_PRIO_MASK)<(latched&SCANLINE_OBJ_PRIO_MASK)) { latch=i; latched=cur; }
+    }
+    return latch;
+}
+// InterleaveSprites color/priority of one OBJ word (priority 4 = none).
+void objLayer(ScanlineLine s,uint window,uint pixel,out uint color,out uint priority) {
+    color=0u; priority=4u;
+    if ((s.layerEnable&0x10u)==0u || (window&0x10u)==0u || (pixel&SCANLINE_OBJ_OPAQUE)==0u) return;
+    uint value;
+    if ((pixel&SCANLINE_OBJ_DIRECT_COLOR)!=0u) value=pixel&0x7FFFu;
+    else if ((pixel&SCANLINE_OBJ_STANDARD_PAL)!=0u) value=bgReadPalette(SCANLINE_OBJ_PALETTE+(pixel&0xFFu));
+    else value=bgReadPalette(SCANLINE_OBJ_EXT_PALETTE+(pixel&0xFFFu));
+    color=colorMakePixel(value,pixel&0xFF000000u);
+    priority=(pixel&SCANLINE_OBJ_PRIO_MASK)>>16;
+}
 void main() {
     if (gl_WorkGroupID.y>=pc.lineCount) return;
     recordIndex=pc.firstLine+gl_WorkGroupID.y;
     uint lane=gl_LocalInvocationID.x;
     bool fresh=records[recordIndex].object.historyRead==0xFFFFFFFFu;
     bool enabled=records[recordIndex].object.enabled!=0u;
+    uint objTable=records[recordIndex].layers.reserved1;
+    bool enhancedFresh=pc.displayScale>1u && fresh && enabled && objTable!=0u;
+    objPageBase=enhancedFresh ? data[objTable] : 0u;
     for (uint part=0u;part<4u;++part) {
         uint index=lane+part*64u;
         objectWords[index]=fresh&&enabled ? memoryWord(records[recordIndex].object.oamTable,index*4u):0u;
     }
     barrier();
     if (lane<4u) {
-        uint bits=0u;
+        uint bits=0u,mosaic=0u;
         if (fresh&&enabled)
             for (uint bit=0u;bit<32u;++bit)
-                if (visibleOnLine(lane*32u+bit,records[recordIndex].object.line)) bits|=1u<<bit;
+                if (visibleOnLine(lane*32u+bit,records[recordIndex].object.line)) {
+                    bits|=1u<<bit;
+                    uint a0=objOAM16((lane*32u+bit)*4u);
+                    if ((a0&0x1000u)!=0u && ((a0>>10)&3u)!=2u) mosaic|=1u<<bit;
+                }
         visibleObjects[lane]=bits;
+        objMosaic[lane]=mosaic;
     }
     barrier();
     for (uint part=0u;part<4u;++part) {
-        uint x=lane+part*64u,pixel=0u,window=0u;
+        uint x=lane+part*64u,pixel=0u,window=0u,flags=0u;
         if (!fresh) {
             uint base=records[recordIndex].object.historyRead;
             pixel=history[base+x]; window=history[base+256u+x];
@@ -118,14 +157,19 @@ void main() {
                 uint remaining=visibleObjects[word];
                 while (remaining!=0u) {
                     uint number=word*32u+uint(findLSB(remaining)); remaining&=remaining-1u;
-                    int sampleValue; uint attributes; bool isWindow;
-                    if (!objCandidate(state,number,x,sampleValue,attributes,isWindow)) continue;
-                    if (isWindow) { if (sampleValue>0) window=1u; }
-                    else objMerge(sampleValue,attributes,pixel);
+                    int sampleValue; uint attributes; bool isWindow,outside; ObjBitmapSource bitmap;
+                    if (!objCandidateSource(state,number,x,enhancedFresh,sampleValue,attributes,isWindow,outside,bitmap))
+                        continue;
+                    if (isWindow) { if (sampleValue>0) window=1u; continue; }
+                    if (enhancedFresh && bitmap.kind!=0u) flags|=2u;
+                    if (outside) continue;
+                    // Provenance follows the last candidate that changed the native pixel.
+                    if (objMerge(sampleValue,attributes,pixel) && enhancedFresh)
+                        flags=(flags&~1u)|(bitmap.kind!=0u && hiresObjWord(bitmap.address)>=0 ? 1u : 0u);
                 }
             }
         }
-        selectedOBJ[x]=pixel; selectedWindow[x]=window;
+        selectedOBJ[x]=pixel; selectedWindow[x]=window; objFlags[x]=flags;
     }
     barrier();
     ScanlineLine state=records[recordIndex].layers;
@@ -133,6 +177,29 @@ void main() {
     // CPU sprite enumeration or selected pixel buffer is needed by this pass.
     state.numSprites=1u;
     bool drawn=state.enabled!=0u && state.forcedBlank==0u && records[recordIndex].finalDisplay.vcount<192u;
+    // Scaled OBJ history slots are assigned by the pipeline (reserved2 bits
+    // 0-9: read slot + 1, bit 31: write this record's slot objectWrite/512).
+    uint slotWords=256u*pc.displayScale*pc.displayScale+9u;
+    uint readSlot=(state.reserved2&0x3FFu)==0u ? 0u : ((state.reserved2&0x3FFu)-1u)*slotWords;
+    bool writeSlot=pc.scaledHistoryBound!=0u && (state.reserved2>>31)!=0u;
+    uint writeBase=(records[recordIndex].objectWrite/512u)*slotWords;
+    bool enhancedOBJ=enhancedFresh;
+    bool objMosaicActive=(objMosaic[0]|objMosaic[1]|objMosaic[2]|objMosaic[3])!=0u;
+    if (!fresh && pc.scaledHistoryBound!=0u && (state.reserved2&0x3FFu)!=0u) {
+        uint slotFlags=scaledHistory[readSlot+slotWords-1u];
+        enhancedOBJ=(slotFlags&1u)!=0u;
+        objMosaicActive=(slotFlags&2u)!=0u;
+    }
+    if (writeSlot && lane<9u) {
+        uint value;
+        if (lane==8u) value=(enhancedOBJ ? 1u : 0u)|(objMosaicActive ? 2u : 0u);
+        else if (!enhancedOBJ) value=0u;
+        else if (fresh) {
+            value=0u;
+            for (uint bit=0u;bit<32u;++bit) value|=(objFlags[lane*32u+bit]&1u)<<bit;
+        } else value=scaledHistory[readSlot+slotWords-9u+lane];
+        scaledHistory[writeBase+slotWords-9u+lane]=value;
+    }
     for (uint part=0u;part<4u;++part) {
         uint x=lane+part*64u;
         ScanlinePixelState pixelState=scanlinePreparePixel(state,recordIndex,x);
@@ -155,10 +222,37 @@ void main() {
                 if (state.layers[bg].isActive!=0u && state.layers[bg].source.type==BG_TYPE_DIRECT &&
                     (pixelState.window&data[bgPage+74u]&(1u<<bg))!=0u) scaledBG|=1u<<bg;
         uint nativeBG[2]=uint[2](pixelState.layerColor[2],pixelState.layerColor[3]);
+        // Display-scale OBJ source for this pixel: its own subpixels, or under
+        // mosaic the native latch position's block when that winner was captured.
+        uint objX=x;
+        bool objBlock=enhancedOBJ;
+        if (enhancedOBJ && drawn && objMosaicActive) {
+            objX=objMosaicLatch(state.objMosaicX,x);
+            objBlock=fresh ? (objFlags[objX]&1u)!=0u :
+                ((scaledHistory[readSlot+slotWords-9u+objX/32u]>>(objX&31u))&1u)!=0u;
+        }
+        // Fresh pixels without a bitmap candidate keep their native OBJ word.
+        if (objBlock && fresh && (objFlags[objX]&2u)==0u) objBlock=false;
+        bool objVaries=objBlock && drawn;
+        uint objNative=scanlineRawOBJ(recordIndex,objX);
         uint lastRaw=pixel;
         for (uint sy=0u;sy<pc.displayScale;++sy)
         for (uint sx=0u;sx<pc.displayScale;++sx) {
             bool changed=false;
+            if (objVaries || (writeSlot && enhancedOBJ)) {
+                uint objWord=!objBlock ? objNative : fresh ? hiresObjPixel(objX,sx,sy) :
+                    scaledHistory[readSlot+(sy*256u+objX)*pc.displayScale+sx];
+                if (writeSlot) scaledHistory[writeBase+(sy*256u+x)*pc.displayScale+sx]=objWord;
+                if (objVaries) {
+                    uint color,priority;
+                    objLayer(state,pixelState.window,objWord,color,priority);
+                    if (color!=pixelState.objColor || priority!=pixelState.objPriority) {
+                        pixelState.objColor=color;
+                        pixelState.objPriority=priority;
+                        changed=true;
+                    }
+                }
+            }
             if (scaled3D) {
                 uint color=nativeSample3D(recordIndex,x,uvec2(sx,sy),true);
                 color=(color>>24)==0u?0u:color|0x40000000u;
@@ -180,7 +274,7 @@ void main() {
                 scaledRaw[(records[recordIndex].scaledCapture-1u)*256u*pc.displayScale*pc.displayScale+
                     (sy*256u+x)*pc.displayScale+sx]=lastRaw;
             NativeFinalConfig config=records[recordIndex].finalDisplay;
-            uint outputPixel=(scaled3D||scaledBG!=0u)?nativeFinalPixel(config,x,lastRaw):finalPixel;
+            uint outputPixel=(scaled3D||scaledBG!=0u||objVaries)?nativeFinalPixel(config,x,lastRaw):finalPixel;
             if ((records[recordIndex].hiresLCDC&(1u<<(x>>7)))!=0u &&
                 config.screensEnabled!=0u && config.vcount<192u) {
                 uint bank=records[recordIndex].hiresLCDC>>2;

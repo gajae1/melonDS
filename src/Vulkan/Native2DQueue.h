@@ -53,7 +53,7 @@ private:
         }
     };
     struct Engine {
-        Memory::View bg, palette, obj, oam, hiresBG;
+        Memory::View bg, palette, obj, oam, hiresBG, hiresOBJ;
         std::array<uint8_t, PaletteEntries * 2> paletteBytes{};
         ObjectState object{};
         std::array<uint8_t, Memory::MaxPages> bgGPU{}, objGPU{};
@@ -62,6 +62,7 @@ private:
     };
     void CaptureBackground(uint32_t engine, const CapturedMemory& captured);
     void CaptureHiresBackground(uint32_t engine, const CapturedMemory& captured);
+    void CaptureHiresObjects(uint32_t engine, const CapturedMemory& captured);
     Memory::View CaptureMapped(std::span<const uint8_t> bytes, Memory::View previous,
         std::span<const uint64_t> dirty, const uint32_t* mapping,
         std::array<uint8_t, Memory::MaxPages>& masks, uint64_t& revision,

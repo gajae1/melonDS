@@ -13,8 +13,10 @@ void Require(bool ok, const char* message) { if (!ok) throw std::invalid_argumen
 constexpr size_t HistoryBytes = size_t(Pipeline::MaxRecords + 2) * 512 * sizeof(uint32_t);
 constexpr uint32_t NativeFrameWords = 256 * 192;
 // Buffers 0-3 memory/records/raw/history; images 4 guest 3D, 5/6 top/bottom,
-// 7 display 3D; buffers 8 native frames, 9 scaled capture A, 10 hires capture.
-constexpr uint32_t BindingCount = 11;
+// 7 display 3D; buffers 8 native frames, 9 scaled capture A, 10 hires capture,
+// 11 scaled OBJ history.
+constexpr uint32_t BindingCount = 12;
+constexpr uint32_t PushBytes = 20;
 constexpr bool ImageBinding(uint32_t binding) { return binding >= 4 && binding < 8; }
 void MemoryBarrier(Device& device, VkCommandBuffer command, VkPipelineStageFlags src,
     VkPipelineStageFlags dst, VkAccessFlags read, VkAccessFlags write)
@@ -32,9 +34,9 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::span<const uint32_t> sha
     Require(owner && !shader.empty(), "Invalid native 2D pipeline input");
     const auto& limits = owner->Properties().limits;
     Require(scale && scale <= limits.maxImageDimension2D / 256, "Invalid native 2D display scale");
-    Require(limits.maxPerStageDescriptorStorageBuffers >= 7 && limits.maxPerStageDescriptorStorageImages >= 4 &&
+    Require(limits.maxPerStageDescriptorStorageBuffers >= 8 && limits.maxPerStageDescriptorStorageImages >= 4 &&
         limits.maxComputeWorkGroupInvocations >= 64 && limits.maxComputeWorkGroupSize[0] >= 64 &&
-        limits.maxComputeSharedMemorySize >= 3088 && limits.maxComputeWorkGroupCount[1] >= MaxRecords,
+        limits.maxComputeSharedMemorySize >= 4128 && limits.maxComputeWorkGroupCount[1] >= MaxRecords,
         "Native 2D compute limits unavailable");
     const auto& f = owner->Functions();
     const auto d = owner->Handle();
@@ -48,7 +50,7 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::span<const uint32_t> sha
         VkDescriptorSetLayoutCreateInfo bi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         bi.bindingCount = uint32_t(entries.size()); bi.pBindings = entries.data();
         Device::Check(f.vkCreateDescriptorSetLayout(d, &bi, nullptr, &bindings), "Native 2D bindings");
-        VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+        VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, PushBytes};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         li.setLayoutCount = 1; li.pSetLayouts = &bindings;
         li.pushConstantRangeCount = 1; li.pPushConstantRanges = &push;
@@ -74,7 +76,7 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::span<const uint32_t> sha
             Device::Check(f.vkCreateComputePipelines(d, owner->GetPipelineCache(), 1, &pi, nullptr, &mergePipeline), "Native 2D merge pipeline");
             f.vkDestroyShaderModule(d, mergeModule, nullptr); mergeModule = VK_NULL_HANDLE;
         }
-        const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
+        const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
         VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         poolInfo.maxSets = 1; poolInfo.poolSizeCount = 2; poolInfo.pPoolSizes = sizes;
         Device::Check(f.vkCreateDescriptorPool(d, &poolInfo, nullptr, &pool), "Native 2D pool");
@@ -179,7 +181,7 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
     // Enhanced BG/LCDC reads and scaled capture A writes share this storage.
     const std::shared_ptr<Device::Buffer> hires = capture ? capture->Hires() : std::shared_ptr<Device::Buffer>{};
     const bool hiresReady = hires && capture->HiresScale() == displayScale;
-    bool scaledCaptures = false;
+    bool scaledCaptures = false, enhancedObjects = false;
     std::vector<uint32_t> starts{0};
     std::array<bool, 384> destinations{};
     std::array<uint32_t, 2> last{0, 512};
@@ -195,6 +197,12 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
             Require(hiresReady && line.layers.reserved0 < bytes.size() &&
                 uint64_t(bytes[line.layers.reserved0]) + Memory::PageWords <= bytes.size(),
                 "Invalid enhanced BG provenance page");
+        if (line.layers.reserved1)
+            Require(hiresReady && line.object.historyRead == NoHistory && line.layers.reserved1 < bytes.size() &&
+                uint64_t(bytes[line.layers.reserved1]) + Memory::PageWords <= bytes.size(),
+                "Invalid enhanced OBJ provenance page");
+        Require(line.layers.reserved2 == 0, "Native 2D record uses pipeline-owned scaled OBJ slot field");
+        enhancedObjects |= line.layers.reserved1 != 0;
         scaledCaptures |= line.scaledCapture != 0;
         const uint32_t source = line.object.historyRead;
         Require(source == NoHistory || (source % 512 == 0 && source < (i + 2) * 512),
@@ -213,6 +221,54 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
         last[line.layers.engine] = line.objectWrite;
     }
     starts.push_back(uint32_t(lines.size()));
+    // Scaled OBJ history: a later line that reuses an OBJ state (no fresh
+    // prefetch) must see the display-scale OBJ words of its source line. Only
+    // records read that way, and each engine's last record (persistent slot),
+    // write a slot; undrawn reuse forwards its source slot unchanged.
+    const bool scaledObjects = displayScale > 1 && (enhancedObjects || scaledHistory);
+    const size_t slotWords = size_t(256) * displayScale * displayScale + 9;
+    std::vector<uint32_t> slotFields(lines.size(), 0);
+    std::array<uint32_t, 2> persistentSource{0, 1};
+    bool fillScaledHistory = false;
+    if (scaledObjects)
+    {
+        if (!scaledHistory)
+        {
+            EnsureBuffer(scaledHistory, (MaxRecords + 2) * slotWords * sizeof(uint32_t),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
+            fillScaledHistory = true;
+        }
+        const auto drawn = [](const Record& line) {
+            return line.layers.enabled && !line.layers.forcedBlank && line.finalDisplay.vcount < 192;
+        };
+        std::vector<uint32_t> value(lines.size());
+        std::vector<bool> write(lines.size());
+        const auto resolve = [&](uint32_t slot) {
+            if (slot < 2) return slot;
+            const uint32_t source = slot - 2;
+            if (lines[source].object.historyRead != NoHistory && !drawn(lines[source])) return value[source];
+            write[source] = true;
+            return slot;
+        };
+        std::array<uint32_t, 2> lastRecord{~0u, ~0u};
+        for (uint32_t i = 0; i < lines.size(); ++i)
+        {
+            const auto& line = lines[i];
+            value[i] = i + 2;
+            if (line.object.historyRead != NoHistory)
+            {
+                const uint32_t read = resolve(line.object.historyRead / 512);
+                slotFields[i] = read + 1;
+                if (!drawn(line)) value[i] = read;
+            }
+            lastRecord[line.layers.engine] = i;
+        }
+        for (uint32_t engine = 0; engine < 2; ++engine)
+            if (lastRecord[engine] != ~0u)
+                persistentSource[engine] = resolve(value[lastRecord[engine]]);
+        for (uint32_t i = 0; i < lines.size(); ++i)
+            if (write[i]) slotFields[i] |= 1u << 31;
+    }
     // All allocation/validation precedes Begin: a host-side exception never
     // leaves the device's shared command buffer partially recording.
     EnsureBuffer(memory, bytes.size_bytes() + merges.size_bytes(),
@@ -232,12 +288,14 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
         std::memcpy(static_cast<uint8_t*>(memory->Data()) + bytes.size_bytes(),
             merges.data(), merges.size_bytes());
     std::memcpy(records->Data(), lines.data(), lines.size_bytes());
+    for (uint32_t i = 0; i < lines.size(); ++i)
+        static_cast<Record*>(records->Data())[i].layers.reserved2 = slotFields[i];
     const auto& f = owner->Functions(); const auto d = owner->Handle();
-    const std::array<std::shared_ptr<Device::Buffer>, 7> buffers{memory, records, raw, history,
-        nativeFrames, scaled, hires ? hires : raw};
+    const std::array<std::shared_ptr<Device::Buffer>, 8> buffers{memory, records, raw, history,
+        nativeFrames, scaled, hires ? hires : raw, scaledHistory ? scaledHistory : raw};
     const std::array<std::shared_ptr<Device::Image>, 4> images{image,
         outputs[buffer * 2], outputs[buffer * 2 + 1], display};
-    std::array<VkDescriptorBufferInfo, 7> bufferInfo{};
+    std::array<VkDescriptorBufferInfo, 8> bufferInfo{};
     std::array<VkDescriptorImageInfo, 4> imageInfo{};
     std::array<VkWriteDescriptorSet, BindingCount> writes{};
     for (uint32_t i = 0, b = 0, m = 0; i < BindingCount; ++i)
@@ -262,6 +320,7 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
     VkClearColorValue zero{};
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (!historyInitialized) f.vkCmdFillBuffer(command, history->Handle(), 0, history->Size(), 0);
+    if (fillScaledHistory) f.vkCmdFillBuffer(command, scaledHistory->Handle(), 0, scaledHistory->Size(), 0);
     if (!blankInitialized)
     {
         ImageBarrier(command, *blank3D, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
@@ -326,7 +385,8 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
         if (i > 1) MemoryBarrier(*owner, command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-        const uint32_t push[] = {starts[i - 1], starts[i] - starts[i - 1], displayScale, buffer};
+        const uint32_t push[] = {starts[i - 1], starts[i] - starts[i - 1], displayScale, buffer,
+            scaledObjects ? 1u : 0u};
         f.vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
         f.vkCmdDispatch(command, 1, push[1], 1);
     }
@@ -337,6 +397,13 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
         {
             const VkBufferCopy copy{VkDeviceSize(last[engine]) * 4, VkDeviceSize(engine) * 512 * 4, 512 * 4};
             f.vkCmdCopyBuffer(command, history->Handle(), history->Handle(), 1, &copy);
+        }
+    for (uint32_t engine = 0; engine < 2; ++engine)
+        if (scaledObjects && persistentSource[engine] != engine)
+        {
+            const VkDeviceSize bytes = slotWords * sizeof(uint32_t);
+            const VkBufferCopy copy{persistentSource[engine] * bytes, engine * bytes, bytes};
+            f.vkCmdCopyBuffer(command, scaledHistory->Handle(), scaledHistory->Handle(), 1, &copy);
         }
     if (!captures.empty()) capture->Record(command);
     owner->SubmitAndWait();

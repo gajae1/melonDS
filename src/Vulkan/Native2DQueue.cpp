@@ -146,6 +146,38 @@ void Queue::CaptureSprites(uint32_t engine, uint32_t line, const CapturedMemory&
     next.oamTable = oam.table; next.historyRead = NoHistory;
     current.obj = obj; current.oam = oam; current.object = next;
     if (!reg.OBJEnable) { current.objSources.clear(); current.objGPU.fill(0); current.objRevision = 0; }
+    if (reg.OBJEnable) CaptureHiresObjects(engine, captured);
+    else current.hiresOBJ = {};
+}
+
+void Queue::CaptureHiresObjects(uint32_t engine, const CapturedMemory& captured)
+{
+    // Enhanced bitmap OBJ provenance at this prefetch event: 64 ownership
+    // words, then one bank byte per 16 KiB OBJ block (0xFF = not a single
+    // A-D bank). The GPU reads hires subpixels when it renders this snapshot;
+    // captures are recorded only after both engines consumed their prefetch,
+    // and a pending writer to an OBJ bank is submitted before this event, so
+    // those subpixels are the ones present at the prefetch.
+    auto& current = engines[engine];
+    const auto* mapping = engine ? gpu.VRAMMap_BOBJ : gpu.VRAMMap_AOBJ;
+    std::array<uint32_t, Memory::PageWords> page{};
+    std::fill_n(page.begin() + 64, 4, ~0u);
+    uint32_t banks = 0;
+    for (uint32_t i = 0; i < (engine ? 8u : 16u); ++i) {
+        const uint32_t mask = mapping[i];
+        if (!std::has_single_bit(mask) || !(mask & 15)) continue;
+        const uint32_t bank = std::countr_zero(mask);
+        if (captured.hiresOwned[bank].none()) continue;
+        banks |= mask;
+        page[64 + i / 4] = (page[64 + i / 4] & ~(255u << ((i % 4) * 8))) | (bank << ((i % 4) * 8));
+    }
+    if (!banks) { current.hiresOBJ = {}; return; }
+    for (uint32_t bank = 0; bank < 4; ++bank) {
+        if (!(banks & (1u << bank))) continue;
+        for (uint32_t bit = 0; bit < 512; ++bit)
+            if (captured.hiresOwned[bank][bit]) page[bank * 16 + bit / 32] |= 1u << (bit % 32);
+    }
+    current.hiresOBJ = memory.Capture({reinterpret_cast<const uint8_t*>(page.data()), sizeof(page)}, current.hiresOBJ);
 }
 
 void Queue::CaptureHiresBackground(uint32_t engine, const CapturedMemory& captured)
@@ -245,6 +277,9 @@ void Queue::CaptureLine(uint32_t engine, uint32_t physicalLine, uint32_t source3
     record.hiresLCDC = hiresLCDC;
     record.layers = PackLine(reg, vcount, 1);
     record.layers.reserved0 = current.hiresBG.table;
+    // Only the event that consumes a fresh prefetch renders OBJ subpixels;
+    // later reuse of this OBJ state reads the scaled history instead.
+    if (current.object.historyRead == NoHistory) record.layers.reserved1 = current.hiresOBJ.table;
     // The core skips both 2D draws outside visible VCOUNT. The native result is
     // unused there; suppress memory lookup while the final pass emits white.
     if (vcount >= 192) record.layers.enabled = 0;
@@ -301,7 +336,7 @@ void Queue::Retire()
     Memory next(memory.ByteLimit());
     SeedMemory(next);
     std::array<ObjectState, 2> objects;
-    std::array<Memory::View, 2> objViews{}, oamViews{};
+    std::array<Memory::View, 2> objViews{}, oamViews{}, hiresOBJViews{};
     for (uint32_t engine = 0; engine < 2; ++engine) {
         objects[engine] = engines[engine].object;
         auto& object = objects[engine];
@@ -309,6 +344,8 @@ void Queue::Retire()
         else if (object.enabled) {
             objViews[engine] = next.Capture(CopyView(memory, engines[engine].obj), {});
             oamViews[engine] = next.Capture(CopyView(memory, engines[engine].oam), {});
+            if (engines[engine].hiresOBJ)
+                hiresOBJViews[engine] = next.Capture(CopyView(memory, engines[engine].hiresOBJ), {});
             object.vramTable = objViews[engine].table; object.oamTable = oamViews[engine].table;
         }
     }
@@ -317,6 +354,7 @@ void Queue::Retire()
     for (uint32_t engine = 0; engine < 2; ++engine) {
         engines[engine].bg = {}; engines[engine].palette = {}; engines[engine].hiresBG = {};
         engines[engine].obj = objViews[engine]; engines[engine].oam = oamViews[engine];
+        engines[engine].hiresOBJ = hiresOBJViews[engine];
         engines[engine].object = objects[engine];
         engines[engine].bgGPU.fill(0); engines[engine].bgRevision = 0;
         if (objects[engine].historyRead == NoHistory && objects[engine].enabled) {
