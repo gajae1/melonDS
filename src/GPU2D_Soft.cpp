@@ -786,14 +786,21 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
 }
 
 
+// The RGB555 -> RGB666 expansion every 2D pixel store applies. The scanline
+// loops below call it directly, so a pixel that is not being captured costs no
+// call; DrawPixel uses the same definition for its remaining callers.
+static inline u32 MakePixel(u16 color, u32 flag)
+{
+    const u32 r = (color & 0x001F) << 1;
+    const u32 g = ((color & 0x03E0) >> 4) | ((color & 0x8000) >> 15);
+    const u32 b = (color & 0x7C00) >> 9;
+    return r | (g << 8) | (b << 16) | flag;
+}
+
 void SoftRenderer2D::DrawPixel(u32* dst, u16 color, u32 flag)
 {
-    u8 r = (color & 0x001F) << 1;
-    u8 g = ((color & 0x03E0) >> 4) | ((color & 0x8000) >> 15);
-    u8 b = (color & 0x7C00) >> 9;
-
     *(dst+256) = *dst;
-    *dst = r | (g << 8) | (b << 16) | flag;
+    *dst = MakePixel(color, flag);
     if (CaptureLayersActive)
     {
         const u32 layer = flag & 0xF0000000 ? 4 : std::countr_zero(flag >> 24);
@@ -900,48 +907,78 @@ void SoftRenderer2D::DrawBG_Text(u32 line, u32 bgnum)
             // Work on the visible part of each tile, including a partial tile
             // at either end of the scanline. Tile-map reads were already once
             // per tile; the span keeps coordinate/flip work out of each pixel.
+            // A tile row is 8-byte aligned and the VRAM mask is a power of
+            // two minus one, so the whole row is one load that never crosses
+            // the mask, and a row of transparent pixels draws nothing.
+            const u32 winbit = 1 << bgnum;
+            const bool capture = CaptureLayersActive;
             for (u32 i = 0; i < 256;)
             {
                 const u32 span = std::min(256u - i, 8u - (xoff & 7));
                 const u16 tile = *(u16*)&bgvram[(tilemapaddr + ((xoff & 0xF8) >> 2)
                     + ((xoff & widexmask) << 3)) & bgvrammask];
-                u16* tilepal = extpal ? GPU2D.GetBGExtPal(extpalslot, tile >> 12) : pal;
                 const u32 pixelsaddr = tilesetaddr + ((tile & 0x03FF) << 6)
                     + (((tile & (1<<11)) ? (7 - row) : row) << 3);
                 const int step = (tile & (1<<10)) ? -1 : 1;
                 int tilex = (tile & (1<<10)) ? 7 - (xoff & 7) : (xoff & 7);
-                for (u32 end = i + span; i < end; ++i, tilex += step)
+                u64 pixels;
+                memcpy(&pixels, &bgvram[pixelsaddr & bgvrammask], sizeof(pixels));
+                if (pixels)
                 {
-                    if (WindowMask[i] & (1<<bgnum))
+                    u16* tilepal = extpal ? GPU2D.GetBGExtPal(extpalslot, tile >> 12) : pal;
+                    for (u32 x = i, end = i + span; x < end; ++x, tilex += step)
                     {
-                        const u8 color = bgvram[(pixelsaddr + tilex) & bgvrammask];
-                        if (color) DrawPixel(&BGOBJLine[i], tilepal[color], flag);
+                        const u8 color = u8(pixels >> (tilex * 8));
+                        if (!color || !(WindowMask[x] & winbit))
+                            continue;
+                        u32* dst = &BGOBJLine[x];
+                        if (capture) DrawPixel(dst, tilepal[color], flag);
+                        else
+                        {
+                            dst[256] = *dst;
+                            *dst = MakePixel(tilepal[color], flag);
+                        }
                     }
                 }
+                i += span;
                 xoff += span;
             }
         }
         else
         {
+            // As above: a 16-color tile row is four aligned bytes inside the
+            // VRAM mask, so one load covers the eight pixels of the span.
+            const u32 winbit = 1 << bgnum;
+            const bool capture = CaptureLayersActive;
             for (u32 i = 0; i < 256;)
             {
                 const u32 span = std::min(256u - i, 8u - (xoff & 7));
                 const u16 tile = *(u16*)&bgvram[(tilemapaddr + ((xoff & 0xF8) >> 2)
                     + ((xoff & widexmask) << 3)) & bgvrammask];
-                u16* tilepal = pal + ((tile & 0xF000) >> 8);
                 const u32 pixelsaddr = tilesetaddr + ((tile & 0x03FF) << 5)
                     + (((tile & (1<<11)) ? (7 - row) : row) << 2);
                 const int step = (tile & (1<<10)) ? -1 : 1;
                 int tilex = (tile & (1<<10)) ? 7 - (xoff & 7) : (xoff & 7);
-                for (u32 end = i + span; i < end; ++i, tilex += step)
+                u32 pixels;
+                memcpy(&pixels, &bgvram[pixelsaddr & bgvrammask], sizeof(pixels));
+                if (pixels)
                 {
-                    if (WindowMask[i] & (1<<bgnum))
+                    u16* tilepal = pal + ((tile & 0xF000) >> 8);
+                    for (u32 x = i, end = i + span; x < end; ++x, tilex += step)
                     {
-                        const u8 packed = bgvram[(pixelsaddr + (tilex >> 1)) & bgvrammask];
-                        const u8 color = (tilex & 1) ? (packed >> 4) : (packed & 0x0F);
-                        if (color) DrawPixel(&BGOBJLine[i], tilepal[color], flag);
+                        const u8 color = u8(pixels >> (tilex * 4)) & 0x0F;
+                        if (!color || !(WindowMask[x] & winbit))
+                            continue;
+                        u32* dst = &BGOBJLine[x];
+                        if (capture) DrawPixel(dst, tilepal[color], flag);
+                        else
+                        {
+                            dst[256] = *dst;
+                            *dst = MakePixel(tilepal[color], flag);
+                        }
                     }
                 }
+                i += span;
                 xoff += span;
             }
         }
@@ -1668,7 +1705,13 @@ void SoftRenderer2D::InterleaveSprites(u32 prio)
         else
             color = extpal[pixel & 0xFFF];
 
-        DrawPixel(&BGOBJLine[i], color, pixel & 0xFF000000);
+        u32* dst = &BGOBJLine[i];
+        if (CaptureLayersActive) DrawPixel(dst, color, pixel & 0xFF000000);
+        else
+        {
+            dst[256] = *dst;
+            *dst = MakePixel(color, pixel & 0xFF000000);
+        }
     }
 }
 
@@ -1834,6 +1877,9 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos, u32 cap
         // Native color and OAM ordering are unchanged. The display line uses
         // the same winner rules independently, including transparent origins.
         const bool nativeWinner = merge(OBJLine[xpos], color);
+        // The remaining block only feeds the captured OBJ display.
+        if (!CaptureOBJScale)
+            return;
         // Integer identity uses the existing borrowed-row fast path. General
         // transforms need the source mapper as well as the native address.
         if (transform && color != OBJ_Outside && transform->a == 256 &&
