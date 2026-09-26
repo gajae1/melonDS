@@ -109,11 +109,11 @@ T SlowRead9(u32 addr, ARMv5* cpu)
     else if ((addr & cpu->DTCMMask) == cpu->DTCMBase)
         val = *(T*)&cpu->DTCM[addr & 0x3FFF];
     else if (std::is_same<T, u32>::value)
-        val = NDS::Current->ARM9Read32(addr);
+        val = cpu->NDS.ARM9Read32(addr);
     else if (std::is_same<T, u16>::value)
-        val = NDS::Current->ARM9Read16(addr);
+        val = cpu->NDS.ARM9Read16(addr);
     else
-        val = NDS::Current->ARM9Read8(addr);
+        val = cpu->NDS.ARM9Read8(addr);
 
     if (std::is_same<T, u32>::value)
         return ROR(val, offset << 3);
@@ -157,15 +157,15 @@ void SlowWrite9(u32 addr, ARMv5* cpu, u32 val)
     }
     else if (std::is_same<T, u32>::value)
     {
-        NDS::Current->ARM9Write32(addr, val);
+        cpu->NDS.ARM9Write32(addr, val);
     }
     else if (std::is_same<T, u16>::value)
     {
-        NDS::Current->ARM9Write16(addr, val);
+        cpu->NDS.ARM9Write16(addr, val);
     }
     else
     {
-        NDS::Current->ARM9Write8(addr, val);
+        cpu->NDS.ARM9Write8(addr, val);
     }
 }
 
