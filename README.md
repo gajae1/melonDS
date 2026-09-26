@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.180"><img src="https://img.shields.io/badge/fork_release-1.1.180-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.184"><img src="https://img.shields.io/badge/fork_release-1.1.184-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -16,6 +16,10 @@ DS emulator, sorta
 
 The goal is to do things right and fast, akin to blargSNES (but hopefully better). But also to, you know, have a fun challenge :)
 <hr>
+
+## Fork status
+
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md) and the [1.1.184 release record](plans/releases/1.1.184.md). Benchmark results describe specific workloads, not a universal speed increase.
 
 ## How to use
 
@@ -42,7 +46,7 @@ See the fork's [development plan](plans/README.md) for tracked work, release pha
 The list below is the original upstream TODO list. Fork status notes are in brackets; see [the task catalog](plans/Task_Catalog.md) for evidence.
 
  * better DSi emulation [fork: partial - DSi clock/NDMA timers, reset state, I2C, BTDMP FIFO and title-replace rollback fixed; DSP delay, AHBM/DMA and camera formats are recorded but held for hardware comparison]
- * better OpenGL rendering [fork: partial - palette range upload, texture-state skip, capture downscale limited to read rows, strict-driver compute fix; renderer accuracy differences (GR-08) not yet resolved]
+ * better OpenGL rendering [fork: partial - palette range upload, texture-state skip, capture downscale limited to read rows, strict-driver compute fix, refresh-limited fast-forward presentation; renderer accuracy differences (GR-08) not yet resolved]
  * netplay [upstream: LAN/Netplay present; fork: connection lifetime and UI hardening; real-game host/client validation not started]
  * the impossible quest of pixel-perfect 3D graphics [not started]
  * support for rendering screens to separate windows [upstream: "Open new window" present]

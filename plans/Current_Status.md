@@ -1,38 +1,35 @@
-# 현재 개발 상태 — 1.1.164
+# 현재 개발 상태 — 1.1.184
 
-2026-09-23. 메인 작업/빌드 경로는 `F:/melonDS`, `build/windows-dev`다.
-현재 변경의 범위·실제 검증은 [1.1.164 기록](releases/1.1.164.md)을 따른다.
-1.1.164는 UYVY·NV12 카메라 프레임 좌표 계산과 Windows 런타임 ZIP 검증의 중복 해제를 줄인다. 두 측정은 국소 변환·패키징 검증 구간이며 게임 FPS와 무관하다.
-1.1.163은 SDL2 조이스틱 목록 조회의 주기별 배열 할당을 제거하고, 두 LTO 모드가 꺼진 구성의 IPO 검사를 건너뛴다. 입력 조회의 국소 측정과 구성 시간은 게임 FPS 개선을 의미하지 않는다.
-1.1.162는 비모자이크 software text BG의 타일 구간 처리, SaveManager의 변경 구간 게시, 카메라의 stride·정지 이미지·재시작 정확성을 포함한다. 국소 측정의 이득을 게임 FPS로 확대하지 않는다.
-1.1.161은 압축 texture 변환, Thumb register shift, 휴면 deadline, DSP callback, Software 3D의 반복 작업을 줄인다. Dense audio·awake scheduler·Thumb immediate 후보는 측정 결과에 따라 제외했다. 국소 부하의 이득을 전체 게임 FPS로 확대하지 않는다.
-1.1.160은 OpenGL BG 팔레트의 변경 구간 전송과 3D chunk 내 동일 texture 설정 생략을 추가했다. 다음 최적화의 우선순위와 수정 범위는 [12영역 평가](Optimization_Assessment_2026-09-22.md)에 기록했다. 평가의 후보 42개는 측정 전이며 완료한 개선 수가 아니다.
-1.1.159는 텍스처 무효화의 중복 전체 해시, 오디오 생산자 대기의 불필요한 잠금 전환,
-Minimum-phase 지원 길이 계산의 부동소수점 연산을 줄인다. JIT 재진입과 오디오 이력 캐시·스테레오 SIMD 후보는
-실행시간 이득이 불명확하거나 대조 부하 비용이 증가해 채택하지 않았다. 계수·기본 버퍼·음색은 유지한다.
-1.1.136 Windows 패키지 provenance는 2026-09-18 자체 manifest 기준으로 재확인했다. 패키지 바이너리 행동 검증은 이 세션에서 재실행하지 않았다.
+2026-09-26. 코드와 빌드의 기준 경로는 `F:/melonDS`다. [1.1.184 릴리스 기록](releases/1.1.184.md)에 소스 커밋·패키지 해시·검증 범위를 기록한다. SDL3·SDL2 패키지 검증을 마쳤고 Windows·Ubuntu·macOS·BSD·Core regressions CI가 모두 통과했다.
 
-| 영역 | 현재 구현 | 남은 경계 |
-|---|---|---|
-| 표시 수명 | 1.1.134의 paint 버퍼 재조회와 실패 fallback 잠금 유지; 1.1.144 typed DisplayFrame 계약(kind·extent·generation, 수명/완료/재사용 명문화) | 사용자 crash의 직접 대조, 장기/다중 창/실제 device loss; GPU image kind·직접 표시는 미구현 |
-| Vulkan 확대 | 1~16배 직접 3D·LCDC 표시, bitmap BG2/BG3 및 일반·반전·affine direct-color bitmap OBJ의 캡처 디테일, 스프라이트 모자이크 행의 캡처 디테일(1.1.141), 캡처 소스 format-7 3D texture의 표시용 확대 샘플(1.1.142), Vulkan 렌더러·표시 GPU 어댑터 선택과 활성 GPU 상태 표시 | 색인 bitmap 향상, 나머지 texture format의 캡처 재사용; 변환 OBJ 검증은 양 engine 1·3·5배율, 모자이크는 affine identity·Y 반전까지, 캡처 texture는 1·3·5배율; 실기 다중 GPU·핫플러그 미검증 |
-| GL compute 이식성 | texture uniform 호출을 texture 래스터라이저 프로그램으로 한정해 strict 드라이버(AMD Windows GL 포함)에서 설정 적용 중단 수정 | 다른 GL 구현·드라이버 버전 전수 검증은 별도 |
-| 비트맵 합성 | 양 engine의 layer 후보·창·우선순위·효과·affine, native VRAM 기록 분리; 1.1.140 확대 3D 합성의 서브픽셀 공통 작업 제거; 1.1.157 no-target2/all-target1 brightness scanline fast path | 전체 GPU 2D/capture가 아니며 CPU 고배율 비용 일부가 남음 |
-| native 보존 | CPU/DMA용 캡처 기록, provenance 무효화·중복 mapping fallback | 실기 oracle와 모든 게임 경계의 수락은 별도 |
-| 캐시/전송 | RAM-only cache·비우기·32MiB 소프트 제한, clear 묶음 전송·cached readback; 1.1.143 프레임 단위 업로드 묶음 제출(texture·clear·capture를 phase당 한 번); 1.1.145 확대 표시의 GPU 최종 합성과 native-origin readback; 1.1.146 합성 행의 direct-landing readback으로 staging·host memcpy 제거; 1.1.147 GR-14 opt-in host/GPU 비용 분해 계측; 1.1.148 캡처 sidecar·LCDC 변환의 연속 실행(16x capture 29.9→16.1ms); 1.1.149 B/blend sidecar의 provenance 샘플러 나눗셈 제거(16x B-VRAM sidecar 49.1→28.1ms); 1.1.150 scaled conversion의 중복 zero-fill 제거(16x convert 3.05→1.60ms); 1.1.151 cached full-readback landing의 중복 host memcpy 제거(16x full_memcpy ~2.1ms 제거); 1.1.152 capture sidecar의 source-B 연속 gather·blend 변환(16x sidecar 최대 −99%); 1.1.153 확대 capture blend의 16x 한정 GPU 이식(행당 deferred dispatch, blend-VRAM 16x sidecar −74.8%·blend-FIFO −81.7%) | GPU 직접 표시; 16x 미만 capture 라인은 CPU 합성 유지 |
-| 오디오/저장 | 기존 PCM·보간·종료 소유권·저장 파일 교체 재시도 유지; 1.1.140 생산 pacing 상한을 링 용량으로 clamp; 1.1.158 Minimum-phase dense 이력의 불필요한 복사 감소(16채널 제한 부하 14~23%, PCM 동일) | 실제 문제 장면의 저버퍼 끊김·음색 수락, 장기 청취·탈착·물리 지연·전원 손실 내구성 |
+## 최근 반영한 변경
 
-기존에 중단된 비트맵 변경 7개 파일을 먼저 보존한 뒤 검토·확장했다.
-1:1 bitmap 좌표의 반복 modulo/division을 줄였다. 합성 시험의 개선을 게임 FPS나 실기 정확성으로 확대하지 않는다.
-1.1.136은 같은 배율의 정수 affine에서 픽셀별 캡처 조회를 subx 루프 밖으로 옮겼다. 전체 행을 하나의 span으로 조회하는 확장은 아직 없다.
+| 영역 | 현재 구현 | 확인하지 못했거나 남은 범위 |
+| --- | --- | --- |
+| Vulkan 표시 | [1.1.182](releases/1.1.182.md)부터 같은 Vulkan 장치의 GPU 이미지를 표시 셰이더가 직접 샘플링한다. [1.1.183](releases/1.1.183.md)은 Windows에서 Vulkan 렌더러가 이 표시 경로를 사용하도록 연결했다. | 1배율에서는 RAM 프레임버퍼를 올린다. 모든 2D·캡처 처리를 GPU로 옮긴 것은 아니다. 실제 다중 GPU·핫플러그·장기 장치 손실 검증은 남아 있다. |
+| OpenGL | OpenGL 렌더러의 텍스처를 화면 출력에서 직접 사용한다. 팔레트 변경 구간 전송·중복 텍스처 설정 생략을 유지하며 1.1.183부터 수직동기가 꺼진 빨리 감기 표시를 모니터 주사율에 맞춰 제한한다. | 창의 픽셀 수에 비례하는 그리기·스왑 비용은 남는다. 모든 드라이버와 약한 내장 GPU에서의 성능을 보장하지 않는다. |
+| 오디오 | 1.1.182에 Sinc 보간(모드 6)과 최종 출력 리샘플러를 추가했다. 기존 모드 0~5의 PCM은 보존하며 1.1.183은 Sinc 반올림 호출 비용을 줄였다. AVX2/FMA·SSE2·NEON·스칼라 경로가 있다. | 실제 저사양 기기에서의 청취·장기 끊김·출력 장치 탈착·물리 지연 수락은 별도다. MinimumPhase와 Sinc의 음색·비용을 같다고 간주하지 않는다. |
+| CPU/JIT | x64·ARM64 정적 분기 블록 연결을 유지한다. 1.1.184는 가장 이른 이벤트 시각을 캐시하고 ARM9 느린 메모리 접근에서 CPU 소유 NDS 참조를 사용한다. | ARM64 실장치 속도는 아직 측정하지 않았다. ARM7 소유 참조 변경은 후보이며 반영하지 않았다. |
+| 소프트웨어 렌더러 | 1.1.183에서 저장 상태 복원 뒤 남은 스캔라인 신호 때문에 오래된 3D 줄을 읽을 수 있던 경쟁 상태를 수정했다. | GPU2D 추가 최적화는 실험 중이다. 2코어에서 느려진 소프트웨어 3D 병렬화 후보는 채택하지 않았다. |
+| 플랫폼/배포 | Windows 기본 배포는 SDL3, SDL2는 별도 호환 ZIP이다. 두 1.1.184 패키지는 같은 소스 식별값을 사용하고 각 325개 파일·비공개 파일 0개를 확인했다. | SDL3 사용 자체가 코어 FPS 향상을 뜻하지 않는다. 런타임/소스 ZIP 및 검증 범위는 버전별 기록을 따른다. |
 
-## 다음 단계
+## 성능 수치의 범위
 
-1. 비트맵 합성 최적화는 추출 CPU 하네스의 양 engine·일반 affine 출력 바이트 대조를 통과했다. 1.1.140은 확대 3D 합성의 서브픽셀 공통 작업을 제거했다(72조건 oracle bitwise 일치). 실제 GPU 캡처 수명 대조와 engine B·일반 affine 성능은 남아 있다. 추가 span 묶음은 측정 후 결정한다.
-2. 일반·반전·affine bitmap OBJ의 캡처 재사용을 구현했고, 1.1.141은 모자이크 행의 캡처 디테일을 native 래치 재사용으로 복원했다. 고배율 성능은 다음 범위다. 무효 provenance·중복 mapping·배율 불일치는 native fallback을 유지한다.
-3. 3D texture의 캡처 재사용은 1.1.142가 format-7 direct-color·단일 capture block 범위를 표시 전용으로 분리했다. 나머지 format과 palette texture의 향상, 업로드 묶음·캐시는 후속이다. 정확성 판정을 위해 향상 경로를 정답으로 삼지 않는다.
-4. texture 업로드 묶음은 1.1.143이 프레임 phase당 한 번 제출로 줄였다(20프레임 fixture 582→37회). 1.1.144는 표시 프레임의 타입 계약을 세웠다. 1.1.145는 확대 표시의 최종 합성을 GPU compute pass로 옮기고 표시용 확대 3D readback을 native-origin 추출로 줄였다. 1.1.146은 합성 행을 renderer 소유 host-visible backing에 직접 readback해 staging buffer와 host memcpy를 제거했다. 1.1.147은 GR-14 opt-in 계측으로 Vulkan 코어·캡처·표시 비용을 host stage·GPU timestamp·경로별 traffic으로 분해했다. 1.1.148은 계측이 고른 capture sidecar·LCDC CPU 경로를 같은 변환의 연속 실행으로 줄였고(생성 capture-heavy 16x 29.9→16.1ms), 1.1.149는 B/blend sidecar의 ReadDisplayCapture provenance 샘플러에서 per-sample 나눗셈을 제거했으며(30행 capture 행렬 byte-identical), 1.1.150은 scaled conversion 앞의 중복 zero-fill을 storage/span 분리로 제거했고(16x convert 3.05→1.60ms), 1.1.151은 cached full-readback landing buffer를 직접 반환해 host memcpy를 제거했다(16x ~2.1ms; uncached fallback은 기존 copy 유지, FullCopyBytes는 실제 flag 귀속의 조건부 계약으로 갱신). 1.1.152는 capture sidecar의 source-B를 행 단위 provenance 해소·연속 gather/blend로 변환했다(16x sidecar 최대 −99%, wl5 126.4→23.9ms). 실게임에서 vulkan 16x가 18.30→4.33ms로 내려갔고 2D-only 화면은 기존 비용을 유지한다. 1.1.152 실게임 재측정(유휴 호스트, ROMSmoke 1200프레임×32조합)은 framebuffer digest 32/32 동일과 capture-heavy vulkan의 추가 개선(solatorobo-16x 165.1→196.7fps +19.2%, black-16x +44.3%, black-8x +40.2%)을 확인했으며 나머지 경로 차이는 1.1.151 측정의 호스트 부하(~20% CPU)를 포함해 코드 효과로 귀속하지 않는다(local-docs/realgame-1.1.152-20260921/findings.md). capture sidecar host loop 후보는 Pro run 20260920T073959Z-d9a7281683이 두 변형을 측정·폐기했다 — 연속 B gather+blend 변환은 16x sidecar를 62~99% 줄였으나 bitmap 소비자의 재현된 +2% 신호가 원인 미규명으로 남아 채택 기준을 못 넘었고, provenance hoist-only 변형은 B-FIFO를 악화했다(local-docs/pro-vk-capture-loop-20260920/result.md, candidate1/2.patch 보존). 후속 귀속 조사(20260920T091739Z-2655f6c8ba)는 동일 footprint NOP control이 8x 역방향을 재현함을 보여 layout/환경 기여를 입증했으나 normal-affinity 잔여를 완전히 설명하지 못해 DEFER를 유지했다(local-docs/pro-vk-bitmap-signal-20260920/result.md). readback wait 후보는 Pro run 20260920T124929Z-722cbc284dc8이 규명했다 — 16x wait ~0.92ms의 대부분이 48MiB 전송·배리어를 포함한 GPU readback 실행 구간(~0.89ms)이고 submit+wait−GPU 잔여는 ~0.06ms라, 계약·미사용 경로 traffic을 보존하는 추가 folding·이른 submit 경계를 입증하지 못해 DEFER로 종결했다(local-docs/pro-vk-fullrb-wait-20260920/result.md, 코드·테스트 변경 없음, 초점 57/57·행렬 30/30×2·소비자 42/42). 보류됐던 C1의 bitmap +2% 신호는 후속 re-gate(20260920T134814Z-977a38b67401 + 부모 campaign 완결)에서 환경/layout 효과로 귀속됐다 — idle-gated 480프로세스에서 C1 재현 회귀 없고, layout-neutral 변형이 오히려 +2.5~4.4% 일관 잔여를 보여 비알고리즘 효과 크기를 입증했으므로 exact C1을 1.1.152로 채택했다(local-docs/pro-vk-bitmap-residual-20260920/result.md). sidecar 저장소·전송 후보는 Pro run 20260920T174902Z-fdb63e070a09이 규명했다 — captured-B gather copy elision 변형(+7/-2)은 16x blend-VRAM −2.22%와 함께 5x source-B FIFO +31.2%·해당 프레임 전체 +5.03%의 재현 회귀(6/6 인접 쌍)를 보여 기각·복원했고, 네이티브 해상도 저장은 포인터 소비자 계약·비균일 서브픽셀 표현 불가로, staging 제거는 ~0.2ms 상한 대비 alias/publication 보호 상실로 채택 기준을 넘지 못했다. 코드 변경 없이 DEFER로 종결하고 초점 56/56×4 cohort·행렬 identity 30/30×2를 확인했다(local-docs/pro-vk-sidecar-store-20260921/result.md, candidate.patch·paired jsonl 보존). 1.1.153은 확대 capture blend를 적격 행에서 GPU compute로 이식했다 — 행당 한 번의 deferred dispatch가 native capture와 겹치고 결과는 기존 CaptureRow staging·publication 경계를 거친다. 행당 submit+wait 고정 비용(~57us)이 16x 미만에서 CPU blend를 넘어서므로 scale==16에 한정한다. 30행 행렬 출력 byte-identical·초점 56/56 OFF/ON·paired 144프로세스에서 blend-VRAM 16x sidecar −74.8%·blend-FIFO −81.7%, 소비자 회귀 없음(local-docs/pro-vk-capture-gpu-20260921/result.md). 행 묶음 제출 후보는 부모 분석으로 DEFER 종결했다 — 행별 publication 계약(valid[line]은 DoCapture 반환 시 확정되고 같은 프레임의 DrawCapturedDisplay·2D 합성 샘플·자기참조 capturedB가 즉시 소비)과 행별 B provenance(FIFO는 스캔라인 중에 채워지고 sourceOffset은 행의 함수, VRAM은 행 사이 기록 가능)이 다중 행 단일 submission을 구조적으로 금지한다. 측정된 submit+wait 바닥 ~62us/행(16x paired run의 submit_other 4.30+wait_other 7.74ms/프레임)은 묶음 없이 줄일 수 없고 submit ~22us/행만으로도 8x CPU sidecar ~2.6us/행을 초과해 16x 미만에는 여지가 없다(local-docs/capture-batch-20260921/result.md). 1.1.153 실게임 재측정(유휴 호스트, ROMSmoke 1200프레임×32조합, HEAD dfc10a13)은 framebuffer digest 32/32 동일과 모든 셀 ±1~5% 노이즈 범위 fps를 확인했다 — 생성 fixture의 blend sidecar 절감은 이 두 게임의 프레임 시간에 관측 가능한 이득을 내지 않지만 회귀도 없다(local-docs/realgame-1.1.153-20260921/findings.md). 남은 후보는 GPU image 완전성·직접 표시(장치 공유 NT-handle 사용자 게이트)이며 scanline/FIFO/capture 가시성·복구 수명을 보존한다.
-5. 실제 게임 표시 비용 측정은 local-docs/realgame-display-cost-20260920/에 기록했다(ROMSmoke RunFrame 1200프레임×32조합 + 1.1.145·1.1.146 재측정). Vulkan과 compute의 표시 프레임은 같은 배율에서 바이트가 같다. Classic도 실기 전체의 정답으로 고정하지 않는다.
+- 원본과 직접 비교한 가장 최근 기록은 **1.1.180 대 포크 기준 원본**이다. Ryzen 7 9800X3D/Windows, 소프트웨어 렌더러, 두 게임의 시작 1200프레임에서 실행 시간은 JIT+fastmem 기준 Solatorobo 약 3.5%, Black 약 10.1% 줄었다. 인터프리터는 각각 약 3.9%, 5.7%였다. 같은 바이너리 A/A 대조를 포함한다. 다만 Black/JIT은 마지막 화면의 진행도가 다르고, 오디오 해시도 포크의 정확도 변경으로 원본과 다르므로 완전히 동일한 연산의 속도 비교는 아니다. 다른 장면·저사양 기기·GPU 렌더러·1.1.184 전체의 향상률로 확대하지 않는다. 근거: `local-docs/upstream-speed-20260925/result.md`.
+- Sinc의 [1.1.182 측정](releases/1.1.182.md)은 같은 두 게임에서 MinimumPhase보다 전체 에뮬레이터 비용이 약 16~26% 적었다. Gaussian보다는 약 4~13% 많았다. 신호 품질 검사는 통과대역 최악 약 −0.17dB와 사인 이미지 억제 78.3dB 이상을 확인했다. 이 수치가 청취 평가를 대신하지 않는다.
+- 1.1.184의 스케줄러·ARM9 변경은 각각 약 1~2.3%의 **실행 명령어 수** 감소를 보였다. fastmem을 끈 Linux 측정이며, 두 값을 더해 FPS 향상률로 해석하지 않는다. 자세한 조건은 해당 릴리스 기록을 따른다.
 
-기존 버전별 runtime/source 패키지 도구를 재사용한다. 새 버전 디렉터리는 구분하며 이전 사용자 빌드·ROM·저장 파일은 삭제하지 않는다.
-원125개 과제 ID와 역사적 책임 버전은 유지한다. Actions·다른 작업트리·드라이버 전역 캐시는 변경하지 않는다.
+## 원본 README의 TODO 진행 상태
+
+| 원본 항목 | 현재 상태 |
+| --- | --- |
+| DSi 에뮬레이션 개선 | 부분 진행. clock/NDMA·리셋·I2C·BTDMP FIFO·title 교체 복구 수정. DSP·AHBM/DMA·카메라의 일부 경계는 하드웨어 대조를 기다린다. |
+| OpenGL 개선 | 부분 진행. 위 전송·표시 최적화와 strict 드라이버 수정 포함. 렌더러 정확성 차이 GR-08은 미해결이다. |
+| Netplay | 원본 LAN/Netplay에 연결 수명·UI 보강을 더했다. 실제 게임의 호스트/클라이언트 수락은 남아 있다. |
+| 픽셀 단위로 완벽한 3D | 달성하지 않았다. 출력 일치 시험을 실제 DS의 모든 렌더링 경계에 대한 증명으로 취급하지 않는다. |
+| 화면을 별도 창으로 표시 | 원본의 Open new window 기능이 있다. 포크의 새 기능으로 세지 않는다. |
+| 주변기기 | 원본의 RAM expansion·Rumble Pak·Boktai·Motion Pak·Guitar Grip을 유지한다. |
+| 디버거·그래픽 뷰어 | 원본 GDB stub의 파싱·재접속·포트 검사를 보강했다. 그래픽 뷰어는 미착수다. |
+| LCD 잔상/응답 시간 | 미착수다. |
+
+Wii 등 big-endian 이식은 현재 범위에서 제외한다. 원래 과제 ID와 역사적 판정은 [과제 목록](Task_Catalog.md), 이전 변경과 측정은 [버전별 기록](releases/)을 따른다. 구현·실험·실기 확인을 같은 완료 상태로 표시하지 않는다.
