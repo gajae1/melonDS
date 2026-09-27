@@ -1499,6 +1499,13 @@ void main()
     uint coarseMaskLo = BinningMaskAndOffset[BinningCoarseMaskStart + linearTile*CoarseBinStride + 0];
     uint coarseMaskHi = BinningMaskAndOffset[BinningCoarseMaskStart + linearTile*CoarseBinStride + 1];
 
+#ifdef VULKAN
+    // Later batches preserve the previous result where they have no polygons.
+    // Skip the unchanged color, depth, attributes and shadow-stencil round trip.
+    if (FirstBatch == 0 && (coarseMaskLo | coarseMaskHi) == 0U)
+        return;
+#endif
+
     int resultOffset = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * ScreenWidth;
     uint stencil = 0U;
     bool prevIsShadowMask = false;
