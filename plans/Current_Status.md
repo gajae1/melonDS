@@ -1,8 +1,8 @@
-# 현재 개발 상태 — 1.1.191
+# 현재 개발 상태 — 1.1.192
 
-2026-09-27. 코드와 빌드의 기준 경로는 `F:/melonDS`다. [1.1.191 릴리스 기록](releases/1.1.191.md)에 소스 커밋·패키지 해시·검증 범위를 기록한다. SDL3·SDL2 패키지와 Windows·Ubuntu·macOS·BSD·Core regressions CI가 모두 통과했다.
+2026-09-27. 코드와 빌드의 기준 경로는 `F:/melonDS`다. [1.1.192 릴리스 기록](releases/1.1.192.md)에 소스 커밋·패키지 해시·검증 범위를 기록한다. SDL3·SDL2 패키지와 Windows·Ubuntu·macOS·BSD·Core regressions CI가 모두 통과했다.
 
-1.1.191은 Vulkan 확대 화면 합성의 GPU 대기를 VBlank 에뮬레이션과 겹쳐, 2·4배율에서 프레임 시간 중앙값을 CoD 기준 AMD 내장 GPU 4.3~12.4%, RTX 5080 6.9~9.7% 줄였다. [1.1.190](releases/1.1.190.md)은 소프트웨어 3D 픽셀 루프를 정리했고(Solatorobo 명령어 수 −4.0%), [1.1.189](releases/1.1.189.md)는 Vulkan 3D 대기를 에뮬레이션과 겹쳤다. 화면·오디오는 모두 이전 버전과 같다. 1.1.188의 GPU 2D는 여전히 기본 비활성이다.
+1.1.192는 Vulkan 3D 연산 셰이더가 두 번째 배치부터 폴리곤이 없는 타일의 깊이·색 재기록을 건너뛰게 해, AMD 내장 GPU 4배율 Solatorobo에서 GPU 3D 시간을 약 29%, 평균 프레임 시간을 9.1% 줄였다. [1.1.191](releases/1.1.191.md)은 Vulkan 확대 화면 합성 대기를 VBlank와 겹쳤고, [1.1.190](releases/1.1.190.md)은 소프트웨어 3D 픽셀 루프를 정리했으며, [1.1.189](releases/1.1.189.md)는 Vulkan 3D 대기를 에뮬레이션과 겹쳤다. 화면·오디오는 모두 이전 버전과 같다. 1.1.188의 GPU 2D는 여전히 기본 비활성이다.
 
 ## 최근 반영한 변경
 
@@ -36,6 +36,8 @@
 - 1.1.190 소프트웨어 3D 정리는 Solatorobo 부팅 이후 300프레임 구간의 실행 명령어 수를 9.59→9.20십억 개(−3.99%)로 줄였다. fastmem을 끈 Linux callgrind 측정이다. 근거: `local-docs/soft3d-189-20260927/result.md`.
 
 - 1.1.191 Vulkan 합성 대기 겹치기는 7라운드 교차 측정에서 CoD 2배율 Radeon 2457→2176µs, RTX 1512→1373µs, CoD 4배율 Radeon 4638→4405µs로 줄었다. 근거: `local-docs/vkdisplay-189-20260927/result.md`.
+
+- 1.1.192 빈 타일 생략은 Radeon 4배율 Solatorobo의 GPU 3D 시간을 10.15→7.20ms, 평균 프레임 시간을 8348→7607µs(9쌍 모두 감소)로 줄였다. CoD는 변화가 없었다. 근거: `local-docs/vkraster-189-20260927/result.md`.
 
 ## 원본 README의 TODO 진행 상태
 
