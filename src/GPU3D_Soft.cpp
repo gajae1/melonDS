@@ -130,15 +130,18 @@ void SoftRenderer3D::SetThreaded(bool threaded) noexcept
     }
 }
 
-void SoftRenderer3D::TextureLookup(u32 texparam, u32 texpal, s16 s, s16 t, u16* color, u8* alpha) const
+void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* color, u8* alpha) const
 {
     // TODO: consider using texture cache
     // however, I like the idea of having a "hardware accurate" path
 
-    u32 vramaddr = (texparam & 0xFFFF) << 3;
+    const u32 texparam = tex.Param;
+    u32 texpal = tex.Palette;
 
-    s32 width = 8 << ((texparam >> 20) & 0x7);
-    s32 height = 8 << ((texparam >> 23) & 0x7);
+    u32 vramaddr = tex.VRAMAddr;
+
+    const s32 width = tex.Width;
+    const s32 height = tex.Height;
 
     s >>= 4;
     t >>= 4;
@@ -179,11 +182,9 @@ void SoftRenderer3D::TextureLookup(u32 texparam, u32 texpal, s16 s, s16 t, u16* 
         else if (t >= height) t = height-1;
     }
 
-    u8 alpha0;
-    if (texparam & (1<<29)) alpha0 = 0;
-    else                    alpha0 = 31;
+    const u8 alpha0 = tex.Alpha0;
 
-    switch ((texparam >> 26) & 0x7)
+    switch (tex.Format)
     {
     case 1: // A3I5
         {
@@ -444,44 +445,41 @@ u32 SoftRenderer3D::AlphaBlend(u32 srccolor, u32 dstcolor, u32 alpha) const noex
     return srcRB | (srcG << 8) | (dstalpha << 24);
 }
 
-u32 SoftRenderer3D::RenderPixel(const Polygon* polygon, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const
+u32 SoftRenderer3D::RenderPixel(const PolygonPixelState& state, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const
 {
     u8 r, g, b, a;
 
-    u32 blendmode = (polygon->Attr >> 4) & 0x3;
-    u32 polyalpha = (polygon->Attr >> 16) & 0x1F;
-    bool wireframe = (polyalpha == 0);
+    const u32 blendmode = state.BlendMode;
+    const u32 polyalpha = state.PolyAlpha;
+    const bool wireframe = (polyalpha == 0);
 
-    if (blendmode == 2)
+    if (state.ToonHighlight)
     {
-        if (GPU3D.RenderDispCnt & (1<<1))
-        {
-            // highlight mode: color is calculated normally
-            // except all vertex color components are set
-            // to the red component
-            // the toon color is added to the final color
+        // highlight mode: color is calculated normally
+        // except all vertex color components are set
+        // to the red component
+        // the toon color is added to the final color
 
-            vg = vr;
-            vb = vr;
-        }
-        else
-        {
-            // toon mode: vertex color is replaced by toon color
+        vg = vr;
+        vb = vr;
+    }
+    else if (blendmode == 2)
+    {
+        // toon mode: vertex color is replaced by toon color
 
-            u16 tooncolor = GPU3D.RenderToonTable[vr >> 1];
+        u16 tooncolor = GPU3D.RenderToonTable[vr >> 1];
 
-            vr = (tooncolor << 1) & 0x3E; if (vr) vr++;
-            vg = (tooncolor >> 4) & 0x3E; if (vg) vg++;
-            vb = (tooncolor >> 9) & 0x3E; if (vb) vb++;
-        }
+        vr = (tooncolor << 1) & 0x3E; if (vr) vr++;
+        vg = (tooncolor >> 4) & 0x3E; if (vg) vg++;
+        vb = (tooncolor >> 9) & 0x3E; if (vb) vb++;
     }
 
-    if ((GPU3D.RenderDispCnt & (1<<0)) && (((polygon->TexParam >> 26) & 0x7) != 0))
+    if (state.Tex)
     {
         u8 tr, tg, tb;
 
         u16 tcolor; u8 talpha;
-        TextureLookup(polygon->TexParam, polygon->TexPalette, s, t, &tcolor, &talpha);
+        TextureLookup(*state.Tex, s, t, &tcolor, &talpha);
 
         tr = (tcolor << 1) & 0x3E; if (tr) tr++;
         tg = (tcolor >> 4) & 0x3E; if (tg) tg++;
@@ -529,7 +527,7 @@ u32 SoftRenderer3D::RenderPixel(const Polygon* polygon, u8 vr, u8 vg, u8 vb, s16
         a = polyalpha;
     }
 
-    if ((blendmode == 2) && (GPU3D.RenderDispCnt & (1<<1)))
+    if (state.ToonHighlight)
     {
         u16 tooncolor = GPU3D.RenderToonTable[vr >> 1];
 
@@ -653,6 +651,17 @@ void SoftRenderer3D::SetupPolygon(SoftRenderer3D::RendererPolygon* rp, Polygon* 
     s32 ytop = polygon->YTop, ybot = polygon->YBottom;
 
     rp->PolyData = polygon;
+
+    // decode the texture parameters once; every pixel of this polygon
+    // would otherwise redo the same bitfield extraction
+    const u32 texparam = polygon->TexParam;
+    rp->Texture.Param = texparam;
+    rp->Texture.Palette = polygon->TexPalette;
+    rp->Texture.VRAMAddr = (texparam & 0xFFFF) << 3;
+    rp->Texture.Width = 8 << ((texparam >> 20) & 0x7);
+    rp->Texture.Height = 8 << ((texparam >> 23) & 0x7);
+    rp->Texture.Format = (texparam >> 26) & 0x7;
+    rp->Texture.Alpha0 = (texparam & (1<<29)) ? 0 : 31;
 
     rp->CurVL = vtop;
     rp->CurVR = vtop;
@@ -835,12 +844,16 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
 
     s32 x = xstart;
     Interpolator<0> interpX(xstart, xend+1, wl, wr, polygon->WBuffer);
+    interpX.PrepareLinearZ(zl, zr);
 
     if (x < 0) x = 0;
     s32 xlimit;
 
     // for shadow masks: set stencil bits where the depth test fails.
     // draw nothing.
+
+    const u32 rowaddr = FirstPixelOffset + (y*ScanlineWidth);
+    const u32 stencilrow = 256 * (y&0x1);
 
     // part 1: left edge
     edge = yedge | 0x1;
@@ -852,7 +865,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
     else
     for (; x < xlimit; x++)
     {
-        u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
+        u32 pixeladdr = rowaddr + x;
 
         interpX.SetXForDepth(x);
 
@@ -860,13 +873,13 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
         u32 dstattr = AttrBuffer[pixeladdr];
 
         if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-            StencilBuffer[256*(y&0x1) + x] = 1;
+            StencilBuffer[stencilrow + x] = 1;
 
         if (dstattr & 0xF)
         {
             pixeladdr += BufferSize;
             if (!fnDepthTest(DepthBuffer[pixeladdr], z, AttrBuffer[pixeladdr]))
-                StencilBuffer[256*(y&0x1) + x] |= 0x2;
+                StencilBuffer[stencilrow + x] |= 0x2;
         }
     }
 
@@ -878,7 +891,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
     if (wireframe && !edge) x = std::max(x, xlimit);
     else for (; x < xlimit; x++)
     {
-        u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
+        u32 pixeladdr = rowaddr + x;
 
         interpX.SetXForDepth(x);
 
@@ -886,13 +899,13 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
         u32 dstattr = AttrBuffer[pixeladdr];
 
         if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-            StencilBuffer[256*(y&0x1) + x] = 1;
+            StencilBuffer[stencilrow + x] = 1;
 
         if (dstattr & 0xF)
         {
             pixeladdr += BufferSize;
             if (!fnDepthTest(DepthBuffer[pixeladdr], z, AttrBuffer[pixeladdr]))
-                StencilBuffer[256*(y&0x1) + x] |= 0x2;
+                StencilBuffer[stencilrow + x] |= 0x2;
         }
     }
 
@@ -904,7 +917,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
     if (r_filledge)
     for (; x < xlimit; x++)
     {
-        u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
+        u32 pixeladdr = rowaddr + x;
 
         interpX.SetXForDepth(x);
 
@@ -912,13 +925,13 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
         u32 dstattr = AttrBuffer[pixeladdr];
 
         if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-            StencilBuffer[256*(y&0x1) + x] = 1;
+            StencilBuffer[stencilrow + x] = 1;
 
         if (dstattr & 0xF)
         {
             pixeladdr += BufferSize;
             if (!fnDepthTest(DepthBuffer[pixeladdr], z, AttrBuffer[pixeladdr]))
-                StencilBuffer[256*(y&0x1) + x] |= 0x2;
+                StencilBuffer[stencilrow + x] |= 0x2;
         }
     }
 
@@ -948,6 +961,28 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
     bool useTexCoords = (GPU3D.RenderDispCnt & (1<<0)) &&
                         (((polygon->TexParam >> 26) & 0x7) != 0);
+
+    // everything below stays constant for the whole scanline, so the
+    // per-pixel loop doesn't reload/recompute it
+    PolygonPixelState pixstate;
+    pixstate.Tex = useTexCoords ? &rp->Texture : nullptr;
+    pixstate.BlendMode = (polygon->Attr >> 4) & 0x3;
+    pixstate.PolyAlpha = polyalpha;
+    pixstate.ToonHighlight = (pixstate.BlendMode == 2) && (GPU3D.RenderDispCnt & (1<<1));
+
+    const bool isshadow = polygon->IsShadow;
+    const bool aaenabled = (GPU3D.RenderDispCnt & (1<<4)) != 0;
+    const u8 alpharef = GPU3D.RenderAlphaRef;
+    const bool depthupdate = (polygon->Attr & (1<<11)) != 0;
+
+    // the front-facing depth test is by far the most common; inline it and
+    // only pay for the indirect call in the rarer modes
+    const auto depthtest = [fnDepthTest](s32 dstz, s32 z, u32 dstattr) -> bool
+    {
+        if (fnDepthTest == DepthTest_LessThan_FrontFacing)
+            return DepthTest_LessThan_FrontFacing(dstz, z, dstattr);
+        return fnDepthTest(dstz, z, dstattr);
+    };
 
     if (polygon->YTop != polygon->YBottom)
     {
@@ -1088,11 +1123,15 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
     s32 x = xstart;
     Interpolator<0> interpX(xstart, xend+1, wl, wr, polygon->WBuffer);
+    interpX.PrepareLinearZ(zl, zr);
 
     if (x < 0) x = 0;
     s32 xlimit;
 
     s32 xcov = 0;
+
+    const u32 rowaddr = FirstPixelOffset + (y*ScanlineWidth);
+    const u32 stencilrow = 256 * (y&0x1);
 
     // part 1: left edge
     edge = yedge | 0x1;
@@ -1109,13 +1148,13 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
     else
     for (; x < xlimit; x++)
     {
-        u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
+        u32 pixeladdr = rowaddr + x;
         u32 dstattr = AttrBuffer[pixeladdr];
 
         // check stencil buffer for shadows
-        if (polygon->IsShadow)
+        if (isshadow)
         {
-            u8 stencil = StencilBuffer[256*(y&0x1) + x];
+            u8 stencil = StencilBuffer[stencilrow + x];
             if (!stencil)
                 continue;
             if (!(stencil & 0x1))
@@ -1130,13 +1169,13 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
         // if depth test against the topmost pixel fails, test
         // against the pixel underneath
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
+        if (!depthtest(DepthBuffer[pixeladdr], z, dstattr))
         {
             if (!(dstattr & 0xF) || pixeladdr >= BufferSize) continue;
 
             pixeladdr += BufferSize;
             dstattr = AttrBuffer[pixeladdr];
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
+            if (!depthtest(DepthBuffer[pixeladdr], z, dstattr))
                 continue;
         }
 
@@ -1153,17 +1192,17 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
             t = interpX.Interpolate(tl, tr);
         }
 
-        u32 color = RenderPixel(polygon, vr>>3, vg>>3, vb>>3, s, t);
+        u32 color = RenderPixel(pixstate, vr>>3, vg>>3, vb>>3, s, t);
         u8 alpha = color >> 24;
 
         // alpha test
-        if (alpha <= GPU3D.RenderAlphaRef) continue;
+        if (alpha <= alpharef) continue;
 
         if (alpha == 31)
         {
             u32 attr = polyattr | edge;
 
-            if (GPU3D.RenderDispCnt & (1<<4))
+            if (aaenabled)
             {
                 // anti-aliasing: all edges are rendered
 
@@ -1192,12 +1231,12 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
         }
         else
         {
-            if (!(polygon->Attr & (1<<11))) z = -1;
-            PlotTranslucentPixel(pixeladdr, color, z, polyattr, polygon->IsShadow);
+            if (!depthupdate) z = -1;
+            PlotTranslucentPixel(pixeladdr, color, z, polyattr, isshadow);
 
             // blend with bottom pixel too, if needed
             if ((dstattr & 0xF) && (pixeladdr < BufferSize))
-                PlotTranslucentPixel(pixeladdr+BufferSize, color, z, polyattr, polygon->IsShadow);
+                PlotTranslucentPixel(pixeladdr+BufferSize, color, z, polyattr, isshadow);
         }
     }
 
@@ -1211,13 +1250,13 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
     else
     for (; x < xlimit; x++)
     {
-        u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
+        u32 pixeladdr = rowaddr + x;
         u32 dstattr = AttrBuffer[pixeladdr];
 
         // check stencil buffer for shadows
-        if (polygon->IsShadow)
+        if (isshadow)
         {
-            u8 stencil = StencilBuffer[256*(y&0x1) + x];
+            u8 stencil = StencilBuffer[stencilrow + x];
             if (!stencil)
                 continue;
             if (!(stencil & 0x1))
@@ -1232,13 +1271,13 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
         // if depth test against the topmost pixel fails, test
         // against the pixel underneath
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
+        if (!depthtest(DepthBuffer[pixeladdr], z, dstattr))
         {
             if (!(dstattr & 0xF) || pixeladdr >= BufferSize) continue;
 
             pixeladdr += BufferSize;
             dstattr = AttrBuffer[pixeladdr];
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
+            if (!depthtest(DepthBuffer[pixeladdr], z, dstattr))
                 continue;
         }
 
@@ -1255,17 +1294,17 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
             t = interpX.Interpolate(tl, tr);
         }
 
-        u32 color = RenderPixel(polygon, vr>>3, vg>>3, vb>>3, s, t);
+        u32 color = RenderPixel(pixstate, vr>>3, vg>>3, vb>>3, s, t);
         u8 alpha = color >> 24;
 
         // alpha test
-        if (alpha <= GPU3D.RenderAlphaRef) continue;
+        if (alpha <= alpharef) continue;
 
         if (alpha == 31)
         {
             u32 attr = polyattr | edge;
 
-            if ((GPU3D.RenderDispCnt & (1<<4)) && (attr & 0xF))
+            if (aaenabled && (attr & 0xF))
             {
                 // anti-aliasing: all edges are rendered
 
@@ -1287,12 +1326,12 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
         }
         else
         {
-            if (!(polygon->Attr & (1<<11))) z = -1;
-            PlotTranslucentPixel(pixeladdr, color, z, polyattr, polygon->IsShadow);
+            if (!depthupdate) z = -1;
+            PlotTranslucentPixel(pixeladdr, color, z, polyattr, isshadow);
 
             // blend with bottom pixel too, if needed
             if ((dstattr & 0xF) && (pixeladdr < BufferSize))
-                PlotTranslucentPixel(pixeladdr+BufferSize, color, z, polyattr, polygon->IsShadow);
+                PlotTranslucentPixel(pixeladdr+BufferSize, color, z, polyattr, isshadow);
         }
     }
 
@@ -1309,13 +1348,13 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
     if (r_filledge)
     for (; x < xlimit; x++)
     {
-        u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
+        u32 pixeladdr = rowaddr + x;
         u32 dstattr = AttrBuffer[pixeladdr];
 
         // check stencil buffer for shadows
-        if (polygon->IsShadow)
+        if (isshadow)
         {
-            u8 stencil = StencilBuffer[256*(y&0x1) + x];
+            u8 stencil = StencilBuffer[stencilrow + x];
             if (!stencil)
                 continue;
             if (!(stencil & 0x1))
@@ -1330,13 +1369,13 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
         // if depth test against the topmost pixel fails, test
         // against the pixel underneath
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
+        if (!depthtest(DepthBuffer[pixeladdr], z, dstattr))
         {
             if (!(dstattr & 0xF) || pixeladdr >= BufferSize) continue;
 
             pixeladdr += BufferSize;
             dstattr = AttrBuffer[pixeladdr];
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
+            if (!depthtest(DepthBuffer[pixeladdr], z, dstattr))
                 continue;
         }
 
@@ -1353,17 +1392,17 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
             t = interpX.Interpolate(tl, tr);
         }
 
-        u32 color = RenderPixel(polygon, vr>>3, vg>>3, vb>>3, s, t);
+        u32 color = RenderPixel(pixstate, vr>>3, vg>>3, vb>>3, s, t);
         u8 alpha = color >> 24;
 
         // alpha test
-        if (alpha <= GPU3D.RenderAlphaRef) continue;
+        if (alpha <= alpharef) continue;
 
         if (alpha == 31)
         {
             u32 attr = polyattr | edge;
 
-            if (GPU3D.RenderDispCnt & (1<<4))
+            if (aaenabled)
             {
                 // anti-aliasing: all edges are rendered
 
@@ -1392,12 +1431,12 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
         }
         else
         {
-            if (!(polygon->Attr & (1<<11))) z = -1;
-            PlotTranslucentPixel(pixeladdr, color, z, polyattr, polygon->IsShadow);
+            if (!depthupdate) z = -1;
+            PlotTranslucentPixel(pixeladdr, color, z, polyattr, isshadow);
 
             // blend with bottom pixel too, if needed
             if ((dstattr & 0xF) && (pixeladdr < BufferSize))
-                PlotTranslucentPixel(pixeladdr+BufferSize, color, z, polyattr, polygon->IsShadow);
+                PlotTranslucentPixel(pixeladdr+BufferSize, color, z, polyattr, isshadow);
         }
     }
 

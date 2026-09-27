@@ -23,6 +23,7 @@
 #include "Platform.h"
 #include <thread>
 #include <atomic>
+#include <limits>
 
 namespace melonDS
 {
@@ -123,6 +124,13 @@ private:
 
                 this->shift = 8;
             }
+
+            // increment for num/den when x advances by one pixel
+            numstep = w0n << shift;
+            denstep = w0d - w1d;
+            px = std::numeric_limits<s32>::min();
+            pnum = 0;
+            pden = 0;
         }
 
         constexpr void SetX(s32 x)
@@ -182,23 +190,31 @@ private:
             {
                 // Z-buffering: linear interpolation
                 // still doesn't quite match hardware...
-                s32 base = 0, disp = 0, factor = 0;
-
-                if (z0 < z1)
+                if constexpr (dir == 0)
                 {
-                    base = z0;
-                    disp = z1 - z0;
-                    factor = x;
+                    // zlinpre/zlinbase/zlindec were set by PrepareLinearZ;
+                    // factor is x for increasing Z, (xdiff - x) for decreasing Z,
+                    // which is exactly what the generic path below computes.
+                    s32 factor = zlindec ? (xdiff - x) : x;
+                    return zlinbase + (s32)((zlinpre * factor) >> 13);
                 }
                 else
                 {
-                    base = z1;
-                    disp = z0 - z1,
-                    factor = xdiff - x;
-                }
+                    s32 base = 0, disp = 0, factor = 0;
 
-                if (dir)
-                {
+                    if (z0 < z1)
+                    {
+                        base = z0;
+                        disp = z1 - z0;
+                        factor = x;
+                    }
+                    else
+                    {
+                        base = z1;
+                        disp = z0 - z1,
+                        factor = xdiff - x;
+                    }
+
                     int shift = 0;
                     while (disp > 0x3FF)
                     {
@@ -208,10 +224,27 @@ private:
 
                     return base + ((((s64)disp * factor * xrecip_z) >> 22) << shift);
                 }
+            }
+        }
+
+        // Precompute the terms InterpolateZ() needs for linear Z interpolation
+        // along a scanline, so the per-pixel loop only has one multiply left.
+        // Only meaningful for dir==0; must be called with the scanline's zl/zr.
+        constexpr void PrepareLinearZ(s32 z0, s32 z1)
+        {
+            if constexpr (dir == 0)
+            {
+                if (z0 < z1)
+                {
+                    zlinbase = z0;
+                    zlinpre = (s64)((z1 - z0) >> 9) * xrecip_z;
+                    zlindec = false;
+                }
                 else
                 {
-                    disp >>= 9;
-                    return base + (((s64)disp * factor * xrecip_z) >> 13);
+                    zlinbase = z1;
+                    zlinpre = (s64)((z0 - z1) >> 9) * xrecip_z;
+                    zlindec = true;
                 }
             }
         }
@@ -221,8 +254,23 @@ private:
         {
             if ((xdiff != 0) && ((!linear) || wbuffer))
             {
-                u32 num = (x * w0n) << shift;
-                u32 den = (x * w0d) + ((xdiff-x) * w1d);
+                u32 num, den;
+                if (x == px + 1)
+                {
+                    // num and den are linear in x, so they can be stepped
+                    // instead of recomputed; the u32 wraparound matches the
+                    // arithmetic of the full expression bit-exactly.
+                    num = pnum + numstep;
+                    den = pden + denstep;
+                }
+                else
+                {
+                    num = (x * w0n) << shift;
+                    den = (x * w0d) + ((xdiff-x) * w1d);
+                }
+                px = x;
+                pnum = num;
+                pden = den;
 
                 // this seems to be a proper division on hardware :/
                 // I haven't been able to find cases that produce imperfect output
@@ -239,6 +287,14 @@ private:
 
         s32 xrecip_z;
         s32 w0n, w0d, w1d;
+
+        s32 numstep, denstep;
+        s32 px;
+        u32 pnum, pden;
+
+        s64 zlinpre;
+        s32 zlinbase;
+        bool zlindec;
 
         u32 yfactor;
     };
@@ -449,6 +505,28 @@ private:
 
     u32 AlphaBlend(u32 srccolor, u32 dstcolor, u32 alpha) const noexcept;
 
+    // texture parameters that stay constant for a polygon, decoded once
+    // in SetupPolygon so the per-pixel lookup doesn't redo the bitfield work
+    struct TextureInfo
+    {
+        u32 Param;      // raw TexParam, for the wrap-mode flags
+        u32 Palette;
+        u32 VRAMAddr;   // (Param & 0xFFFF) << 3
+        s32 Width;
+        s32 Height;
+        u32 Format;     // (Param >> 26) & 0x7
+        u8 Alpha0;      // alpha of palette index 0 in formats that have one
+    };
+
+    // blending/toon/texture state constant over a polygon's scanline
+    struct PolygonPixelState
+    {
+        const TextureInfo* Tex;     // null when the texture unit is off
+        u32 BlendMode;              // (polygon->Attr >> 4) & 0x3
+        u32 PolyAlpha;              // (polygon->Attr >> 16) & 0x1F
+        bool ToonHighlight;         // blendmode==2 and highlight mode selected
+    };
+
     struct RendererPolygon
     {
         Polygon* PolyData;
@@ -459,6 +537,7 @@ private:
         u32 CurVL, CurVR;
         u32 NextVL, NextVR;
 
+        TextureInfo Texture;
     };
 
     RendererPolygon PolygonList[2048];
@@ -470,8 +549,8 @@ private:
     s16 PolygonStartNext[2048];
     s16 PolygonEndNext[2048];
     void SetupPolygonRows(int npolys);
-    void TextureLookup(u32 texparam, u32 texpal, s16 s, s16 t, u16* color, u8* alpha) const;
-    u32 RenderPixel(const Polygon* polygon, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const;
+    void TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* color, u8* alpha) const;
+    u32 RenderPixel(const PolygonPixelState& state, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const;
     void PlotTranslucentPixel(u32 pixeladdr, u32 color, u32 z, u32 polyattr, u32 shadow);
     void SetupPolygonLeftEdge(RendererPolygon* rp, s32 y) const;
     void SetupPolygonRightEdge(RendererPolygon* rp, s32 y) const;
