@@ -116,7 +116,8 @@ DisplayCompositor::DisplayCompositor(std::shared_ptr<Device> device, std::span<c
 DisplayCompositor::~DisplayCompositor() { Cleanup(); }
 void DisplayCompositor::Cleanup()
 {
-    // Device::SubmitAndWait drains on failure before resources can be released.
+    // [observed] WaitForSubmission drains on failure before resources are freed.
+    try { Complete(); } catch (...) {}
     if (pipeline) f.vkDestroyPipeline(device, pipeline, nullptr);
     if (layout) f.vkDestroyPipelineLayout(device, layout, nullptr);
     if (pool) f.vkDestroyDescriptorPool(device, pool, nullptr);
@@ -182,21 +183,22 @@ void DisplayCompositor::Init(std::span<const u32> shader)
 }
 void DisplayCompositor::Compose(u32 screen, std::span<const Line> lines,
     const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
-    const Device::Buffer* direct)
+    const Device::Buffer* direct, bool deferred)
 {
-    ComposeImpl(screen, lines, image3D, sourceScale, destination, direct, false);
+    ComposeImpl(screen, lines, image3D, sourceScale, destination, direct, false, {}, deferred);
 }
 
 std::shared_ptr<Device::Image> DisplayCompositor::ComposeResident(u32 screen, std::span<const Line> lines,
     const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> cpuRows,
-    std::span<const bool> changedRows)
+    std::span<const bool> changedRows, bool deferred)
 {
-    ComposeImpl(screen, lines, image3D, sourceScale, cpuRows, nullptr, true, changedRows);
+    ComposeImpl(screen, lines, image3D, sourceScale, cpuRows, nullptr, true, changedRows, deferred);
     return outputs[screen];
 }
 
 void DisplayCompositor::ReadbackResident(u32 screen, std::span<u32> destination)
 {
+    Complete();
     if (screen >= outputs.size() || !residentValid[screen] ||
         destination.size() != size_t(256) * 192 * scale * scale)
         throw std::invalid_argument("No complete resident display at the requested extent");
@@ -223,8 +225,11 @@ void DisplayCompositor::ReadbackResident(u32 screen, std::span<u32> destination)
 
 void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
     const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
-    const Device::Buffer* direct, bool resident, std::span<const bool> changedRows)
+    const Device::Buffer* direct, bool resident, std::span<const bool> changedRows, bool deferred)
 {
+    // [observed] Screens share descriptors and mapped uploads. Finish before
+    // changing either; Begin alone would complete too late for these host writes.
+    Complete();
     RenderCostVulkanScope cost(owner->Costs(), Cost::RecordDisplay);
     CheckExtents(lines, sourceScale, scale, destination.size());
     constexpr VkMemoryPropertyFlags directProperties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -315,8 +320,7 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
             VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
         if (owner->Costs()) owner->Costs()->Transfer(Cost::ComposedRows, 0,
             std::count_if(lines.begin(), lines.end(), [](const Line& line) { return !Preserved(line); }));
-        owner->SubmitAndWait();
-        residentValid[screen] = true;
+        Submit(screen, true, input, lines, destination, nullptr, deferred);
         return;
     }
     u32 transferredRows = 0;
@@ -371,18 +375,43 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
     }
     if (owner->Costs()) owner->Costs()->Transfer(Cost::ComposedRows, 0,
         std::count_if(lines.begin(), lines.end(), [](const Line& line) { return !Preserved(line); }));
-    owner->SubmitAndWait();
-    // Cached coherent backing needs no invalidate; GPU completion and the host
-    // visibility barrier still precede both reads and future CPU fills.
-    if (direct) return;
+    Submit(screen, false, input, lines, destination, direct, deferred);
+}
+
+void DisplayCompositor::Submit(u32 screen, bool resident, const std::shared_ptr<Device::Image>& input,
+    std::span<const Line> lines, std::span<u32> destination, const Device::Buffer* direct, bool deferred)
+{
+    owner->Submit();
+    pending = true;
+    pendingScreen = screen;
+    pendingResident = resident;
+    pendingInput = input;
+    pendingCopy = !resident && !direct ? destination : std::span<u32>{};
+    if (!pendingCopy.empty())
+        for (u32 y = 0; y < 192; ++y) pendingRows[y] = !Preserved(lines[y]);
+    owner->SetPendingCompletion([this] { Complete(); });
+    if (!deferred) Complete();
+}
+
+void DisplayCompositor::Complete()
+{
+    if (!pending) return;
+    pending = false;
+    owner->WaitForSubmission();
+    pendingInput.reset();
+    if (pendingResident) residentValid[pendingScreen] = true;
+    // [observed] Cached coherent backing needs no invalidate. The recorded host
+    // barrier and this fence precede CPU reads and reuse, including the copy below.
+    if (pendingCopy.empty()) return;
     RenderCostVulkanScope copy(owner->Costs(), Cost::DisplayCopy);
     const size_t rowPixels = size_t(256) * scale * scale;
     for (u32 y = 0; y < 192; ++y)
-        if (!Preserved(lines[y]))
+        if (pendingRows[y])
         {
-            std::memcpy(destination.data() + y * rowPixels,
+            std::memcpy(pendingCopy.data() + y * rowPixels,
                 static_cast<const u32*>(readback->Data()) + y * rowPixels, rowPixels * sizeof(u32));
             if (owner->Costs()) owner->Costs()->Transfer(Cost::DisplayCopyBytes, rowPixels * sizeof(u32));
         }
+    pendingCopy = {};
 }
 }

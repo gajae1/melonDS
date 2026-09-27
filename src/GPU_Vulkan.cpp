@@ -21,6 +21,7 @@ VulkanRenderer::VulkanRenderer(NDS& nds, const std::string& preferred)
 
 VulkanRenderer::~VulkanRenderer()
 {
+    FinishDisplayComposition();
     if (const auto* cost = Costs(); cost && cost->Count())
     {
         char line[8192];
@@ -193,6 +194,8 @@ void VulkanRenderer::Stop()
 
 void VulkanRenderer::DrawScanline(u32 line)
 {
+    // [observed] VCount writes can resume visible rows after VBlank.
+    if (CompositionSubmitted) FinishDisplayComposition();
     // After a native device failure the frontend replaces this backend at the
     // frame boundary; until then draw the remaining rows with CPU 2D.
     if (NativePipeline && !HasRenderFailure())
@@ -271,13 +274,21 @@ void VulkanRenderer::DrawScanline(u32 line)
 
 void VulkanRenderer::DiscardDisplayComposition()
 {
+    if (CompositionSubmitted) FinishDisplayComposition();
     CompositionPending = false;
     ChangedDisplayRows.fill(false);
     for (auto& lines : CompositionLines)
         for (auto& line : lines) line.mode = CompositionLine::Keep;
 }
 
-void VulkanRenderer::FinishDisplayComposition() noexcept
+void VulkanRenderer::VBlank()
+{
+    // [observed] Visible contexts are latched now; the next 3D render starts
+    // at VCount 215. Submit here so intervening emulation can overlap the GPU.
+    if (CompositionPending) FinishDisplayComposition(true);
+}
+
+void VulkanRenderer::FinishDisplayComposition(bool deferred) noexcept
 {
     FinishNative2D();
     if (!CompositionPending) return;
@@ -295,25 +306,43 @@ void VulkanRenderer::FinishDisplayComposition() noexcept
     {
         try
         {
-            for (u32 screen = 0; screen < 2; ++screen)
-                if (DirectDisplay)
+            if (CompositionSubmitted)
+            {
+                CompositionSubmitted = false;
+                rasterizer.Compositor->Complete();
+            }
+            else
+            {
+                for (u32 screen = 0; screen < 2; ++screen)
+                    if (DirectDisplay)
+                    {
+                        ResidentImages[BackBuffer][screen] = rasterizer.Compositor->ComposeResident(
+                            BackBuffer * 2 + screen, CompositionLines[screen], rasterizer.RenderedImage,
+                            rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen],
+                            ResidentImages[BackBuffer][screen] ? std::span<const bool>(ChangedDisplayRows) : std::span<const bool>{}, deferred);
+                        ResidentCPUValid[BackBuffer][screen] = false;
+                    }
+                    else if (pending(CompositionLines[screen]))
+                    {
+                        ReadbackDisplay(BackBuffer);
+                        rasterizer.Compositor->Compose(screen, CompositionLines[screen], rasterizer.RenderedImage,
+                            rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen], ScaledMemory[BackBuffer][screen].get(), deferred);
+                        ResidentImages[BackBuffer][screen].reset();
+                    }
+                if (deferred)
                 {
-                    ResidentImages[BackBuffer][screen] = rasterizer.Compositor->ComposeResident(
-                        BackBuffer * 2 + screen, CompositionLines[screen], rasterizer.RenderedImage,
-                        rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen],
-                        ResidentImages[BackBuffer][screen] ? std::span<const bool>(ChangedDisplayRows) : std::span<const bool>{});
-                    ResidentCPUValid[BackBuffer][screen] = false;
+                    CompositionSubmitted = true;
+                    // [observed] Keep the contexts for the existing CPU replay on
+                    // completion failure. Every subsequent Begin completes this first.
+                    rasterizer.Device->SetPendingCompletion([this] { FinishDisplayComposition(); });
+                    rasterizer.DisplaySubmissions += rasterizer.TotalSubmissionCount() - submissionsBefore;
+                    return;
                 }
-                else if (pending(CompositionLines[screen]))
-                {
-                    ReadbackDisplay(BackBuffer);
-                    rasterizer.Compositor->Compose(screen, CompositionLines[screen], rasterizer.RenderedImage,
-                        rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen], ScaledMemory[BackBuffer][screen].get());
-                    ResidentImages[BackBuffer][screen].reset();
-                }
+            }
         }
         catch (const std::exception& error)
         {
+            CompositionSubmitted = false;
             rasterizer.Compositor.reset();
             DirectDisplay = false;
             DirectDisplayFailed = true;
@@ -323,6 +352,7 @@ void VulkanRenderer::FinishDisplayComposition() noexcept
             Platform::Log(Platform::LogLevel::Warn, "Vulkan composition falling back to CPU: %s\n", error.what());
         }
     }
+    CompositionSubmitted = false;
     if (replay)
     {
         RenderCostVulkanScope fallback(Costs(), Cost::Fallback);
@@ -426,6 +456,7 @@ void VulkanRenderer::DisableDirectDisplay(const std::string& reason, bool perman
 
 void VulkanRenderer::ReadbackDisplay(u32 buffer)
 {
+    if (CompositionSubmitted) FinishDisplayComposition();
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
     for (u32 screen = 0; screen < 2; ++screen)
         if (ResidentImages[buffer][screen] && !ResidentCPUValid[buffer][screen])
@@ -451,6 +482,11 @@ void VulkanRenderer::ReadbackDisplay(u32 buffer)
 
 bool VulkanRenderer::GetResidentFrame(ResidentFrame& frame)
 {
+    // [observed] Screen.cpp holds renderLock through GetResidentFrame/Present,
+    // serializing host queue access with emulation. Complete before hand-off;
+    // Present's same-queue ALL_COMMANDS -> FRAGMENT_SHADER image barrier makes
+    // compose writes visible to sampling. Reuse has the reverse dependency.
+    if (CompositionSubmitted) FinishDisplayComposition();
     frame = {};
     const auto& images = ResidentImages[BackBuffer ^ 1];
     if (!DirectDisplay || !images[0] || !images[1]) return false;

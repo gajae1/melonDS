@@ -38,6 +38,7 @@ public:
     void Stop() override;
     void DrawScanline(u32 line) override;
     void DrawSprites(u32 line) override;
+    void VBlank() override;
     void SwapBuffers() override;
     void PreSavestate() override;
     bool GetFramebuffers(void** top, void** bottom) override;
@@ -115,7 +116,8 @@ private:
     using CompositionLine = SoftRenderer2D::ScaledLineContext;
     std::array<std::vector<CompositionLine>, 2> CompositionLines;
     bool CompositionPending = false;
-    void FinishDisplayComposition() noexcept;
+    bool CompositionSubmitted = false;
+    void FinishDisplayComposition(bool deferred = false) noexcept;
     void DiscardDisplayComposition();
     struct DisplayCapture
     {

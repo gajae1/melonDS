@@ -13,6 +13,13 @@ static VKAPI_ATTR VkResult VKAPI_CALL DeviceLost(VkQueue, uint32_t, const VkSubm
     return VK_ERROR_DEVICE_LOST;
 }
 static unsigned downloads;
+static unsigned waits;
+static PFN_vkWaitForFences originalWait;
+static VKAPI_ATTR VkResult VKAPI_CALL Wait(VkDevice device, uint32_t count,
+    const VkFence* fences, VkBool32 all, uint64_t timeout) {
+    ++waits;
+    return originalWait(device, count, fences, all, timeout);
+}
 static VKAPI_ATTR void VKAPI_CALL Readback(VkCommandBuffer cmd, VkImage image, VkImageLayout layout,
     VkBuffer buffer, uint32_t count, const VkBufferImageCopy* regions) {
     ++downloads; originalReadback(cmd, image, layout, buffer, count, regions);
@@ -52,7 +59,21 @@ static void RunRenderer(const std::string& adapter) {
             nds->GPU.GPU2D_A.UpdateRegistersPostDraw(y == 0);
             nds->GPU.GPU2D_B.UpdateRegistersPostDraw(y == 0);
         }
+        originalWait = table.vkWaitForFences;
+        table.vkWaitForFences = Wait;
+        const auto waitsBefore = waits;
+        const auto submitsBefore = renderer->TotalSubmissionCount();
+        renderer->VBlank();
+        const auto submitted = renderer->TotalSubmissionCount() - submitsBefore;
+        Require(submitted > 0 && waits - waitsBefore < submitted,
+            "VBlank did not leave display work overlapping emulation");
+        if (frame & 1) {
+            // [observed] A different device user must complete the display first.
+            renderer->DisplayDevice()->Begin();
+            renderer->DisplayDevice()->SubmitAndWait();
+        }
         renderer->SwapBuffers();
+        table.vkWaitForFences = originalWait;
         VulkanRenderer::ResidentFrame resident;
         Require(renderer->GetResidentFrame(resident), "renderer did not publish GPU frame");
         Require(downloads == before, "renderer publication downloaded pixels");

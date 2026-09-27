@@ -21,25 +21,31 @@ public:
     // Direct backing is renderer-owned, cached/coherent, and exactly matches
     // destination. Only composed row ranges are transferred; CPU capture/fill
     // and Keep rows survive. Null backing retains the vector/staging path.
-    // Both paths complete synchronously before returning.
+    // [observed] By default both paths complete before returning. With deferred
+    // completion, the destination must remain alive and untouched until Complete.
     void Compose(u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines,
         const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
-        const Device::Buffer* direct = nullptr);
-    // Complete GPU image in GENERAL layout, with the same packed BGRA words as
+        const Device::Buffer* direct = nullptr, bool deferred = false);
+    // [observed] GPU image in GENERAL layout, with the same packed BGRA words as
     // Compose. CPU rows are read only for Keep/CaptureOverride; no GPU->host
     // transfer or CPU pixel conversion occurs. The returned image is borrowed
     // until the next composition of this screen. Copy/consume it before reuse.
+    // [observed] Deferred callers must Complete before handing it to a consumer.
     std::shared_ptr<Device::Image> ComposeResident(u32 screen,
         std::span<const SoftRenderer2D::ScaledLineContext> lines,
         const std::shared_ptr<Device::Image>& image3D, u32 sourceScale,
-        std::span<u32> cpuRows, std::span<const bool> changedRows = {});
+        std::span<u32> cpuRows, std::span<const bool> changedRows = {}, bool deferred = false);
+    void Complete();
     // Explicit CPU demand (screenshot/fallback). Valid only after this screen's
     // latest successful ComposeResident and before it is overwritten.
     void ReadbackResident(u32 screen, std::span<u32> destination);
 private:
     void ComposeImpl(u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines,
         const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
-        const Device::Buffer* direct, bool resident, std::span<const bool> changedRows = {});
+        const Device::Buffer* direct, bool resident, std::span<const bool> changedRows = {}, bool deferred = false);
+    void Submit(u32 screen, bool resident, const std::shared_ptr<Device::Image>& input,
+        std::span<const SoftRenderer2D::ScaledLineContext> lines, std::span<u32> destination,
+        const Device::Buffer* direct, bool deferred);
     void Init(std::span<const u32> shader);
     void Cleanup();
     std::shared_ptr<Device> owner;
@@ -56,5 +62,10 @@ private:
     std::vector<std::shared_ptr<Device::Image>> outputs;
     std::vector<bool> residentValid;
     std::shared_ptr<Device::Image> blank3D;
+    bool pending = false, pendingResident = false;
+    u32 pendingScreen = 0;
+    std::shared_ptr<Device::Image> pendingInput;
+    std::span<u32> pendingCopy;
+    std::array<bool, 192> pendingRows{};
 };
 }

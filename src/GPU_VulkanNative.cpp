@@ -264,6 +264,7 @@ void VulkanRenderer::PreSavestate()
 
 bool VulkanRenderer::GetFramebuffers(void** top, void** bottom)
 {
+    if (CompositionSubmitted) FinishDisplayComposition();
     try { if (NativePipeline) ReadbackDisplay(BackBuffer ^ 1); }
     catch (const std::exception& error)
     {
