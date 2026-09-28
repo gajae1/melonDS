@@ -3,6 +3,8 @@
 #include "GPU3D_ComputeShader.h"
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 
 int main(int argc, char** argv)
 {
@@ -15,8 +17,16 @@ int main(int argc, char** argv)
         const auto config = melonDS::ComputeShader::VulkanConfig(scale);
         for (unsigned i = 0; i < melonDS::ComputeShader::Count; ++i)
         {
-            std::ofstream file(scaledDirectory / (std::to_string(i) + ".comp"));
-            file << melonDS::ComputeShader::BuildSource(i, config, true);
+            const auto path = scaledDirectory / (std::to_string(i) + ".comp");
+            const auto source = melonDS::ComputeShader::BuildSource(i, config, true);
+            {
+                std::ifstream previous(path);
+                if (previous && std::string(std::istreambuf_iterator<char>(previous), {}) == source)
+                    continue;
+            }
+            std::ofstream file(path);
+            file << source;
+            file.close();
             if (!file) return 2;
         }
     }

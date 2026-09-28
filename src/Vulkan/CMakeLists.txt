@@ -33,6 +33,7 @@ add_custom_command(OUTPUT "${vulkan_shader_dir}/export.stamp"
     COMMAND ComputeShaderExport "${vulkan_shader_dir}"
     COMMAND "${CMAKE_COMMAND}" -E touch "${vulkan_shader_dir}/export.stamp"
     DEPENDS ComputeShaderExport VERBATIM)
+add_custom_target(VulkanShaderSources DEPENDS "${vulkan_shader_dir}/export.stamp")
 foreach(scale RANGE 1 ${vulkan_max_scale})
     foreach(variant RANGE 0 31)
         set(spirv "${vulkan_shader_dir}/${scale}/${variant}.spv")
@@ -44,7 +45,8 @@ foreach(scale RANGE 1 ${vulkan_max_scale})
             COMMAND "${MELONDS_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
                 "${vulkan_shader_dir}/${scale}/${variant}.comp" -o "${spirv}"
             ${validate_command}
-            DEPENDS "${vulkan_shader_dir}/export.stamp" "${vulkan_shader_dir}/${scale}/${variant}.comp" VERBATIM)
+            # Wait for export, but recompile only sources whose content changed.
+            DEPENDS VulkanShaderSources "${vulkan_shader_dir}/${scale}/${variant}.comp" VERBATIM)
         list(APPEND vulkan_spirv_files "${spirv}")
     endforeach()
 endforeach()
