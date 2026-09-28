@@ -1,6 +1,6 @@
 # 참고 프로젝트 반영 현황
 
-2026-09-29, 1.1.211 코드 기준. 참고 목록에는 실제 포함한 소스, 오프라인 계수 생성기, 설계·검증 참고 자료가 섞여 있다. 공통 완료 기준이 없으므로 하나의 구현 비율로 합산하지 않는다. 아래는 현재 코드에서 확인한 범위이며 다른 프로젝트의 전체 기능이나 성능을 이식했다는 뜻이 아니다.
+2026-09-29, 1.1.212 코드 기준. 참고 목록에는 실제 포함한 소스, 오프라인 계수 생성기, 설계·검증 참고 자료가 섞여 있다. 공통 완료 기준이 없으므로 하나의 구현 비율로 합산하지 않는다. 아래는 현재 코드에서 확인한 범위이며 다른 프로젝트의 전체 기능이나 성능을 이식했다는 뜻이 아니다.
 
 | 프로젝트·자료 | 현재 반영 범위 | 남은 범위·구분 |
 | --- | --- | --- |
@@ -18,6 +18,8 @@
 1.1.210의 Sinc 두 위상 스테레오 커널은 기존 `AudioInterpolationMath`의 누산 순서를 보존하는 자체 확장이다. 새로운 외부 소스나 계수는 도입하지 않았다.
 
 1.1.211의 복사 범위 분석은 기존 `Native2DCapture`의 자체 확장이며 새 외부 소스는 도입하지 않았다.
+
+1.1.212는 기존 SDL3 장치 열기와 자체 프런트엔드를 수정했다. SDL의 전역 버퍼 힌트를 재생·마이크 사이에서 격리하고 기존 Windows 공유 모드 주기를 확인했다. 새 오디오 라이브러리·계수·독점 출력 모드는 도입하지 않았다.
 
 근거: [참고 자료 원목록](Reference_Notes_2026-09-11.md), [작업 카탈로그](Task_Catalog.md), [진행 기록](Execution_Order.md), [현재 상태](Current_Status.md), [버전별 기록](releases/), [계수 출처·재생성](../src/audio_interpolation/README.md). 코드 연결점은 `src/jit/`, `src/ARMJIT_Memory.cpp`, `src/AudioInterpolationRenderer.cpp`, `src/frontend/qt_sdl/AudioTimeStretch.cpp`, `src/frontend/qt_sdl/AudioOutput.cpp`, `src/FATStorage.cpp`, `src/DSi_NAND.cpp`다.
 
