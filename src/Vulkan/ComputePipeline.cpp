@@ -574,7 +574,7 @@ void ComputePipeline::Validate(const Batch& batch) const
     for(const auto& index:batch.indices)if(index.PolyIdx>=batch.polygons.size()||index.SpanIdxL>=batch.edges.size()||index.SpanIdxR>=batch.edges.size())throw std::invalid_argument("Invalid edge index");
 }
 
-void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,bool first,std::span<const VkDescriptorSet> textures)
+void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,bool first,bool final,std::span<const VkDescriptorSet> textures)
 {
     auto upload=[&](unsigned index,const void* data,size_t size) {
         const auto* bytes=static_cast<const unsigned char*>(data);
@@ -626,9 +626,12 @@ void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,boo
             f.vkCmdDispatchIndirect(command, buffers[7]->Handle(), variant*16);
         }
     }
-    Barrier(command);Bind(command,batch.wbuffer?4:3,rasterSet,indicesSet);
+    Barrier(command);
+    const unsigned finalEffects=((batch.meta.DispCnt>>7)&1)|((batch.meta.DispCnt>>3)&2);
+    const unsigned blendShader=final ? ComputeShader::Count+2*finalEffects+unsigned(batch.wbuffer) : batch.wbuffer?4:3;
+    Bind(command,blendShader,rasterSet,final?outputSet:indicesSet);
     const uint32_t firstBatch=first;
-    f.vkCmdPushConstants(command,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,4,&firstBatch);
+    f.vkCmdPushConstants(command,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(firstBatch),&firstBatch);
     f.vkCmdDispatch(command,Resources.config.ScreenWidth/Resources.config.TileSize,Resources.config.ScreenHeight/Resources.config.TileSize,1);Barrier(command);
 }
 
@@ -693,6 +696,14 @@ void ComputePipeline::SubmitView(std::span<const Batch> batches,Readback mode)
     // Per-image transfer-to-compute barriers make the uploads visible to this
     // render. Their resources remain retained through the same submission fence.
     RecordUploads(command);
+    // Edge marking needs neighboring final depths/attributes. Fog and AA only
+    // need the current pixel and can resolve directly from the last blend.
+    const auto dispCnt=batches.back().meta.DispCnt;
+    const bool fuseFinal=(dispCnt&(1u<<5))==0;
+    fullReadbackValid=false;
+    ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_GENERAL,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_READ_BIT,VK_ACCESS_SHADER_WRITE_BIT);
     size_t offset=0;
     bool first=true;
     for(const auto& batch:batches) {
@@ -704,16 +715,15 @@ void ComputePipeline::SubmitView(std::span<const Batch> batches,Readback mode)
             f.vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&reuse,0,nullptr,0,nullptr);
         }
-        RecordBatch(command,batch,first,std::span<const VkDescriptorSet>(textures).subspan(offset,batch.variants.size()));
+        RecordBatch(command,batch,first,fuseFinal && &batch==&batches.back(),
+            std::span<const VkDescriptorSet>(textures).subspan(offset,batch.variants.size()));
         first=false;offset+=batch.variants.size();
     }
-    fullReadbackValid=false;
-    ImageBarrier(f,command,output->Handle(),VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_GENERAL,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_READ_BIT,VK_ACCESS_SHADER_WRITE_BIT);
-    const auto dispCnt=batches.back().meta.DispCnt;
-    const unsigned effect=((dispCnt>>5)&1)|((dispCnt>>6)&2)|((dispCnt>>2)&4);
-    Bind(command,24+effect,rasterSet,outputSet);f.vkCmdDispatch(command,Resources.config.ScreenWidth/32,Resources.config.ScreenHeight,1);
+    if(!fuseFinal) {
+        const unsigned effect=((dispCnt>>5)&1)|((dispCnt>>6)&2)|((dispCnt>>2)&4);
+        Bind(command,24+effect,rasterSet,outputSet);
+        f.vkCmdDispatch(command,Resources.config.ScreenWidth/32,Resources.config.ScreenHeight,1);
+    }
     owner->Timestamp(Device::TimestampStage::ThreeD);
     if(mode==Readback::Full)RecordFullReadback(command);
     else {

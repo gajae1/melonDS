@@ -14,7 +14,7 @@ namespace melonDS::Vulkan {
 // use the same integer formats as the GL compute renderer.
 class ComputePipeline {
 public:
-    using Shaders=std::array<std::span<const uint32_t>,32>;
+    using Shaders=std::array<std::span<const uint32_t>,ComputeShader::VulkanCount>;
     struct Texture {
         std::shared_ptr<Device::Image> image;
         uint32_t width, height, layers;
@@ -115,7 +115,7 @@ private:
     void Bind(VkCommandBuffer command,unsigned shader,VkDescriptorSet storage,VkDescriptorSet image,
         VkDescriptorSet textures=VK_NULL_HANDLE);
     void Validate(const Batch& batch) const;
-    void RecordBatch(VkCommandBuffer command,const Batch& batch,bool first,std::span<const VkDescriptorSet> textures);
+    void RecordBatch(VkCommandBuffer command,const Batch& batch,bool first,bool final,std::span<const VkDescriptorSet> textures);
     void WriteTextureSet(VkDescriptorSet set,const Variant& variant);
     void UploadImage(const std::shared_ptr<Device::Image>& image,uint32_t width,uint32_t height,
         uint32_t layers,std::span<const uint32_t> pixels,VkImageLayout oldLayout,uint32_t firstLayer=0);
@@ -145,7 +145,7 @@ private:
     VkDescriptorPool texturePool{};
     VkPipelineLayout layout{};
     std::array<VkDescriptorSetLayout,4> setLayouts{};
-    std::array<VkPipeline,32> pipelines{};
+    std::array<VkPipeline,ComputeShader::VulkanCount> pipelines{};
     VkDescriptorSet setupSet{},rasterSet{},metaSet{},textureSet{},indicesSet{},outputSet{};
     // polygon, X span, Y span, color/depth/attributes, result, bin, work, meta, indices
     std::array<std::shared_ptr<Device::Buffer>,11> buffers;

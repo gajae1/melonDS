@@ -459,6 +459,24 @@ static void Frames(unsigned scale,const std::string& preferred)
                 if(pipeline.Render(parts)!=expected)throw std::runtime_error("Split Vulkan frame differs from combined GL frame");
                 std::printf("Vulkan %ux %s scene=%u two-batch depth/stencil/texture composition equal PASS\n",scale,mode?"W":"Z",scene);
             }
+            if(scene==0 && scale==1) {
+                // Alternate fused and neighbor-dependent final passes, including
+                // a completely empty last batch which must still emit every pixel.
+                for(auto& polygon:input.polygons)polygon.Attr|=1u<<15;
+                batch.meta.ClearAttr|=1u<<15;
+                batch.meta.FogColor=0x100B2030;batch.meta.FogShift=2;
+                for(unsigned effect=0;effect<8;++effect) {
+                    batch.meta.DispCnt=(1u<<3)|((effect&1u)<<5)|((effect&2u)<<6)|((effect&4u)<<2);
+                    const auto reference=GLFrame(batch,scale,sources,clearColors,clearDepths);
+                    if(pipeline.Render(batch)!=reference)throw std::runtime_error("Final effect combination differs from GL");
+                    std::array<Vulkan::ComputePipeline::Batch,2> parts{batch,batch};
+                    auto& empty=parts.back();
+                    empty.polygons={};empty.edges={};empty.indices={};empty.variants={};
+                    empty.meta.NumPolygons=0;empty.meta.NumVariants=0;
+                    if(pipeline.Render(parts)!=reference)throw std::runtime_error("Empty final batch lost prior pixels");
+                }
+                std::printf("Vulkan %s all final effects and empty-tail output equal PASS\n",mode?"W":"Z");
+            }
         }
     }
 }

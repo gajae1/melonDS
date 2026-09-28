@@ -15,7 +15,7 @@ int main(int argc, char** argv)
         const auto scaledDirectory = directory / std::to_string(scale);
         std::filesystem::create_directories(scaledDirectory);
         const auto config = melonDS::ComputeShader::VulkanConfig(scale);
-        for (unsigned i = 0; i < melonDS::ComputeShader::Count; ++i)
+        for (unsigned i = 0; i < melonDS::ComputeShader::VulkanCount; ++i)
         {
             const auto path = scaledDirectory / (std::to_string(i) + ".comp");
             const auto source = melonDS::ComputeShader::BuildSource(i, config, true);

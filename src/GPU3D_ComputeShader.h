@@ -5,6 +5,8 @@
 
 namespace melonDS::ComputeShader {
 inline constexpr unsigned Count = 32;
+// Z/W pairs for the four neighbor-independent final-effect combinations.
+inline constexpr unsigned VulkanCount = Count + 8;
 struct Config {
     int ScreenWidth;
     int ScreenHeight;

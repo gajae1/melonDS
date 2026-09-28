@@ -9,7 +9,7 @@ namespace melonDS::ComputeShader {
 std::string BuildSource(unsigned variant, const Config& config, bool vulkan)
 {
     struct Program { const std::string* body; const char* defines; };
-    const std::array<Program, Count> programs{{
+    const std::array<Program, VulkanCount> programs{{
         {&ComputeRendererShaders::InterpSpans, "#define InterpSpans\n#define ZBuffer\n"},
         {&ComputeRendererShaders::InterpSpans, "#define InterpSpans\n#define WBuffer\n"},
         {&ComputeRendererShaders::BinCombined, "#define BinCombined\n"},
@@ -42,8 +42,16 @@ std::string BuildSource(unsigned variant, const Config& config, bool vulkan)
         {&ComputeRendererShaders::FinalPass, "#define FinalPass\n#define AntiAliasing\n#define EdgeMarking\n"},
         {&ComputeRendererShaders::FinalPass, "#define FinalPass\n#define AntiAliasing\n#define Fog\n"},
         {&ComputeRendererShaders::FinalPass, "#define FinalPass\n#define AntiAliasing\n#define EdgeMarking\n#define Fog\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define DepthBlend\n#define FinalBlend\n#define ZBuffer\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define DepthBlend\n#define FinalBlend\n#define WBuffer\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define DepthBlend\n#define FinalBlend\n#define ZBuffer\n#define Fog\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define DepthBlend\n#define FinalBlend\n#define WBuffer\n#define Fog\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define DepthBlend\n#define FinalBlend\n#define ZBuffer\n#define AntiAliasing\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define DepthBlend\n#define FinalBlend\n#define WBuffer\n#define AntiAliasing\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define DepthBlend\n#define FinalBlend\n#define ZBuffer\n#define Fog\n#define AntiAliasing\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define DepthBlend\n#define FinalBlend\n#define WBuffer\n#define Fog\n#define AntiAliasing\n"},
     }};
-    if (variant >= programs.size()) throw std::out_of_range("Compute shader variant");
+    if (variant >= (vulkan ? VulkanCount : Count)) throw std::out_of_range("Compute shader variant");
     std::string source = vulkan ? "#version 450\n" : "#version 430 core\n";
     source += programs[variant].defines;
     source += "\n#define ScreenWidth " + std::to_string(config.ScreenWidth);

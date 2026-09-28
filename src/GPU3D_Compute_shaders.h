@@ -1282,11 +1282,132 @@ void main()
 
 )";
 
+const std::string FinalPixelHeader = R"(
+#ifdef VULKAN
+// The setup texel buffer occupies set 3 binding 0 in the shared pipeline layout.
+IMAGE_BINDING(1, rgba8) writeonly uniform image2D FinalFB;
+#else
+IMAGE_BINDING(0, rgba8) writeonly uniform image2D FinalFB;
+#endif
+
+uint BlendFog(uint color, uint depth)
+{
+    uint densityid = 0, densityfrac = 0;
+
+    if (depth >= FogOffset)
+    {
+        depth -= FogOffset;
+        depth = (depth >> 2) << FogShift;
+
+        densityid = depth >> 17;
+        if (densityid >= 32)
+        {
+            densityid = 32;
+            densityfrac = 0;
+        }
+        else
+        {
+            densityfrac = depth & 0x1FFFFU;
+        }
+    }
+
+    uint density =
+        ((ToonTable[densityid].g * (0x20000U-densityfrac)) +
+         (ToonTable[densityid+1].g * densityfrac)) >> 17;
+    density = min(density, 128U);
+
+    uint colorRB = color & 0x3F003FU;
+    uint colorGA = (color >> 8) & 0x3F003FU;
+
+    uint fogRB = FogColor & 0x3F003FU;
+    uint fogGA = (FogColor >> 8) & 0x1F003FU;
+
+    uint finalColorRB = ((fogRB * density) + (colorRB * (128-density))) >> 7;
+    uint finalColorGA = ((fogGA * density) + (colorGA * (128-density))) >> 7;
+
+    finalColorRB &= 0x3F003FU;
+    finalColorGA &= 0x1F003FU;
+
+    return (DispCnt & (1U<<6)) != 0
+        ? (bitfieldInsert(color, finalColorGA >> 16, 24, 8))
+        : (finalColorRB | (finalColorGA << 8));
+}
+
+)";
+
+const std::string FinalPixelResolve = R"(
+#ifdef Fog
+    {
+        if ((attr.x & (1U<<15)) != 0U)
+        {
+            color.x = BlendFog(color.x, depth.x);
+        }
+
+        if ((attr.x & 0xFU) != 0 && (attr.y & (1U<<15)) != 0U)
+        {
+            color.y = BlendFog(color.y, depth.y);
+        }
+    }
+#endif
+#ifdef AntiAliasing
+    {
+        // resolve anti-aliasing
+        if ((attr.x & 0x3U) != 0)
+        {
+            uint coverage = (attr.x >> 8) & 0x1FU;
+
+            if (coverage != 0)
+            {
+                uint topRB = color.x & 0x3F003FU;
+                uint topG = color.x & 0x003F00U;
+                uint topA = bitfieldExtract(color.x, 24, 5);
+
+                uint botRB = color.y & 0x3F003FU;
+                uint botG = color.y & 0x003F00U;
+                uint botA = bitfieldExtract(color.y, 24, 5);
+
+                coverage++;
+
+                if (botA > 0)
+                {
+                    topRB = ((topRB * coverage) + (botRB * (32-coverage))) >> 5;
+                    topG = ((topG * coverage) + (botG * (32-coverage))) >> 5;
+
+                    topRB &= 0x3F003FU;
+                    topG &= 0x003F00U;
+                }
+
+                topA = ((topA * coverage) + (botA * (32-coverage))) >> 5;
+
+                color.x = topRB | topG | (topA << 24);
+            }
+            else
+            {
+                color.x = color.y;
+            }
+        }
+    }
+#endif
+)";
+
+const std::string FinalPixelStore = R"(
+    vec4 result = vec4(color.x & 0x3FU, bitfieldExtract(color.x, 8, 8), bitfieldExtract(color.x, 16, 8), bitfieldExtract(color.x, 24, 8));
+    result /= vec4(63.0, 63.0, 63.0, 31.0);
+    imageStore(FinalFB, ivec2(gl_GlobalInvocationID.xy), result);
+)";
+
 const std::string DepthBlend =
     PolygonBuffer +
     Tilebuffers +
     ResultBuffer +
     BinningBuffer + R"(
+#ifdef FinalBlend
+)" + FinalPixelHeader + R"(
+void WriteFinalPixel(uvec2 color, uvec2 depth, uvec2 attr)
+{
+)" + FinalPixelResolve + FinalPixelStore + R"(
+}
+#endif
 
 TEXTURE_BINDING(0) uniform usampler2D ClearBitmapColor;
 TEXTURE_BINDING(1) uniform usampler2D ClearBitmapDepth;
@@ -1499,12 +1620,28 @@ void main()
     uint coarseMaskLo = BinningMaskAndOffset[BinningCoarseMaskStart + linearTile*CoarseBinStride + 0];
     uint coarseMaskHi = BinningMaskAndOffset[BinningCoarseMaskStart + linearTile*CoarseBinStride + 1];
 
-#ifdef VULKAN
     // Later batches preserve the previous result where they have no polygons.
     // Skip the unchanged color, depth, attributes and shadow-stencil round trip.
     if (FirstBatch == 0 && (coarseMaskLo | coarseMaskHi) == 0U)
-        return;
+    {
+#ifdef FinalBlend
+        // No polygon work remains for this tile. Resolve only the fields that
+        // this compile-time effect combination needs from the previous batch.
+        int offset = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * ScreenWidth;
+        uvec2 color = uvec2(ResultValue[ResultColorStart+offset], 0U);
+        uvec2 depth = uvec2(0U), attr = uvec2(0U);
+#if defined(Fog) || defined(AntiAliasing)
+        color.y = ResultValue[ResultColorStart+offset+FramebufferStride];
+        attr.x = ResultValue[ResultAttrStart+offset];
 #endif
+#ifdef Fog
+        depth = uvec2(ResultValue[ResultDepthStart+offset], ResultValue[ResultDepthStart+offset+FramebufferStride]);
+        attr.y = ResultValue[ResultAttrStart+offset+FramebufferStride];
+#endif
+        WriteFinalPixel(color, depth, attr);
+#endif
+        return;
+    }
 
     int resultOffset = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * ScreenWidth;
     uint stencil = 0U;
@@ -1538,6 +1675,11 @@ void main()
     ProcessCoarseMask(linearTile, coarseMaskLo, 0, color, depth, attr, stencil, prevIsShadowMask);
     ProcessCoarseMask(linearTile, coarseMaskHi, BinStride/2, color, depth, attr, stencil, prevIsShadowMask);
 
+#ifdef FinalBlend
+    WriteFinalPixel(color, depth, attr);
+    return;
+#endif
+
     ResultValue[ResultColorStart+resultOffset] = color.x;
     ResultValue[ResultColorStart+resultOffset+FramebufferStride] = color.y;
     ResultValue[ResultDepthStart+resultOffset] = depth.x;
@@ -1553,56 +1695,7 @@ const std::string FinalPass =
     ResultBuffer + R"(
 
 layout (local_size_x = 32) in;
-
-#ifdef VULKAN
-// The setup texel buffer occupies set 3 binding 0 in the shared pipeline layout.
-IMAGE_BINDING(1, rgba8) writeonly uniform image2D FinalFB;
-#else
-IMAGE_BINDING(0, rgba8) writeonly uniform image2D FinalFB;
-#endif
-
-uint BlendFog(uint color, uint depth)
-{
-    uint densityid = 0, densityfrac = 0;
-
-    if (depth >= FogOffset)
-    {
-        depth -= FogOffset;
-        depth = (depth >> 2) << FogShift;
-
-        densityid = depth >> 17;
-        if (densityid >= 32)
-        {
-            densityid = 32;
-            densityfrac = 0;
-        }
-        else
-        {
-            densityfrac = depth & 0x1FFFFU;
-        }
-    }
-
-    uint density =
-        ((ToonTable[densityid].g * (0x20000U-densityfrac)) +
-         (ToonTable[densityid+1].g * densityfrac)) >> 17;
-    density = min(density, 128U);
-
-    uint colorRB = color & 0x3F003FU;
-    uint colorGA = (color >> 8) & 0x3F003FU;
-
-    uint fogRB = FogColor & 0x3F003FU;
-    uint fogGA = (FogColor >> 8) & 0x1F003FU;
-
-    uint finalColorRB = ((fogRB * density) + (colorRB * (128-density))) >> 7;
-    uint finalColorGA = ((fogGA * density) + (colorGA * (128-density))) >> 7;
-
-    finalColorRB &= 0x3F003FU;
-    finalColorGA &= 0x1F003FU;
-
-    return (DispCnt & (1U<<6)) != 0
-        ? (bitfieldInsert(color, finalColorGA >> 16, 24, 8))
-        : (finalColorRB | (finalColorGA << 8));
-}
+)" + FinalPixelHeader + R"(
 
 void main()
 {
@@ -1657,56 +1750,6 @@ void main()
     }
 #endif
 
-#ifdef Fog
-    if ((attr.x & (1U<<15)) != 0U)
-    {
-        color.x = BlendFog(color.x, depth.x);
-    }
-
-    if ((attr.x & 0xFU) != 0 && (attr.y & (1U<<15)) != 0U)
-    {
-        color.y = BlendFog(color.y, depth.y);
-    }
-#endif
-
-#ifdef AntiAliasing
-    // resolve anti-aliasing
-    if ((attr.x & 0x3U) != 0)
-    {
-        uint coverage = (attr.x >> 8) & 0x1FU;
-
-        if (coverage != 0)
-        {
-            uint topRB = color.x & 0x3F003FU;
-            uint topG = color.x & 0x003F00U;
-            uint topA = bitfieldExtract(color.x, 24, 5);
-
-            uint botRB = color.y & 0x3F003FU;
-            uint botG = color.y & 0x003F00U;
-            uint botA = bitfieldExtract(color.y, 24, 5);
-
-            coverage++;
-
-            if (botA > 0)
-            {
-                topRB = ((topRB * coverage) + (botRB * (32-coverage))) >> 5;
-                topG = ((topG * coverage) + (botG * (32-coverage))) >> 5;
-
-                topRB &= 0x3F003FU;
-                topG &= 0x003F00U;
-            }
-
-            topA = ((topA * coverage) + (botA * (32-coverage))) >> 5;
-
-            color.x = topRB | topG | (topA << 24);
-        }
-        else
-        {
-            color.x = color.y;
-        }
-    }
-#endif
-
 //    if (bitfieldExtract(color.x, 24, 8) != 0U)
 //        color.x |= 0x40000000U;
 //    else
@@ -1715,9 +1758,7 @@ void main()
     //if ((gl_GlobalInvocationID.y % 8) == 7 || (gl_GlobalInvocationID.y % 8) == 7)
     //    color.x = 0x1F00001FU | 0x40000000U;
 
-    vec4 result = vec4(color.x & 0x3FU, bitfieldExtract(color.x, 8, 8), bitfieldExtract(color.x, 16, 8), bitfieldExtract(color.x, 24, 8));
-    result /= vec4(63.0, 63.0, 63.0, 31.0);
-    imageStore(FinalFB, ivec2(gl_GlobalInvocationID.xy), result);
+)" + FinalPixelResolve + FinalPixelStore + R"(
 }
 
 )";
