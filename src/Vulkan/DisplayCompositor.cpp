@@ -241,7 +241,7 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
         (direct->MemoryProperties() & directProperties) != directProperties))
         throw std::invalid_argument("Invalid direct display backing");
     // Direct callers never allocate the intermediate staging image-sized buffer.
-    // Legacy callers keep the original full-image transfer and selective memcpy.
+    // Legacy callers transfer the same composed ranges into staging, then copy them.
     if (!resident && !direct && !readback)
         readback = owner->CreateBuffer(destination.size_bytes(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             true, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -290,22 +290,45 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
         if (active) groupRows[activeGroups++] = g;
     }
     const u32 compactRows = activeGroups != groupCount;
+    if (activeGroups)
     {
-        RenderCostVulkanScope copy(owner->Costs(), Cost::ContextCopy);
-        std::memcpy(contexts->Data(), lines.data(), lines.size_bytes());
-        const u32 mapBytes = compactRows ? activeGroups * sizeof(u32) : 0;
-        if (mapBytes)
-            std::memcpy(static_cast<char*>(contexts->Data()) + sizeof(Line) * 192, groupRows.data(), mapBytes);
-        if (owner->Costs()) owner->Costs()->Transfer(Cost::ContextCopyBytes, lines.size_bytes() + mapBytes);
-    }
-    const VkDescriptorImageInfo images[] = {{VK_NULL_HANDLE, input->View(), VK_IMAGE_LAYOUT_GENERAL},
-        {VK_NULL_HANDLE, outputs[screen]->View(), VK_IMAGE_LAYOUT_GENERAL}};
-    for (u32 i = 0; i < 2; ++i)
-    {
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = descriptors; write.dstBinding = i + 1; write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; write.pImageInfo = &images[i];
-        f.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        {
+            RenderCostVulkanScope copy(owner->Costs(), Cost::ContextCopy);
+            auto* data = static_cast<char*>(contexts->Data());
+            size_t copied = 0;
+            // Preserved lines can share a dispatched band with composed lines. Only
+            // their mode is consumed before the shader returns; never copy pixels.
+            // Coalesce all other contexts so a full frame remains one bulk copy.
+            for (u32 y = 0; y < 192;)
+            {
+                if (Preserved(lines[y]))
+                {
+                    std::memcpy(data + sizeof(Line) * y + offsetof(Line, mode),
+                        &lines[y].mode, sizeof(lines[y].mode));
+                    copied += sizeof(lines[y].mode);
+                    ++y;
+                    continue;
+                }
+                const u32 first = y++;
+                while (y < 192 && !Preserved(lines[y])) ++y;
+                const size_t bytes = sizeof(Line) * (y - first);
+                std::memcpy(data + sizeof(Line) * first, lines.data() + first, bytes);
+                copied += bytes;
+            }
+            const u32 mapBytes = compactRows ? activeGroups * sizeof(u32) : 0;
+            if (mapBytes)
+                std::memcpy(data + sizeof(Line) * 192, groupRows.data(), mapBytes);
+            if (owner->Costs()) owner->Costs()->Transfer(Cost::ContextCopyBytes, copied + mapBytes);
+        }
+        const VkDescriptorImageInfo images[] = {{VK_NULL_HANDLE, input->View(), VK_IMAGE_LAYOUT_GENERAL},
+            {VK_NULL_HANDLE, outputs[screen]->View(), VK_IMAGE_LAYOUT_GENERAL}};
+        for (u32 i = 0; i < 2; ++i)
+        {
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = descriptors; write.dstBinding = i + 1; write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; write.pImageInfo = &images[i];
+            f.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
     }
     const auto command = owner->Begin(Device::SubmitKind::Display);
     if (overrideCount)
@@ -316,22 +339,24 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
         f.vkCmdCopyBufferToImage(command, overrides->Handle(), outputs[screen]->Handle(),
             VK_IMAGE_LAYOUT_GENERAL, overrideCount, overrideCopies.data());
     }
-    VkMemoryBarrier upload{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    upload.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT; upload.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 1, &upload, 0, nullptr, 0, nullptr);
-    ImageBarrier(f, command, input->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-    ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
-        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-    f.vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    f.vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descriptors, 0, nullptr);
-    const u32 settings[] = {scale, sourceScale, compactRows};
-    f.vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(settings), settings);
     if (activeGroups)
+    {
+        VkMemoryBarrier upload{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        upload.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT; upload.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &upload, 0, nullptr, 0, nullptr);
+        ImageBarrier(f, command, input->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+        ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+        f.vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        f.vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descriptors, 0, nullptr);
+        const u32 settings[] = {scale, sourceScale, compactRows};
+        f.vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(settings), settings);
         f.vkCmdDispatch(command, 32 * scale, activeGroups, 1);
+    }
     owner->Timestamp(Device::TimestampStage::DisplayCompose);
     if (resident)
     {
@@ -355,31 +380,24 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
         target.buffer = direct->Handle(); target.size = direct->Size();
         f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, nullptr, 1, &target, 0, nullptr);
-        std::array<VkBufferImageCopy, 192> copies{};
-        u32 count = 0;
-        for (u32 y = 0; y < 192;)
-        {
-            if (Preserved(lines[y])) { ++y; continue; }
-            const u32 first = y++;
-            while (y < 192 && !Preserved(lines[y])) ++y;
-            auto& copy = copies[count++];
-            copy.bufferOffset = VkDeviceSize(first) * 256 * scale * scale * sizeof(u32);
-            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-            copy.imageOffset.y = static_cast<int32_t>(first * scale);
-            copy.imageExtent = {256 * scale, (y - first) * scale, 1};
-            transferredRows += y - first;
-        }
-        if (count)
-            f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                direct->Handle(), count, copies.data());
     }
-    else
+    std::array<VkBufferImageCopy, 192> copies{};
+    u32 count = 0;
+    for (u32 y = 0; y < 192;)
     {
-        VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {256 * scale, 192 * scale, 1};
-        transferredRows = 192;
-        f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback->Handle(), 1, &copy);
+        if (Preserved(lines[y])) { ++y; continue; }
+        const u32 first = y++;
+        while (y < 192 && !Preserved(lines[y])) ++y;
+        auto& copy = copies[count++];
+        copy.bufferOffset = VkDeviceSize(first) * 256 * scale * scale * sizeof(u32);
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageOffset.y = static_cast<int32_t>(first * scale);
+        copy.imageExtent = {256 * scale, (y - first) * scale, 1};
+        transferredRows += y - first;
     }
+    if (count)
+        f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            direct ? direct->Handle() : readback->Handle(), count, copies.data());
     ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT);
     VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};

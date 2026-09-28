@@ -161,5 +161,63 @@ inline float DotFloat(const float* a, const float* b, unsigned count) noexcept
 #endif
 #endif
 }
+
+#ifdef MELONDS_INTERPOLATION_AVX2
+__attribute__((target("avx2,fma"))) inline std::array<float, 2> DotFloatStereoAVX2(
+    const float* left, const float* right, const float* weights, unsigned count) noexcept
+{
+    __m256 l = _mm256_setzero_ps(), r = _mm256_setzero_ps();
+    for (unsigned i = 0; i < count; i += 8)
+    {
+        const __m256 w = _mm256_loadu_ps(weights+i);
+        l = _mm256_fmadd_ps(_mm256_loadu_ps(left+i), w, l);
+        r = _mm256_fmadd_ps(_mm256_loadu_ps(right+i), w, r);
+    }
+    const __m128 lp = _mm_add_ps(_mm256_castps256_ps128(l), _mm256_extractf128_ps(l, 1));
+    const __m128 rp = _mm_add_ps(_mm256_castps256_ps128(r), _mm256_extractf128_ps(r, 1));
+    const __m128 lh = _mm_hadd_ps(lp, lp), rh = _mm_hadd_ps(rp, rp);
+    return {_mm_cvtss_f32(_mm_hadd_ps(lh, lh)), _mm_cvtss_f32(_mm_hadd_ps(rh, rh))};
+}
+#endif
+
+// The sinc output stage filters both channels with the same coefficients.
+// Share weight loads and dispatch while retaining each channel's DotFloat
+// accumulator sequence, reduction order and rounding.
+inline std::array<float, 2> DotFloatStereo(
+    const float* left, const float* right, const float* weights, unsigned count) noexcept
+{
+    if (ForcedScalar())
+        return {DotFloatScalar(left, weights, count), DotFloatScalar(right, weights, count)};
+#ifdef MELONDS_INTERPOLATION_NEON
+    float32x4_t l = vdupq_n_f32(0), r = vdupq_n_f32(0);
+    for (unsigned i = 0; i < count; i += 4)
+    {
+        const float32x4_t w = vld1q_f32(weights+i);
+        l = vfmaq_f32(l, vld1q_f32(left+i), w);
+        r = vfmaq_f32(r, vld1q_f32(right+i), w);
+    }
+    return {vaddvq_f32(l), vaddvq_f32(r)};
+#else
+#ifdef MELONDS_INTERPOLATION_AVX2
+    static const bool supported = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    if (supported) return DotFloatStereoAVX2(left, right, weights, count);
+#endif
+#if defined(__SSE2__)
+    __m128 l = _mm_setzero_ps(), r = _mm_setzero_ps();
+    for (unsigned i = 0; i < count; i += 4)
+    {
+        const __m128 w = _mm_loadu_ps(weights+i);
+        l = _mm_add_ps(l, _mm_mul_ps(_mm_loadu_ps(left+i), w));
+        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(right+i), w));
+    }
+    l = _mm_add_ps(l, _mm_movehl_ps(l, l));
+    r = _mm_add_ps(r, _mm_movehl_ps(r, r));
+    return {_mm_cvtss_f32(_mm_add_ss(l, _mm_shuffle_ps(l, l, 1))),
+            _mm_cvtss_f32(_mm_add_ss(r, _mm_shuffle_ps(r, r, 1)))};
+#else
+    return {DotFloatScalar(left, weights, count), DotFloatScalar(right, weights, count)};
+#endif
+#endif
+}
 }
 #endif

@@ -221,11 +221,14 @@ void AudioSincOutput::Push(const s16* stereo)
         const float fraction = float(phase-index);
         const float* a = Weights.data() + index * Count;
         const float* b = a + Count;
-        for (const auto& history : History)
+        const auto first = AudioInterpolationMath::DotFloatStereo(
+            History[0].data()+Head, History[1].data()+Head, a, Count);
+        const auto second = AudioInterpolationMath::DotFloatStereo(
+            History[0].data()+Head, History[1].data()+Head, b, Count);
+        for (unsigned ch = 0; ch < 2; ++ch)
         {
-            const float first = AudioInterpolationMath::DotFloat(history.data()+Head, a, Count);
-            const float second = AudioInterpolationMath::DotFloat(history.data()+Head, b, Count);
-            Pending.push_back(s16(std::clamp(RoundSample(first + fraction*(second-first)), -32768, 32767)));
+            const float value = first[ch] + fraction*(second[ch]-first[ch]);
+            Pending.push_back(s16(std::clamp(RoundSample(value), -32768, 32767)));
         }
         Position += Step;
     }

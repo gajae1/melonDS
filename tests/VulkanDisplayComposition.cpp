@@ -615,81 +615,86 @@ void DirectDifferential(const std::shared_ptr<Vulkan::Device>& device, int scale
     const std::vector<Line>& original, const std::shared_ptr<Vulkan::Device::Image>& input,
     std::span<const u32> oracle, size_t& compared)
 {
-    Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale);
-    std::array<std::array<std::shared_ptr<Vulkan::Device::Buffer>, 2>, 2> backing;
-    const size_t row = size_t(256) * scale * scale;
-    for (auto& slot : backing)
-        for (auto& screen : slot)
-            screen = device->CreateBuffer(oracle.size_bytes(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                true, 0, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    for (unsigned slot = 0; slot < 2; ++slot)
-    for (unsigned screen = 0; screen < 2; ++screen)
+    for (bool direct : {true, false})
     {
-        const auto& memory = backing[slot][screen];
+        Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale);
+        std::array<std::array<std::shared_ptr<Vulkan::Device::Buffer>, 2>, 2> backing;
+        const size_t row = size_t(256) * scale * scale;
+        for (auto& slot : backing)
+            for (auto& screen : slot)
+                screen = device->CreateBuffer(oracle.size_bytes(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    true, 0, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        for (unsigned slot = 0; slot < 2; ++slot)
+        for (unsigned screen = 0; screen < 2; ++screen)
+        {
+            const auto& memory = backing[slot][screen];
+            std::span<u32> output{static_cast<u32*>(memory->Data()), oracle.size()};
+            std::vector<u32> expected(oracle.begin(), oracle.end());
+            auto lines = original;
+            const u32 sentinel = 0xA537C2E1 ^ (slot << 20) ^ (screen << 24);
+            std::fill(output.begin(), output.end(), sentinel);
+            for (u32 y = 0; y < 192; ++y)
+            {
+                const bool cpuFill = slot == 0 && (y % 8 == 2 || y % 8 == 3);
+                if (cpuFill || (slot == 0 && y % 8 == 7) || (slot == 1 && y % 2 && y != 191))
+                    lines[y].mode = Line::Keep;
+                else if (slot == 0 && y % 8 == 5) lines[y].mode = Line::CaptureOverride;
+                if (cpuFill || lines[y].mode == Line::CaptureOverride)
+                    for (size_t x = 0; x < row; ++x)
+                        output[y * row + x] = (cpuFill ? 0xFF125600 : 0xFF983400) ^ u32(x + y * 131 + screen);
+                if (lines[y].mode == Line::Keep || lines[y].mode == Line::CaptureOverride)
+                    std::copy_n(output.data() + y * row, row, expected.data() + y * row);
+            }
+            CopyProbe probe(*device);
+            compositor.Compose(screen, lines, input, sourceScale, output, direct ? memory.get() : nullptr, slot == 1);
+            compositor.Complete();
+            Equal(output, expected, "direct backing != production oracle/preserved CPU rows");
+            Require(direct ? probe.target == memory->Handle() && !compositor.readback :
+                compositor.readback && probe.target == compositor.readback->Handle(),
+                "display copy did not target the expected direct/staging buffer");
+            std::array<unsigned, 192> visits{};
+            for (const auto& copy : probe.regions)
+            {
+                Require(copy.imageOffset.x == 0 && copy.imageOffset.z == 0 && copy.imageOffset.y >= 0 &&
+                    copy.imageOffset.y % scale == 0 && copy.imageExtent.width == u32(256 * scale) &&
+                    copy.imageExtent.height % scale == 0 && copy.imageExtent.depth == 1 &&
+                    copy.imageSubresource.layerCount == 1 && copy.bufferRowLength == 0 && copy.bufferImageHeight == 0,
+                    "direct transfer region has wrong addressing");
+                const u32 first = copy.imageOffset.y / scale, end = first + copy.imageExtent.height / scale;
+                Require(first < end && end <= 192 && copy.bufferOffset == first * row * sizeof(u32),
+                    "direct transfer range exceeds backing or has wrong offset");
+                for (u32 y = first; y < end; ++y) ++visits[y];
+                Require(first == 0 || lines[first - 1].mode == Line::Keep || lines[first - 1].mode == Line::CaptureOverride,
+                    "contiguous composed rows were not coalesced");
+            }
+            unsigned composed = 0;
+            for (u32 y = 0; y < 192; ++y)
+            {
+                const bool writes = lines[y].mode != Line::Keep && lines[y].mode != Line::CaptureOverride;
+                Require(visits[y] == unsigned(writes), "direct transfer overwrote or missed a row");
+                composed += writes;
+            }
+            Require(probe.bytes == composed * row * sizeof(u32), "direct transfer byte accounting mismatch");
+            compared += oracle.size();
+            std::printf("%s output=%dx source=%dx slot=%u screen=%u: ranges=%zu copied_bytes=%llu preserved_bytes=%llu PASS\n",
+                direct ? "Direct" : "Staging", scale, sourceScale, slot, screen, probe.regions.size(), static_cast<unsigned long long>(probe.bytes),
+                static_cast<unsigned long long>(oracle.size_bytes() - probe.bytes));
+        }
+        auto memory = backing[0][0];
         std::span<u32> output{static_cast<u32*>(memory->Data()), oracle.size()};
-        std::vector<u32> expected(oracle.begin(), oracle.end());
-        auto lines = original;
-        const u32 sentinel = 0xA537C2E1 ^ (slot << 20) ^ (screen << 24);
-        std::fill(output.begin(), output.end(), sentinel);
-        for (u32 y = 0; y < 192; ++y)
-        {
-            const bool cpuFill = slot == 0 && (y % 8 == 2 || y % 8 == 3);
-            if (cpuFill || (slot == 0 && y % 8 == 7) || (slot == 1 && y % 2 && y != 191))
-                lines[y].mode = Line::Keep;
-            else if (slot == 0 && y % 8 == 5) lines[y].mode = Line::CaptureOverride;
-            if (cpuFill || lines[y].mode == Line::CaptureOverride)
-                for (size_t x = 0; x < row; ++x)
-                    output[y * row + x] = (cpuFill ? 0xFF125600 : 0xFF983400) ^ u32(x + y * 131 + screen);
-            if (lines[y].mode == Line::Keep || lines[y].mode == Line::CaptureOverride)
-                std::copy_n(output.data() + y * row, row, expected.data() + y * row);
-        }
+        std::vector<u32> before(output.begin(), output.end());
+        std::vector<Line> keep(192);
+        for (auto& line : keep) line.mode = Line::Keep;
         CopyProbe probe(*device);
-        compositor.Compose(screen, lines, input, sourceScale, output, memory.get());
-        Equal(output, expected, "direct backing != production oracle/preserved CPU rows");
-        Require(probe.target == memory->Handle() && !compositor.readback,
-            "direct copy did not target renderer-compatible backing without staging");
-        std::array<unsigned, 192> visits{};
-        for (const auto& copy : probe.regions)
-        {
-            Require(copy.imageOffset.x == 0 && copy.imageOffset.z == 0 && copy.imageOffset.y >= 0 &&
-                copy.imageOffset.y % scale == 0 && copy.imageExtent.width == u32(256 * scale) &&
-                copy.imageExtent.height % scale == 0 && copy.imageExtent.depth == 1 &&
-                copy.imageSubresource.layerCount == 1 && copy.bufferRowLength == 0 && copy.bufferImageHeight == 0,
-                "direct transfer region has wrong addressing");
-            const u32 first = copy.imageOffset.y / scale, end = first + copy.imageExtent.height / scale;
-            Require(first < end && end <= 192 && copy.bufferOffset == first * row * sizeof(u32),
-                "direct transfer range exceeds backing or has wrong offset");
-            for (u32 y = first; y < end; ++y) ++visits[y];
-            Require(first == 0 || lines[first - 1].mode == Line::Keep || lines[first - 1].mode == Line::CaptureOverride,
-                "contiguous composed rows were not coalesced");
-        }
-        unsigned composed = 0;
-        for (u32 y = 0; y < 192; ++y)
-        {
-            const bool writes = lines[y].mode != Line::Keep && lines[y].mode != Line::CaptureOverride;
-            Require(visits[y] == unsigned(writes), "direct transfer overwrote or missed a row");
-            composed += writes;
-        }
-        Require(probe.bytes == composed * row * sizeof(u32), "direct transfer byte accounting mismatch");
+        compositor.Compose(0, keep, input, sourceScale, output, direct ? memory.get() : nullptr);
+        Equal(output, before, "all-Keep changed direct backing");
+        Require(probe.bytes == 0, "all-Keep issued a transfer");
+        bool rejected = false;
+        try { compositor.Compose(0, keep, input, sourceScale, before, memory.get()); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        Require(rejected, "mismatched mapped destination accepted");
         compared += oracle.size();
-        std::printf("Direct output=%dx source=%dx slot=%u screen=%u: ranges=%zu copied_bytes=%llu preserved_bytes=%llu PASS\n",
-            scale, sourceScale, slot, screen, probe.regions.size(), static_cast<unsigned long long>(probe.bytes),
-            static_cast<unsigned long long>(oracle.size_bytes() - probe.bytes));
     }
-    auto memory = backing[0][0];
-    std::span<u32> output{static_cast<u32*>(memory->Data()), oracle.size()};
-    std::vector<u32> before(output.begin(), output.end());
-    std::vector<Line> keep(192);
-    for (auto& line : keep) line.mode = Line::Keep;
-    CopyProbe probe(*device);
-    compositor.Compose(0, keep, input, sourceScale, output, memory.get());
-    Equal(output, before, "all-Keep changed direct backing");
-    Require(probe.bytes == 0, "all-Keep issued a transfer");
-    bool rejected = false;
-    try { compositor.Compose(0, keep, input, sourceScale, before, memory.get()); }
-    catch (const std::invalid_argument&) { rejected = true; }
-    Require(rejected, "mismatched mapped destination accepted");
-    compared += oracle.size();
 }
 struct DispatchProbe
 {
@@ -902,6 +907,11 @@ DiagnosticOutput DiagnosticExercise(bool enabled, DiagnosticProbe::Failure failu
     {
         auto& cost = *device->Costs();
         cost.End(RenderCostNowNs());
+        // 48 composed contexts, 144 mode words, and 48 compact group indices,
+        // for each of two screens at scale 3 (one group per active line).
+        Require(cost.Sum().Bytes[RenderCostVulkanMeter::ContextCopyBytes] ==
+            2 * (48 * sizeof(Line) + 144 * sizeof(Line::mode) + 48 * sizeof(u32)),
+            "preserved context pixel payload was copied or context accounting diverged");
         if (failure == DiagnosticProbe::UnreadyResults)
         {
             u64 observed = 0, dropped = 0;
