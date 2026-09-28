@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <vector>
 namespace melonDS::Vulkan::Native2D {
+class Pipeline;
 struct CaptureRow {
     uint32_t control, line, rawFirst, sourceScale;
     uint32_t sourceX, sourceAbort;
@@ -30,7 +31,7 @@ public:
     // Completed guest capture bytes only. Retaining this snapshot makes the next
     // writer copy-on-write, so queued consumers keep their original byte version.
     std::shared_ptr<Device::Buffer> Snapshot() const;
-    uint64_t Revision() const { return revision; }
+    uint64_t Revision() const;
     // Optional presentation-only derivative. Allocation/limit failure leaves
     // exact guest capture enabled. Configure once before submitting commands.
     bool EnableHires(std::span<const uint32_t> shader, uint32_t scale);
@@ -41,6 +42,10 @@ public:
     uint32_t HiresPitch() const { return hiresPitch; }
 private:
     friend class Pipeline;
+    // Queries and resource reuse drain the one submitted writer first. The
+    // writer and capture owner both detach this link before either is freed.
+    void CompletePending() const;
+    Pipeline* pendingWriter = nullptr;
     // Prepare all allocation/descriptors before the shared command begins.
     // Record adds ordered capture dispatches to the caller's 2D submission.
     void Prepare(std::span<const CaptureCommand> commands, const std::shared_ptr<Device::Buffer>& raw,

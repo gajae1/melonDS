@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Native2DCapture.h"
+#include "Native2DPipeline.h"
 #include <array>
 #include <bitset>
 #include <cstring>
@@ -54,8 +55,19 @@ CapturePipeline::CapturePipeline(std::shared_ptr<Device> device, std::span<const
         Cleanup(); throw;
     }
 }
-CapturePipeline::~CapturePipeline() { Cleanup(); }
+CapturePipeline::~CapturePipeline() {
+    try { CompletePending(); } catch (...) {}
+    Cleanup();
+}
+void CapturePipeline::CompletePending() const {
+    if(pendingWriter) pendingWriter->Complete();
+}
+uint64_t CapturePipeline::Revision() const {
+    CompletePending();
+    return revision;
+}
 bool CapturePipeline::EnableHires(std::span<const uint32_t> shader,uint32_t scale) {
+    CompletePending();
     if(hires) return scale==hiresScale;
     if(scale<2 || scale>11 || shader.empty() || !dispatches.empty()) return false;
     const uint32_t pitch=(scale*scale+1u)&~1u;
@@ -82,10 +94,12 @@ bool CapturePipeline::EnableHires(std::span<const uint32_t> shader,uint32_t scal
     }
 }
 std::shared_ptr<Device::Buffer> CapturePipeline::Snapshot() const {
+    CompletePending();
     if(!initialized || previousBanks) throw std::logic_error("Native capture snapshot is not complete");
     return banks;
 }
 void CapturePipeline::DisableHires() {
+    CompletePending();
     if(!dispatches.empty()) throw std::logic_error("Native hires capture is still pending");
     if(hiresPipeline) owner->Functions().vkDestroyPipeline(owner->Handle(),hiresPipeline,nullptr);
     hiresPipeline=VK_NULL_HANDLE;hires.reset();hiresScale=0;hiresPitch=0;
@@ -104,6 +118,7 @@ void CapturePipeline::Prepare(std::span<const CaptureCommand> commands,
     const std::shared_ptr<Device::Image>& native3D,
     const std::shared_ptr<Device::Buffer>& scaledRaw,const std::shared_ptr<Device::Image>& display3D)
 {
+    CompletePending();
     Require(!commands.empty() && commands.size()<=256 && raw && raw->BelongsTo(*owner) &&
         (raw->Usage()&VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) && uint64_t(rawWords)*4<=raw->Size(),
         "Invalid native capture batch/raw buffer");
@@ -225,6 +240,7 @@ void CapturePipeline::Record(VkCommandBuffer cmd)
 }
 void CapturePipeline::ReadRange(uint32_t bank, uint32_t first, std::span<uint16_t> destination)
 {
+    CompletePending();
     Require(initialized && bank<4 && first<65536 && destination.size()<=65536-first &&
         !(first&1) && !(destination.size()&1),"Invalid native capture readback range");
     if(destination.empty()) return;

@@ -225,8 +225,24 @@ void Pipeline::Complete()
     if (!inFlight.active) return;
     // Leases outlive the wait, including its failure path, which idles the
     // device before throwing.
-    [[maybe_unused]] const auto batch = std::exchange(inFlight, {});
-    owner->WaitForSubmission();
+    const auto batch = std::exchange(inFlight, {});
+    try { owner->WaitForSubmission(); }
+    catch (...)
+    {
+        if (batch.capture)
+        {
+            batch.capture->pendingWriter = nullptr;
+            batch.capture->initialized = batch.capture->hiresInitialized = false;
+            batch.capture->dispatches.clear();
+            batch.capture->previousBanks.reset();
+        }
+        throw;
+    }
+    if (batch.capture)
+    {
+        batch.capture->pendingWriter = nullptr;
+        batch.capture->Complete();
+    }
 }
 
 void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> lines,
@@ -569,13 +585,9 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
     uploadedEpoch = memoryEpoch;
     uploadedBytes = bytes.size_bytes();
     inFlight = {true, std::move(copies), std::move(previousScaledHistory), hires,
-        std::move(previousMemory), native3D, display3D};
+        std::move(previousMemory), native3D, display3D, captures.empty() ? nullptr : capture};
+    if (inFlight.capture) inFlight.capture->pendingWriter = this;
     owner->SetPendingCompletion([this] { Complete(); });
-    if (!captures.empty())
-    {
-        Complete();
-        capture->Complete();
-    }
 }
 
 const std::shared_ptr<Device::Image>& Pipeline::Output(uint32_t buffer, uint32_t screen) const
@@ -604,39 +616,75 @@ void Pipeline::ReadRaw(uint32_t first, std::span<uint32_t> destination)
 void Pipeline::ReadFrame(uint32_t buffer, uint32_t screen, std::span<uint32_t> destination,
     std::span<uint32_t> nativeDestination)
 {
-    Require(destination.size() == size_t(NativeFrameWords) * displayScale * displayScale &&
-        (nativeDestination.empty() || nativeDestination.size() == NativeFrameWords), "Invalid native 2D frame readback");
-    const auto& image = Output(buffer, screen);
-    Complete();
-    EnsureBuffer(landing, destination.size_bytes() + nativeDestination.size_bytes(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
-    const auto command = owner->Begin(Device::SubmitKind::FullReadback);
-    ImageBarrier(command, *image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy{};
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {256 * displayScale, 192 * displayScale, 1};
-    owner->Functions().vkCmdCopyImageToBuffer(command, image->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        landing->Handle(), 1, &copy);
-    if (!nativeDestination.empty())
+    Require(screen < 2 && !destination.empty(), "Invalid native 2D frame readback");
+    std::array<std::span<uint32_t>, 2> destinations{}, nativeDestinations{};
+    destinations[screen] = destination;
+    nativeDestinations[screen] = nativeDestination;
+    ReadFrames(buffer, destinations, nativeDestinations);
+}
+
+void Pipeline::ReadFrames(uint32_t buffer, std::array<std::span<uint32_t>, 2> destinations,
+    std::array<std::span<uint32_t>, 2> nativeDestinations)
+{
+    Require(buffer < 2, "Invalid native 2D frame readback");
+    std::array<size_t, 2> offsets{};
+    size_t bytes = 0;
+    bool readNative = false;
+    for (uint32_t screen = 0; screen < 2; ++screen)
     {
-        // The guest frame lands after the complete display-scale image bytes.
+        const auto destination = destinations[screen], native = nativeDestinations[screen];
+        Require((destination.empty() && native.empty()) ||
+            (destination.size() == size_t(NativeFrameWords) * displayScale * displayScale &&
+             (native.empty() || native.size() == NativeFrameWords)), "Invalid native 2D frame readback");
+        if (destination.empty()) continue;
+        Output(buffer, screen); // Validate every requested image before recording.
+        offsets[screen] = bytes;
+        bytes += destination.size_bytes() + native.size_bytes();
+        readNative |= !native.empty();
+    }
+    if (!bytes) return;
+    Complete();
+    EnsureBuffer(landing, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+    const auto command = owner->Begin(Device::SubmitKind::FullReadback);
+    if (readNative)
         MemoryBarrier(*owner, command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_ACCESS_TRANSFER_READ_BIT);
-        const VkBufferCopy native{VkDeviceSize(buffer * 2 + screen) * NativeFrameWords * sizeof(uint32_t),
-            destination.size_bytes(), nativeDestination.size_bytes()};
-        owner->Functions().vkCmdCopyBuffer(command, nativeFrames->Handle(), landing->Handle(), 1, &native);
+    for (uint32_t screen = 0; screen < 2; ++screen)
+    {
+        if (destinations[screen].empty()) continue;
+        const auto& image = Output(buffer, screen);
+        ImageBarrier(command, *image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = offsets[screen];
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {256 * displayScale, 192 * displayScale, 1};
+        owner->Functions().vkCmdCopyImageToBuffer(command, image->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            landing->Handle(), 1, &copy);
+        if (!nativeDestinations[screen].empty())
+        {
+            // Each guest frame lands immediately after its display-scale image.
+            const VkBufferCopy native{VkDeviceSize(buffer * 2 + screen) * NativeFrameWords * sizeof(uint32_t),
+                offsets[screen] + destinations[screen].size_bytes(), nativeDestinations[screen].size_bytes()};
+            owner->Functions().vkCmdCopyBuffer(command, nativeFrames->Handle(), landing->Handle(), 1, &native);
+        }
+        ImageBarrier(command, *image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     }
-    ImageBarrier(command, *image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     MemoryBarrier(*owner, command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
     owner->SubmitAndWait();
-    std::memcpy(destination.data(), landing->Data(), destination.size_bytes());
-    if (!nativeDestination.empty())
-        std::memcpy(nativeDestination.data(), static_cast<const uint8_t*>(landing->Data()) + destination.size_bytes(),
-            nativeDestination.size_bytes());
+    for (uint32_t screen = 0; screen < 2; ++screen)
+    {
+        if (destinations[screen].empty()) continue;
+        const auto* data = static_cast<const uint8_t*>(landing->Data()) + offsets[screen];
+        std::memcpy(destinations[screen].data(), data, destinations[screen].size_bytes());
+        if (!nativeDestinations[screen].empty())
+            std::memcpy(nativeDestinations[screen].data(), data + destinations[screen].size_bytes(),
+                nativeDestinations[screen].size_bytes());
+    }
 }
 }

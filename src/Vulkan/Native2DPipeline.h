@@ -46,10 +46,8 @@ public:
     // scaled history stay leased until completion. Output() is published for
     // later work on this device's queue: the next Device::Begin() completes the
     // batch first, and ReadFrame/ReadRaw/SetScale complete it explicitly.
-    // A batch with capture commands completes before Submit returns, because
-    // CapturePipeline publishes Revision/Snapshot only on completion and those
-    // host queries do not drain the device. A deferred batch therefore never
-    // writes capture-owned storage and never references the CapturePipeline.
+    // Capture batches also defer. Capture queries, reuse and destruction drain
+    // the linked writer before observing or changing capture-owned storage.
     void Submit(std::span<const uint32_t> memory, std::span<const Record> lines,
         const std::shared_ptr<Device::Image>& native3D, uint32_t buffer,
         CapturePipeline* capture = nullptr, std::span<const CaptureCommand> captures = {},
@@ -57,7 +55,7 @@ public:
         const std::shared_ptr<Device::Image>& display3D = {}, uint64_t memoryEpoch = 0);
     // Waits for a deferred batch and releases its leases. No-op when nothing
     // is pending; throws on device failure. Capture revisions are published
-    // only by the synchronous capture branch inside Submit.
+    // after the fence succeeds, including completion through capture queries.
     void Complete();
     bool Pending() const { return inFlight.active; }
     // Input storage placement: 0 mapped device-local, 1 device-local filled
@@ -72,6 +70,10 @@ public:
     // the same submission as the display-scale image.
     void ReadFrame(uint32_t buffer, uint32_t screen, std::span<uint32_t> destination,
         std::span<uint32_t> nativeDestination = {});
+    // Read the requested screens with one transfer submission and host wait.
+    // An empty destination skips that screen, including already valid CPU data.
+    void ReadFrames(uint32_t buffer, std::array<std::span<uint32_t>, 2> destinations,
+        std::array<std::span<uint32_t>, 2> nativeDestinations = {});
     uint32_t Scale() const { return displayScale; }
     // Replace display-scale storage between batches. Guest OBJ history and
     // descriptors survive; display frames must be read back first.
@@ -84,6 +86,7 @@ private:
         std::vector<MemoryCopy> copies;
         std::shared_ptr<Device::Buffer> scaledHistory, hires, inputPrefix;
         std::shared_ptr<Device::Image> native3D, display3D;
+        CapturePipeline* capture = nullptr;
     };
     void Cleanup();
     void EnsureBuffer(std::shared_ptr<Device::Buffer>& buffer, size_t bytes,

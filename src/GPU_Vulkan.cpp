@@ -458,24 +458,30 @@ void VulkanRenderer::ReadbackDisplay(u32 buffer)
 {
     if (CompositionSubmitted) FinishDisplayComposition();
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
+    if (NativePipeline)
+    {
+        std::array<std::span<u32>, 2> display{}, native{};
+        for (u32 screen = 0; screen < 2; ++screen)
+            if (ResidentImages[buffer][screen] && !ResidentCPUValid[buffer][screen])
+            {
+                const std::span<u32> pixels{Framebuffer[buffer][screen], 256 * 192};
+                display[screen] = DisplayScale == 1 ? pixels : ScaledBuffers[buffer][screen];
+                if (DisplayScale != 1) native[screen] = pixels;
+            }
+        if (display[0].empty() && display[1].empty()) return;
+        rasterizer.CompleteRender();
+        const u64 before = rasterizer.TotalSubmissionCount();
+        NativePipeline->ReadFrames(buffer, display, native);
+        rasterizer.DisplaySubmissions += rasterizer.TotalSubmissionCount() - before;
+        for (u32 screen = 0; screen < 2; ++screen)
+            if (!display[screen].empty()) ResidentCPUValid[buffer][screen] = true;
+        return;
+    }
     for (u32 screen = 0; screen < 2; ++screen)
         if (ResidentImages[buffer][screen] && !ResidentCPUValid[buffer][screen])
         {
             rasterizer.CompleteRender();
-            if (NativePipeline)
-            {
-                const u64 before = rasterizer.TotalSubmissionCount();
-                if (DisplayScale == 1)
-                    NativePipeline->ReadFrame(buffer, screen, {Framebuffer[buffer][screen], 256 * 192});
-                else
-                {
-                    NativePipeline->ReadFrame(buffer, screen, ScaledBuffers[buffer][screen],
-                        {Framebuffer[buffer][screen], 256 * 192});
-                }
-                rasterizer.DisplaySubmissions += rasterizer.TotalSubmissionCount() - before;
-            }
-            else
-                rasterizer.Compositor->ReadbackResident(buffer * 2 + screen, ScaledBuffers[buffer][screen]);
+            rasterizer.Compositor->ReadbackResident(buffer * 2 + screen, ScaledBuffers[buffer][screen]);
             ResidentCPUValid[buffer][screen] = true;
         }
 }

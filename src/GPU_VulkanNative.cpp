@@ -165,8 +165,8 @@ void VulkanRenderer::FinishNative2D(bool deferred) noexcept
     try
     {
         // A deferred batch copied every host input and leases its GPU sources,
-        // so the queue retires now. Capture batches still complete inside
-        // Submit: CapturedState reads Revision/Snapshot without draining.
+        // so the queue retires now. Capture queries drain their linked writer
+        // before publishing a revision or retaining an immutable snapshot.
         if (deferred)
             NativePipeline->Submit(NativeQueue->Data().Words(), NativeQueue->Records(), NativeSource3D, BackBuffer,
                 NativeCapture.get(), NativeCaptures, NativeQueue->TakeCopies(), NativeQueue->Merges(), NativeDisplay3D,

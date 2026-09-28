@@ -1848,6 +1848,84 @@ void ScaleChanges()
     std::puts("Vulkan live 1x/2x/3x transitions: subpixel coverage, cached texture, frame lifetime, native rounding and invalid scale rejection PASS");
 }
 
+PFN_vkWaitForFences nativeCaptureWait;
+unsigned nativeCaptureWaits;
+VKAPI_ATTR VkResult VKAPI_CALL CountNativeCaptureWait(VkDevice device, uint32_t count,
+    const VkFence* fences, VkBool32 all, uint64_t timeout)
+{
+    ++nativeCaptureWaits;
+    return nativeCaptureWait(device, count, fences, all, timeout);
+}
+
+void NativeCaptureDeferred(int scale)
+{
+    auto nds = Console(true, scale), soft = Console(false);
+    auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
+    RendererSettings settings{scale, false, false, false};
+    settings.VulkanNative2D = true;
+    Require(renderer.SetRenderSettings(settings) && renderer.Native2DActive(), "deferred capture GPU 2D unavailable");
+    for (auto* console : {nds.get(), soft.get()}) console->ARM9Write8(0x04000241, 0x80);
+    auto& table = const_cast<volk::VolkDeviceTable&>(renderer.DisplayDevice()->Functions());
+    const auto drawCapture = [&](NDS& console, bool trace) {
+        auto& render = console.GetRenderer();
+        Scene(console, 0, false, false);
+        console.GPU.ScreensEnabled = true;
+        console.GPU.CaptureCnt = 0x81310000; // 3D -> bank B, 256x192.
+        console.GPU.CaptureEnable = true;
+        render.AllocCapture(1, 0, 3);
+        render.Start3DRendering();
+        // Isolate capture completion from the preceding 3D producer fence.
+        // Retained 3D deferral is exercised separately by NativeDeferred.
+        render.Finish3DRendering();
+        u64 lastLineSubmissions = 0;
+        for (u32 y = 0; y < 192; ++y)
+        {
+            console.GPU.VCount = y;
+            console.GPU.GPU2D_A.UpdateRegistersPreDraw(y == 0);
+            console.GPU.GPU2D_B.UpdateRegistersPreDraw(y == 0);
+            if (trace && y == 191)
+            {
+                // Start before the last line: measuring only VBlank would miss
+                // the eager capture wait that this regression guards against.
+                nativeCaptureWait = table.vkWaitForFences;
+                nativeCaptureWaits = 0;
+                lastLineSubmissions = renderer.TotalSubmissionCount();
+                table.vkWaitForFences = CountNativeCaptureWait;
+            }
+            render.DrawSprites(y); render.DrawScanline(y);
+            if (trace && y == 191)
+            {
+                table.vkWaitForFences = nativeCaptureWait;
+                Require(!nativeCaptureWaits, "capture submission waited at the last visible line");
+                Require(renderer.TotalSubmissionCount() == lastLineSubmissions + 1,
+                    "last visible line did not submit the capture batch");
+                Require(!renderer.HasRenderFailure(), "deferred capture renderer failed");
+            }
+            console.GPU.GPU2D_A.UpdateRegistersPostDraw(y == 0);
+            console.GPU.GPU2D_B.UpdateRegistersPostDraw(y == 0);
+        }
+        console.GPU.CaptureEnable = false;
+    };
+    drawCapture(*soft, false);
+    drawCapture(*nds, true);
+    // The first CPU capture demand must drain the writer BEFORE checking that
+    // the capture bank is initialized. Compare guest bytes with CPU rendering.
+    renderer.SyncVRAMCapture(1, 0, 3, true);
+    Require(!renderer.HasRenderFailure() &&
+        std::memcmp(nds->GPU.VRAM[1], soft->GPU.VRAM[1], 256 * 192 * sizeof(u16)) == 0,
+        "deferred capture first CPU demand differs from software");
+    drawCapture(*nds, true);
+    renderer.PreSavestate();
+    Require(!renderer.HasRenderFailure() &&
+        std::memcmp(nds->GPU.VRAM[1], soft->GPU.VRAM[1], 256 * 192 * sizeof(u16)) == 0,
+        "pending capture savestate preparation lost guest bytes");
+    drawCapture(*nds, true);
+    renderer.Reset();
+    Require(!renderer.HasRenderFailure(), "pending capture reset failed");
+    drawCapture(*nds, true); // Destruction must finish capture-owned resources.
+    std::printf("Vulkan native capture %dx: deferred last line, first CPU demand, save/reset/destruction PASS\n", scale);
+}
+
 void NativeDeferred()
 {
     for (int scale : {1, 3})
@@ -1890,6 +1968,7 @@ void NativeDeferred()
         renderer.Start3DRendering(); // Destruction must also drain pending work.
     }
     std::puts("Vulkan retained 3D: CPU demand, GPU display, retention toggle, reset and pending destruction PASS");
+    for (int scale : {1, 3}) NativeCaptureDeferred(scale);
 }
 }
 
