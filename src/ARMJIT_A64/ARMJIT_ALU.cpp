@@ -23,19 +23,20 @@ using namespace Arm64Gen;
 namespace melonDS
 {
 
-void Compiler::Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs)
+void Compiler::Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs, ARM64Reg result)
 {
     if (!(CurInstr.SetFlags & 0x2))
         S = false;
 
     CPSRDirty |= S;
 
+    // Capture the old count before writing a Thumb destination that may be Rs.
     UBFX(W1, rs, 0, 8);
 
     if (!S)
     {
         if (op == 3)
-            RORV(W0, op2.Reg.Rm, W1);
+            RORV(result, op2.Reg.Rm, W1);
         else
         {
             CMP(W1, 32);
@@ -43,28 +44,29 @@ void Compiler::Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs)
             {
                 MOVI2R(W2, 31);
                 CSEL(W1, W2, W1, CC_GE);
-                ASRV(W0, op2.Reg.Rm, W1);
+                ASRV(result, op2.Reg.Rm, W1);
             }
             else
             {
                 if (op == 0)
-                    LSLV(W0, op2.Reg.Rm, W1);
+                    LSLV(result, op2.Reg.Rm, W1);
                 else if (op == 1)
-                    LSRV(W0, op2.Reg.Rm, W1);
-                CSEL(W0, WZR, W0, CC_GE);
+                    LSRV(result, op2.Reg.Rm, W1);
+                CSEL(result, WZR, result, CC_GE);
             }
         }
     }
     else
     {
-        MOV(W0, op2.Reg.Rm);
+        if (result != op2.Reg.Rm)
+            MOV(result, op2.Reg.Rm);
         FixupBranch zero = CBZ(W1);
 
         SUB(W1, W1, 1);
         if (op == 3)
         {
-            RORV(W0, op2.Reg.Rm, W1);
-            BFI(RCPSR, W0, 29, 1);
+            RORV(result, op2.Reg.Rm, W1);
+            BFI(RCPSR, result, 29, 1);
         }
         else
         {
@@ -73,28 +75,28 @@ void Compiler::Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs)
             {
                 MOVI2R(W2, 31);
                 CSEL(W1, W2, W1, CC_GT);
-                ASRV(W0, op2.Reg.Rm, W1);
-                BFI(RCPSR, W0, 29, 1);
+                ASRV(result, op2.Reg.Rm, W1);
+                BFI(RCPSR, result, 29, 1);
             }
             else
             {
                 if (op == 0)
                 {
-                    LSLV(W0, op2.Reg.Rm, W1);
-                    UBFX(W1, W0, 31, 1);
+                    LSLV(result, op2.Reg.Rm, W1);
+                    UBFX(W1, result, 31, 1);
                 }
                 else if (op == 1)
-                    LSRV(W0, op2.Reg.Rm, W1);
-                CSEL(W1, WZR, op ? W0 : W1, CC_GT);
+                    LSRV(result, op2.Reg.Rm, W1);
+                CSEL(W1, WZR, op ? result : W1, CC_GT);
                 BFI(RCPSR, W1, 29, 1);
-                CSEL(W0, WZR, W0, CC_GE);
+                CSEL(result, WZR, result, CC_GE);
             }
         }
 
-        MOV(W0, W0, ArithOption(W0, (ShiftType)op, 1));
+        MOV(result, result, ArithOption(result, (ShiftType)op, 1));
         SetJumpTarget(zero);
     }
-    op2 = Op2(W0, ST_LSL, 0);
+    op2 = Op2(result, ST_LSL, 0);
 }
 
 void Compiler::Comp_RegShiftImm(int op, int amount, bool S, Op2& op2, ARM64Reg tmp)
@@ -848,8 +850,7 @@ void Compiler::T_Comp_ALU()
         {   
             Op2 op2;
             op2.Reg.Rm = rd;
-            Comp_RegShiftReg(op == 0x7 ? 3 : (op - 0x2), true, op2, rs);
-            MOV(rd, op2.Reg.Rm, op2.ToArithOption());
+            Comp_RegShiftReg(op == 0x7 ? 3 : (op - 0x2), true, op2, rs, rd);
             if (FlagsNZNeeded())
                 TST(rd, rd);
             Comp_RetriveFlags(false);

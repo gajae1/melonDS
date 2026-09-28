@@ -207,7 +207,8 @@ public:
     void A_Comp_GetOp2(bool S, Op2& op2);
 
     void Comp_RegShiftImm(int op, int amount, bool S, Op2& op2, Arm64Gen::ARM64Reg tmp = Arm64Gen::W0);
-    void Comp_RegShiftReg(int op, bool S, Op2& op2, Arm64Gen::ARM64Reg rs);
+    // W1/W2 remain scratch; result may alias the source or count register.
+    void Comp_RegShiftReg(int op, bool S, Op2& op2, Arm64Gen::ARM64Reg rs, Arm64Gen::ARM64Reg result = Arm64Gen::W0);
 
     bool Comp_MemLoadLiteral(int size, bool signExtend, int rd, u32 addr);
 

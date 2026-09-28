@@ -83,7 +83,7 @@ public:
     void SaveReg(int reg, ARM64Reg nativeReg);
     void A_Comp_ALUTriOp();
     void A_Comp_GetOp2(bool S, Op2& op2);
-    void Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs);
+    void Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs, ARM64Reg result = W0);
     void Comp_RegShiftImm(int op, int amount, bool S, Op2& op2, ARM64Reg tmp = W0);
     // Outside this fixture's ADD/nonbranch scope. Never silently emit a stub.
     void Comp_Logical(int, bool, ARM64Reg, ARM64Reg, Op2) { std::abort(); }

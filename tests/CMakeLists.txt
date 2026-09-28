@@ -614,7 +614,7 @@ if (TARGET core AND ENABLE_JIT)
         "MemBlockPermission|ARMJIT_LoadStore.cpp|void Compiler::Comp_MemBlockPermission(int rn, int count, bool store, bool preinc, bool decrement)"
         "TriOp|ARMJIT_ALU.cpp|void Compiler::A_Comp_ALUTriOp()"
         "GetOp2|ARMJIT_ALU.cpp|void Compiler::A_Comp_GetOp2(bool S, Op2& op2)"
-        "ShiftReg|ARMJIT_ALU.cpp|void Compiler::Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs)"
+        "ShiftReg|ARMJIT_ALU.cpp|void Compiler::Comp_RegShiftReg(int op, bool S, Op2& op2, ARM64Reg rs, ARM64Reg result)"
         "ShiftImm|ARMJIT_ALU.cpp|void Compiler::Comp_RegShiftImm(int op, int amount, bool S, Op2& op2, ARM64Reg tmp)")
     foreach(definition IN LISTS arm64_block_definitions)
         string(REPLACE "|" ";" fields "${definition}")

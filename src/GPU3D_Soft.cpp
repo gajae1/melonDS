@@ -1594,32 +1594,42 @@ void SoftRenderer3D::ScanlineFinalPass(s32 y)
         u32 fogB = (GPU3D.RenderFogColor >> 9) & 0x3E; if (fogB) fogB++;
         u32 fogA = (GPU3D.RenderFogColor >> 16) & 0x1F;
 
+        // pack fog components into 16-bit lanes, like AlphaBlend's R/B packing;
+        // each lane sums to at most 63*128 = 8064, so lanes can't carry into each other
+        u32 fogRB = fogR | (fogB << 16);
+        u32 fogGA = fogG | (fogA << 16);
+
+        const auto blendfog = [fogcolor, fogRB, fogGA, fogA](u32 srccolor, u32 density) -> u32
+        {
+            u32 srcRB = srccolor & 0x003F003F;
+            u32 srcGA = (srccolor >> 8) & 0x001F003F;
+
+            if (fogcolor)
+            {
+                srcRB = ((fogRB * density) + (srcRB * (128-density))) >> 7;
+                srcGA = ((fogGA * density) + (srcGA * (128-density))) >> 7;
+            }
+            else
+            {
+                const u32 srcA = (srccolor >> 24) & 0x1F;
+                const u32 alpha = ((fogA * density) + (srcA * (128-density))) >> 7;
+                return (srccolor & 0x003F3F3F) | (alpha << 24);
+            }
+
+            return (srcRB & 0x003F003F) | ((srcGA & 0x001F003F) << 8);
+        };
+
         for (int x = 0; x < 256; x++)
         {
             u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
-            u32 density, srccolor, srcR, srcG, srcB, srcA;
+            u32 density;
 
             u32 attr = AttrBuffer[pixeladdr];
             if (attr & (1<<15))
             {
                 density = CalculateFogDensity(pixeladdr);
 
-                srccolor = ColorBuffer[pixeladdr];
-                srcR = srccolor & 0x3F;
-                srcG = (srccolor >> 8) & 0x3F;
-                srcB = (srccolor >> 16) & 0x3F;
-                srcA = (srccolor >> 24) & 0x1F;
-
-                if (fogcolor)
-                {
-                    srcR = ((fogR * density) + (srcR * (128-density))) >> 7;
-                    srcG = ((fogG * density) + (srcG * (128-density))) >> 7;
-                    srcB = ((fogB * density) + (srcB * (128-density))) >> 7;
-                }
-
-                srcA = ((fogA * density) + (srcA * (128-density))) >> 7;
-
-                ColorBuffer[pixeladdr] = srcR | (srcG << 8) | (srcB << 16) | (srcA << 24);
+                ColorBuffer[pixeladdr] = blendfog(ColorBuffer[pixeladdr], density);
             }
 
             // fog for lower pixel
@@ -1633,22 +1643,7 @@ void SoftRenderer3D::ScanlineFinalPass(s32 y)
 
             density = CalculateFogDensity(pixeladdr);
 
-            srccolor = ColorBuffer[pixeladdr];
-            srcR = srccolor & 0x3F;
-            srcG = (srccolor >> 8) & 0x3F;
-            srcB = (srccolor >> 16) & 0x3F;
-            srcA = (srccolor >> 24) & 0x1F;
-
-            if (fogcolor)
-            {
-                srcR = ((fogR * density) + (srcR * (128-density))) >> 7;
-                srcG = ((fogG * density) + (srcG * (128-density))) >> 7;
-                srcB = ((fogB * density) + (srcB * (128-density))) >> 7;
-            }
-
-            srcA = ((fogA * density) + (srcA * (128-density))) >> 7;
-
-            ColorBuffer[pixeladdr] = srcR | (srcG << 8) | (srcB << 16) | (srcA << 24);
+            ColorBuffer[pixeladdr] = blendfog(ColorBuffer[pixeladdr], density);
         }
     }
 
