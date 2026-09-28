@@ -334,25 +334,34 @@ void Compiler::Comp_MulOp(bool S, bool add, Gen::OpArg rd, Gen::OpArg rm, Gen::O
         Comp_AddCycles_CI(RSCRATCH, 0);
     }
 
-    static_assert(EAX == RSCRATCH, "Someone changed RSCRATCH!");
-    MOV(32, R(RSCRATCH), rm);
-    if (add)
+    if (add && rd == rn)
     {
+        // The accumulator must survive until the product has been computed.
+        MOV(32, R(RSCRATCH), rm);
         IMUL(32, RSCRATCH, rs);
         LEA(32, rd.GetSimpleReg(), MRegSum(RSCRATCH, rn.GetSimpleReg()));
-        if (S && FlagsNZRequired())
-            TEST(32, rd, rd);
     }
     else
     {
-        IMUL(32, RSCRATCH, rs);
-        MOV(32, rd, R(RSCRATCH));
-        if (S && FlagsNZRequired())
-        TEST(32, R(RSCRATCH), R(RSCRATCH));
+        // Multiplication is commutative: preserve Rs when it already occupies Rd.
+        if (rd == rs)
+            IMUL(32, rd.GetSimpleReg(), rm);
+        else
+        {
+            if (rd != rm)
+                MOV(32, rd, rm);
+            IMUL(32, rd.GetSimpleReg(), rs);
+        }
+        if (add)
+            LEA(32, rd.GetSimpleReg(), MRegSum(rd.GetSimpleReg(), rn.GetSimpleReg()));
     }
 
     if (S)
+    {
+        if (FlagsNZRequired())
+            TEST(32, rd, rd);
         Comp_RetriveFlags(false, false, false);
+    }
 }
 
 void Compiler::A_Comp_MUL_MLA()

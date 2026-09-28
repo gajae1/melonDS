@@ -278,7 +278,8 @@ int TestMultiplyTiming(NDSArgs&& args, bool jit)
     };
     constexpr Variant variants[] = {
         {"boundary"}, {"live-NZ", true}, {"alias-Rs", true, 1},
-        {"alias-accumulator", true, 2}, {"EQ", true, 0, 0}, {"NE", false, 0, 1},
+        {"alias-accumulator", true, 2}, {"alias-Rm", true, 3},
+        {"EQ", true, 0, 0}, {"NE", false, 0, 1},
         {"waitstates", true, 0, 14, true},
         {"operand-order", true, 0, 14, false, 0x1000000},
         {"negative-product", true, 0, 14, false, 0x80000000},
@@ -291,6 +292,7 @@ int TestMultiplyTiming(NDSArgs&& args, bool jit)
     for (const auto& v : variants)
     {
         const bool thumb = op == 6, longOp = op >= 2 && op <= 5;
+        if (v.alias == 3 && (thumb || longOp)) continue;
         if ((thumb && (v.cond != 14 || v.alias == 2)) || (!thumb && v.halfword) ||
             (op == 0 && v.alias == 2)) continue;
         ARM& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
@@ -300,7 +302,7 @@ int TestMultiplyTiming(NDSArgs&& args, bool jit)
         for (unsigned i = 0; i < 4; ++i) nds->ARM7MemTimings[addr >> 15][i] = i & 1 ? seq : ns;
         u32 rd = 0, rm = 1, rs = 2, rn = 3;
         if (longOp && v.alias) rs = v.alias == 1 ? rd : rn;
-        else if (!thumb && v.alias) rd = v.alias == 1 ? rs : rn;
+        else if (!thumb && v.alias) rd = v.alias == 1 ? rs : v.alias == 3 ? rm : rn;
         if (thumb) rs = v.alias ? rd : rm;
         u32 opcode = thumb ? 0x4340 | (rs << 3) | rd :
             (v.cond << 28) | (u32(v.s) << 20) | (rs << 8) | rm | 0x90;
