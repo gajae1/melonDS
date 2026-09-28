@@ -15,6 +15,7 @@ struct TextureLoader::Source {
     std::vector<u32> words;
     std::shared_ptr<Device::Buffer> texture, palette;
     u64 revision=0,generation=0;
+    std::array<u64,4> bankRevisions{};
     bool active=false,hasCaptured=false,refresh=true;
 };
 TextureLoader::TextureLoader(ComputePipeline& pipeline,VulkanRenderer& parent,GPU& gpu)
@@ -47,6 +48,7 @@ bool TextureLoader::BeginTextureUpdate(u64& generation)
     if(masksChanged) { s.masks=masks; s.refresh=true; }
     if(masksChanged || revision!=s.revision) { s.revision=revision; ++s.generation; }
     s.hasCaptured=revision!=0;
+    if(s.hasCaptured)s.bankRevisions=parent.NativeCapture->BankRevisions();
     if(!s.hasCaptured)s.texture.reset();
     // No GPU bank snapshot is retained here. Queued decodes own it only until
     // the upload/render fence, avoiding unnecessary COW on the next capture.
@@ -86,17 +88,22 @@ u64 TextureLoader::TextureSource(u32 start,u32 size)
 {
     auto& s=*source;
     if(!s.hasCaptured || !size)return 0;
-    u64 hash=s.revision;
-    bool any=false;
+    // Ownership remains part of the range stamp, but unrelated physical bank
+    // writes must not evict an otherwise unchanged decoded texture/clear plane.
+    u64 hash=0;
+    u32 banks=0;
     u32 segment=(start&0x7FFFF)/256;
     u64 count=(u64(start&255)+size+255)/256;
     while(count) {
         const u32 length=u32(std::min<u64>(count,2048-segment));
-        for(u32 i=0;i<length;++i)any|=s.masks[segment+i]!=0;
+        for(u32 i=0;i<length;++i)banks|=s.masks[segment+i];
         hash=XXH64(s.masks.data()+segment,size_t(length)*4,hash);
         count-=length;segment=0;
     }
-    return any?(hash|1):0;
+    if(!banks)return 0;
+    for(u32 bank=0;bank<4;++bank)if(banks&(1u<<bank))
+        hash=XXH64(&s.bankRevisions[bank],sizeof(u64),hash);
+    return hash|1;
 }
 void TextureLoader::PrepareInputs()
 {

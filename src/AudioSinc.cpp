@@ -117,8 +117,11 @@ s32 AudioSinc::Output(u32 elapsed, u32 period, u32 mixPeriod) const
         const double position = phase * Phases;
         const unsigned index = std::min(unsigned(position), Phases-1);
         // Interpolate adjacent phases to avoid phase-quantization sidebands.
-        const float a = AudioInterpolationMath::DotFloat(History.data()+Head, tables.Phase[index].data(), Taps);
-        const float b = AudioInterpolationMath::DotFloat(History.data()+Head, tables.Phase[index+1].data(), Taps);
+        // Pair coefficient phases, not channels. Finite products commute;
+        // the paired kernel shares history loads with the same accumulation.
+        const auto [a, b] = AudioInterpolationMath::DotFloatStereo(
+            tables.Phase[index].data(), tables.Phase[index+1].data(),
+            History.data()+Head, Taps);
         value = a + float(position-index)*(b-a);
     }
     else

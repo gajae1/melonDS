@@ -245,6 +245,50 @@ int TestALUExecution(NDSArgs&& args, bool jit)
                 }
             }
         }
+        // Thumb register shifts destructively update R1. Alias cases also take
+        // their count from old R1, including low-byte zero and >=32 boundaries.
+        constexpr ShiftCase aliases[] = {
+            {0,0,0x80000000,0}, {0,1,2,1}, {0,31,0x80000000,1},
+            {0,32,0,0}, {0,255,0,0}, {0,256,0x80000100,0},
+            {1,0,0x80000000,0}, {1,1,0x40000000,1}, {1,31,1,0},
+            {1,32,0,1}, {1,255,0,0}, {1,256,0x80000100,0},
+            {2,0,0x80000000,0}, {2,1,0xC0000000,1}, {2,31,0xFFFFFFFF,0},
+            {2,32,0xFFFFFFFF,1}, {2,255,0xFFFFFFFF,1}, {2,256,0x80000100,0},
+            {3,0,0x80000000,0}, {3,1,0xC0000000,1}, {3,31,0x3F,0},
+            {3,32,0x80000020,1}, {3,255,0x1FF,0}, {3,256,0x80000100,0},
+        };
+        unsigned registerBlock=0;
+        for(bool alias : {false,true})
+        for(const auto& test : alias ? aliases : shifts)
+        for(bool partial : {false,true})
+        {
+            const u32 addr=Code+0x18000+32*registerBlock++;
+            const u32 input=alias ? 0x80000000u|test.count : 0x80000001u;
+            const u32 rs=alias ? 1 : 3, op=test.op==3 ? 7 : test.op+2;
+            nds->ARM9Write16(addr,0x4000|(op<<6)|(rs<<3)|1);
+            nds->ARM9Write16(addr+2,partial ? 0x2600 : 0x4636);
+            nds->ARM9Write16(addr+4,0x4738);
+            nds->ARM9Write32(addr+16,0xE10F8000);
+            nds->ARM9Write32(addr+20,0xEAFFFFFE);
+            for(bool carry : {false,true})
+            for(unsigned run=0;run<2;++run)
+            {
+                cpu.R[1]=input;cpu.R[3]=test.count;
+                cpu.R[6]=0xCCCCCCCC;cpu.R[7]=addr+16;cpu.R[8]=0;
+                cpu.CPSR=0xDF|V|(carry ? C : 0);
+                const bool outCarry=(test.count&255)==0 ? carry : test.carry;
+                const u32 flags=V|(outCarry ? C : 0)|(partial ? Z : NZ(test.result));
+                const bool warm=run==0 || HasBlock(*nds,arm7,addr|1,jit);
+                cpu.JumpTo(addr|1);nds->RunFrame();++checks;
+                if(!warm || cpu.R[1]!=test.result || cpu.R[8]!=(0xDF|flags) || cpu.R[3]!=test.count)
+                {
+                    if(failures++<12)std::fprintf(stderr,
+                        "ARM%d Thumb register op=%u count=%u alias=%u partial=%u C=%u: %08x/%08x expected=%08x/%08x\n",
+                        arm7 ? 7 : 9,test.op,test.count,alias,partial,carry,
+                        cpu.R[1],cpu.R[8],test.result,0xDF|flags);
+                }
+            }
+        }
         cpu.JumpTo(Idle);
     }
     std::printf("warmed ARM ALU/shift/partial flags/RRX/PC: %u checks, %u failures\n", checks, failures);

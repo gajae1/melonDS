@@ -1963,6 +1963,7 @@ void NativeCaptureBeginFailure()
             "capture failure fixture did not produce opaque white");
         const auto retained = retainSnapshot ? capture.Snapshot() : std::shared_ptr<Vulkan::Device::Buffer>{};
         const auto previousRevision = capture.Revision();
+        const auto previousBanks = capture.BankRevisions();
         // The next batch would capture disabled-layer black. Fail after Prepare
         // has selected its bank/descriptor, but before any commands can run.
         row.layers.enabled = row.layers.forcedBlank = 0;
@@ -1984,13 +1985,15 @@ void NativeCaptureBeginFailure()
         rejected = false;
         try { capture.Snapshot(); }
         catch (const std::exception&) { rejected = true; }
-        Require(rejected && capture.Revision() == previousRevision,
+        Require(rejected && capture.Revision() == previousRevision && capture.BankRevisions() == previousBanks,
             "failed capture preparation published a completed snapshot/revision");
         // A successful retry publishes the new bank and clears the read guard.
         pipeline.Render(memory, records, {}, 0, &capture, commands);
         capture.ReadRange(0, 0, pixels);
         Require(std::all_of(pixels.begin(), pixels.end(), [](u16 p) { return p == 0x8000; }) &&
-            capture.Revision() == previousRevision + 1 && bool(capture.Snapshot()),
+            capture.Revision() == previousRevision + 1 && bool(capture.Snapshot()) &&
+            capture.BankRevisions()[0] == previousRevision + 1 &&
+            std::equal(previousBanks.begin()+1, previousBanks.end(), capture.BankRevisions().begin()+1),
             "capture did not recover after command-begin failure");
     }
     std::puts("Vulkan capture begin failure: reused/COW banks reject reads and recover on retry PASS");
@@ -2081,11 +2084,23 @@ struct CapturedTextureInputProbe
     static inline CapturedTextureInputProbe* active = nullptr;
     volk::VolkDeviceTable& functions;
     PFN_vkCreateBuffer original;
-    unsigned inputs = 0;
+    PFN_vkCmdCopyBufferToImage originalImageCopy;
+    unsigned inputs = 0, textureUploads = 0;
     explicit CapturedTextureInputProbe(Vulkan::Device& device)
-        : functions(const_cast<volk::VolkDeviceTable&>(device.Functions())), original(functions.vkCreateBuffer)
-    { active = this; functions.vkCreateBuffer = Create; }
-    ~CapturedTextureInputProbe() { functions.vkCreateBuffer = original; active = nullptr; }
+        : functions(const_cast<volk::VolkDeviceTable&>(device.Functions())), original(functions.vkCreateBuffer),
+          originalImageCopy(functions.vkCmdCopyBufferToImage)
+    { active = this; functions.vkCreateBuffer = Create; functions.vkCmdCopyBufferToImage = CopyImage; }
+    ~CapturedTextureInputProbe() {
+        functions.vkCreateBuffer = original; functions.vkCmdCopyBufferToImage = originalImageCopy; active = nullptr;
+    }
+    static VKAPI_ATTR void VKAPI_CALL CopyImage(VkCommandBuffer command, VkBuffer source,
+        VkImage image, VkImageLayout layout, u32 count, const VkBufferImageCopy* regions)
+    {
+        for(u32 i=0;i<count;++i)
+            if(regions[i].imageExtent.width==256 && regions[i].imageExtent.height==256)
+                ++active->textureUploads;
+        active->originalImageCopy(command,source,image,layout,count,regions);
+    }
     static VKAPI_ATTR VkResult VKAPI_CALL Create(VkDevice device, const VkBufferCreateInfo* info,
         const VkAllocationCallbacks* allocation, VkBuffer* buffer)
     {
@@ -2103,11 +2118,14 @@ void NativeTextureInputReuse()
     Require(renderer.SetRenderSettings(settings) && renderer.Native2DActive(), "native texture fixture unavailable");
     const std::array<NDS*, 2> consoles{nds.get(), reference.get()};
     for (auto* console : consoles) { console->Start(); console->RunFrame(); }
-    auto capture = [&](u32 bank) {
+    auto capture = [&](u32 bank, bool blue = false) {
         for (auto* console : consoles)
         {
             console->ARM9Write8(0x04000240 + bank, 0x80);
-            Scene(*console, 0, false, false);
+            auto& polygon = Scene(*console, 0, false, false);
+            if(blue)for(auto* vertex : std::span(polygon.Vertices, polygon.NumVertices)) {
+                vertex->FinalColor[0]=0;vertex->FinalColor[2]=63<<3;
+            }
             // Use the frame loop to register capture ownership, so later CPU
             // writes exercise the production synchronization/invalidation path.
             console->GetRenderer().Start3DRendering();
@@ -2141,20 +2159,26 @@ void NativeTextureInputReuse()
         Require(actual == expected, "native captured texture baseline or GPU snapshot became stale");
     };
     check();
-    Require(probe.inputs == 1, "native captured texture input was not prepared");
+    Require(probe.inputs == 1 && probe.textureUploads == 1, "native captured texture input was not prepared");
     // A different bank changes the global capture revision without changing
-    // texture ownership or CPU bytes. Textures decode with a fresh GPU snapshot.
+    // texture ownership or CPU bytes. Its cached decoded image remains usable.
     capture(3);
-    const auto before = probe.inputs;
+    const auto before = probe.inputs, uploads = probe.textureUploads;
     check();
     Require(probe.inputs == before, "revision-only texture update reallocated immutable input");
+    Require(probe.textureUploads == uploads, "unrelated capture bank evicted decoded texture");
+    // A new GPU write to the source bank must still invalidate that texture.
+    capture(1, true);
+    for(auto* console : consoles)console->ARM9Write8(0x04000241, 0x83);
+    check();
+    Require(probe.textureUploads == uploads + 1, "source-bank capture did not refresh decoded texture");
     for (u32 bank : {0u, 1u})
     {
         for (auto* console : consoles)
         {
             console->ARM9Write8(0x04000240 + bank, 0x80);
             console->ARM9Write16(0x06800000 + bank * 131072 + (80 * 256 + 80) * 2,
-                bank ? 0xFC00 : 0x83E0);
+                bank ? 0x801F : 0x83E0);
             console->ARM9Write8(0x04000240 + bank, 0x83);
         }
         const auto oldInputs = probe.inputs;
@@ -2164,7 +2188,7 @@ void NativeTextureInputReuse()
         Require(probe.inputs == oldInputs + (bank == 0 ? 1 : 0),
             "CPU contribution refresh or CPU-only fallback allocated unexpected texture input");
     }
-    std::puts("Native captured texture: revision-only input reuse, CPU OR contribution and ownership refresh match Software PASS");
+    std::puts("Native captured texture: revision-only input reuse, unrelated-bank decode reuse, source-bank GPU refresh and CPU ownership match Software PASS");
 }
 
 void NativeDeferred()

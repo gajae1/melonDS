@@ -32,6 +32,8 @@ public:
     // writer copy-on-write, so queued consumers keep their original byte version.
     std::shared_ptr<Device::Buffer> Snapshot() const;
     uint64_t Revision() const;
+    // Only banks written by a completed batch advance their content stamp.
+    std::array<uint64_t, 4> BankRevisions() const;
     // Optional presentation-only derivative. Allocation/limit failure leaves
     // exact guest capture enabled. Configure once before submitting commands.
     bool EnableHires(std::span<const uint32_t> shader, uint32_t scale);
@@ -53,7 +55,14 @@ private:
         const std::shared_ptr<Device::Buffer>& scaledRaw = {},
         const std::shared_ptr<Device::Image>& display3D = {});
     void Record(VkCommandBuffer command);
-    void Complete() { initialized = true; hiresInitialized = bool(hires); ++revision; dispatches.clear(); previousBanks.reset(); }
+    void Complete() {
+        ++revision;
+        for(uint32_t bank=0;bank<4;++bank)
+            if(pendingBanks&(1u<<bank)) bankRevisions[bank]=revision;
+        pendingBanks=0;
+        initialized=true;hiresInitialized=bool(hires);
+        dispatches.clear();previousBanks.reset();
+    }
     void Cleanup();
     std::shared_ptr<Device> owner;
     VkDescriptorSetLayout bindings{};
@@ -69,6 +78,8 @@ private:
     bool hiresInitialized = false;
     uint32_t hiresScale = 0, hiresPitch = 0;
     uint64_t revision = 0;
+    std::array<uint64_t, 4> bankRevisions{};
+    uint32_t pendingBanks = 0;
     std::vector<uint32_t> dispatches;
 };
 }

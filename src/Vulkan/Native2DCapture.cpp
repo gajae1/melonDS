@@ -66,6 +66,10 @@ uint64_t CapturePipeline::Revision() const {
     CompletePending();
     return revision;
 }
+std::array<uint64_t, 4> CapturePipeline::BankRevisions() const {
+    CompletePending();
+    return bankRevisions;
+}
 bool CapturePipeline::EnableHires(std::span<const uint32_t> shader,uint32_t scale) {
     CompletePending();
     if(hires) return scale==hiresScale;
@@ -132,11 +136,14 @@ void CapturePipeline::Prepare(std::span<const CaptureCommand> commands,
     if(hires) Require(scaled->BelongsTo(*owner) && (scaled->Usage()&VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) &&
         scaled!=hires && scaled!=banks,"Invalid hires capture raw buffer");
     dispatches.clear(); dispatches.push_back(0);
+    // First use (or recovery) clears every bank, not just capture destinations.
+    pendingBanks=initialized?0:0xF;
     std::array<std::bitset<512>,4> reads{}, writesSinceBarrier{};
     for(uint32_t i=0;i<commands.size();++i) {
         const auto& c=commands[i]; const auto& row=c.row;
         const uint32_t size=(row.control>>20)&3, width=size?256:128, height=size?size*64:128;
         const uint32_t segments=width/128, dstBank=(row.control>>16)&3;
+        pendingBanks|=1u<<dstBank;
         const uint32_t dst=(((((row.control>>18)&3)<<14)+row.line*width)&65535)/128;
         Require(row.line<height && uint64_t(row.rawFirst)+width<=rawWords && c.hasB<=1 &&
             c.gpuMask<(1u<<segments) && (c.hasB || !c.gpuMask) &&

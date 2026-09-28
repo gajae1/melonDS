@@ -519,8 +519,8 @@ void Compiler::Comp_RetriveFlags(bool sign, bool retriveCV, bool carryUsed)
     }
 }
 
-// always uses RSCRATCH, RSCRATCH2 only if S == true
-OpArg Compiler::Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, bool& carryUsed)
+// Result defaults to RSCRATCH; RSCRATCH2 retains carry when requested.
+OpArg Compiler::Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, bool& carryUsed, OpArg result)
 {
     S = S && (CurInstr.SetFlags & 0x2);
     carryUsed = S;
@@ -532,9 +532,10 @@ OpArg Compiler::Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, b
         SETcc(CC_NZ, R(RSCRATCH2));
     }
 
-    MOV(32, R(RSCRATCH), rm);
     static_assert(RSCRATCH3 == ECX, "Someone changed RSCRATCH3");
+    // Save the old count before shifting a Thumb destination that may be Rs.
     MOV(32, R(ECX), rs);
+    if (result != rm) MOV(32, result, rm);
     AND(32, R(ECX), Imm32(0xFF));
 
     FixupBranch zero = J_CC(CC_Z);
@@ -554,21 +555,21 @@ OpArg Compiler::Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, b
         if (op < 2)
         {
             FixupBranch eq32 = J_CC(CC_E);
-            XOR(32, R(RSCRATCH), R(RSCRATCH));
+            XOR(32, result, result);
             if (S)
                 XOR(32, R(RSCRATCH2), R(RSCRATCH2));
             done1 = J();
             SetJumpTarget(eq32);
         }
-        (this->*shiftOp)(32, R(RSCRATCH), Imm8(31));
-        (this->*shiftOp)(32, R(RSCRATCH), Imm8(1));
+        (this->*shiftOp)(32, result, Imm8(31));
+        (this->*shiftOp)(32, result, Imm8(1));
         if (S)
             SETcc(CC_C, R(RSCRATCH2));
 
         FixupBranch done2 = J();
 
         SetJumpTarget(lt32);
-        (this->*shiftOp)(32, R(RSCRATCH), R(ECX));
+        (this->*shiftOp)(32, result, R(ECX));
         if (S)
             SETcc(CC_C, R(RSCRATCH2));
 
@@ -580,14 +581,14 @@ OpArg Compiler::Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, b
     else if (op == 3)
     {
         if (S)
-            BT(32, R(RSCRATCH), Imm8(31));
-        ROR(32, R(RSCRATCH), R(ECX));
+            BT(32, result, Imm8(31));
+        ROR(32, result, R(ECX));
         if (S)
             SETcc(CC_C, R(RSCRATCH2));
     }
     SetJumpTarget(zero);
 
-    return R(RSCRATCH);
+    return result;
 }
 
 // Result defaults to RSCRATCH; Thumb may supply its mapped destination.
@@ -768,10 +769,10 @@ void Compiler::T_Comp_ALU()
         {
             int shiftOp = op == 0x7 ? 3 : op - 0x2;
             bool carryUsed;
-            OpArg shifted = Comp_RegShiftReg(shiftOp, rs, rd, true, carryUsed);
+            OpArg shifted = Comp_RegShiftReg(shiftOp, rs, rd, true, carryUsed, rd);
             if (FlagsNZRequired())
                 TEST(32, shifted, shifted);
-            MOV(32, rd, shifted);
+            if (rd != shifted) MOV(32, rd, shifted);
             Comp_RetriveFlags(false, false, true);
         }
         return;
