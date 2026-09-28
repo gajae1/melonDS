@@ -331,7 +331,15 @@ void Queue::CaptureLine(uint32_t engine, uint32_t physicalLine, uint32_t source3
     // Only actual draws advance this latch; VCOUNT outside the visible range
     // skips the software 2D draw entirely.
     if (vcount < 192) AdvanceWindowState(reg);
-    current.object.historyRead = record.objectWrite;
+    // Reusing OBJ without a drawn horizontal mosaic leaves both pixel and
+    // window history unchanged. Keep the original producer instead of making
+    // every disabled/blank scanline depend on the preceding copy. A fresh
+    // prefetch still needs its first producer, and a real mosaic must preserve
+    // its post-draw latch for the next consumer (including size changes).
+    const bool changesHistory = record.layers.enabled && !record.layers.forcedBlank &&
+        vcount < 192 && record.layers.objMosaicX != 0;
+    if (current.object.historyRead == NoHistory || changesHistory)
+        current.object.historyRead = record.objectWrite;
     // This object event now lives in queued GPU output/history. The input copy
     // list owns its sources until submission; only a fresh prefetch needs an
     // additional future-reader lease across Retire.

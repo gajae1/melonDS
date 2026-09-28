@@ -159,6 +159,7 @@ void VulkanRenderer::FinishNative2D(bool deferred) noexcept
     // returning with no native batch in flight.
     CompleteNative2D();
     if (!NativePipeline || NativeQueue->Records().empty() || HasRenderFailure()) return;
+    RenderCostVulkanScope record(Costs(), RenderCostVulkanMeter::RecordDisplay);
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
     const u64 before = rasterizer.TotalSubmissionCount();
     try
@@ -197,6 +198,7 @@ void VulkanRenderer::DrawSprites(u32 line)
 void VulkanRenderer::DrawNativeSprites(u32 line)
 {
     if (HasRenderFailure()) return;
+    RenderCostVulkanScope scan(Costs(), RenderCostVulkanMeter::Scan2D);
     try
     {
         SyncNativeSources(true);
@@ -220,6 +222,7 @@ void VulkanRenderer::DrawNativeSprites(u32 line)
 void VulkanRenderer::DrawNativeLine(u32 line)
 {
     if (HasRenderFailure()) return;
+    RenderCostVulkanScope scan(Costs(), RenderCostVulkanMeter::Scan2D);
     try
     {
         if (GPU.CaptureEnable && GPU.VCount < 192) PrepareNativeCapture();

@@ -36,7 +36,7 @@ private:
     VulkanRenderer& Parent;
     std::span<const u32> GetScaledPixels() const;
     void EnsureNativePixels() const;
-    // Waits for a deferred render and converts its native pixels. Every CPU
+    // Waits for a deferred render; converts native pixels only with readback. Every CPU
     // consumer and every other use of the device runs this first; a failed
     // completion retires the backend with black native output.
     void CompleteRender() const noexcept;

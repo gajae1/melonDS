@@ -1847,6 +1847,50 @@ void ScaleChanges()
     Require(Screen(*nds) == native, "1x hires setting bypassed native DS coordinate rounding");
     std::puts("Vulkan live 1x/2x/3x transitions: subpixel coverage, cached texture, frame lifetime, native rounding and invalid scale rejection PASS");
 }
+
+void NativeDeferred()
+{
+    for (int scale : {1, 3})
+    {
+        auto nds = Console(true, scale), soft = Console(false);
+        auto& renderer = nds->GetRenderer();
+        RendererSettings settings{scale, false, false, false};
+        settings.VulkanNative2D = true;
+        Require(renderer.SetRenderSettings(settings), "GPU 2D setting rejected");
+        Scene(*nds, 0, false, false); Scene(*soft, 0, false, false);
+        // Explicit completion must also work without a host readback, before
+        // the GPU 2D batch consumes the retained image.
+        renderer.Start3DRendering(); soft->GetRenderer().Start3DRendering();
+        renderer.Finish3DRendering();
+        Screen(*nds, false); Screen(*soft, false);
+        Require(Screen(*nds) == Screen(*soft), "deferred retained display differs from software");
+        // Disable GPU 2D while a different 3D image is still pending. The
+        // transition must preserve lazy CPU pixels before changing retention.
+        for (auto* console : {nds.get(), soft.get()})
+        {
+            auto& polygon = Scene(*console, 0, false, false);
+            for (auto* vertex : std::span(polygon.Vertices, polygon.NumVertices))
+            {
+                vertex->FinalColor[0] = 0;
+                vertex->FinalColor[2] = 63 << 3;
+            }
+            console->GetRenderer().Start3DRendering();
+        }
+        settings.VulkanNative2D = false;
+        Require(renderer.SetRenderSettings(settings), "pending GPU 2D disable failed");
+        Require(Screen(*nds, false) == Screen(*soft, false),
+            "retention transition lost the pending render");
+        settings.VulkanNative2D = true;
+        Require(renderer.SetRenderSettings(settings), "GPU 2D re-enable failed");
+        Scene(*nds, 0, false, false);
+        renderer.Start3DRendering();
+        renderer.Reset();
+        Require(!renderer.HasRenderFailure(), "pending retained reset failed");
+        Scene(*nds, 0, false, false);
+        renderer.Start3DRendering(); // Destruction must also drain pending work.
+    }
+    std::puts("Vulkan retained 3D: CPU demand, GPU display, retention toggle, reset and pending destruction PASS");
+}
 }
 
 int main(int argc, char** argv)
@@ -1865,6 +1909,7 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
+        if (argc == 2 && std::strcmp(argv[1], "native-deferred") == 0) { NativeDeferred(); return 0; }
         if (argc == 2 && std::strcmp(argv[1], "upload-lifetime") == 0) { UploadLifetime(); return 0; }
         if (argc == 3 && (std::strcmp(argv[1], "upload-batching") == 0 ||
             std::strcmp(argv[1], "upload-measure") == 0)) {

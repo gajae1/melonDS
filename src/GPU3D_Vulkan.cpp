@@ -385,7 +385,7 @@ void VulkanRenderer3D::DrawFrame()
     }
     const auto readback = RetainNativeImage ? Pipeline::Readback::None :
         gpuComposition ? Pipeline::Readback::Native : Pipeline::Readback::Full;
-    if (!RetainNativeImage && !hasCaptures && (ScaleFactor == 1 || gpuComposition))
+    if (!hasCaptures && (RetainNativeImage || ScaleFactor == 1 || gpuComposition))
     {
         // No second captured-texture render or CPU scaled copy needs this frame
         // now; its first consumer is the next visible scanline (CompleteRender).
@@ -397,6 +397,7 @@ void VulkanRenderer3D::DrawFrame()
         NativePixelsValid = false;
         ScaledColorBuffer = {};
         RenderedImage = Pipeline->OutputImage();
+        if (RetainNativeImage) NativeImage = RenderedImage;
         ++RenderedVersion;
         RenderedScale = ScaleFactor;
         HadCaptureTextures = false;
@@ -468,8 +469,13 @@ void VulkanRenderer3D::CompleteRender() const noexcept
 {
     if (!RenderPending) return;
     RenderPending = false;
-    // Deferred frames read back 256x192 native origins: Full at 1x, else Native.
-    try { StoreNativePixels(Pipeline->CompleteView()); }
+    // GPU 2D retains the image without a host readback. CPU consumers instead
+    // receive 256x192 native origins: Full at 1x, otherwise Native.
+    try
+    {
+        const auto pixels = Pipeline->CompleteView();
+        if (!RetainNativeImage) StoreNativePixels(pixels);
+    }
     catch (const std::exception& error)
     {
         Failed = true;

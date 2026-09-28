@@ -318,6 +318,16 @@ int main(int argc, char** argv)
                     std::chrono::steady_clock::now() - frameStart).count());
             }
             if (!nds->IsRunning()) { std::fprintf(stderr,"stopped frame=%d\n",i); return 6; }
+#ifdef VULKANRENDERER_ENABLED
+            // Keep the bounded diagnostic cohorts visible during headless runs;
+            // destruction alone reports only the final 256 frames.
+            if (const auto* renderer = dynamic_cast<VulkanRenderer*>(&nds->GetRenderer()))
+                if (auto* cost = renderer->Costs(); cost && cost->TakeReport()) {
+                    char report[8192];
+                    cost->Report(report, sizeof(report), "rom-smoke");
+                    std::fprintf(stderr, "frame=%d %s\n", i + 1, report);
+                }
+#endif
             if (pcmPath) {
                 std::array<s16, 4096> samples;
                 int count;
