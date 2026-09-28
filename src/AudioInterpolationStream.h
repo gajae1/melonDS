@@ -155,7 +155,9 @@ public:
         size_t keep = 0;
         for (size_t i = 0; i < Direct.size(); ++i)
         {
-            const auto tail = Direct[i];
+            // Compaction only writes earlier entries; keep this tail in place
+            // instead of copying its entire stereo record for every read.
+            const auto& tail = Direct[i];
             const u64 age = clock - tail.Clock;
             if (age >= tail.Support) continue;
             // Both sides share the timestamp and kernel lookup. Gain and pan
