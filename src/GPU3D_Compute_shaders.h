@@ -318,10 +318,12 @@ STORAGE_BINDING(3) buffer DepthTileBuffer
 {
     uint DepthTiles[];
 };
+#ifndef VULKAN
 STORAGE_BINDING(4) buffer AttrTileBuffer
 {
     uint AttrTiles[];
 };
+#endif
 
 )"};
 
@@ -1268,7 +1270,21 @@ void main()
                 color = r | (g << 8) | (b << 16) | (a << 24);
 
                 DepthTiles[tileOffset] = z;
+#ifdef VULKAN
+                // Translucent fragments never consume tile attributes. For
+                // opaque ones, reuse the alpha byte: 31..33 encode no side
+                // edge, 64..255 encode (vertical edge, side, coverage).
+                if (a == 31U)
+                {
+                    uint side = attr & 3U;
+                    uint vertical = attr & 12U;
+                    uint tag = side == 0U ? 31U + (vertical >> 2)
+                        : 64U + (vertical << 4) + ((side - 1U) << 5) + ((attr >> 8) & 31U);
+                    color = (color & 0x00FFFFFFU) | (tag << 24);
+                }
+#else
                 AttrTiles[tileOffset] = attr;
+#endif
             }
 #else
             color = 0xFFFFFFFF; // doesn't really matter as long as it's not 0
@@ -1492,7 +1508,9 @@ void ProcessCoarseMask(int linearTile, uint coarseMask, uint coarseOffset,
                 bool equalDepthTest = (polygonAttr & (1U << 14)) != 0U;
 
                 uint tileDepth = DepthTiles[pixelindex];
+#ifndef VULKAN
                 uint tileAttr = AttrTiles[pixelindex];
+#endif
 
                 uint dstattr = attr.x;
 
@@ -1541,8 +1559,20 @@ void ProcessCoarseMask(int linearTile, uint coarseMask, uint coarseOffset,
                     uint srcAttr = (polygonAttr & 0x3F008000U);
 
                     uint srcA = tileColor & 0x1F000000U;
+#ifdef VULKAN
+                    uint tag = tileColor >> 24;
+                    if (tag >= 31U)
+#else
                     if (srcA == 0x1F000000U)
+#endif
                     {
+#ifdef VULKAN
+                        // Shadow masks were classified by polygon attributes
+                        // above: tag 255 is also a valid ordinary opaque pixel.
+                        uint tileAttr = tag < 64U ? (tag - 31U) << 2
+                            : (((tag - 64U) >> 4) & 12U) | (1U + ((tag >> 5) & 1U)) | ((tag & 31U) << 8);
+                        tileColor = (tileColor & 0x00FFFFFFU) | 0x1F000000U;
+#endif
                         srcAttr |= tileAttr;
 
                         if (!writeSecondLayer)

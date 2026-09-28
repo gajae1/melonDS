@@ -82,30 +82,39 @@ struct Inputs {
     std::vector<SetupIndices> indices;
     MetaUniform meta{};
     const unsigned scale;
-    explicit Inputs(unsigned scale=1) : indices(Spans*scale),scale(scale) {
+    explicit Inputs(unsigned scale=1,bool boundary=false) : indices(Spans*scale),scale(scale) {
         meta.NumPolygons=Polygons; meta.NumVariants=1; meta.DispCnt=(1<<3)|(1<<4);
         for (unsigned p=0;p<Polygons;++p) {
             Vertex vertices[4]{}; Polygon polygon{};
             polygon.NumVertices=4;
             s32 positions[10][2]{{10+int(p)*7,0},{180-int(p)*3,0},
                 {150+int(p)*5,Lines},{45-int(p)*2,Lines}};
+            if(boundary) {
+                const int left=5+38*int(p),height=p==5?1:Lines;
+                positions[0][0]=left;positions[1][0]=left+26;
+                positions[2][0]=left+24;positions[3][0]=left+3;
+                positions[2][1]=positions[3][1]=height;
+            }
             for (unsigned v=0;v<4;++v) {
                 polygon.Vertices[v]=&vertices[v];
                 polygon.FinalZ[v]=0x10000+p*0x20000+v*0x1234;
                 polygon.FinalW[v]=p%2 ? 0x1000+v*0x321 : 0x1000;
                 for (unsigned c=0;c<3;++c) vertices[v].FinalColor[c]=((p*7+v*11+c*13)%64)<<3;
+                if(boundary)for(auto& color:vertices[v].FinalColor)color=(p%2?63:0)<<3;
                 vertices[v].TexCoords[0]=int(v)*123-int(p)*71;
                 vertices[v].TexCoords[1]=int(p)*57-int(v)*91;
             }
             for (unsigned v=0;v<4;++v)
                 for (auto& coordinate:positions[v]) coordinate*=scale;
             auto& out=polygons[p]; out.FirstXSpan=p*Lines*scale;
-            out.YTop=0;out.YBot=Lines*scale;out.XMin=256*scale;out.XMax=-1;
+            out.YTop=0;out.YBot=(boundary&&p==5?1:Lines)*scale;out.XMin=256*scale;out.XMax=-1;
             out.Attr=((p%2?15u:31u)<<16)|(3<<6);out.Variant=0;
+            if(boundary)out.Attr=((p==4?1u:p==2||p==3?30u:31u)<<16)|(3<<6);
             SetupYSpan(&out,&edges[p*2],&polygon,0,3,0,positions);
             SetupYSpan(&out,&edges[p*2+1],&polygon,1,2,1,positions);
             for (unsigned y=0;y<Lines*scale;++y) indices[p*Lines*scale+y]={u16(p),u16(p*2),u16(p*2+1),u16(y)};
         }
+        if(boundary)indices.resize(((Polygons-1)*Lines+1)*scale);
     }
 };
 
@@ -382,8 +391,9 @@ static void Frames(unsigned scale,const std::string& preferred)
     }
     pipeline.UploadClearBitmap(clearColors,clearDepths);
     for(unsigned mode=0;mode<2;++mode) {
-        for(unsigned scene=0;scene<8;++scene) {
-            Inputs input(scale);input.meta.ClearDepth=0xFFFFFF;input.meta.ClearColor=0x1F020406;
+        for(unsigned scene=0;scene<9;++scene) {
+            Inputs input(scale,scene==8);input.meta.ClearDepth=0xFFFFFF;input.meta.ClearColor=0x1F020406;
+            if(scene==8) {input.meta.ClearColor=0;input.meta.AlphaRef=1;}
             for(unsigned i=0;i<34;++i) {
                 input.meta.ToonTable[i*4]=((i*11)%64)|(((i*7)%64)<<8)|(((i*3)%64)<<16);
                 input.meta.ToonTable[i*4+1]=i*3;input.meta.ToonTable[i*4+2]=0x3F0020;
@@ -430,6 +440,14 @@ static void Frames(unsigned scale,const std::string& preferred)
                 batch.polygons={};batch.edges={};batch.indices={};batch.variants={};
                 batch.meta.NumPolygons=0;batch.meta.NumVariants=0;
             }
+            // Populate the same scratch slots with alpha=1, then reject them.
+            // A skipped zero write would leak the preceding frame's fragment.
+            const size_t rejectedPixel=size_t(16*scale)*(256*scale)+(5+38*4+13)*scale;
+            if(scene==8) {
+                auto primed=batch;primed.meta.AlphaRef=0;
+                if(pipeline.Render(primed)[rejectedPixel]==0)
+                    throw std::runtime_error("Alpha-rejection fixture did not prime scratch");
+            }
             const auto pixels=pipeline.Render(batch);
             const auto expected=GLFrame(batch,scale,sources,clearColors,clearDepths);
             if(pixels.size()!=size_t(256*192*scale*scale))throw std::runtime_error("Unexpected compute output dimensions");
@@ -438,6 +456,15 @@ static void Frames(unsigned scale,const std::string& preferred)
                     std::fprintf(stderr,"Frame mismatch scale=%u mode=%u scene=%u xy=%u,%u Vk=%08x GL=%08x\n",scale,mode,scene,i%(256*scale),i/(256*scale),pixels[i],expected[i]);break;
                 }
                 throw std::runtime_error("Vulkan/GL final pixels differ");
+            }
+            if(scene==8) {
+                bool black=false,white=false,translucent=false;
+                for(auto pixel:expected) {
+                    black|=pixel==0xFF000000;white|=pixel==0xFFFFFFFF;
+                    translucent|=(pixel>>24)>0&&(pixel>>24)<255;
+                }
+                if(!black||!white||!translucent||expected[rejectedPixel]!=0)
+                    throw std::runtime_error("Boundary fixture missed opaque/translucent/rejected pixels");
             }
             unsigned changed=0;for(auto pixel:pixels)changed+=pixel!=pixels.back();
             if(scene!=3&&changed<100)throw std::runtime_error("Compute graph produced no polygon coverage");
@@ -459,7 +486,7 @@ static void Frames(unsigned scale,const std::string& preferred)
                 if(pipeline.Render(parts)!=expected)throw std::runtime_error("Split Vulkan frame differs from combined GL frame");
                 std::printf("Vulkan %ux %s scene=%u two-batch depth/stencil/texture composition equal PASS\n",scale,mode?"W":"Z",scene);
             }
-            if(scene==0 && scale==1) {
+            if((scene==0||scene==8) && scale==1) {
                 // Alternate fused and neighbor-dependent final passes, including
                 // a completely empty last batch which must still emit every pixel.
                 for(auto& polygon:input.polygons)polygon.Attr|=1u<<15;

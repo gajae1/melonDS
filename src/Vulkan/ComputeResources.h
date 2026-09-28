@@ -30,7 +30,7 @@ struct ComputeResources {
               12288 * sizeof(ComputeData::SpanSetupY),
               VkDeviceSize(BatchWork) * config.TileSize * config.TileSize * 4,
               VkDeviceSize(BatchWork) * config.TileSize * config.TileSize * 4,
-              VkDeviceSize(BatchWork) * config.TileSize * config.TileSize * 4,
+              4, // Retain the descriptor slot; opaque tile attributes use color alpha.
               VkDeviceSize(Pixels) * 7 * 4,
               sizeof(ComputeData::BinResultHeader) + VkDeviceSize(Tiles) * (2 + 64 + 64) * 4,
               VkDeviceSize(Work) * 16, sizeof(ComputeData::MetaUniform),

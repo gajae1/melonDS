@@ -48,7 +48,7 @@ int main()
             const auto bytes = std::accumulate(r.Sizes.begin(), r.Sizes.end(), VkDeviceSize{});
             std::printf("scale=%d tile=%d batch=%u spans=%u buffer_bytes=%llu scratch_bytes=%llu\n",
                 scale, r.config.TileSize, r.BatchWork, r.MaxSpans,
-                (unsigned long long)bytes, (unsigned long long)(3 * r.Sizes[3]));
+                (unsigned long long)bytes, (unsigned long long)(r.Sizes[3] + r.Sizes[4] + r.Sizes[5]));
         }
         std::puts("Vulkan resource limits: 16 accepted, 176 rejected, 16 bounded-device cases PASS");
         return 0;
