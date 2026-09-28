@@ -474,9 +474,22 @@ AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, C
         wanted.channels = 2;
         char framesText[16];
         std::snprintf(framesText, sizeof(framesText), "%d", next.frames);
-        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, framesText);
-        output->sdl = SDL_OpenAudioDeviceStream(devid, &wanted, Impl::RenderRequest, output.get());
-        if (!output->sdl) { error = SDL_GetError(); return opened; }
+        {
+            // Serialize with every other hint writer (mic open does the same
+            // SetHint+Open) and restore the prior value: the hint is global,
+            // so leaving our period behind would silently resize later opens.
+            std::lock_guard hintLock(AudioOutput::DeviceOpenHintMutex());
+            const char* priorHint = SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES);
+            const bool hadHint = priorHint != nullptr;
+            const std::string previousHint = priorHint ? priorHint : "";
+            SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, framesText);
+            output->sdl = SDL_OpenAudioDeviceStream(devid, &wanted, Impl::RenderRequest, output.get());
+            // Capture the failure before restoring the hint; SetHint can
+            // overwrite SDL's error string.
+            if (!output->sdl) error = SDL_GetError();
+            SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, hadHint ? previousHint.c_str() : nullptr);
+        }
+        if (!output->sdl) return opened;
         output->sdlPhysical = devid == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK ? 0 : devid;
         obtained.rate = rate;
         // Before open, SDL reports the preferred period. Query the bound

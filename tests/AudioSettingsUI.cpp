@@ -291,6 +291,7 @@ static void Scenario(const QString& name)
     if (name == "secondary")
     {
         cfg.SetInt("Audio.LowPassCutoff", 9000);
+        cfg.SetBool("AudioSync", false); // explicit saved value the disabled control must keep
         cfg.SetInt("Audio.OutputBackend", PreviewBackend);
         cfg.SetQString("Audio.OutputDevice", PreviewDevice);
         instance.activeBackend = PreviewBackend;
@@ -321,6 +322,9 @@ static void Scenario(const QString& name)
         cfg.SetInt("Audio.Interpolation", 3);
         instance.activeInterpolation = 3;
     }
+    // Explicit saved values; the fixture root also seeds AudioSync = false.
+    if (name == "audio-sync-preview-cancel") cfg.SetBool("AudioSync", false);
+    if (name == "audio-sync-accept") cfg.SetBool("AudioSync", true);
     auto dialog = Open(window);
 
     if (name == "filter-cancel")
@@ -627,6 +631,47 @@ static void Scenario(const QString& name)
         Finish(*dialog, QDialogButtonBox::Cancel);
         Require(instance.calls.size() == 1, "Refreshing availability reopened an active output");
     }
+    else if (name == "audio-sync-preview-cancel" || name == "audio-sync-accept")
+    {
+        const bool accept = name == "audio-sync-accept";
+        const bool saved = accept; // matches the explicit seeds above: accept=true, preview-cancel=false
+        std::vector<bool> published;
+        const auto watch = [&] {
+            QObject::connect(dialog.get(), &AudioSettingsDialog::updateAudioSync, dialog.get(),
+                             [&](bool enabled) { published.push_back(enabled); });
+        };
+        auto* sync = Widget<QCheckBox>(*dialog, "chkAudioSync");
+        Require(sync->isEnabled() && sync->isChecked() == saved && cfg.GetBool("AudioSync") == saved &&
+                sync->toolTip().contains("latency", Qt::CaseInsensitive),
+                "Saved audio sync setting was not shown unchanged");
+        watch();
+        if (!accept)
+        {
+            Finish(*dialog, QDialogButtonBox::Cancel);
+            Require(published.empty() && !cfg.GetBool("AudioSync"), "Cancel republished an unchanged audio sync setting");
+            dialog = Open(window);
+            sync = Widget<QCheckBox>(*dialog, "chkAudioSync");
+            watch();
+        }
+        Click(sync);
+        Require(sync->isChecked() == !saved && cfg.GetBool("AudioSync") == !saved &&
+                published == std::vector<bool>{!saved} && instance.stretchCalls.empty(),
+                "Audio sync preview did not update configuration and its dedicated signal");
+        if (accept)
+        {
+            Finish(*dialog, QDialogButtonBox::Ok);
+            Require(published == std::vector<bool>{false}, "Accepting republished the audio sync preview");
+            Config::GetGlobalTable().SetBool("AudioSync", true);
+            Require(Config::Load() && !Config::GetGlobalTable().GetBool("AudioSync"),
+                    "Accepted audio sync setting did not survive config reload");
+        }
+        else
+        {
+            Finish(*dialog, QDialogButtonBox::Cancel);
+            Require(!cfg.GetBool("AudioSync") && published == std::vector<bool>{true, false},
+                    "Cancel did not restore and publish the saved audio sync setting");
+        }
+    }
     else if (name == "secondary")
     {
         auto* combo = Widget<QComboBox>(*dialog, "cbBufferSize");
@@ -636,8 +681,12 @@ static void Scenario(const QString& name)
         auto* backends = Widget<QComboBox>(*dialog, "cbOutputBackend");
         auto* devices = Widget<QComboBox>(*dialog, "cbOutputDevice");
         auto* timeStretch = Widget<QCheckBox>(*dialog, "chkTimeStretch");
+        auto* audioSync = Widget<QCheckBox>(*dialog, "chkAudioSync");
+        std::vector<bool> published;
+        QObject::connect(dialog.get(), &AudioSettingsDialog::updateAudioSync, dialog.get(),
+                         [&](bool enabled) { published.push_back(enabled); });
         Require(!combo->isEnabled() && !preview->isEnabled() && !filter->isEnabled() && !cutoff->isEnabled() &&
-                !backends->isEnabled() && !devices->isEnabled() && !timeStretch->isEnabled(),
+                !backends->isEnabled() && !devices->isEnabled() && !timeStretch->isEnabled() && !audioSync->isEnabled(),
                 "Secondary instance exposes shared output/filter controls");
         QTest::keyClick(combo, Qt::Key_Up);
         Click(preview); Click(filter);
@@ -645,7 +694,10 @@ static void Scenario(const QString& name)
         QTest::keyClick(backends, Qt::Key_Up);
         QTest::keyClick(devices, Qt::Key_Up);
         Click(timeStretch);
+        Click(audioSync);
         Finish(*dialog, QDialogButtonBox::Ok);
+        Require(published.empty() && !audioSync->isChecked() && !cfg.GetBool("AudioSync"),
+                "Secondary instance changed the seeded audio sync setting");
         Require(instance.calls.empty() && cfg.GetInt("Audio.BufferSize") == 512 &&
                 cfg.GetInt("Audio.LowPassCutoff") == 9000,
                 "Secondary instance changed global output/filter settings through UI or OK");
@@ -740,7 +792,7 @@ int main(int argc, char** argv)
         configDirectory = directory.path();
         emuDirectory = configDirectory;
         QFile file(configDirectory + "/melonDS.toml");
-        const QByteArray seed = "[Audio]\nBufferSize = 512\nLowPassCutoff = 0\n"
+        const QByteArray seed = "AudioSync = false\n[Audio]\nBufferSize = 512\nLowPassCutoff = 0\n"
                                 "[Mic]\nInputType = 0\n"
                                 "[Instance0.Audio]\nVolume = 256\nDSiVolumeSync = false\n";
         Require(file.open(QIODevice::WriteOnly) && file.write(seed) == seed.size(),

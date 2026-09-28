@@ -54,6 +54,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     oldOutputBackend = cfg.GetInt("Audio.OutputBackend");
     oldOutputDevice = cfg.GetQString("Audio.OutputDevice");
     oldTimeStretch = cfg.GetBool("Audio.TimeStretch");
+    oldAudioSync = cfg.GetBool("AudioSync");
     oldVolume = instcfg.GetInt("Audio.Volume");
     oldDSiSync = instcfg.GetBool("Audio.DSiVolumeSync");
 
@@ -111,6 +112,10 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     {
         const QSignalBlocker blocker(ui->chkTimeStretch);
         ui->chkTimeStretch->setChecked(oldTimeStretch);
+    }
+    {
+        const QSignalBlocker blocker(ui->chkAudioSync);
+        ui->chkAudioSync->setChecked(oldAudioSync);
     }
 
     ui->sbLowPassCutoff->blockSignals(true);
@@ -204,6 +209,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
         ui->btnApplyBuffer->setEnabled(false);
         ui->chkLowPass->setEnabled(false);
         ui->chkTimeStretch->setEnabled(false);
+        ui->chkAudioSync->setEnabled(false);
         ui->sbLowPassCutoff->setEnabled(false);
         for (QAbstractButton* btn : grpMicMode->buttons())
             btn->setEnabled(false);
@@ -285,6 +291,11 @@ void AudioSettingsDialog::on_AudioSettingsDialog_rejected()
         if (!applyTimeStretch(oldTimeStretch, error))
             QMessageBox::warning(this, tr("Audio output"),
                 tr("The previous pitch-preserving speed setting could not be restored.\n%1").arg(error));
+    }
+    if (cfg.GetBool("AudioSync") != oldAudioSync)
+    {
+        cfg.SetBool("AudioSync", oldAudioSync);
+        emit updateAudioSync(oldAudioSync);
     }
     instcfg.SetInt("Audio.Volume", oldVolume);
     instcfg.SetBool("Audio.DSiVolumeSync", oldDSiSync);
@@ -371,6 +382,13 @@ void AudioSettingsDialog::on_chkTimeStretch_toggled(bool checked)
             tr("The pitch-preserving speed setting could not be applied.\n%1").arg(error));
     }
     ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
+}
+
+void AudioSettingsDialog::on_chkAudioSync_toggled(bool checked)
+{
+    // The main window applies the running setting; Cancel restores oldAudioSync.
+    emuInstance->getGlobalConfig().SetBool("AudioSync", checked);
+    emit updateAudioSync(checked);
 }
 
 void AudioSettingsDialog::populateOutputDevices(int backend, const QString& device)

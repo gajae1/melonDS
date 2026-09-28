@@ -105,7 +105,8 @@ foreach(case IN ITEMS filter-cancel buffer-preview-cancel buffer-accept
         buffer-failure buffer-cancel-failure secondary
         output-preview-cancel output-failure output-unavailable
         time-stretch-preview-cancel time-stretch-failure
-        interpolation-preview-cancel interpolation-accept interpolation-failure interpolation-sinc-accept)
+        interpolation-preview-cancel interpolation-accept interpolation-failure interpolation-sinc-accept
+        audio-sync-preview-cancel audio-sync-accept)
     add_test(NAME audio-settings-ui-${case} COMMAND AudioSettingsUI ${case})
     set_tests_properties(audio-settings-ui-${case} PROPERTIES TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;SDL_AUDIODRIVER=dummy")
@@ -425,6 +426,18 @@ set_tests_properties(audio-device-async-owner PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-device-loss-reopen PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-device-bounded-teardown PROPERTIES TIMEOUT 20)
 set_tests_properties(audio-callback-buffer PROPERTIES TIMEOUT 30)
+
+if(ENABLE_SDL3)
+    add_executable(SDL3AudioOpen "${CMAKE_SOURCE_DIR}/tests/SDL3AudioOpen.cpp")
+    target_compile_definitions(SDL3AudioOpen PRIVATE MELONDS_SDL3)
+    target_include_directories(SDL3AudioOpen PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(SDL3AudioOpen PRIVATE PkgConfig::SDL3 Threads::Threads)
+    if(WIN32)
+        target_link_libraries(SDL3AudioOpen PRIVATE melonds-wasapi)
+    endif()
+    add_test(NAME audio-sdl3-open-hint COMMAND SDL3AudioOpen)
+    set_tests_properties(audio-sdl3-open-hint PROPERTIES TIMEOUT 15 ENVIRONMENT "SDL_AUDIODRIVER=dummy")
+endif()
 
 add_executable(AudioTimeStretch "${CMAKE_SOURCE_DIR}/tests/AudioTimeStretch.cpp")
 target_link_libraries(AudioTimeStretch PRIVATE melonds-audio-stretch Threads::Threads)

@@ -333,7 +333,7 @@ public:
     double slowmoFPS;
     bool fastForwardToggled;
     bool slowmoToggled;
-    bool doAudioSync;
+    std::atomic<bool> doAudioSync;
 private:
 
     std::unique_ptr<melonDS::Savestate> backupState;

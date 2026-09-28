@@ -59,6 +59,7 @@ public:
 signals:
     void updateAudioVolume(int vol, bool dsisync);
     void updateAudioSettings();
+    void updateAudioSync(bool enabled);
 
 private slots:
     void on_AudioSettingsDialog_accepted();
@@ -70,6 +71,7 @@ private slots:
     void on_sbLowPassCutoff_valueChanged(int value);
     void on_chkLowPass_toggled(bool checked);
     void on_chkTimeStretch_toggled(bool checked);
+    void on_chkAudioSync_toggled(bool checked);
     void on_cbOutputBackend_currentIndexChanged(int idx);
     void on_cbOutputDevice_currentIndexChanged(int idx);
     void on_btnApplyBuffer_clicked();
@@ -95,6 +97,7 @@ private:
     int oldOutputBackend;
     QString oldOutputDevice;
     bool oldTimeStretch;
+    bool oldAudioSync;
     int oldVolume;
     bool oldDSiSync;
     QButtonGroup* grpMicMode;

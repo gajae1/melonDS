@@ -159,8 +159,9 @@ QString EmuInstance::audioOutputDescription() const
     if (audioDevice.IsOpening()) return QObject::tr("Reconnecting audio output...");
     if (!audioDevice) return QObject::tr("Audio output unavailable");
     const auto& spec = audioDevice.GetSpec();
-    QString description = QObject::tr("%1: %2 frames at %3 Hz (%4 ms of audio)")
-        .arg(QString::fromStdString(spec.backend)).arg(audioBufSize).arg(audioFreq)
+    QString description = QObject::tr("%1: requested %2 frames; active block %3 frames at %4 Hz (%5 ms of audio)")
+        .arg(QString::fromStdString(spec.backend)).arg(audioDevice.GetSettings().frames)
+        .arg(audioBufSize).arg(audioFreq)
         .arg(audioBufSize * 1000.0 / audioFreq, 0, 'f', 2);
     if (spec.bufferFrames > 0)
         description += QObject::tr("; device capacity %1 frames").arg(spec.bufferFrames);
@@ -651,11 +652,20 @@ void EmuInstance::micOpen()
     spec.freq = micFreq;
     spec.format = SDL_AUDIO_S16;
     spec.channels = 1;
-    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "1024");
-    micStream = SDL_OpenAudioDeviceStream(devid, &spec, micCallbackSDL3, this);
+    std::string openError;
+    {
+        std::lock_guard hintLock(AudioOutput::DeviceOpenHintMutex());
+        const char* hint = SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES);
+        const bool hadHint = hint != nullptr;
+        const std::string previousHint = hint ? hint : "";
+        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "1024");
+        micStream = SDL_OpenAudioDeviceStream(devid, &spec, micCallbackSDL3, this);
+        if (!micStream) openError = SDL_GetError();
+        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, hadHint ? previousHint.c_str() : nullptr);
+    }
     if (!micStream)
     {
-        Platform::Log(Platform::LogLevel::Error, "Mic init failed: %s\n", SDL_GetError());
+        Platform::Log(Platform::LogLevel::Error, "Mic init failed: %s\n", openError.c_str());
     }
     else
     {

@@ -2,6 +2,7 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,16 @@ public:
     const Spec& GetSpec() const { return spec; }
     const Settings& GetSettings() const { return settings; }
     static std::vector<DeviceInfo> Enumerate(int backend, std::string& error);
+
+    // SDL3 has no per-device period parameter; SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES
+    // is process-global and is sampled inside SDL_OpenAudioDeviceStream. Every
+    // stream open that sets the hint (this output, the mic input) must hold this
+    // lock across SetHint+Open so one stream cannot size another's device.
+    static std::mutex& DeviceOpenHintMutex()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
 private:
     struct Impl;
     struct Owner;

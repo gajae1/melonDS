@@ -1993,6 +1993,7 @@ void MainWindow::onOpenAudioSettings()
     connect(emuThread, &EmuThread::windowEmuStart, dlg, &AudioSettingsDialog::onConsoleReset);
     connect(dlg, &AudioSettingsDialog::updateAudioVolume, this, &MainWindow::onUpdateAudioVolume);
     connect(dlg, &AudioSettingsDialog::updateAudioSettings, this, &MainWindow::onUpdateAudioSettings);
+    connect(dlg, &AudioSettingsDialog::updateAudioSync, this, &MainWindow::onChangeAudioSync);
     connect(dlg, &AudioSettingsDialog::finished, this, &MainWindow::onAudioSettingsFinished);
 }
 
@@ -2228,7 +2229,8 @@ void MainWindow::onChangeLimitFramerate(bool checked)
 void MainWindow::onChangeAudioSync(bool checked)
 {
     emuInstance->doAudioSync = checked;
-    globalCfg.SetBool("AudioSync", emuInstance->doAudioSync);
+    globalCfg.SetBool("AudioSync", checked);
+    actAudioSync->setChecked(checked);
 }
 
 

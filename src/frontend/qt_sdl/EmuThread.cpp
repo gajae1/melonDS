@@ -191,8 +191,35 @@ void EmuThread::run()
     emuInstance->fastForwardToggled = false;
     emuInstance->slowmoToggled = false;
 
+    // The output frame rate depends only on the requested speed limit, never on
+    // this frame's work. Evaluated at the point of use so the resumed-audio wait
+    // and the emulate path cannot disagree about it.
+    const auto outputFrameRate = [&] {
+        const double requestedFPS = emuInstance->curFPS.load(std::memory_order_relaxed);
+        const double audioFPS = emuInstance->audioTimeStretchEnabled ? requestedFPS
+            : std::min(requestedFPS, emuInstance->targetFPS);
+        return std::max(audioFPS, 59.8260982880808 * 0.5);
+    };
+
     while (emuStatus != emuStatus_Exit)
     {
+        // Complete an interrupted audio wait before sampling input, so the
+        // resumed frame uses input received during that wait. Still wait before
+        // producing more PCM to avoid overflowing the retained output queue.
+        if ((emuStatus == emuStatus_Running || emuStatus == emuStatus_FrameStep) &&
+            audioSyncInterrupted && emuInstance->doAudioSync &&
+            (emuInstance->audioTimeStretchEnabled || !(fastforward || slowmo)))
+        {
+            const auto stop = cheatStopToken();
+            emuInstance->audioSync(static_cast<int>(std::ceil(emuInstance->audioFreq / outputFrameRate())), stop);
+            if (stop.stop_requested())
+            {
+                handleMessages();
+                continue;
+            }
+            audioSyncInterrupted = false;
+        }
+
         if (emuInstance->instanceID == 0)
             MPInterface::Acquire()->Process();
 
@@ -330,28 +357,10 @@ void EmuThread::run()
             // requested emulation speed before producing device-rate samples.
             // The optional pitch-preserving path instead keeps the source
             // clock unchanged and converts speed after the core produces PCM.
-            const double requestedFPS = emuInstance->curFPS.load(std::memory_order_relaxed);
-            const double audioFPS = emuInstance->audioTimeStretchEnabled ? requestedFPS
-                : std::min(requestedFPS, emuInstance->targetFPS);
-            const double outputFPS = std::max(audioFPS, 59.8260982880808 * 0.5);
+            const double outputFPS = outputFrameRate();
             emuInstance->audioSetSpeed(outputFPS / 59.8260982880808);
             emuInstance->nds->SPU.SetOutputSkew(emuInstance->audioTimeStretchEnabled
                 ? 1.0 : outputFPS / 59.8260982880808);
-            // A control request can interrupt the previous frame's audio wait
-            // with a nearly full PCM queue. Finish that wait before producing
-            // another frame after resume; otherwise the core may discard PCM.
-            if (audioSyncInterrupted && emuInstance->doAudioSync &&
-                (emuInstance->audioTimeStretchEnabled || !(fastforward || slowmo)))
-            {
-                const auto stop = cheatStopToken();
-                emuInstance->audioSync(static_cast<int>(std::ceil(emuInstance->audioFreq / outputFPS)), stop);
-                if (stop.stop_requested())
-                {
-                    handleMessages();
-                    continue;
-                }
-                audioSyncInterrupted = false;
-            }
             u32 nlines;
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
             {
