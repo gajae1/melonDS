@@ -221,6 +221,14 @@ void EmuThread::run()
             audioSyncInterrupted = false;
         }
 
+        // Prepare GL and apply pending renderer work before sampling input, so
+        // the frame that resumes after this host block consumes fresh input and
+        // hotkey edges. On GL failure hotkeys still run; the failure branch
+        // below handles it as before.
+        const bool glReady = prepareGL();
+        if (glReady && (emuStatus == emuStatus_Running || emuStatus == emuStatus_FrameStep))
+            applyPendingVideo();
+
         if (emuInstance->instanceID == 0)
             MPInterface::Acquire()->Process();
 
@@ -237,7 +245,7 @@ void EmuThread::run()
         if (emuInstance->hotkeyPressed(HK_SwapScreens)) emit swapScreensToggle();
         if (emuInstance->hotkeyPressed(HK_SwapScreenEmphasis)) emit screenEmphasisToggle();
 
-        if (!prepareGL())
+        if (!glReady)
         {
             handleMessages();
             SDL_Delay(20);
@@ -302,7 +310,8 @@ void EmuThread::run()
                 dsi->I2C.GetBPTWL()->ProcessVolumeSwitchInput(currentTime);
             }
 
-            applyPendingVideo();
+            // Video edits arriving after input sampling wait until the next
+            // iteration; do not rebuild the renderer with this sample held.
 
             // Rebase after potentially blocking renderer/control work, before
             // this frame starts. Retain normal running-frame rounding error.
