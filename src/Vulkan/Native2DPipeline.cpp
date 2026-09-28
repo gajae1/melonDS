@@ -515,12 +515,24 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
         MemoryBarrier(*owner, command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT,
             VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
-        for (size_t i = 0; i < copies.size(); ++i)
+        for (size_t i = 0; i < copies.size();)
         {
             const auto& copy = copies[i];
-            const VkBufferCopy region{VkDeviceSize(copy.sourceWord) * 4,
+            const VkBuffer source = copySources[i++];
+            VkBufferCopy region{VkDeviceSize(copy.sourceWord) * 4,
                 VkDeviceSize(copy.destinationWord) * 4, VkDeviceSize(copy.words) * 4};
-            f.vkCmdCopyBuffer(command, copySources[i], memory->Handle(), 1, &region);
+            // Capture pages arrive as adjacent 256-byte halves. Join only runs
+            // contiguous on both sides; do not reorder sources or bridge gaps.
+            // Keep self-copies separate so joining cannot create overlapping
+            // source/destination ranges from individually disjoint copies.
+            while (source != memory->Handle() && i < copies.size() && copySources[i] == source &&
+                VkDeviceSize(copies[i].sourceWord) * 4 == region.srcOffset + region.size &&
+                VkDeviceSize(copies[i].destinationWord) * 4 == region.dstOffset + region.size)
+            {
+                region.size += VkDeviceSize(copies[i].words) * 4;
+                ++i;
+            }
+            f.vkCmdCopyBuffer(command, source, memory->Handle(), 1, &region);
         }
     }
     if (!merges.empty())

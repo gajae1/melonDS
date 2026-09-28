@@ -590,8 +590,9 @@ OpArg Compiler::Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, b
     return R(RSCRATCH);
 }
 
-// may uses RSCRATCH for op2 and RSCRATCH2 for the carryValue
-OpArg Compiler::Comp_RegShiftImm(int op, int amount, OpArg rm, bool S, bool& carryUsed)
+// Result defaults to RSCRATCH; Thumb may supply its mapped destination.
+// RSCRATCH2 still retains the shifter carry before NZ flags are collected.
+OpArg Compiler::Comp_RegShiftImm(int op, int amount, OpArg rm, bool S, bool& carryUsed, OpArg result)
 {
     carryUsed = true;
 
@@ -600,12 +601,12 @@ OpArg Compiler::Comp_RegShiftImm(int op, int amount, OpArg rm, bool S, bool& car
     case 0: // LSL
         if (amount > 0)
         {
-            MOV(32, R(RSCRATCH), rm);
-            SHL(32, R(RSCRATCH), Imm8(amount));
+            if (result != rm) MOV(32, result, rm);
+            SHL(32, result, Imm8(amount));
             if (S)
                 SETcc(CC_C, R(RSCRATCH2));
 
-            return R(RSCRATCH);
+            return result;
         }
         else
         {
@@ -615,11 +616,11 @@ OpArg Compiler::Comp_RegShiftImm(int op, int amount, OpArg rm, bool S, bool& car
     case 1: // LSR
         if (amount > 0)
         {
-            MOV(32, R(RSCRATCH), rm);
-            SHR(32, R(RSCRATCH), Imm8(amount));
+            if (result != rm) MOV(32, result, rm);
+            SHR(32, result, Imm8(amount));
             if (S)
                 SETcc(CC_C, R(RSCRATCH2));
-            return R(RSCRATCH);
+            return result;
         }
         else
         {
@@ -631,29 +632,29 @@ OpArg Compiler::Comp_RegShiftImm(int op, int amount, OpArg rm, bool S, bool& car
             return Imm32(0);
         }
     case 2: // ASR
-        MOV(32, R(RSCRATCH), rm);
-        SAR(32, R(RSCRATCH), Imm8(amount ? amount : 31));
+        if (result != rm) MOV(32, result, rm);
+        SAR(32, result, Imm8(amount ? amount : 31));
         if (S)
         {
             if (amount == 0)
                 // ASR #32 leaves every result bit equal to the source sign.
                 // rm can be an immediate PC value, which BT cannot encode.
-                BT(32, R(RSCRATCH), Imm8(31));
+                BT(32, result, Imm8(31));
             SETcc(CC_C, R(RSCRATCH2));
         }
-        return R(RSCRATCH);
+        return result;
     case 3: // ROR
-        MOV(32, R(RSCRATCH), rm);
+        if (result != rm) MOV(32, result, rm);
         if (amount > 0)
-            ROR(32, R(RSCRATCH), Imm8(amount));
+            ROR(32, result, Imm8(amount));
         else
         {
             BT(32, R(RCPSR), Imm8(29));
-            RCR(32, R(RSCRATCH), Imm8(1));
+            RCR(32, result, Imm8(1));
         }
         if (S)
             SETcc(CC_C, R(RSCRATCH2));
-        return R(RSCRATCH);
+        return result;
     }
 
     abort();
@@ -670,7 +671,7 @@ void Compiler::T_Comp_ShiftImm()
     Comp_AddCycles_C();
 
     bool carryUsed;
-    OpArg shifted = Comp_RegShiftImm(op, amount, rs, true, carryUsed);
+    OpArg shifted = Comp_RegShiftImm(op, amount, rs, true, carryUsed, rd);
 
     if (shifted != rd)
         MOV(32, rd, shifted);

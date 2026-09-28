@@ -38,13 +38,22 @@ bool TextureLoader::BeginTextureUpdate(u64& generation)
         if(std::any_of(masks.begin(),masks.end(),[](u32 value){return value!=0;}))
             revision=parent.NativeCapture->Revision();
     }
-    if(masks!=s.masks || revision!=s.revision) {
-        s.masks=masks;s.revision=revision;++s.generation;s.refresh=true;
-    }
+    // The assembled words encode only the CPU baseline and the per-segment bank
+    // masks. Captured bank bytes are bound per decode from a fresh snapshot, so
+    // a capture revision bump only re-stamps TextureSource/generation; it does
+    // not change the assembled bytes. Rebuilding only on a mask change keeps a
+    // capture-updated frame from re-materializing the whole 512KiB baseline.
+    const bool masksChanged=masks!=s.masks;
+    if(masksChanged) { s.masks=masks; s.refresh=true; }
+    if(masksChanged || revision!=s.revision) { s.revision=revision; ++s.generation; }
     s.hasCaptured=revision!=0;
+    if(!s.hasCaptured)s.texture.reset();
     // No GPU bank snapshot is retained here. Queued decodes own it only until
     // the upload/render fence, avoiding unnecessary COW on the next capture.
-    s.texture.reset();s.palette.reset();
+    // The palette has no native hook reporting its own change, so its snapshot
+    // is refreshed every update; the assembled texture is dropped in
+    // TextureBytes only when its bytes actually change.
+    s.palette.reset();
     generation=s.generation;
     return s.active;
 }
@@ -67,6 +76,8 @@ const u8* TextureLoader::TextureBytes(bool cpuTextureChanged)
                 }
             }
         }
+        // The device copy read by decodes must match the rebuilt bytes.
+        s.texture.reset();
         s.refresh=false;
     }
     return reinterpret_cast<const u8*>(s.words.data());
@@ -91,13 +102,16 @@ void TextureLoader::PrepareInputs()
 {
     auto& s=*source;
     if(!s.hasCaptured || s.words.empty())throw std::logic_error("Missing captured texture source");
+    auto device=parent.DisplayDevice();
     if(!s.texture) {
-        auto device=parent.DisplayDevice();
         auto input=device->CreateBuffer(s.words.size()*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,true);
-        auto palette=device->CreateBuffer(131072,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,true);
         std::memcpy(input->Data(),s.words.data(),s.words.size()*4);
+        s.texture=std::move(input);
+    }
+    if(!s.palette) {
+        auto palette=device->CreateBuffer(131072,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,true);
         std::memcpy(palette->Data(),s.gpu.VRAMFlat_TexPal,131072);
-        s.texture=std::move(input);s.palette=std::move(palette);
+        s.palette=std::move(palette);
     }
 }
 void TextureLoader::DecodeTexture(const TextureHandle& texture,u32 layer,u32 texParam,u32 palBase)

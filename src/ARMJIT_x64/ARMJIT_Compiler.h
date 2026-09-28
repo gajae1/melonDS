@@ -197,7 +197,8 @@ public:
     void Comp_SpecialBranchBehaviour(bool taken);
 
 
-    Gen::OpArg Comp_RegShiftImm(int op, int amount, Gen::OpArg rm, bool S, bool& carryUsed);
+    Gen::OpArg Comp_RegShiftImm(int op, int amount, Gen::OpArg rm, bool S, bool& carryUsed,
+        Gen::OpArg result = Gen::R(RSCRATCH));
     Gen::OpArg Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, bool& carryUsed);
 
     Gen::OpArg A_Comp_GetALUOp2(bool S, bool& carryUsed);

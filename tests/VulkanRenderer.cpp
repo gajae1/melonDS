@@ -1996,8 +1996,181 @@ void NativeCaptureBeginFailure()
     std::puts("Vulkan capture begin failure: reused/COW banks reject reads and recover on retry PASS");
 }
 
+struct NativeCopyProbe
+{
+    static inline NativeCopyProbe* active = nullptr;
+    volk::VolkDeviceTable& functions;
+    PFN_vkCmdCopyBuffer original;
+    VkBuffer first, second;
+    u64 bytes = 0;
+    u32 calls = 0;
+    NativeCopyProbe(Vulkan::Device& device, VkBuffer a, VkBuffer b)
+        : functions(const_cast<volk::VolkDeviceTable&>(device.Functions())),
+          original(functions.vkCmdCopyBuffer), first(a), second(b)
+    { active = this; functions.vkCmdCopyBuffer = Copy; }
+    ~NativeCopyProbe() { functions.vkCmdCopyBuffer = original; active = nullptr; }
+    static VKAPI_ATTR void VKAPI_CALL Copy(VkCommandBuffer command, VkBuffer source,
+        VkBuffer destination, u32 count, const VkBufferCopy* regions)
+    {
+        if (source == active->first || source == active->second)
+        {
+            ++active->calls;
+            for (u32 i = 0; i < count; ++i) active->bytes += regions[i].size;
+        }
+        active->original(command, source, destination, count, regions);
+    }
+};
+void NativeCopyRuns()
+{
+    using namespace Vulkan::Native2D;
+    std::string error;
+    auto device = Vulkan::Device::Create(error);
+    Require(bool(device), error.c_str());
+    Pipeline pipeline(device, Vulkan::EmbeddedNative2D());
+    std::vector<u32> sourceA(4096), sourceB(4096), memory(4096, 0x12345678);
+    for (u32 i = 0; i < sourceA.size(); ++i)
+    {
+        sourceA[i] = (i * 0x9E3779B9u) ^ 0xA537C2E1u;
+        sourceB[i] = (i * 0x45D9F3Bu) ^ 0x5A983421u;
+    }
+    auto a = device->CreateBuffer(sourceA.size() * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    auto b = device->CreateBuffer(sourceB.size() * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    std::memcpy(a->Data(), sourceA.data(), sourceA.size() * 4);
+    std::memcpy(b->Data(), sourceB.data(), sourceB.size() * 4);
+    std::vector<MemoryCopy> copies;
+    // A full contiguous block plus source/destination gaps and a source change.
+    for (u32 i = 0; i < 32; ++i) copies.push_back({a, i * 64, 128 + i * 64, 64});
+    const std::array<MemoryCopy, 8> fragmented{{
+        {a,0,2304,64}, {a,64,2368,64}, {a,256,2432,64}, {a,320,2560,64},
+        {b,0,2624,64}, {b,64,2688,64}, {a,384,2752,64}, {a,448,2816,64}}};
+    copies.insert(copies.end(), fragmented.begin(), fragmented.end());
+    auto expectedMemory = memory;
+    for (const auto& copy : copies)
+    {
+        const auto& source = copy.source == a ? sourceA : sourceB;
+        std::copy_n(source.begin() + copy.sourceWord, copy.words,
+            expectedMemory.begin() + copy.destinationWord);
+    }
+    std::array<Record, 32> records{};
+    for (u32 i = 0; i < records.size(); ++i)
+    {
+        auto& row = records[i];
+        row.layers.enabled = row.layers.forcedBlank = 1;
+        row.object.historyRead = NoHistory;
+        row.objectWrite = (i + 2) * 512; row.rawOutput = i * 256;
+        row.physicalLine = i; row.source3DAbort = 1;
+        row.finalDisplay = {3u << 16, 0, 1, i, i * 128, 0, 0, 0};
+    }
+    std::vector<u32> expected(256 * 192), actual(expected.size());
+    // Identical final-display shader, with independent CPU copies as the oracle.
+    pipeline.Render(expectedMemory, records, {}, 0);
+    pipeline.ReadFrame(0, 0, expected);
+    NativeCopyProbe probe(*device, a->Handle(), b->Handle());
+    pipeline.Submit(memory, records, {}, 0, nullptr, {}, std::move(copies));
+    Require(pipeline.Pending(), "native copy batch did not defer");
+    pipeline.Complete();
+    pipeline.ReadFrame(0, 0, actual);
+    Require(actual == expected, "coalesced native copies changed pixels or overwrote gaps");
+    Require(probe.calls == 6 && probe.bytes == 40 * 256,
+        "native adjacent copy runs did not reduce calls while preserving transfer bytes");
+    std::puts("Native GPU copies: 40 half-page inputs -> 6 commands, 10240 bytes, pixels/gaps preserved PASS");
+}
+
+struct CapturedTextureInputProbe
+{
+    static inline CapturedTextureInputProbe* active = nullptr;
+    volk::VolkDeviceTable& functions;
+    PFN_vkCreateBuffer original;
+    unsigned inputs = 0;
+    explicit CapturedTextureInputProbe(Vulkan::Device& device)
+        : functions(const_cast<volk::VolkDeviceTable&>(device.Functions())), original(functions.vkCreateBuffer)
+    { active = this; functions.vkCreateBuffer = Create; }
+    ~CapturedTextureInputProbe() { functions.vkCreateBuffer = original; active = nullptr; }
+    static VKAPI_ATTR VkResult VKAPI_CALL Create(VkDevice device, const VkBufferCreateInfo* info,
+        const VkAllocationCallbacks* allocation, VkBuffer* buffer)
+    {
+        const auto result = active->original(device, info, allocation, buffer);
+        if (result == VK_SUCCESS && info->size == (131072 + 2048) * 4 &&
+            info->usage == VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ++active->inputs;
+        return result;
+    }
+};
+void NativeTextureInputReuse()
+{
+    auto nds = Console(true), reference = Console(false);
+    auto& renderer = static_cast<VulkanRenderer&>(nds->GetRenderer());
+    RendererSettings settings{1, false, false, false}; settings.VulkanNative2D = true;
+    Require(renderer.SetRenderSettings(settings) && renderer.Native2DActive(), "native texture fixture unavailable");
+    const std::array<NDS*, 2> consoles{nds.get(), reference.get()};
+    for (auto* console : consoles) { console->Start(); console->RunFrame(); }
+    auto capture = [&](u32 bank) {
+        for (auto* console : consoles)
+        {
+            console->ARM9Write8(0x04000240 + bank, 0x80);
+            Scene(*console, 0, false, false);
+            // Use the frame loop to register capture ownership, so later CPU
+            // writes exercise the production synchronization/invalidation path.
+            console->GetRenderer().Start3DRendering();
+            console->ARM9Write32(0x04000064, 0x81300000 | (bank << 16));
+            console->RunFrame();
+        }
+    };
+    capture(1);
+    for (auto* console : consoles)
+    {
+        console->ARM9Write8(0x04000240, 0x83); // Zero CPU bank A OR captured bank B.
+        console->ARM9Write8(0x04000241, 0x83);
+    }
+    CapturedTextureInputProbe probe(*renderer.DisplayDevice());
+    unsigned phase = 0;
+    auto check = [&] {
+        for (auto* console : consoles)
+        {
+            auto& poly = Scene(*console, 7, false, false);
+            poly.TexParam |= (5u << 20) | (5u << 23);
+            for (auto* vertex : std::span(poly.Vertices, poly.NumVertices))
+                vertex->TexCoords[0] = vertex->TexCoords[1] = 80 * 16;
+        }
+        const auto actual = Screen(*nds), expected = Screen(*reference);
+        if (actual != expected) {
+            const auto mismatch = std::mismatch(actual.begin(), actual.end(), expected.begin());
+            std::fprintf(stderr, "Native texture phase=%u first=%zu actual=%08x expected=%08x allocations=%u\n",
+                phase, size_t(mismatch.first - actual.begin()), *mismatch.first, *mismatch.second, probe.inputs);
+        }
+        ++phase;
+        Require(actual == expected, "native captured texture baseline or GPU snapshot became stale");
+    };
+    check();
+    Require(probe.inputs == 1, "native captured texture input was not prepared");
+    // A different bank changes the global capture revision without changing
+    // texture ownership or CPU bytes. Textures decode with a fresh GPU snapshot.
+    capture(3);
+    const auto before = probe.inputs;
+    check();
+    Require(probe.inputs == before, "revision-only texture update reallocated immutable input");
+    for (u32 bank : {0u, 1u})
+    {
+        for (auto* console : consoles)
+        {
+            console->ARM9Write8(0x04000240 + bank, 0x80);
+            console->ARM9Write16(0x06800000 + bank * 131072 + (80 * 256 + 80) * 2,
+                bank ? 0xFC00 : 0x83E0);
+            console->ARM9Write8(0x04000240 + bank, 0x83);
+        }
+        const auto oldInputs = probe.inputs;
+        check();
+        // A changes the CPU contribution while B remains GPU-owned. Writing B
+        // retires the last captured texture mapping and uses the CPU decoder.
+        Require(probe.inputs == oldInputs + (bank == 0 ? 1 : 0),
+            "CPU contribution refresh or CPU-only fallback allocated unexpected texture input");
+    }
+    std::puts("Native captured texture: revision-only input reuse, CPU OR contribution and ownership refresh match Software PASS");
+}
+
 void NativeDeferred()
 {
+    NativeTextureInputReuse();
+    NativeCopyRuns();
     NativeCaptureBeginFailure();
     for (int scale : {1, 3})
     {

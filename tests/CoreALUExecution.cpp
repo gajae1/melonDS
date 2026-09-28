@@ -202,6 +202,49 @@ int TestALUExecution(NDSArgs&& args, bool jit)
                 }
             }
         }
+        // Thumb immediate shifts: aliases, encoded #32 and partial NZ overwrite.
+        // Hand-calculated boundaries, with BX to ARM MRS to observe all flags.
+        const struct { unsigned op, amount; u32 input, result; bool carry; } immediate[] = {
+            {0,0,0x80000001,0x80000001,0}, {0,1,0x80000001,2,1},
+            {0,31,0x80000001,0x80000000,0}, {0,1,0,0,0},
+            {1,0,0x80000001,0,1}, {1,1,0x80000001,0x40000000,1},
+            {1,31,0x80000001,1,0}, {1,0,0x7FFFFFFF,0,0},
+            {2,0,0x80000001,0xFFFFFFFF,1}, {2,1,0x80000001,0xC0000000,1},
+            {2,31,0x80000001,0xFFFFFFFF,0}, {2,0,0x7FFFFFFF,0,0},
+        };
+        unsigned shiftBlock = 0;
+        for (const auto& test : immediate)
+        for (u32 rd : {1u, 2u})
+        for (bool partial : {false, true})
+        {
+            const u32 addr = Code + 0x10000 + 32 * shiftBlock++;
+            nds->ARM9Write16(addr, (test.op << 11) | (test.amount << 6) | (1u << 3) | rd);
+            nds->ARM9Write16(addr + 2, partial ? 0x2600 : 0x4636); // MOVS R6,#0 / MOV R6,R6.
+            nds->ARM9Write16(addr + 4, 0x4738); // BX R7.
+            nds->ARM9Write32(addr + 16, 0xE10F8000); // MRS R8,CPSR.
+            nds->ARM9Write32(addr + 20, 0xEAFFFFFE);
+            for (bool carry : {false, true})
+            for (unsigned run = 0; run < 2; ++run)
+            {
+                cpu.R[1] = test.input; cpu.R[2] = 0x12345678;
+                cpu.R[6] = 0xCCCCCCCC; cpu.R[7] = addr + 16; cpu.R[8] = 0;
+                cpu.CPSR = 0xDF | V | (carry ? C : 0);
+                const bool outCarry = test.op == 0 && test.amount == 0 ? carry : test.carry;
+                const u32 flags = V | (outCarry ? C : 0) | (partial ? Z : NZ(test.result));
+                const bool warm = run == 0 || HasBlock(*nds, arm7, addr | 1, jit);
+                cpu.JumpTo(addr | 1);
+                nds->RunFrame();
+                ++checks;
+                if (!warm || cpu.R[rd] != test.result || cpu.R[8] != (0xDF | flags) ||
+                    (rd != 1 && cpu.R[1] != test.input))
+                {
+                    if (failures++ < 12)
+                        std::fprintf(stderr, "ARM%d Thumb immediate op=%u amount=%u rd=%u partial=%u C=%u: %08x/%08x expected=%08x/%08x\n",
+                            arm7 ? 7 : 9, test.op, test.amount, rd, partial, carry,
+                            cpu.R[rd], cpu.R[8], test.result, 0xDF | flags);
+                }
+            }
+        }
         cpu.JumpTo(Idle);
     }
     std::printf("warmed ARM ALU/shift/partial flags/RRX/PC: %u checks, %u failures\n", checks, failures);
