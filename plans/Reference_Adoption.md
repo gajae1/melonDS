@@ -1,24 +1,24 @@
 # 참고 프로젝트 반영 현황
 
-2026-09-28, 1.1.192 코드 기준. 참고 목록에는 실제 포함한 소스, 오프라인 계수 생성기, 설계·검증 참고 자료가 섞여 있다. 공통 완료 기준이 없으므로 하나의 구현 비율로 합산하지 않는다. 아래는 현재 코드에서 확인한 범위이며 다른 프로젝트의 전체 기능이나 성능을 이식했다는 뜻이 아니다.
+2026-09-28, 1.1.196 코드 기준. 참고 목록에는 실제 포함한 소스, 오프라인 계수 생성기, 설계·검증 참고 자료가 섞여 있다. 공통 완료 기준이 없으므로 하나의 구현 비율로 합산하지 않는다. 아래는 현재 코드에서 확인한 범위이며 다른 프로젝트의 전체 기능이나 성능을 이식했다는 뜻이 아니다.
 
 | 프로젝트·자료 | 현재 반영 범위 | 남은 범위·구분 |
 | --- | --- | --- |
 | Dolphin | 기존 melonDS에서 물려받은 `src/jit/`의 x64·ARM64 emitter, CPU 기능 검출, JIT 메모리 기반이 실제 코드로 사용된다. 저장 I/O의 짧은 읽기·쓰기 처리와 통신 오류 계약도 참고했다. | Dolphin의 최신 JIT 전체를 이식한 것은 아니다. 이번 포크의 정적 블록 연결은 x64 1.1.181, ARM64 1.1.182에 반영됐고 ARM64 실제 장치 속도는 미측정이다. |
-| r8brain-free-src | 고정 7.5 소스에서 만든 최소위상 계수를 MinimumPhase 보간이 실제 사용한다. 1.1.106의 독립 생성 도구, 1.1.121의 고음 보존 계수, 1.1.158의 이력 비용 절감이 반영됐다. | 원본 블록 리샘플러를 런타임에 그대로 호출하지 않는다. `tools/audio-interpolation/reference.cpp`는 오프라인 전용이다. 가변 timer의 처리 비용·청취 평가는 별도다. |
+| r8brain-free-src | 고정 7.5 소스에서 만든 최소위상 계수를 MinimumPhase 보간이 실제 사용한다. 1.1.106의 독립 생성 도구, 1.1.121의 고음 보존 계수, 1.1.158의 이력 비용 절감, 1.1.193의 최소위상 이력 참조 읽기가 반영됐다. | 원본 블록 리샘플러를 런타임에 그대로 호출하지 않는다. `tools/audio-interpolation/reference.cpp`는 오프라인 전용이다. 가변 timer의 처리 비용·청취 평가는 별도다. |
 | Rubber Band | `AudioTimeStretch.cpp`와 빌드 대상에 포함되어 선택형 음높이 유지 배속을 실제 처리한다. | 기본 비활성이다. 모든 속도·장치의 지연이나 장기 끊김 수락까지 완료한 것은 아니다. |
 | miniaudio | DeviceOnly 구현이 Windows WASAPI 출력에 연결돼 있다. 장치 선택·주기 협상·재시도와 SDL fallback을 제품에서 사용한다. | 물리 장치 분리·드라이버별 지연·장기 청취는 별도 검증 범위다. |
 | SpeexDSP | 채널 보간 Q3 후보를 실제 SPU 입력과 비교했다. | 가변 timer 처리와 채널 상대 지연 때문에 채널 보간으로 채택하지 않았다. Rubber Band 내부 의존성에 있는 Speex 코드와 이 보류 후보를 구분한다. |
 | ENet·libslirp | 기존 ENet 기반 LAN/Netplay를 사용하며 payload·peer·연결 수명 검사를 보강했다. libslirp는 4.9.4를 실제 포함하고 서로 다른 IPv4 fragment header 길이 처리를 수정했다. | ENet 도입 자체는 원본 기능이다. 실제 두 PC 게임 통신·인터넷 전체 수락은 남아 있다. |
 | mGBA·libyuv·Opus | GBA Flash 명령·범위 대조(1.1.65/66), 분할 링 복사(1.1.99), 픽셀/오디오 SIMD 설계를 참고했다. 현재 픽셀·오디오는 기능 검출에 따라 스칼라·SSE2·AVX2/FMA·NEON 등을 선택한다. | 해당 엔진·코덱·픽셀 라이브러리 전체를 도입한 것은 아니다. SIMD 범위와 정확성 계약은 커널마다 다르며, 지원 명령 집합 수를 성능 향상률로 세지 않는다. |
 | QEMU·Dynarmic | 번역 블록 상태·무효화·예외와 차등 검증 방법을 참고했다. 자체 JIT와 인터프리터 비교, 조건부 명령·타이밍·블록 연결 회귀 검사가 있다. | QEMU TCG나 Dynarmic JIT를 대체 엔진으로 탑재한 것은 아니다. 다른 에뮬레이터와의 일치는 DS 실기 사이클 일치의 증명이 아니다. |
-| parallel-rdp·Khronos | GPU 작업량 분할·간접 실행 한도·메모리 가시성 설계에 참고했다. 자체 Vulkan 경로는 직접 이미지 표시(1.1.182), 업로드 병합(1.1.186), 대기 분산(1.1.189/191), 빈 타일 생략(1.1.192)까지 구현됐다. | parallel-rdp 엔진 자체를 이식하지 않았다. 1배율 RAM 출력, CPU 2D·일부 캡처 경유가 남아 있다. GPU 2D는 느린 측정 결과 때문에 기본 비활성이다. |
+| parallel-rdp·Khronos | GPU 작업량 분할·간접 실행 한도·메모리 가시성 설계에 참고했다. 자체 Vulkan 경로는 직접 이미지 표시(1.1.182), 업로드 병합(1.1.186), 대기 분산(1.1.189/191), 빈 타일 생략(1.1.192), GPU 2D 입력·스냅샷·제출 비용 감소(1.1.194), 변경 없는 앞부분 보존과 추가분 전송(1.1.195), 같은 OBJ 이력의 직렬 의존성 제거와 캡처 없는 3D 비동기(1.1.196)까지 구현됐다. | parallel-rdp 엔진 자체를 이식하지 않았다. 1배율 RAM 출력, CPU 2D·일부 캡처 경유가 남아 있다. GPU 2D는 선택형·기본 false다. 1.1.196의 4배율 단회 비교에서는 두 게임 모두 CPU2D보다 빨랐지만 모든 장면·1배율·구형 장치의 우위는 입증하지 못했고 캡처 묶음의 동기 완료가 남는다. |
 | Qt QSaveFile·SQLite atomic-commit 설명 | 기존 Platform 경계를 통한 원자적 파일 쓰기를 FAT/NAND export와 저장에 적용했고 실패 반환·기존 목적지 보존을 처리한다. | SQLite를 새로 도입하지 않았다. 폴더 전체 트랜잭션·동시 writer·전원 장애 내구성 전체를 보장하지 않는다. |
 
-근거: [참고 자료 원목록](Reference_Notes_2026-09-11.md), [작업 카탈로그](Task_Catalog.md), [진행 기록](Execution_Order.md), [현재 상태](Current_Status.md), [계수 출처·재생성](../src/audio_interpolation/README.md). 코드 연결점은 `src/jit/`, `src/ARMJIT_Memory.cpp`, `src/AudioInterpolationRenderer.cpp`, `src/frontend/qt_sdl/AudioTimeStretch.cpp`, `src/frontend/qt_sdl/AudioOutput.cpp`, `src/FATStorage.cpp`, `src/DSi_NAND.cpp`다.
+근거: [참고 자료 원목록](Reference_Notes_2026-09-11.md), [작업 카탈로그](Task_Catalog.md), [진행 기록](Execution_Order.md), [현재 상태](Current_Status.md), [버전별 기록](releases/), [계수 출처·재생성](../src/audio_interpolation/README.md). 코드 연결점은 `src/jit/`, `src/ARMJIT_Memory.cpp`, `src/AudioInterpolationRenderer.cpp`, `src/frontend/qt_sdl/AudioTimeStretch.cpp`, `src/frontend/qt_sdl/AudioOutput.cpp`, `src/FATStorage.cpp`, `src/DSi_NAND.cpp`다.
 
 ## OpenGL·Vulkan의 다음 범위
 
-OpenGL은 직접 텍스처 표시, 변경 팔레트 구간 업로드, 중복 텍스처 상태 생략, 빨리 감기 표시 제한까지 반영됐다. 남은 창 크기별 fill/swap 비용과 compute 경로를 조사할 여지는 있다. 최적화가 끝났다는 근거는 없다.
+OpenGL은 직접 텍스처 표시, 변경 팔레트 구간 업로드, 중복 텍스처 상태 생략, 빨리 감기 표시 제한, 1.1.193의 완전 덮개 시 배경 clear 생략까지 반영됐다. 불투명 화면 사각형이 창을 완전히 덮을 때만 clear를 건너뛰며 드라이버 fast clear 비용과 프레임 시간 이득은 미측정이다. 남은 창 크기별 fill/swap 비용과 compute 경로를 조사할 여지는 있다. 최적화가 끝났다는 근거는 없다.
 
-Vulkan의 다음 목표는 남은 CPU↔GPU 전송, 동기 대기와 셰이더 메모리 트래픽을 줄이는 것이다. API가 더 낮은 수준이라는 사실만으로 OpenGL이나 Metal보다 빠르다고 판단하지 않는다. 같은 장면·해상도·출력 조건의 측정으로 채택하며, Mac Metal 상대 성능은 실제 Mac 측정 전에는 미검증으로 남긴다.
+Vulkan의 다음 목표는 남은 CPU↔GPU 전송, 동기 대기와 셰이더 메모리 트래픽을 줄이는 것이다. 1.1.194~196에서 GPU2D의 입력 전송·스냅샷·제출과 같은 OBJ 이력의 직렬 의존성을 줄였지만 캡처 묶음의 동기 완료와 1배율 RAM 경로가 남는다. API가 더 낮은 수준이라는 사실만으로 OpenGL이나 Metal보다 빠르다고 판단하지 않는다. 같은 장면·해상도·출력 조건의 측정으로 채택하며, Mac Metal 상대 성능은 실제 Mac 측정 전에는 미검증으로 남긴다.
