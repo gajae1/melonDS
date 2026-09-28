@@ -564,7 +564,8 @@ target_include_directories(StateLoadMessages PRIVATE "${CMAKE_CURRENT_SOURCE_DIR
 
 foreach(pair IN ITEMS "statePrepareGL|bool EmuThread::prepareGL()"
         "stateReportGL|void EmuThread::reportGLFailure(int win)"
-        "stateClearGL|void EmuThread::clearGLFailure(int win)")
+        "stateClearGL|void EmuThread::clearGLFailure(int win)"
+        "statePaceFrame|void EmuThread::paceFrame(double frametimeStep, bool audioPacesFrames, double perfCountsSec, double& lastTime, double& frameLimitError)")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 name)
     list(GET parts 1 signature)
@@ -601,6 +602,8 @@ else()
 endif()
 add_test(NAME savestate-message-recovery COMMAND StateLoadMessages)
 add_test(NAME audio-settings-message COMMAND StateLoadMessages audio-settings)
+add_test(NAME frame-pacing-resume COMMAND StateLoadMessages frame-pacing)
+set_tests_properties(frame-pacing-resume PROPERTIES TIMEOUT 10)
 add_test(NAME direct-boot-message-failure COMMAND StateLoadMessages boot-failure)
 add_test(NAME gl-state-message-gate COMMAND StateLoadMessages gl-gate)
 set_tests_properties(gl-state-message-gate PROPERTIES TIMEOUT 10)

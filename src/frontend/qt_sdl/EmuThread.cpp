@@ -139,6 +139,7 @@ void EmuThread::run()
 #endif
     const auto applyPendingVideo = [&] {
         if (!videoSettingsDirty) return;
+        framePacingResetRequested = true;
         QMutexLocker renderLocker(&emuInstance->renderLock);
         if (useOpenGL)
             emuInstance->setVSyncGL(true);
@@ -303,6 +304,11 @@ void EmuThread::run()
 
             applyPendingVideo();
 
+            // Rebase after potentially blocking renderer/control work, before
+            // this frame starts. Retain normal running-frame rounding error.
+            if (framePacingResetRequested)
+                rebaseFramePacing(SDL_GetPerformanceCounter() * perfCountsSec, lastTime, frameLimitError);
+
             // process input and hotkeys
             emuInstance->nds->SetKeyMask(emuInstance->inputMask);
 
@@ -364,6 +370,7 @@ void EmuThread::run()
             u32 nlines;
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
             {
+                framePacingResetRequested = true;
                 compileShaders();
                 nlines = 1;
             }
@@ -409,6 +416,7 @@ void EmuThread::run()
                     const auto frame = debugger->Run(
                         runFrame,
                         [&] {
+                            framePacingResetRequested = true;
                             handleMessages();
                             if (emuStatus == emuStatus_Paused)
                             {
@@ -423,6 +431,7 @@ void EmuThread::run()
                                 compileShaders();
                                 return false;
                             }
+                            rebaseFramePacing(SDL_GetPerformanceCounter() * perfCountsSec, lastTime, frameLimitError);
                             return true;
                         });
                     if (!frame) continue;
@@ -551,31 +560,7 @@ void EmuThread::run()
             // differs from the requested speed (including slow motion).
             const bool audioPacesFrames = synchronizeAudio && outputFPS == currentFPS &&
                 (emuInstance->audioIsRunning() || emuInstance->audioStartRequested);
-            if (emuInstance->doLimitFPS && !audioPacesFrames)
-            {
-                double curtime = SDL_GetPerformanceCounter() * perfCountsSec;
-
-                frameLimitError += frametimeStep - (curtime - lastTime);
-                if (frameLimitError < -frametimeStep)
-                    frameLimitError = -frametimeStep;
-                if (frameLimitError > frametimeStep)
-                    frameLimitError = frametimeStep;
-
-                if (round(frameLimitError * 1000.0) > 0.0)
-                {
-                    SDL_Delay(round(frameLimitError * 1000.0));
-                    double timeBeforeSleep = curtime;
-                    curtime = SDL_GetPerformanceCounter() * perfCountsSec;
-                    frameLimitError -= curtime - timeBeforeSleep;
-                }
-
-                lastTime = curtime;
-            }
-            else
-            {
-                lastTime = SDL_GetPerformanceCounter() * perfCountsSec;
-                frameLimitError = 0.0;
-            }
+            paceFrame(frametimeStep, audioPacesFrames, perfCountsSec, lastTime, frameLimitError);
 
             nframes++;
             if (nframes >= 30)
@@ -601,6 +586,7 @@ void EmuThread::run()
         else
         {
             // paused
+            framePacingResetRequested = true;
             nframes = 0;
             lastTime = SDL_GetPerformanceCounter() * perfCountsSec;
             lastMeasureTime = lastTime;
@@ -624,6 +610,35 @@ void EmuThread::run()
         }
 
         handleMessages();
+    }
+}
+
+void EmuThread::paceFrame(double frametimeStep, bool audioPacesFrames, double perfCountsSec, double& lastTime, double& frameLimitError)
+{
+    if (emuInstance->doLimitFPS && !audioPacesFrames)
+    {
+        double curtime = SDL_GetPerformanceCounter() * perfCountsSec;
+
+        frameLimitError += frametimeStep - (curtime - lastTime);
+        if (frameLimitError < -frametimeStep)
+            frameLimitError = -frametimeStep;
+        if (frameLimitError > frametimeStep)
+            frameLimitError = frametimeStep;
+
+        if (round(frameLimitError * 1000.0) > 0.0)
+        {
+            SDL_Delay(round(frameLimitError * 1000.0));
+            double timeBeforeSleep = curtime;
+            curtime = SDL_GetPerformanceCounter() * perfCountsSec;
+            frameLimitError -= curtime - timeBeforeSleep;
+        }
+
+        lastTime = curtime;
+    }
+    else
+    {
+        lastTime = SDL_GetPerformanceCounter() * perfCountsSec;
+        frameLimitError = 0.0;
     }
 }
 
@@ -682,6 +697,10 @@ void EmuThread::handleMessages()
     while (!msgQueue.empty())
     {
         Message msg = msgQueue.dequeue();
+        // A control transaction may pause/restart or borrow the GL context
+        // without ever reaching the idle branch (including paired messages).
+        // Exclude that host work from the next frame's pacing interval.
+        framePacingResetRequested = true;
 #ifdef GDBSTUB_ENABLED
         if (GdbFrame::IsSuspended() &&
             (msg.type == msg_SaveState || msg.type == msg_LoadState || msg.type == msg_UndoStateLoad))
@@ -1085,6 +1104,7 @@ bool EmuThread::prepareGL()
 
 void EmuThread::reportGLFailure(int win)
 {
+    framePacingResetRequested = true;
     const int previous = glFailureWindow.exchange(win);
     emuInstance->audioDisable();
     if (previous < 0) emit windowOpenGLFailed(win);

@@ -233,6 +233,18 @@ private:
     bool emuActive;
     bool stateRecoveryFailed = false;
 
+    // Emulation-thread state: host control work is not guest timing debt.
+    bool framePacingResetRequested = true;
+    void rebaseFramePacing(double now, double& lastTime, double& frameLimitError)
+    {
+        if (!framePacingResetRequested) return;
+        lastTime = now;
+        frameLimitError = 0.0;
+        framePacingResetRequested = false;
+    }
+    void paceFrame(double frametimeStep, bool audioPacesFrames, double perfCountsSec,
+                   double& lastTime, double& frameLimitError);
+
     constexpr static int emuPauseStackRunning = 0;
     constexpr static int emuPauseStackPauseThreshold = 1;
     int emuPauseStack;

@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
+#include <cmath>
 #include <limits>
 #include <new>
 #include <list>
@@ -38,6 +39,15 @@
 using namespace melonDS;
 using Platform::FileLength;
 using Platform::CloseFile;
+
+static u64 frameCounter = 0;
+static std::vector<unsigned> frameSleeps;
+static u64 FrameCounter() { return frameCounter; }
+static void FrameDelay(unsigned milliseconds)
+{
+    frameSleeps.push_back(milliseconds);
+    frameCounter += u64(milliseconds) * 1000;
+}
 
 enum class ImportFailure { None, Short, Error, Oversize };
 static ImportFailure importFailure = ImportFailure::None;
@@ -112,6 +122,8 @@ public:
     FixtureConsole* nds = &console;
     StateLoadResult result = StateLoadResult::Success;
     bool audio = true;
+    bool doLimitFPS = true;
+    u64 pauseWorkTicks = 0;
     bool bootOK = true;
     bool stopOnBootFailure = false;
     std::string lastOSD;
@@ -127,7 +139,7 @@ public:
     QMutex* vulkanRenderLock() { return nullptr; }
 
     EmuInstance() { console.audio = &audio; }
-    void audioDisable() { audio = false; }
+    void audioDisable() { audio = false; frameCounter += pauseWorkTicks; }
     void audioEnable() { audio = true; }
     unsigned audioReloads = 0;
     void audioUpdateSettings() { ++audioReloads; }
@@ -195,6 +207,11 @@ void EmuThread::updateRenderer() { std::abort(); }
 #include "stateReportGL.inc"
 #include "stateClearGL.inc"
 #include "stateThreadConstructor.inc"
+#define SDL_GetPerformanceCounter FrameCounter
+#define SDL_Delay FrameDelay
+#include "statePaceFrame.inc"
+#undef SDL_Delay
+#undef SDL_GetPerformanceCounter
 #define OpenFile OpenImportFile
 #define CloseFile CloseImportFile
 #define FileLength ImportFileLength
@@ -246,6 +263,78 @@ int main(int argc, char** argv)
     check(cacheReplies == 2 && !cacheResult && instance.cacheCalls == 2,
           "Unavailable cache control reported success");
     thread.useOpenGL = false; instance.currentAvailable = true;
+    if (argc == 2 && (std::string(argv[1]) == "frame-pacing" ||
+                     std::string(argv[1]) == "frame-pacing-legacy"))
+    {
+        // The legacy run is a negative control: the unchanged production
+        // limiter executes without the new rebase, as it did before this fix.
+        const bool legacy = std::string(argv[1]) == "frame-pacing-legacy";
+        constexpr double step = 1.0 / 60, secondsPerTick = 1e-6;
+        double lastTime = 0, error = 0;
+        dispatch(EmuThread::msg_EmuRun);
+        for (u64 pauseTicks : {75000u, 2000000u, 250000u})
+        {
+            frameCounter = 100000000;
+            thread.rebaseFramePacing(100, lastTime, error);
+            lastTime = 100;
+            error = -0.0004; // An ordinary retained sub-millisecond residual.
+            instance.pauseWorkTicks = pauseTicks;
+            if (pauseTicks == 250000)
+            {
+                thread.msgQueue.enqueue({.type = EmuThread::msg_EmuPause});
+                thread.msgQueue.enqueue({.type = EmuThread::msg_EmuUnpause});
+                thread.handleMessages(); // No idle loop between the two messages.
+                check(thread.msgSemaphore.tryAcquire(2), "Batched controls lost acknowledgements");
+            }
+            else
+            {
+                dispatch(EmuThread::msg_EmuPause);
+                dispatch(EmuThread::msg_EmuUnpause);
+            }
+            instance.pauseWorkTicks = 0;
+            check(instance.audio && thread.emuStatus == EmuThread::emuStatus_Running,
+                  "Resume pacing changed playback state");
+            const u64 resumed = frameCounter;
+            frameSleeps.clear();
+            for (int frame = 0; frame < 2; ++frame)
+            {
+                if (!legacy) thread.rebaseFramePacing(frameCounter * secondsPerTick, lastTime, error);
+                frameCounter += 2000; // Actual guest/render work belongs to this frame.
+                thread.paceFrame(step, false, secondsPerTick, lastTime, error);
+                const double elapsed = (frameCounter - resumed) * secondsPerTick;
+                check(std::abs(elapsed - (frame + 1) * step) <= 0.001,
+                      "Host pause created a catch-up frame burst");
+            }
+            check(frameSleeps.size() == 2, "Resumed frames bypassed pacing");
+            std::printf("resume pause_us=%llu batched=%d two_frames_us=%llu sleeps=%zu\n",
+                (unsigned long long)pauseTicks, pauseTicks == 250000,
+                (unsigned long long)(frameCounter - resumed), frameSleeps.size());
+        }
+        // Ordinary frames must retain rounding compensation. Resetting the
+        // limiter every frame drifts by about 100 ms over these 300 frames.
+        frameCounter = 200000000;
+        thread.framePacingResetRequested = true;
+        thread.rebaseFramePacing(200, lastTime, error);
+        frameSleeps.clear();
+        for (int frame = 0; frame < 300; ++frame)
+        {
+            thread.rebaseFramePacing(frameCounter * secondsPerTick, lastTime, error);
+            frameCounter += 2000;
+            thread.paceFrame(step, false, secondsPerTick, lastTime, error);
+        }
+        check(std::abs(double(frameCounter - 200000000) - 5000000) <= 1000,
+              "Ordinary frame rounding compensation was lost");
+        frameSleeps.clear();
+        error = 0.010;
+        thread.paceFrame(step, true, secondsPerTick, lastTime, error);
+        check(frameSleeps.empty() && error == 0, "Audio pacing acquired a second wait");
+        instance.doLimitFPS = false;
+        error = 0.010;
+        thread.paceFrame(step, false, secondsPerTick, lastTime, error);
+        check(frameSleeps.empty() && error == 0, "Unlimited mode acquired a frame wait");
+        std::printf("frame pacing %s: %u failures\n", legacy ? "legacy control" : "corrected", failures);
+        return failures ? 1 : 0;
+    }
 #ifdef GDBSTUB_ENABLED
     if (argc == 2 && std::string(argv[1]) == "gdb-suspended")
     {
