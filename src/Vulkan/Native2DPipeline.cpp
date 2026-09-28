@@ -134,6 +134,7 @@ void Pipeline::SetScale(uint32_t scale)
     scaledRaw.reset();
     scaledHistory.reset();
     displayScale = scale;
+    separateReadback = false;
 }
 void Pipeline::Cleanup()
 {
@@ -644,7 +645,27 @@ void Pipeline::ReadFrames(uint32_t buffer, std::array<std::span<uint32_t>, 2> de
     }
     if (!bytes) return;
     Complete();
-    EnsureBuffer(landing, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+    const bool both = !destinations[0].empty() && !destinations[1].empty();
+    const auto readSeparately = [&] {
+        for (uint32_t screen = 0; screen < 2; ++screen)
+            ReadFrame(buffer, screen, destinations[screen], nativeDestinations[screen]);
+    };
+    if (both && separateReadback)
+    {
+        readSeparately();
+        return;
+    }
+    try { EnsureBuffer(landing, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true); }
+    catch (const std::exception&)
+    {
+        if (!both) throw;
+        // Only allocation is retried, before Begin or any transfer. Preserve
+        // the previous, smaller landing buffer and avoid repeating an oversized
+        // allocation on every CPU frame. A scale change permits a fresh attempt.
+        separateReadback = true;
+        readSeparately();
+        return;
+    }
     const auto command = owner->Begin(Device::SubmitKind::FullReadback);
     if (readNative)
         MemoryBarrier(*owner, command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,

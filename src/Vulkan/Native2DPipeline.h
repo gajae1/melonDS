@@ -122,5 +122,6 @@ private:
     uint32_t inputTier = 0;
     uint32_t rawWords = 0;
     uint32_t displayScale = 1;
+    bool separateReadback = false;
 };
 }

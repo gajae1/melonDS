@@ -4,6 +4,7 @@
 #include "GPU_Vulkan.h"
 #include "Vulkan/ComputePipeline.h"
 #include "Vulkan/EmbeddedShaders.h"
+#include "Vulkan/Native2DPipeline.h"
 #include "Savestate.h"
 #include <algorithm>
 #include <array>
@@ -1926,8 +1927,78 @@ void NativeCaptureDeferred(int scale)
     std::printf("Vulkan native capture %dx: deferred last line, first CPU demand, save/reset/destruction PASS\n", scale);
 }
 
+unsigned failedCaptureBegins;
+VKAPI_ATTR VkResult VKAPI_CALL FailCaptureBegin(VkCommandBuffer, const VkCommandBufferBeginInfo*)
+{
+    ++failedCaptureBegins;
+    return VK_ERROR_OUT_OF_HOST_MEMORY;
+}
+
+void NativeCaptureBeginFailure()
+{
+    using namespace Vulkan::Native2D;
+    std::string error;
+    auto device = Vulkan::Device::Create(error);
+    Require(bool(device), error.c_str());
+    auto& table = const_cast<volk::VolkDeviceTable&>(device->Functions());
+    for (bool retainSnapshot : {false, true})
+    {
+        Pipeline pipeline(device, Vulkan::EmbeddedNative2D());
+        CapturePipeline capture(device, Vulkan::EmbeddedNative2DCapture());
+        std::array<u32, 1> memory{};
+        std::array<Record, 1> records{};
+        auto& row = records[0];
+        row.layers.enabled = row.layers.forcedBlank = 1;
+        row.object.historyRead = NoHistory;
+        row.objectWrite = 1024;
+        row.source3DAbort = 1;
+        row.finalDisplay.screensEnabled = 1;
+        row.finalDisplay.dispCnt = 1u << 16;
+        std::array<CaptureCommand, 1> commands{};
+        commands[0].row.control = 1u << 20; // composed A, 256x64, bank A.
+        pipeline.Render(memory, records, {}, 0, &capture, commands);
+        std::array<u16, 256> pixels{};
+        capture.ReadRange(0, 0, pixels);
+        Require(std::all_of(pixels.begin(), pixels.end(), [](u16 p) { return p == 0xFFFF; }),
+            "capture failure fixture did not produce opaque white");
+        const auto retained = retainSnapshot ? capture.Snapshot() : std::shared_ptr<Vulkan::Device::Buffer>{};
+        const auto previousRevision = capture.Revision();
+        // The next batch would capture disabled-layer black. Fail after Prepare
+        // has selected its bank/descriptor, but before any commands can run.
+        row.layers.enabled = row.layers.forcedBlank = 0;
+        const auto original = table.vkBeginCommandBuffer;
+        failedCaptureBegins = 0;
+        table.vkBeginCommandBuffer = FailCaptureBegin;
+        bool failed = false;
+        try { pipeline.Submit(memory, records, {}, 0, &capture, commands); }
+        catch (const std::exception&) { failed = true; }
+        table.vkBeginCommandBuffer = original;
+        Require(failed && failedCaptureBegins == 1 && !pipeline.Pending(),
+            "capture command-begin failure was not injected");
+        pixels.fill(0x1234);
+        bool rejected = false;
+        try { capture.ReadRange(0, 0, pixels); }
+        catch (const std::exception&) { rejected = true; }
+        Require(rejected && std::all_of(pixels.begin(), pixels.end(), [](u16 p) { return p == 0x1234; }),
+            "failed capture preparation exposed stale or uninitialized guest bytes");
+        rejected = false;
+        try { capture.Snapshot(); }
+        catch (const std::exception&) { rejected = true; }
+        Require(rejected && capture.Revision() == previousRevision,
+            "failed capture preparation published a completed snapshot/revision");
+        // A successful retry publishes the new bank and clears the read guard.
+        pipeline.Render(memory, records, {}, 0, &capture, commands);
+        capture.ReadRange(0, 0, pixels);
+        Require(std::all_of(pixels.begin(), pixels.end(), [](u16 p) { return p == 0x8000; }) &&
+            capture.Revision() == previousRevision + 1 && bool(capture.Snapshot()),
+            "capture did not recover after command-begin failure");
+    }
+    std::puts("Vulkan capture begin failure: reused/COW banks reject reads and recover on retry PASS");
+}
+
 void NativeDeferred()
 {
+    NativeCaptureBeginFailure();
     for (int scale : {1, 3})
     {
         auto nds = Console(true, scale), soft = Console(false);

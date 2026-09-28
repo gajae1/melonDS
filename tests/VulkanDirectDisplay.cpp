@@ -26,6 +26,20 @@ static VKAPI_ATTR void VKAPI_CALL Readback(VkCommandBuffer cmd, VkImage image, V
     VkBuffer buffer, uint32_t count, const VkBufferImageCopy* regions) {
     ++downloads; originalReadback(cmd, image, layout, buffer, count, regions);
 }
+static PFN_vkAllocateMemory originalAllocate;
+static unsigned deniedCombinedAllocations;
+static unsigned readbackAllocations;
+static VKAPI_ATTR VkResult VKAPI_CALL LimitReadbackAllocation(VkDevice device,
+    const VkMemoryAllocateInfo* info, const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory) {
+    ++readbackAllocations;
+    // Two 3x screens plus native guest pixels. Single-screen storage still fits.
+    constexpr VkDeviceSize combinedBytes = 2 * (256 * 192 * 3 * 3 * 4 + 256 * 192 * 4);
+    if (info->allocationSize >= combinedBytes) {
+        ++deniedCombinedAllocations;
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    return originalAllocate(device, info, callbacks, memory);
+}
 static void RunRenderer(const std::string& adapter) {
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
@@ -114,7 +128,7 @@ static void RunRenderer(const std::string& adapter) {
 // GPU-composited 2D: resident publication stays device-side, the first CPU
 // demand copies both screens in a single submission, and downloaded pixels
 // match an independent software-rendered frame.
-static void RunNative2D(const std::string& adapter) {
+static void RunNative2D(const std::string& adapter, bool memoryPressure = false) {
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
@@ -131,6 +145,7 @@ static void RunNative2D(const std::string& adapter) {
     static const u32 clearA[2] = {0x001F, 0x03E0};
     constexpr u16 backdropB = 0x7C00;
     for (const int scale : std::array<int, 2>{1, 3}) {
+        if (memoryPressure && scale != 3) continue;
         RendererSettings settings{scale, false, false, false};
         settings.VulkanNative2D = true;
         Require(renderer->SetRenderSettings(settings) && renderer->Native2DActive() &&
@@ -183,13 +198,28 @@ static void RunNative2D(const std::string& adapter) {
             // must add exactly one submission holding both screen copies.
             const auto submitsBefore = renderer->TotalSubmissionCount();
             Renderer::DisplayFrame cpu;
-            Require(renderer->GetDisplayFrame(cpu), "native CPU demand failed");
-            Require(renderer->TotalSubmissionCount() - submitsBefore == 1,
-                "native CPU demand did not copy both screens in one submission");
+            const auto allocatedBefore = readbackAllocations;
+            const auto deniedBefore = deniedCombinedAllocations;
+            originalAllocate = table.vkAllocateMemory;
+            if (memoryPressure) table.vkAllocateMemory = LimitReadbackAllocation;
+            const bool materialized = renderer->GetDisplayFrame(cpu);
+            table.vkAllocateMemory = originalAllocate;
+            Require(materialized, "native CPU demand failed");
+            const u64 expectedSubmissions = memoryPressure ? 2 : 1;
+            if (memoryPressure) {
+                if (frame == 0)
+                    Require(deniedCombinedAllocations > deniedBefore,
+                        "combined readback allocation failure was not injected");
+                else
+                    Require(readbackAllocations == allocatedBefore,
+                        "fallback retried an allocation on the next CPU frame");
+            }
+            Require(renderer->TotalSubmissionCount() - submitsBefore == expectedSubmissions,
+                "native CPU demand used an unexpected number of submissions");
             Require(downloads == downloadsBefore + 2,
                 "native CPU demand must copy each screen image once");
             Require(renderer->GetDisplayFrame(cpu) &&
-                renderer->TotalSubmissionCount() == submitsBefore + 1 &&
+                renderer->TotalSubmissionCount() == submitsBefore + expectedSubmissions &&
                 downloads == downloadsBefore + 2, "repeated native demand resubmitted");
             Require(cpu.kind == Renderer::DisplayFrame::Kind::CpuBGRA &&
                 cpu.width == 256u * scale && cpu.height == 192u * scale &&
@@ -227,7 +257,9 @@ static void RunNative2D(const std::string& adapter) {
     }
     oracleNds.reset();
     nds.reset();
-    std::puts("NATIVE2D scale1/3 resident, one-submission CPU readback, exact pixels, repeated demand PASS");
+    std::puts(memoryPressure ?
+        "NATIVE2D 3x combined allocation OOM: per-screen fallback, exact pixels, no allocation retry PASS" :
+        "NATIVE2D scale1/3 resident, one-submission CPU readback, exact pixels, repeated demand PASS");
 }
 
 int main() {
@@ -243,6 +275,7 @@ int main() {
         originalReadback=table.vkCmdCopyImageToBuffer; table.vkCmdCopyImageToBuffer=Readback;
         RunRenderer(device->Id());
         RunNative2D(device->Id());
+        RunNative2D(device->Id(), true);
         table.vkCmdCopyImageToBuffer=originalReadback;
     } catch(const std::exception& e) { std::fprintf(stderr,"Direct display FAIL: %s\n",e.what()); result=1; }
     return result;

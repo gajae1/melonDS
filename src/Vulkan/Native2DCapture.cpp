@@ -95,7 +95,7 @@ bool CapturePipeline::EnableHires(std::span<const uint32_t> shader,uint32_t scal
 }
 std::shared_ptr<Device::Buffer> CapturePipeline::Snapshot() const {
     CompletePending();
-    if(!initialized || previousBanks) throw std::logic_error("Native capture snapshot is not complete");
+    if(!initialized || !dispatches.empty() || previousBanks) throw std::logic_error("Native capture snapshot is not complete");
     return banks;
 }
 void CapturePipeline::DisableHires() {
@@ -241,7 +241,10 @@ void CapturePipeline::Record(VkCommandBuffer cmd)
 void CapturePipeline::ReadRange(uint32_t bank, uint32_t first, std::span<uint16_t> destination)
 {
     CompletePending();
-    Require(initialized && bank<4 && first<65536 && destination.size()<=65536-first &&
+    // Prepare may have selected a copy-on-write bank before Begin failed.
+    // Only Complete publishes a batch; neither old nor unwritten bytes may
+    // satisfy a read of an unfinished capture.
+    Require(initialized && dispatches.empty() && !previousBanks && bank<4 && first<65536 && destination.size()<=65536-first &&
         !(first&1) && !(destination.size()&1),"Invalid native capture readback range");
     if(destination.empty()) return;
     if(!landing || landing->Size()<destination.size_bytes())
