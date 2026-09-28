@@ -120,11 +120,12 @@ int TestALUExecution(NDSArgs&& args, bool jit)
             }
         }
         // Rm=PC reads +8 with an immediate shift and +12 with a register shift.
-        // ASRS #32 also exercises the shifter's constant PC/carry path.
-        for (unsigned form : {0u, 1u, 2u, 3u})
+        // ASRS #32 also exercises the shifter's constant PC/carry path, and
+        // ADD R2,PC,R1 uses PC as the flagless ADD base.
+        for (unsigned form : {0u, 1u, 2u, 3u, 4u})
         {
             const u32 addr = Code + 0x1100 + form * 32;
-            Write(*nds, addr, {form == 3 ? 0xE1B02041 : form == 2 ? 0xE1B0204F : form == 1 ? 0xE1A0231F : 0xE1A0200F, 0xE10F8000,
+            Write(*nds, addr, {form == 4 ? 0xE08F2001 : form == 3 ? 0xE1B02041 : form == 2 ? 0xE1B0204F : form == 1 ? 0xE1A0231F : 0xE1A0200F, 0xE10F8000,
                               0xE1A00000, 0xE1A00000, 0xE1A00000, 0xEAFFFFFE});
             for (unsigned run = 0; run < 2; ++run)
             {
@@ -134,7 +135,7 @@ int TestALUExecution(NDSArgs&& args, bool jit)
                 cpu.JumpTo(addr);
                 nds->RunFrame();
                 ++checks;
-                const u32 result = form == 3 ? 0xFFFFFFFF : form == 2 ? 0 : addr + 8 + form * 4;
+                const u32 result = form == 4 ? addr + 8 + 0x80000001 : form == 3 ? 0xFFFFFFFF : form == 2 ? 0 : addr + 8 + form * 4;
                 const u32 flags = form == 2 ? 0x500000DF : 0xB00000DF;
                 if (cpu.R[2] != result || cpu.R[8] != flags)
                 {
@@ -144,36 +145,42 @@ int TestALUExecution(NDSArgs&& args, bool jit)
                 }
             }
         }
-        // ADC/SBC/RSC with destination aliases and shifted Operand2. Widened
-        // signed/unsigned arithmetic supplies the oracle, independently of JIT
-        // host flags and the interpreter's flag helper functions.
+        // SUB/RSB/ADD/ADC/SBC/RSC with destination aliases; register,
+        // register-shifted, and #0x80000000 Operand2; and flags live, NZ-dead,
+        // unwritten (S=0), or all overwritten by CMP. Widened signed/unsigned
+        // arithmetic supplies the oracle, independently of JIT host flags and
+        // the interpreter's flag helper functions.
         const struct { u32 a, b; bool carry; } arithmetic[] = {
             {0x7FFFFFFF, 1, 1}, {0x7FFFFFFF, 0x80000000, 1},
             {0xFFFFFFFF, 0, 1}, {0x80000000, 0x80000000, 0},
             {0, 1, 0}, {0x80000000, 1, 1},
         };
-        for (unsigned op = 5; op <= 7; ++op)
+        for (unsigned op = 2; op <= 7; ++op)
         for (unsigned rd : {0u, 1u, 2u})
-        for (unsigned mode = 0; mode < 3; ++mode)
-        for (unsigned shifted : {0u, 1u})
+        for (unsigned mode = 0; mode < 4; ++mode)
+        for (unsigned form = 0; form < 3; ++form)
         {
-            const u32 addr = Code + 0x2000 + (((op - 5) * 9 + rd * 3 + mode) * 2 + shifted) * 32;
-            const u32 opcode = 0xE0000000 | (op << 21) | (mode == 2 ? 0 : 1 << 20) | (rd << 12) | (shifted ? 0x311 : 1);
-            Write(*nds, addr, {opcode, mode == 1 ? 0xE3B06000 : 0xE1A06006,
+            const u32 addr = Code + 0x2000 + ((((op - 2) * 3 + rd) * 4 + mode) * 3 + form) * 32;
+            const u32 operand2 = form == 2 ? 0x02000102 : form == 1 ? 0x311 : 1;
+            const u32 opcode = 0xE0000000 | (op << 21) | (mode == 2 ? 0 : 1 << 20) | (rd << 12) | operand2;
+            Write(*nds, addr, {opcode, mode == 1 ? 0xE3B06000 : mode == 3 ? 0xE1560006 : 0xE1A06006,
                               0xE10F8000, 0x6A000000, 0xE3A0A001, 0xEAFFFFFE});
             for (const auto& test : arithmetic)
             for (unsigned run = 0; run < 2; ++run)
             {
-                u32 a = test.a, b = test.b * (shifted ? 2u : 1u);
-                if (op == 7) std::swap(a, b);
-                const u64 wide = op == 5 ? u64(a) + b + test.carry : u64(a) - b - !test.carry;
-                const s64 signedWide = op == 5 ? s64(s32(a)) + s32(b) + test.carry : s64(s32(a)) - s32(b) - !test.carry;
+                const bool add = op == 4 || op == 5;
+                const bool carryIn = op == 4 ? false : op <= 3 ? true : test.carry;
+                u32 a = test.a, b = form == 2 ? 0x80000000u : test.b * (form ? 2u : 1u);
+                if (op == 3 || op == 7) std::swap(a, b);
+                const u64 wide = add ? u64(a) + b + carryIn : u64(a) - b - !carryIn;
+                const s64 signedWide = add ? s64(s32(a)) + s32(b) + carryIn : s64(s32(a)) - s32(b) - !carryIn;
                 const u32 result = static_cast<u32>(wide);
-                const bool carry = op == 5 ? wide > 0xFFFFFFFF : u64(a) >= u64(b) + !test.carry;
+                const bool carry = add ? wide > 0xFFFFFFFF : u64(a) >= u64(b) + !carryIn;
                 const bool overflow = signedWide > 0x7FFFFFFFLL || signedWide < -0x80000000LL;
                 u32 flags = NZ(result) | (carry ? C : 0) | (overflow ? V : 0);
                 if (mode == 1) flags = (flags & (C | V)) | Z;
                 if (mode == 2) flags = N | V | (test.carry ? C : 0);
+                if (mode == 3) flags = Z | C; // CMP R6,R6 overwrites every flag.
                 cpu.R[0] = test.a;
                 cpu.R[1] = test.b;
                 cpu.R[3] = 1;
@@ -188,8 +195,8 @@ int TestALUExecution(NDSArgs&& args, bool jit)
                     (rd != 0 && cpu.R[0] != test.a) || (rd != 1 && cpu.R[1] != test.b))
                 {
                     if (failures++ < 12)
-                        std::fprintf(stderr, "ARM%d arithmetic op=%u rd=%u mode=%u shift=%u run=%u: %08x/%08x expected=%08x/%08x\n",
-                            arm7 ? 7 : 9, op, rd, mode, shifted, run, cpu.R[rd], cpu.R[8], result, 0xDF | flags);
+                        std::fprintf(stderr, "ARM%d arithmetic op=%u rd=%u mode=%u form=%u run=%u: %08x/%08x expected=%08x/%08x\n",
+                            arm7 ? 7 : 9, op, rd, mode, form, run, cpu.R[rd], cpu.R[8], result, 0xDF | flags);
                 }
             }
         }

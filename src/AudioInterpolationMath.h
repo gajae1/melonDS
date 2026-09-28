@@ -15,6 +15,7 @@
 #define MELONDS_INTERPOLATION_NEON 1
 #endif
 
+#include <array>
 #include <cstdlib>
 #if defined(__SSE2__)
 #include <emmintrin.h>
@@ -70,6 +71,47 @@ inline double Dot(const double* a, const double* b) noexcept
     if (supported && !ForcedScalar()) return DotAVX2(a, b);
 #endif
     return DotScalar(a, b);
+}
+
+#ifdef MELONDS_INTERPOLATION_AVX2
+__attribute__((target("avx2,fma"))) inline std::array<double, 2> DotStereoAVX2(
+    const double* left, const double* right, const double* weights) noexcept
+{
+    __m256d l = _mm256_setzero_pd(), r = _mm256_setzero_pd();
+    for (unsigned i = 0; i < 16; i += 4)
+    {
+        const __m256d w = _mm256_loadu_pd(weights + i);
+        l = _mm256_fmadd_pd(_mm256_loadu_pd(left + i), w, l);
+        r = _mm256_fmadd_pd(_mm256_loadu_pd(right + i), w, r);
+    }
+    const __m128d lp = _mm_add_pd(_mm256_castpd256_pd128(l), _mm256_extractf128_pd(l, 1));
+    const __m128d rp = _mm_add_pd(_mm256_castpd256_pd128(r), _mm256_extractf128_pd(r, 1));
+    return {_mm_cvtsd_f64(_mm_hadd_pd(lp, lp)), _mm_cvtsd_f64(_mm_hadd_pd(rp, rp))};
+}
+#endif
+
+// Both channels use the same coefficients. Share loads and dispatch while
+// retaining each channel's existing Dot reduction order and rounding.
+inline std::array<double, 2> DotStereo(
+    const double* left, const double* right, const double* weights) noexcept
+{
+#ifdef MELONDS_INTERPOLATION_NEON
+    if (!ForcedScalar())
+    {
+        float64x2_t l = vdupq_n_f64(0), r = vdupq_n_f64(0);
+        for (unsigned i = 0; i < 16; i += 2)
+        {
+            const float64x2_t w = vld1q_f64(weights + i);
+            l = vfmaq_f64(l, vld1q_f64(left + i), w);
+            r = vfmaq_f64(r, vld1q_f64(right + i), w);
+        }
+        return {vaddvq_f64(l), vaddvq_f64(r)};
+    }
+#elif defined(MELONDS_INTERPOLATION_AVX2)
+    static const bool supported = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    if (supported && !ForcedScalar()) return DotStereoAVX2(left, right, weights);
+#endif
+    return {DotScalar(left, weights), DotScalar(right, weights)};
 }
 
 // Sinc uses floats and a variable support; keep the existing double kernels

@@ -25,7 +25,7 @@ using namespace Gen;
 namespace melonDS
 {
 
-// uses RSCRATCH3
+// uses RSCRATCH3 only when op2 is also the destination
 void Compiler::Comp_ArithTriOp(void (Compiler::*op)(int, const OpArg&, const OpArg&),
     OpArg rd, OpArg rn, OpArg op2, bool carryUsed, int opFlags)
 {
@@ -36,15 +36,31 @@ void Compiler::Comp_ArithTriOp(void (Compiler::*op)(int, const OpArg&, const OpA
             CMC();
     }
 
+    // With no live guest flag from this instruction, ADD and SUB #imm need no
+    // host flags: LEA or a folded constant replaces the scratch copy.
+    const bool isAdd = op == &Compiler::ADD;
+    const bool flaglessLEA = (isAdd || (op == &Compiler::SUB && op2.IsImm()))
+        && (!(opFlags & opSetsFlags) || CurInstr.SetFlags == 0);
+
     if (rd == rn && !(opFlags & opInvertOp2))
         (this->*op)(32, rd, op2);
-    else if (opFlags & opSymmetric && op2 == R(RSCRATCH))
+    else if (flaglessLEA)
     {
-        if (opFlags & opInvertOp2)
-            NOT(32, op2);
-        (this->*op)(32, op2, rn);
-        MOV(32, rd, op2);
+        if (op2.IsImm())
+        {
+            const u32 offset = isAdd ? op2.Imm32() : 0u - op2.Imm32();
+            if (rn.IsImm())
+                MOV(32, rd, Imm32(rn.Imm32() + offset));
+            else
+                LEA(32, rd.GetSimpleReg(), MDisp(rn.GetSimpleReg(), (s32)offset));
+        }
+        else if (rn.IsImm())
+            LEA(32, rd.GetSimpleReg(), MDisp(op2.GetSimpleReg(), (s32)rn.Imm32()));
+        else
+            LEA(32, rd.GetSimpleReg(), MRegSum(rn.GetSimpleReg(), op2.GetSimpleReg()));
     }
+    else if (opFlags & opSymmetric && !(opFlags & opInvertOp2) && op2 == rd)
+        (this->*op)(32, rd, rn);
     else
     {
         if (opFlags & opInvertOp2)
@@ -56,9 +72,13 @@ void Compiler::Comp_ArithTriOp(void (Compiler::*op)(int, const OpArg&, const OpA
             }
             NOT(32, op2);
         }
-        MOV(32, R(RSCRATCH3), rn);
-        (this->*op)(32, R(RSCRATCH3), op2);
-        MOV(32, rd, R(RSCRATCH3));
+        // Build the result in rd unless op2 still names it.
+        const OpArg dst = op2 == rd ? R(RSCRATCH3) : rd;
+        if (dst != rn)
+            MOV(32, dst, rn);
+        (this->*op)(32, dst, op2);
+        if (dst != rd)
+            MOV(32, rd, dst);
     }
 
     if (opFlags & opSetsFlags)

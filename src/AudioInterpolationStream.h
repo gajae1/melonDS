@@ -185,10 +185,17 @@ public:
                 }
                 continue;
             }
-            const double left = AudioInterpolationMath::Dot(block.Moments[0].data(), coefficients[row].data());
-            value[0] -= left;
-            value[1] -= block.SameSides ? left
-                : AudioInterpolationMath::Dot(block.Moments[1].data(), coefficients[row].data());
+            if (block.SameSides)
+            {
+                const double both = AudioInterpolationMath::Dot(block.Moments[0].data(), coefficients[row].data());
+                value[0] -= both; value[1] -= both;
+            }
+            else
+            {
+                const auto stereo = AudioInterpolationMath::DotStereo(block.Moments[0].data(),
+                    block.Moments[1].data(), coefficients[row].data());
+                value[0] -= stereo[0]; value[1] -= stereo[1];
+            }
             if (keep != i) Blocks[keep] = block;
             ++keep;
         }

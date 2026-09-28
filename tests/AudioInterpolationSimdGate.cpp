@@ -21,15 +21,18 @@ int main()
     double* m = mStorage + 1;
     for (unsigned pattern = 0; pattern < 4; ++pattern)
     {
-        double expected = 0;
+        double expected = 0, expectedRight = 0;
         for (unsigned i = 0; i < 16; ++i)
         {
             a[i] = double(i + 1) * (pattern & 1 ? -1 : 1);
             b[i] = (pattern & 2) && (i & 1) ? -0.5 : 0.25;
             m[i] = double(i);
             expected += a[i] * b[i];
+            expectedRight += m[i] * b[i];
         }
         if (melonDS::AudioInterpolationMath::Dot(a, b) != expected) return 2;
+        const auto stereo = melonDS::AudioInterpolationMath::DotStereo(a, m, b);
+        if (stereo[0] != expected || stereo[1] != expectedRight) return 5;
         melonDS::AudioInterpolationMath::Accumulate(m, 0.5, a);
         for (unsigned i = 0; i < 16; ++i)
             if (m[i] != double(i) + 0.5 * a[i]) return 3;
