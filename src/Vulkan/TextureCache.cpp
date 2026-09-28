@@ -52,16 +52,22 @@ bool TextureLoader::BeginTextureUpdate(u64& generation)
     if(!s.hasCaptured)s.texture.reset();
     // No GPU bank snapshot is retained here. Queued decodes own it only until
     // the upload/render fence, avoiding unnecessary COW on the next capture.
-    // The palette has no native hook reporting its own change, so its snapshot
-    // is refreshed every update; the assembled texture is dropped in
-    // TextureBytes only when its bytes actually change.
-    s.palette.reset();
+    // The palette snapshot is immutable and stays valid while its coherent
+    // bytes are unchanged, so it survives updates without captures (a bank
+    // recapture maps it LCDC for a frame). TextureBytes drops it only on a
+    // real palette change or when the native pipeline goes away, and drops
+    // the assembled texture only when its bytes actually change.
     generation=s.generation;
     return s.active;
 }
-const u8* TextureLoader::TextureBytes(bool cpuTextureChanged)
+const u8* TextureLoader::TextureBytes(bool cpuTextureChanged,bool texPalChanged)
 {
     auto& s=*source;
+    // Checked before any early return: a coherent-byte change must retire the
+    // snapshot even in an update with no captured decode, and losing the
+    // native pipeline must not retain it. Queued decodes still holding the
+    // previous buffer keep it alive through shared ownership.
+    if(texPalChanged||!s.active)s.palette.reset();
     if(!s.hasCaptured)return s.gpu.VRAMFlat_Texture;
     if(s.refresh || cpuTextureChanged || s.words.empty()) {
         s.words.resize(131072+2048);

@@ -219,5 +219,93 @@ inline std::array<float, 2> DotFloatStereo(
 #endif
 #endif
 }
+
+// Filter two phases together, sharing stereo history loads while preserving
+// each dot's accumulation and reduction order. Results are A-left, A-right,
+// B-left, B-right. As with DotFloatStereo, count is a multiple of 16.
+#ifdef MELONDS_INTERPOLATION_AVX2
+__attribute__((target("avx2,fma"))) inline std::array<float, 4> DotFloatStereoPairAVX2(
+    const float* left, const float* right, const float* first,
+    const float* second, unsigned count) noexcept
+{
+    __m256 l0 = _mm256_setzero_ps(), r0 = _mm256_setzero_ps();
+    __m256 l1 = _mm256_setzero_ps(), r1 = _mm256_setzero_ps();
+    for (unsigned i = 0; i < count; i += 8)
+    {
+        const __m256 hl = _mm256_loadu_ps(left+i);
+        const __m256 hr = _mm256_loadu_ps(right+i);
+        const __m256 w0 = _mm256_loadu_ps(first+i);
+        l0 = _mm256_fmadd_ps(hl, w0, l0);
+        r0 = _mm256_fmadd_ps(hr, w0, r0);
+        const __m256 w1 = _mm256_loadu_ps(second+i);
+        l1 = _mm256_fmadd_ps(hl, w1, l1);
+        r1 = _mm256_fmadd_ps(hr, w1, r1);
+    }
+    const __m128 l0p = _mm_add_ps(_mm256_castps256_ps128(l0), _mm256_extractf128_ps(l0, 1));
+    const __m128 r0p = _mm_add_ps(_mm256_castps256_ps128(r0), _mm256_extractf128_ps(r0, 1));
+    const __m128 l1p = _mm_add_ps(_mm256_castps256_ps128(l1), _mm256_extractf128_ps(l1, 1));
+    const __m128 r1p = _mm_add_ps(_mm256_castps256_ps128(r1), _mm256_extractf128_ps(r1, 1));
+    const __m128 l0h = _mm_hadd_ps(l0p, l0p), r0h = _mm_hadd_ps(r0p, r0p);
+    const __m128 l1h = _mm_hadd_ps(l1p, l1p), r1h = _mm_hadd_ps(r1p, r1p);
+    return {_mm_cvtss_f32(_mm_hadd_ps(l0h, l0h)), _mm_cvtss_f32(_mm_hadd_ps(r0h, r0h)),
+            _mm_cvtss_f32(_mm_hadd_ps(l1h, l1h)), _mm_cvtss_f32(_mm_hadd_ps(r1h, r1h))};
+}
+#endif
+
+inline std::array<float, 4> DotFloatStereoPair(
+    const float* left, const float* right, const float* first,
+    const float* second, unsigned count) noexcept
+{
+    if (ForcedScalar())
+        return {DotFloatScalar(left, first, count), DotFloatScalar(right, first, count),
+                DotFloatScalar(left, second, count), DotFloatScalar(right, second, count)};
+#ifdef MELONDS_INTERPOLATION_NEON
+    float32x4_t l0 = vdupq_n_f32(0), r0 = vdupq_n_f32(0);
+    float32x4_t l1 = vdupq_n_f32(0), r1 = vdupq_n_f32(0);
+    for (unsigned i = 0; i < count; i += 4)
+    {
+        const float32x4_t hl = vld1q_f32(left+i);
+        const float32x4_t hr = vld1q_f32(right+i);
+        const float32x4_t w0 = vld1q_f32(first+i);
+        l0 = vfmaq_f32(l0, hl, w0);
+        r0 = vfmaq_f32(r0, hr, w0);
+        const float32x4_t w1 = vld1q_f32(second+i);
+        l1 = vfmaq_f32(l1, hl, w1);
+        r1 = vfmaq_f32(r1, hr, w1);
+    }
+    return {vaddvq_f32(l0), vaddvq_f32(r0), vaddvq_f32(l1), vaddvq_f32(r1)};
+#else
+#ifdef MELONDS_INTERPOLATION_AVX2
+    static const bool supported = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    if (supported) return DotFloatStereoPairAVX2(left, right, first, second, count);
+#endif
+#if defined(__SSE2__)
+    __m128 l0 = _mm_setzero_ps(), r0 = _mm_setzero_ps();
+    __m128 l1 = _mm_setzero_ps(), r1 = _mm_setzero_ps();
+    for (unsigned i = 0; i < count; i += 4)
+    {
+        const __m128 hl = _mm_loadu_ps(left+i);
+        const __m128 hr = _mm_loadu_ps(right+i);
+        const __m128 w0 = _mm_loadu_ps(first+i);
+        l0 = _mm_add_ps(l0, _mm_mul_ps(hl, w0));
+        r0 = _mm_add_ps(r0, _mm_mul_ps(hr, w0));
+        const __m128 w1 = _mm_loadu_ps(second+i);
+        l1 = _mm_add_ps(l1, _mm_mul_ps(hl, w1));
+        r1 = _mm_add_ps(r1, _mm_mul_ps(hr, w1));
+    }
+    l0 = _mm_add_ps(l0, _mm_movehl_ps(l0, l0));
+    r0 = _mm_add_ps(r0, _mm_movehl_ps(r0, r0));
+    l1 = _mm_add_ps(l1, _mm_movehl_ps(l1, l1));
+    r1 = _mm_add_ps(r1, _mm_movehl_ps(r1, r1));
+    return {_mm_cvtss_f32(_mm_add_ss(l0, _mm_shuffle_ps(l0, l0, 1))),
+            _mm_cvtss_f32(_mm_add_ss(r0, _mm_shuffle_ps(r0, r0, 1))),
+            _mm_cvtss_f32(_mm_add_ss(l1, _mm_shuffle_ps(l1, l1, 1))),
+            _mm_cvtss_f32(_mm_add_ss(r1, _mm_shuffle_ps(r1, r1, 1)))};
+#else
+    return {DotFloatScalar(left, first, count), DotFloatScalar(right, first, count),
+            DotFloatScalar(left, second, count), DotFloatScalar(right, second, count)};
+#endif
+#endif
+}
 }
 #endif

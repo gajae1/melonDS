@@ -2085,7 +2085,7 @@ struct CapturedTextureInputProbe
     volk::VolkDeviceTable& functions;
     PFN_vkCreateBuffer original;
     PFN_vkCmdCopyBufferToImage originalImageCopy;
-    unsigned inputs = 0, textureUploads = 0;
+    unsigned inputs = 0, palettes = 0, textureUploads = 0;
     explicit CapturedTextureInputProbe(Vulkan::Device& device)
         : functions(const_cast<volk::VolkDeviceTable&>(device.Functions())), original(functions.vkCreateBuffer),
           originalImageCopy(functions.vkCmdCopyBufferToImage)
@@ -2107,6 +2107,8 @@ struct CapturedTextureInputProbe
         const auto result = active->original(device, info, allocation, buffer);
         if (result == VK_SUCCESS && info->size == (131072 + 2048) * 4 &&
             info->usage == VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ++active->inputs;
+        if (result == VK_SUCCESS && info->size == 131072 &&
+            info->usage == VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ++active->palettes;
         return result;
     }
 };
@@ -2141,13 +2143,16 @@ void NativeTextureInputReuse()
     }
     CapturedTextureInputProbe probe(*renderer.DisplayDevice());
     unsigned phase = 0;
-    auto check = [&] {
+    auto check = [&](unsigned format = 7, u32 expectedPixel = 0) {
         for (auto* console : consoles)
         {
-            auto& poly = Scene(*console, 7, false, false);
+            auto& poly = Scene(*console, format, false, false);
             poly.TexParam |= (5u << 20) | (5u << 23);
-            for (auto* vertex : std::span(poly.Vertices, poly.NumVertices))
+            for (auto* vertex : std::span(poly.Vertices, poly.NumVertices)) {
                 vertex->TexCoords[0] = vertex->TexCoords[1] = 80 * 16;
+                if (format != 7)
+                    vertex->FinalColor[0] = vertex->FinalColor[1] = vertex->FinalColor[2] = 63 << 3;
+            }
         }
         const auto actual = Screen(*nds), expected = Screen(*reference);
         if (actual != expected) {
@@ -2157,6 +2162,8 @@ void NativeTextureInputReuse()
         }
         ++phase;
         Require(actual == expected, "native captured texture baseline or GPU snapshot became stale");
+        if (expectedPixel) Require(actual[80 * 256 + 80] == expectedPixel,
+            "captured indexed texture did not use the current palette");
     };
     check();
     Require(probe.inputs == 1 && probe.textureUploads == 1, "native captured texture input was not prepared");
@@ -2172,6 +2179,27 @@ void NativeTextureInputReuse()
     for(auto* console : consoles)console->ARM9Write8(0x04000241, 0x83);
     check();
     Require(probe.textureUploads == uploads + 1, "source-bank capture did not refresh decoded texture");
+    Require(probe.palettes == 1, "unchanged captured-texture palette was reallocated");
+    auto palette = [&](u16 color) {
+        for (auto* console : consoles) {
+            console->ARM9Write8(0x04000244, 0x80);
+            for (u32 i = 0; i < 256; ++i) console->ARM9Write16(0x06880000 + i * 2, color);
+            console->ARM9Write8(0x04000244, 0x83);
+        }
+    };
+    palette(0x03E0);
+    check(4, 0xFF00FF00);
+    Require(probe.palettes == 2, "changed palette did not replace its immutable input");
+    capture(1);
+    for (auto* console : consoles) console->ARM9Write8(0x04000241, 0x83);
+    check(4, 0xFF00FF00);
+    Require(probe.palettes == 2, "new captured bytes redundantly uploaded an unchanged palette");
+    palette(0x7C00);
+    // Observe the new palette during an update that needs no captured decode.
+    // The next indexed decode must not resurrect the old green snapshot.
+    for (auto* console : consoles) { Scene(*console, 0, false, false); Screen(*console); }
+    check(4, 0xFF0000FF);
+    Require(probe.palettes == 3, "palette change without an immediate decode was lost");
     for (u32 bank : {0u, 1u})
     {
         for (auto* console : consoles)
@@ -2188,7 +2216,7 @@ void NativeTextureInputReuse()
         Require(probe.inputs == oldInputs + (bank == 0 ? 1 : 0),
             "CPU contribution refresh or CPU-only fallback allocated unexpected texture input");
     }
-    std::puts("Native captured texture: revision-only input reuse, unrelated-bank decode reuse, source-bank GPU refresh and CPU ownership match Software PASS");
+    std::puts("Native captured texture: immutable palette reuse/refresh, revision-only input reuse, bank invalidation and CPU ownership match Software PASS");
 }
 
 void NativeDeferred()

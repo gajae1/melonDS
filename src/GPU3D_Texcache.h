@@ -155,7 +155,7 @@ public:
 
         TextureBytes = nullptr;
         if constexpr (HasNativeTexHooks)
-            TextureBytes = TexLoader.TextureBytes(textureChanged);
+            TextureBytes = TexLoader.TextureBytes(textureChanged, texPalChanged);
         if (!TextureBytes)
             TextureBytes = GPU.VRAMFlat_Texture;
 
@@ -450,7 +450,7 @@ private:
         const TexHandleT& handle, u64& generation)
     {
         { loader.BeginTextureUpdate(generation) } -> std::convertible_to<bool>;
-        { loader.TextureBytes(bool{}) } -> std::convertible_to<const u8*>;
+        { loader.TextureBytes(bool{}, bool{}) } -> std::convertible_to<const u8*>;
         { loader.TextureSource(u32{}, u32{}) } -> std::convertible_to<u64>;
         { loader.DecodeTexture(handle, u32{}, u32{}, u32{}) };
     };

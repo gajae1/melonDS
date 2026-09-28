@@ -224,13 +224,16 @@ void AudioSincOutput::Push(const s16* stereo)
         const float fraction = float(phase-index);
         const float* a = Weights.data() + index * Count;
         const float* b = a + Count;
-        const auto first = AudioInterpolationMath::DotFloatStereo(
-            History[0].data()+Head, History[1].data()+Head, a, Count);
-        const auto second = AudioInterpolationMath::DotFloatStereo(
-            History[0].data()+Head, History[1].data()+Head, b, Count);
+        // Both phases filter the same history, so one paired kernel shares its
+        // loads while keeping each dot's accumulation order. Phase-major:
+        // pair[0]/[1] are phase A left/right, pair[2]/[3] phase B left/right.
+        const auto pair = AudioInterpolationMath::DotFloatStereoPair(
+            History[0].data()+Head, History[1].data()+Head, a, b, Count);
         for (unsigned ch = 0; ch < 2; ++ch)
         {
-            const float value = first[ch] + fraction*(second[ch]-first[ch]);
+            const float first = pair[ch];
+            const float second = pair[2+ch];
+            const float value = first + fraction*(second-first);
             Pending.push_back(s16(std::clamp(RoundSample(value), -32768, 32767)));
         }
         Position += Step;

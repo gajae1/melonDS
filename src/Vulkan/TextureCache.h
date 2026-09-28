@@ -16,7 +16,7 @@ struct TextureLoader
     ComputePipeline& Pipeline;
     TextureLoader(ComputePipeline& pipeline, VulkanRenderer& parent, GPU& gpu);
     bool BeginTextureUpdate(u64& generation);
-    const u8* TextureBytes(bool cpuTextureChanged);
+    const u8* TextureBytes(bool cpuTextureChanged, bool texPalChanged);
     u64 TextureSource(u32 start, u32 size);
     void DecodeTexture(const TextureHandle& texture, u32 layer, u32 texParam, u32 palBase);
     bool DecodeClearBitmap();

@@ -2,7 +2,9 @@
 // Exercises PCM16 decoding, loop history, the mixer and the real 48 kHz PCM
 // output. The companion spectrum check measures these files, not FIR taps.
 #include "NDS.h"
+#include "AudioInterpolationMath.h"
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -17,6 +19,38 @@ using namespace melonDS;
 static void Require(bool condition, const char* message)
 {
     if (!condition) throw std::runtime_error(message);
+}
+
+static void PairedPhaseTest()
+{
+    std::array<float, 320> left, right, first, second;
+    u32 random = 0x4712A35B;
+    auto next = [&] { random ^= random << 13; random ^= random >> 17; random ^= random << 5; return random; };
+    for (unsigned trial = 0; trial < 32; ++trial)
+    {
+        for (unsigned i = 0; i < left.size(); ++i)
+        {
+            left[i] = s16(next()); right[i] = s16(next());
+            first[i] = s16(next()) * 0.000031f;
+            second[i] = s16(next()) * 0.000017f;
+        }
+        for (unsigned count : {48u, 64u, 112u, 304u})
+        {
+            const float* l = left.data() + (trial & 3);
+            const float* r = trial & 4 ? l : right.data() + (trial & 3);
+            const float* a = first.data() + (trial & 3);
+            const float* b = trial & 8 ? a : second.data() + (trial & 3);
+            const auto oldA = AudioInterpolationMath::DotFloatStereo(l, r, a, count);
+            const auto oldB = AudioInterpolationMath::DotFloatStereo(l, r, b, count);
+            const auto paired = AudioInterpolationMath::DotFloatStereoPair(l, r, a, b, count);
+            for (unsigned ch = 0; ch < 2; ++ch)
+            {
+                Require(std::bit_cast<u32>(paired[ch]) == std::bit_cast<u32>(oldA[ch]) &&
+                    std::bit_cast<u32>(paired[2 + ch]) == std::bit_cast<u32>(oldB[ch]),
+                    "paired Sinc phases changed SIMD accumulation or reduction order");
+            }
+        }
+    }
 }
 
 static std::vector<u8> Save(NDS& nds)
@@ -243,6 +277,7 @@ int main(int argc, char** argv) try
 {
     if (argc == 2 && std::string(argv[1]) == "--history")
     {
+        PairedPhaseTest();
         HistoryTest();
         OutputTest();
         return 0;
