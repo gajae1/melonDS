@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.212"><img src="https://img.shields.io/badge/fork_release-1.1.212-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.213"><img src="https://img.shields.io/badge/fork_release-1.1.213-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,7 +19,7 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.212 release record](plans/releases/1.1.212.md). 1.1.212 isolates SDL3 playback/microphone buffer requests, shows requested and active output block sizes, and exposes audio synchronization in the audio dialog without changing its saved setting. Interrupted audio waits now finish before input is sampled for the resumed frame. These changes do not establish lower physical latency or resolve all audio crackling. The current Windows test endpoint has a fixed 10 ms shared-mode period. GPU 2D remains opt-in; a universal Vulkan advantage over OpenGL or Metal has not been established.
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.213 release record](plans/releases/1.1.213.md). 1.1.213 lets OpenGL Compute binning emit final work descriptors for single-variant batches, skipping the offset and sorting dispatches and their barriers. This follows the existing Vulkan path and does not change the classic OpenGL renderer. Pixel equivalence and reduced dispatch work do not establish game FPS or physical latency gains. Audio synchronization remains a user choice; asynchronous clock correction is not enabled. GPU 2D remains opt-in; a universal Vulkan advantage over OpenGL or Metal has not been established.
 
 ## How to use
 
