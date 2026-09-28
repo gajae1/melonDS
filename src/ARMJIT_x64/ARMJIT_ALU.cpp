@@ -95,13 +95,14 @@ void Compiler::Comp_ArithTriOpReverse(void (Compiler::*op)(int, const Gen::OpArg
             CMC();
     }
 
-    if (op2 != R(RSCRATCH))
-    {
-        MOV(32, R(RSCRATCH), op2);
-        op2 = R(RSCRATCH);
-    }
-    (this->*op)(32, op2, rn);
-    MOV(32, rd, op2);
+    // Reverse subtraction starts from op2. Preserve rn when it is also rd;
+    // otherwise compute in rd and avoid copying the temporary result back.
+    const OpArg dst = rd == rn ? R(RSCRATCH) : rd;
+    if (dst != op2)
+        MOV(32, dst, op2);
+    (this->*op)(32, dst, rn);
+    if (dst != rd)
+        MOV(32, rd, dst);
 
     if (opFlags & opSetsFlags)
         Comp_RetriveFlags(opFlags & opInvertCarry, opFlags & opRetriveCV, carryUsed);
