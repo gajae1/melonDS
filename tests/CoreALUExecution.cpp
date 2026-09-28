@@ -145,7 +145,7 @@ int TestALUExecution(NDSArgs&& args, bool jit)
                 }
             }
         }
-        // SUB/RSB/ADD/ADC/SBC/RSC with destination aliases; register,
+        // SUB/RSB/ADD/ADC/SBC/RSC/BIC with destination aliases; register,
         // register-shifted, and #0x80000000 Operand2; and flags live, NZ-dead,
         // unwritten (S=0), or all overwritten by CMP. Widened signed/unsigned
         // arithmetic supplies the oracle, independently of JIT host flags and
@@ -155,7 +155,7 @@ int TestALUExecution(NDSArgs&& args, bool jit)
             {0xFFFFFFFF, 0, 1}, {0x80000000, 0x80000000, 0},
             {0, 1, 0}, {0x80000000, 1, 1},
         };
-        for (unsigned op = 2; op <= 7; ++op)
+        for (unsigned op : {2u, 3u, 4u, 5u, 6u, 7u, 14u})
         for (unsigned rd : {0u, 1u, 2u})
         for (unsigned mode = 0; mode < 4; ++mode)
         for (unsigned form = 0; form < 3; ++form)
@@ -174,9 +174,11 @@ int TestALUExecution(NDSArgs&& args, bool jit)
                 if (op == 3 || op == 7) std::swap(a, b);
                 const u64 wide = add ? u64(a) + b + carryIn : u64(a) - b - !carryIn;
                 const s64 signedWide = add ? s64(s32(a)) + s32(b) + carryIn : s64(s32(a)) - s32(b) - !carryIn;
-                const u32 result = static_cast<u32>(wide);
-                const bool carry = add ? wide > 0xFFFFFFFF : u64(a) >= u64(b) + !carryIn;
-                const bool overflow = signedWide > 0x7FFFFFFFLL || signedWide < -0x80000000LL;
+                const u32 result = op == 14 ? a & ~b : static_cast<u32>(wide);
+                // Logical instructions take C from the shifter and preserve V.
+                const bool carry = op == 14 ? (form == 2 || (form == 1 ? bool(test.b & N) : test.carry)) :
+                    add ? wide > 0xFFFFFFFF : u64(a) >= u64(b) + !carryIn;
+                const bool overflow = op == 14 || signedWide > 0x7FFFFFFFLL || signedWide < -0x80000000LL;
                 u32 flags = NZ(result) | (carry ? C : 0) | (overflow ? V : 0);
                 if (mode == 1) flags = (flags & (C | V)) | Z;
                 if (mode == 2) flags = N | V | (test.carry ? C : 0);

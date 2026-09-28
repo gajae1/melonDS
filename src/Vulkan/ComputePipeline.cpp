@@ -22,7 +22,7 @@ void ImageBarrier(const volk::VolkDeviceTable& f,VkCommandBuffer command,VkImage
 
 ComputePipeline::ComputePipeline(std::shared_ptr<Device> device,const Shaders& shaders,int scale)
     :owner(std::move(device)),f(owner->Functions()),device(owner->Handle()),
-    Resources(scale, owner->Properties().limits), hostReadback(Resources.Pixels)
+    Resources(scale, owner->Properties().limits)
 {
     try{Init(shaders);}catch(...){Cleanup();throw;}
 }
@@ -59,9 +59,10 @@ void ComputePipeline::EnableNativeReadback(std::span<const uint32_t> shader)
     if(nativePipeline)return;
     if(shader.empty())throw std::invalid_argument("Missing native readback shader");
     try {
-        nativeHostReadback.resize(256*192);
         nativeReadback=owner->CreateBuffer(256*192*sizeof(uint32_t),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             true,VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        if(!(nativeReadback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+            nativeHostReadback.resize(256*192);
         const VkDescriptorSetLayoutBinding entries[]={
             {0,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
             {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
@@ -165,8 +166,6 @@ void ComputePipeline::Init(const Shaders& shaders)
             VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|(i==7?VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT:0);
         buffers[i]=owner->CreateBuffer(Resources.Sizes[i],usage,false);
     }
-    readback=owner->CreateBuffer(Resources.Pixels*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,true,
-        VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     output=CreateOutput();
     clearColor=owner->CreateImage(256,256,1,VK_FORMAT_R32_UINT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     clearDepth=owner->CreateImage(256,256,1,VK_FORMAT_R32_UINT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
@@ -669,6 +668,9 @@ void ComputePipeline::SubmitView(std::span<const Batch> batches,Readback mode)
             variantCount+=batch.variants.size();polygonCount+=batch.polygons.size();
         }
         if(variantCount>2048||polygonCount>2048)throw std::invalid_argument("Compute frame exceeds DS polygon capacity");
+        // Allocate before recording so an allocation failure leaves the device
+        // usable and pending texture uploads can still be completed below.
+        if(mode==Readback::Full)PrepareFullReadback();
         if(retainOutputs)SelectOutput();
     } catch(...) {
         // Invalid frames still complete already queued uploads, as they did
@@ -773,7 +775,7 @@ void ComputePipeline::RecordNativeReadback(VkCommandBuffer command)
 std::span<const uint32_t> ComputePipeline::NativeReadbackPixels()
 {
     if(nativeReadback->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
-        return {static_cast<const uint32_t*>(nativeReadback->Data()),nativeHostReadback.size()};
+        return {static_cast<const uint32_t*>(nativeReadback->Data()),256*192};
     RenderCostVulkanScope copy(owner->Costs(), Cost::NativeCopy);
     std::memcpy(nativeHostReadback.data(),nativeReadback->Data(),nativeHostReadback.size()*sizeof(uint32_t));
     if (owner->Costs()) owner->Costs()->Transfer(Cost::NativeCopyBytes, nativeHostReadback.size()*sizeof(uint32_t));
@@ -800,6 +802,18 @@ std::span<const uint32_t> ComputePipeline::ReadNativeView(const std::shared_ptr<
     } catch(...) { BindNativeImage(*output); throw; }
     BindNativeImage(*output);
     return NativeReadbackPixels();
+}
+
+void ComputePipeline::PrepareFullReadback()
+{
+    if(readback)return;
+    auto buffer=owner->CreateBuffer(Resources.Pixels*sizeof(uint32_t),VK_BUFFER_USAGE_TRANSFER_DST_BIT,true,
+        VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    // Cached mapped memory is already the returned CPU view. Reserve a second
+    // CPU copy only when the device cannot provide that memory type.
+    if(!(buffer->MemoryProperties()&VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+        hostReadback.resize(Resources.Pixels);
+    readback=std::move(buffer);
 }
 
 void ComputePipeline::RecordFullReadback(VkCommandBuffer command)
@@ -832,6 +846,7 @@ std::span<const uint32_t> ComputePipeline::ReadbackView()
 {
     if(fullReadbackValid)return FullReadbackPixels();
     RenderCostVulkanScope cost(owner->Costs(), Cost::RecordFullReadback);
+    PrepareFullReadback();
     const auto command=owner->Begin(Device::SubmitKind::FullReadback);
     RecordFullReadback(command);
     owner->SubmitAndWait();

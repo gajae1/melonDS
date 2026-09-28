@@ -508,6 +508,72 @@ static void Frames(unsigned scale,const std::string& preferred)
     }
 }
 
+static PFN_vkCreateBuffer createReadbackBuffer;
+static unsigned rejectedReadbacks;
+static VKAPI_ATTR VkResult VKAPI_CALL RejectFullReadback(VkDevice device,const VkBufferCreateInfo* info,
+    const VkAllocationCallbacks* allocation,VkBuffer* buffer)
+{
+    if(info->usage==VK_BUFFER_USAGE_TRANSFER_DST_BIT) {
+        ++rejectedReadbacks;
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    return createReadbackBuffer(device,info,allocation,buffer);
+}
+
+static void DeferredReadback(const std::string& preferred)
+{
+    constexpr unsigned scale=3;
+    std::string error;auto device=Vulkan::Device::Create(error,preferred);
+    if(!device)throw std::runtime_error(error);
+    auto& functions=const_cast<volk::VolkDeviceTable&>(device->Functions());
+    struct Restore {
+        volk::VolkDeviceTable& functions;
+        PFN_vkCreateBuffer original;
+        ~Restore(){functions.vkCreateBuffer=original;}
+    } restore{functions,functions.vkCreateBuffer};
+    createReadbackBuffer=restore.original;rejectedReadbacks=0;
+    functions.vkCreateBuffer=RejectFullReadback;
+    Vulkan::ComputePipeline pipeline(device,Vulkan::EmbeddedShaders(scale),scale);
+    pipeline.EnableNativeReadback(Vulkan::EmbeddedNativeReadback());
+    Vulkan::ComputePipeline::Batch batch{};
+    batch.meta.ClearColor=0x1F112233;batch.meta.ClearDepth=0xFFFFFF;
+    const std::span<const Vulkan::ComputePipeline::Batch> batches(&batch,1);
+    using Readback=Vulkan::ComputePipeline::Readback;
+    const auto expected=GLFrame(batch,scale,{}, {}, {});
+    if(!pipeline.RenderView(batches,Readback::None).empty()||rejectedReadbacks)
+        throw std::runtime_error("GPU-only frame allocated full readback");
+    auto checkNative=[&] {
+        const auto pixels=pipeline.RenderView(batches,Readback::Native);
+        if(pixels.size()!=256*192)throw std::runtime_error("Native readback size lost with cached memory");
+        for(unsigned y=0;y<192;++y)for(unsigned x=0;x<256;++x)
+            if(pixels[y*256+x]!=expected[y*scale*256*scale+x*scale])
+                throw std::runtime_error("Native readback differs after deferred allocation");
+    };
+    checkNative();
+    if(rejectedReadbacks)throw std::runtime_error("Native frame allocated full readback");
+    for(bool direct:{false,true}) {
+        bool failed=false;
+        try {
+            if(direct)pipeline.SubmitView(batches,Readback::Full);
+            else pipeline.ReadbackView();
+        }catch(const std::runtime_error&){failed=true;}
+        if(!failed||pipeline.ViewPending())throw std::runtime_error("Readback allocation failure left a pending frame");
+        checkNative(); // A failed allocation must not leave a command recording.
+    }
+    if(rejectedReadbacks!=2)throw std::runtime_error("Full readback allocation failure not exercised");
+    functions.vkCreateBuffer=restore.original;
+    const auto full=pipeline.ReadbackView();
+    if(full.size()!=expected.size()||!std::equal(full.begin(),full.end(),expected.begin()))
+        throw std::runtime_error("Deferred full readback differs from GL");
+    functions.vkCreateBuffer=RejectFullReadback;
+    batch.meta.ClearColor=0x1F332211;
+    const auto changed=GLFrame(batch,scale,{}, {}, {});
+    const auto next=pipeline.RenderView(batches,Readback::Full);
+    if(next.size()!=changed.size()||!std::equal(next.begin(),next.end(),changed.begin())||rejectedReadbacks!=2)
+        throw std::runtime_error("Full readback allocation was not reused or pixels were stale");
+    std::puts("Vulkan deferred readback: GPU/native allocation-free, failure recovery, full pixels and reuse PASS");
+}
+
 int main(int argc,char** argv)
 {
     QGuiApplication app(argc,argv);
@@ -539,6 +605,7 @@ int main(int argc,char** argv)
             }
             Frames(scale,preferred);
         }
+        if(!high)DeferredReadback(preferred);
         SubmissionFailure();
     }catch(const std::exception& error){std::fprintf(stderr,"%s\n",error.what());return 4;}
     return 0;

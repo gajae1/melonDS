@@ -107,6 +107,7 @@ private:
     void BindNativeImage(const Device::Image& image);
     void RecordNativeReadback(VkCommandBuffer command);
     std::span<const uint32_t> NativeReadbackPixels();
+    void PrepareFullReadback();
     void RecordFullReadback(VkCommandBuffer command);
     std::span<const uint32_t> FullReadbackPixels() const;
     bool viewPending=false;

@@ -139,9 +139,13 @@ public:
                 block.Moments[1] = block.Moments[0];
                 block.SameSides = false;
             }
-            AudioInterpolationMath::Accumulate(block.Moments[0].data(), delta[0], weights.data());
-            if (!block.SameSides)
-                AudioInterpolationMath::Accumulate(block.Moments[1].data(), delta[1], weights.data());
+            // Stereo blocks share each event's weight loads across both sides;
+            // per-element arithmetic and dispatch gates are unchanged.
+            if (block.SameSides)
+                AudioInterpolationMath::Accumulate(block.Moments[0].data(), delta[0], weights.data());
+            else
+                AudioInterpolationMath::AccumulateStereo(block.Moments[0].data(),
+                    block.Moments[1].data(), delta[0], delta[1], weights.data());
         }
         Current = value; LastInput = clock;
     }

@@ -61,9 +61,25 @@ void Compiler::Comp_ArithTriOp(void (Compiler::*op)(int, const OpArg&, const OpA
     }
     else if (opFlags & opSymmetric && !(opFlags & opInvertOp2) && op2 == rd)
         (this->*op)(32, rd, rn);
-    else
+    else if (opFlags & opInvertOp2)
     {
-        if (opFlags & opInvertOp2)
+        // BIC needs rn & ~op2. A constant operand is inverted at compile time,
+        // and a register operand is inverted in rd as long as rd does not still
+        // hold a live operand, so neither case needs a scratch copy or write back.
+        if (op2.IsImm())
+        {
+            if (rd != rn)
+                MOV(32, rd, rn);
+            (this->*op)(32, rd, Imm32(~op2.Imm32()));
+        }
+        else if (rd != rn && op2 != R(RSCRATCH))
+        {
+            if (op2 != rd)
+                MOV(32, rd, op2);
+            NOT(32, rd);
+            (this->*op)(32, rd, rn);
+        }
+        else
         {
             if (op2 != R(RSCRATCH))
             {
@@ -71,7 +87,13 @@ void Compiler::Comp_ArithTriOp(void (Compiler::*op)(int, const OpArg&, const OpA
                 op2 = R(RSCRATCH);
             }
             NOT(32, op2);
+            if (rd != rn)
+                MOV(32, rd, rn);
+            (this->*op)(32, rd, op2);
         }
+    }
+    else
+    {
         // Build the result in rd unless op2 still names it.
         const OpArg dst = op2 == rd ? R(RSCRATCH3) : rd;
         if (dst != rn)
