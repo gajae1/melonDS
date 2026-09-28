@@ -2,9 +2,11 @@
 #include "Native2DPipeline.h"
 #include "Native2DMemory.h"
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace melonDS::Vulkan::Native2D {
@@ -17,6 +19,14 @@ constexpr uint32_t NativeFrameWords = 256 * 192;
 // 11 scaled OBJ history.
 constexpr uint32_t BindingCount = 12;
 constexpr uint32_t PushBytes = 20;
+// Input storage grows geometrically so varying batch sizes do not reallocate
+// device memory each time; records follow memory in the upload buffer.
+constexpr size_t MinInputBytes = 64 * 1024;
+constexpr size_t AlignRecords(size_t bytes) { return (bytes + 15) & ~size_t(15); }
+size_t InputCapacity(size_t bytes, size_t limit)
+{
+    return std::max(bytes, std::min(std::bit_ceil(std::max(bytes, MinInputBytes)), limit));
+}
 constexpr bool ImageBinding(uint32_t binding) { return binding >= 4 && binding < 8; }
 void MemoryBarrier(Device& device, VkCommandBuffer command, VkPipelineStageFlags src,
     VkPipelineStageFlags dst, VkAccessFlags read, VkAccessFlags write)
@@ -101,12 +111,19 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::span<const uint32_t> sha
     }
 }
 
-Pipeline::~Pipeline() { Cleanup(); }
+Pipeline::~Pipeline()
+{
+    // Owners complete explicitly; this keeps leased handles, descriptors and
+    // pipelines alive until the fence. A failed wait already idled the device.
+    try { Complete(); } catch (...) {}
+    Cleanup();
+}
 
 void Pipeline::SetScale(uint32_t scale)
 {
     Require(scale && scale <= owner->Properties().limits.maxImageDimension2D / 256, "Invalid native 2D display scale");
     if (scale == displayScale) return;
+    Complete();
     decltype(outputs) next;
     for (auto& image : next)
         image = owner->CreateImage(256 * scale, 192 * scale, 1, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT |
@@ -136,6 +153,49 @@ void Pipeline::EnsureBuffer(std::shared_ptr<Device::Buffer>& buffer, size_t byte
         buffer = owner->CreateBuffer(bytes, usage, host, host ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0);
 }
 
+void Pipeline::PrepareInputs(size_t memoryBytes, size_t recordBytes)
+{
+    const size_t limit = owner->Properties().limits.maxStorageBufferRange;
+    Require(memoryBytes && recordBytes && memoryBytes <= limit && recordBytes <= limit,
+        "Native 2D buffer range exceeded");
+    constexpr VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    const auto ensure = [&](std::shared_ptr<Device::Buffer>& buffer, size_t bytes) {
+        if (buffer && buffer->Size() >= bytes) return;
+        // No batch is pending here, so the old allocation can go first.
+        buffer.reset();
+        const size_t capacity = InputCapacity(bytes, limit);
+        for (;;)
+        {
+            try
+            {
+                // Tier 0 needs a DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type
+                // (UMA, resizable BAR or the small BAR heap); tier 2 is the
+                // original mapped HOST_CACHED storage with its uncached fallback.
+                if (inputTier == 0)
+                    buffer = owner->CreateBuffer(capacity, usage, true, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                else if (inputTier == 1)
+                    buffer = owner->CreateBuffer(capacity, usage, false);
+                else
+                    buffer = owner->CreateBuffer(capacity, usage, true, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+                return;
+            }
+            catch (const std::exception&)
+            {
+                if (inputTier >= 2) throw;
+                ++inputTier;
+            }
+        }
+    };
+    ensure(memory, memoryBytes);
+    ensure(records, recordBytes);
+    const size_t staged = (memory->Data() ? 0 : AlignRecords(memoryBytes)) + (records->Data() ? 0 : recordBytes);
+    if (staged && (!upload || upload->Size() < staged))
+    {
+        upload.reset();
+        upload = owner->CreateBuffer(std::bit_ceil(staged), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    }
+}
+
 void Pipeline::ImageBarrier(VkCommandBuffer command, const Device::Image& image,
     VkImageLayout from, VkImageLayout to, VkPipelineStageFlags src, VkPipelineStageFlags dst,
     VkAccessFlags read, VkAccessFlags write)
@@ -154,6 +214,27 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
     std::vector<MemoryCopy> copies, std::span<const MemoryMerge> merges,
     const std::shared_ptr<Device::Image>& display3D)
 {
+    Submit(bytes, lines, native3D, buffer, capture, captures, std::move(copies), merges, display3D);
+    Complete();
+}
+
+void Pipeline::Complete()
+{
+    if (!inFlight.active) return;
+    // Leases outlive the wait, including its failure path, which idles the
+    // device before throwing.
+    [[maybe_unused]] const auto batch = std::exchange(inFlight, {});
+    owner->WaitForSubmission();
+}
+
+void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> lines,
+    const std::shared_ptr<Device::Image>& native3D, uint32_t buffer,
+    CapturePipeline* capture, std::span<const CaptureCommand> captures,
+    std::vector<MemoryCopy> copies, std::span<const MemoryMerge> merges,
+    const std::shared_ptr<Device::Image>& display3D)
+{
+    // Host inputs, descriptors and capture state below are reused in place.
+    Complete();
     Require(buffer < 2 && !bytes.empty() && !lines.empty() && lines.size() <= MaxRecords,
         "Invalid native 2D batch");
     Require(captures.empty() || capture, "Native capture batch has no pipeline");
@@ -301,9 +382,8 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
     }
     // All allocation/validation precedes Begin: a host-side exception never
     // leaves the device's shared command buffer partially recording.
-    EnsureBuffer(memory, bytes.size_bytes() + merges.size_bytes(),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
-    EnsureBuffer(records, lines.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    const size_t memoryBytes = bytes.size_bytes() + merges.size_bytes();
+    PrepareInputs(memoryBytes, lines.size_bytes());
     EnsureBuffer(raw, lines.size() * 256 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false);
     if (scaledCaptures)
     {
@@ -313,13 +393,19 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false);
     }
     const auto& scaled = scaledCaptures ? scaledRaw : raw;
-    std::memcpy(memory->Data(), bytes.data(), bytes.size_bytes());
+    // Mapped inputs are written in place; others are staged sequentially and
+    // copied on the device before the barriers that precede every reader.
+    auto* const stage = upload ? static_cast<uint8_t*>(upload->Data()) : nullptr;
+    const bool stageMemory = !memory->Data(), stageRecords = !records->Data();
+    const size_t recordOffset = stageMemory ? AlignRecords(memoryBytes) : 0;
+    auto* const memoryTarget = stageMemory ? stage : static_cast<uint8_t*>(memory->Data());
+    auto* const recordTarget = stageRecords ? stage + recordOffset : static_cast<uint8_t*>(records->Data());
+    std::memcpy(memoryTarget, bytes.data(), bytes.size_bytes());
     if (!merges.empty())
-        std::memcpy(static_cast<uint8_t*>(memory->Data()) + bytes.size_bytes(),
-            merges.data(), merges.size_bytes());
-    std::memcpy(records->Data(), lines.data(), lines.size_bytes());
+        std::memcpy(memoryTarget + bytes.size_bytes(), merges.data(), merges.size_bytes());
+    std::memcpy(recordTarget, lines.data(), lines.size_bytes());
     for (uint32_t i = 0; i < lines.size(); ++i)
-        static_cast<Record*>(records->Data())[i].layers.reserved2 = slotFields[i];
+        reinterpret_cast<Record*>(recordTarget)[i].layers.reserved2 = slotFields[i];
     const auto& f = owner->Functions(); const auto d = owner->Handle();
     const std::array<std::shared_ptr<Device::Buffer>, 8> buffers{memory, records, raw, history,
         nativeFrames, scaled, hires ? hires : raw, scaledHistory ? scaledHistory : raw};
@@ -347,6 +433,18 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
     if (!captures.empty()) capture->Prepare(captures, raw, uint32_t(lines.size()) * 256, native3D,
         scaledCaptures ? scaledRaw : std::shared_ptr<Device::Buffer>{}, display3D);
     const auto command = owner->Begin(Device::SubmitKind::Display);
+    // The copy barrier (ALL_COMMANDS), merge barrier (TRANSFER) and dispatch
+    // barrier (ALL_COMMANDS) each order these uploads before their readers.
+    if (stageMemory)
+    {
+        const VkBufferCopy region{0, 0, memoryBytes};
+        f.vkCmdCopyBuffer(command, upload->Handle(), memory->Handle(), 1, &region);
+    }
+    if (stageRecords)
+    {
+        const VkBufferCopy region{recordOffset, 0, lines.size_bytes()};
+        f.vkCmdCopyBuffer(command, upload->Handle(), records->Handle(), 1, &region);
+    }
     VkClearColorValue zero{};
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (!historyInitialized) f.vkCmdFillBuffer(command, history->Handle(), 0, history->Size(), 0);
@@ -442,11 +540,19 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
             f.vkCmdCopyBuffer(command, scaledHistory->Handle(), scaledHistory->Handle(), 1, &copy);
         }
     if (!captures.empty()) capture->Record(command);
-    owner->SubmitAndWait();
-    if (!captures.empty()) capture->Complete();
+    owner->Submit();
+    // Queued work on this device is ordered after this batch, so its outputs
+    // are published now; CPU readers complete it first.
     historyInitialized = blankInitialized = true;
     initialized[buffer * 2] = initialized[buffer * 2 + 1] = true;
     rawWords = uint32_t(lines.size()) * 256;
+    inFlight = {true, std::move(copies), std::move(previousScaledHistory), hires, native3D, display3D};
+    owner->SetPendingCompletion([this] { Complete(); });
+    if (!captures.empty())
+    {
+        Complete();
+        capture->Complete();
+    }
 }
 
 const std::shared_ptr<Device::Image>& Pipeline::Output(uint32_t buffer, uint32_t screen) const
@@ -459,6 +565,7 @@ void Pipeline::ReadRaw(uint32_t first, std::span<uint32_t> destination)
 {
     Require(!destination.empty() && first <= rawWords && destination.size() <= rawWords - first,
         "Invalid native 2D raw readback");
+    Complete();
     EnsureBuffer(landing, destination.size_bytes(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
     const auto command = owner->Begin(Device::SubmitKind::FullReadback);
     MemoryBarrier(*owner, command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -477,6 +584,7 @@ void Pipeline::ReadFrame(uint32_t buffer, uint32_t screen, std::span<uint32_t> d
     Require(destination.size() == size_t(NativeFrameWords) * displayScale * displayScale &&
         (nativeDestination.empty() || nativeDestination.size() == NativeFrameWords), "Invalid native 2D frame readback");
     const auto& image = Output(buffer, screen);
+    Complete();
     EnsureBuffer(landing, destination.size_bytes() + nativeDestination.size_bytes(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
     const auto command = owner->Begin(Device::SubmitKind::FullReadback);
     ImageBarrier(command, *image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,

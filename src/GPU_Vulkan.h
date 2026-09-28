@@ -74,7 +74,10 @@ private:
     void DisableNative2D();
     void DrawNativeSprites(u32 line);
     void DrawNativeLine(u32 line);
-    void FinishNative2D() noexcept;
+    // Submits queued rows after completing any deferred batch. deferred leaves
+    // a capture-free batch in flight; every other caller sees it completed.
+    void FinishNative2D(bool deferred = false) noexcept;
+    void CompleteNative2D() noexcept;
     void FailNative2D(const std::exception& error) noexcept;
     void BindNative3D();
     void CaptureNativeLine(u32 rawFirst);

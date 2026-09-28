@@ -66,6 +66,7 @@ bool VulkanRenderer::InitNative2D()
 void VulkanRenderer::ResetNative2D()
 {
     if (!NativePipeline) return;
+    CompleteNative2D();
     NativeSource3D.reset();
     NativeDisplay3D.reset();
     NativeQueue.reset();
@@ -96,6 +97,7 @@ void VulkanRenderer::MigrateNative2DScale(u32 scale)
     // prefetch and guest OBJ history stay on the device.
     if (!NativeQueue->Records().empty() || !NativeCaptures.empty())
         throw std::logic_error("Native 2D scale change with queued rows");
+    NativePipeline->Complete();
     NativeQueue->DropHires();
     NativeHiresOwned = {};
     NativeCapture->DisableHires();
@@ -110,6 +112,7 @@ void VulkanRenderer::DisableNative2D()
     // prefetch is pending (none follows line 191; line 0's runs at VCOUNT 262).
     // Publish displayed frames and GPU-only guest capture rows for CPU 2D.
     if (!NativeQueue->Records().empty()) throw std::logic_error("Native 2D disable with queued rows");
+    NativePipeline->Complete();
     ReadbackDisplay(0);
     ReadbackDisplay(1);
     for (u32 bank = 0; bank < 4; ++bank)
@@ -143,15 +146,32 @@ void VulkanRenderer::BindNative3D()
     }
 }
 
-void VulkanRenderer::FinishNative2D() noexcept
+void VulkanRenderer::CompleteNative2D() noexcept
 {
+    if (!NativePipeline || !NativePipeline->Pending()) return;
+    try { NativePipeline->Complete(); }
+    catch (const std::exception& error) { FailNative2D(error); }
+}
+
+void VulkanRenderer::FinishNative2D(bool deferred) noexcept
+{
+    // Dependency callers (captures, textures, 3D, lifecycle) rely on this
+    // returning with no native batch in flight.
+    CompleteNative2D();
     if (!NativePipeline || NativeQueue->Records().empty() || HasRenderFailure()) return;
     auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
     const u64 before = rasterizer.TotalSubmissionCount();
     try
     {
-        NativePipeline->Render(NativeQueue->Data().Words(), NativeQueue->Records(), NativeSource3D, BackBuffer,
-            NativeCapture.get(), NativeCaptures, NativeQueue->TakeCopies(), NativeQueue->Merges(), NativeDisplay3D);
+        // A deferred batch copied every host input and leases its GPU sources,
+        // so the queue retires now. Capture batches still complete inside
+        // Submit: CapturedState reads Revision/Snapshot without draining.
+        if (deferred)
+            NativePipeline->Submit(NativeQueue->Data().Words(), NativeQueue->Records(), NativeSource3D, BackBuffer,
+                NativeCapture.get(), NativeCaptures, NativeQueue->TakeCopies(), NativeQueue->Merges(), NativeDisplay3D);
+        else
+            NativePipeline->Render(NativeQueue->Data().Words(), NativeQueue->Records(), NativeSource3D, BackBuffer,
+                NativeCapture.get(), NativeCaptures, NativeQueue->TakeCopies(), NativeQueue->Merges(), NativeDisplay3D);
         for (u32 screen = 0; screen < 2; ++screen)
         {
             ResidentImages[BackBuffer][screen] = NativePipeline->Output(BackBuffer, screen);
@@ -239,6 +259,10 @@ void VulkanRenderer::DrawNativeLine(u32 line)
         }
         captured.source.reset();
         if (GPU.CaptureEnable && GPU.VCount < 192) CaptureNativeLine(first);
+        // The last visible row closes the frame's batch. Run it on the GPU
+        // while VBlank emulation continues; the 3D start (DrawFrame), any
+        // Device::Begin and every dependency/lifecycle path complete it.
+        if (line == 191) FinishNative2D(true);
     }
     catch (const std::exception& error) { FailNative2D(error); }
 }

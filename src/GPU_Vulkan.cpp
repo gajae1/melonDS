@@ -487,6 +487,8 @@ bool VulkanRenderer::GetResidentFrame(ResidentFrame& frame)
     // Present's same-queue ALL_COMMANDS -> FRAGMENT_SHADER image barrier makes
     // compose writes visible to sampling. Reuse has the reverse dependency.
     if (CompositionSubmitted) FinishDisplayComposition();
+    // Hand off only completed native output, as for composition above.
+    CompleteNative2D();
     frame = {};
     const auto& images = ResidentImages[BackBuffer ^ 1];
     if (!DirectDisplay || !images[0] || !images[1]) return false;
