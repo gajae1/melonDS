@@ -19,7 +19,9 @@ struct CapturedMemory {
     std::array<std::bitset<512>, 4> hiresOwned{};
 };
 // Captures guest state at its original events; never computes a pixel. The
-// renderer submits Records(), then calls Retire only after GPU completion.
+// renderer submits Records(), then calls Retire once that batch's inputs were
+// copied/submitted with resources leased for their GPU lifetime; the queued
+// work need not have completed on the device.
 class Queue {
 public:
     explicit Queue(melonDS::GPU& gpu);
@@ -29,13 +31,19 @@ public:
         const CapturedMemory& captured = {}, uint32_t hiresLCDC = 0);
     void CaptureHiresSource(uint32_t rawFirst, uint32_t captureIndex);
     const Memory& Data() const { return memory; }
+    // Identifies the current immutable arena. Incremented only after Retire
+    // replaces it; same-epoch batches append after the previously sent words.
+    uint64_t Epoch() const { return epoch; }
     std::span<const Record> Records() const { return records; }
     // Transfer one-use GPU input leases to the submission that consumes them.
     std::vector<MemoryCopy> TakeCopies() { return std::exchange(copies, {}); }
     std::span<const MemoryMerge> Merges() const { return merges; }
     // Preserve a prefetched OBJ snapshot across the batch boundary; rendered
     // OBJ history was copied by Pipeline into its two persistent engine slots.
-    void Retire();
+    // retainMemory keeps the immutable arena, views and GPU provenance when at
+    // least 2 MiB of headroom remains, so a same-epoch submission only appends
+    // new words; otherwise legacy full compaction runs and bumps Epoch().
+    void Retire(bool retainMemory = false);
     // Display-scale captures were discarded (scale change): latched pages must
     // no longer reference them. Guest views and the OBJ prefetch are kept.
     void DropHires();
@@ -79,5 +87,6 @@ private:
     std::vector<MemoryMerge> merges;
     std::unordered_map<StageKey, uint32_t, StageHash> staging;
     std::vector<Memory::PageOverride> overrides;
+    uint64_t epoch = 1;
 };
 }

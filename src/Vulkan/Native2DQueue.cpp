@@ -346,8 +346,25 @@ void Queue::CaptureHiresSource(uint32_t rawFirst, uint32_t captureIndex)
     records[index].scaledCapture = captureIndex + 1;
 }
 
-void Queue::Retire()
+void Queue::Retire(bool retainMemory)
 {
+    if (retainMemory && memory.ByteSize() + 2 * 1024 * 1024 <= memory.ByteLimit()) {
+        // Same epoch: every retained view stays byte-identical, so the
+        // submission that already copied this arena only appends new words.
+        // A fresh (unconsumed) prefetch keeps its whole provenance; consumed
+        // history was persisted by Pipeline into the per-engine slot.
+        for (uint32_t engine = 0; engine < 2; ++engine) {
+            auto& current = engines[engine];
+            if (current.object.historyRead != NoHistory) {
+                current.object.historyRead = engine * 512;
+                // Rendered objects cleared this in CaptureLine; kept only for
+                // an unconsumed prefetch that a later compaction must replay.
+                current.objSources.clear();
+            }
+        }
+        records.clear(); copies.clear(); merges.clear(); staging.clear();
+        return;
+    }
     Memory next(memory.ByteLimit());
     SeedMemory(next);
     std::array<ObjectState, 2> objects;
@@ -365,6 +382,7 @@ void Queue::Retire()
         }
     }
     memory = std::move(next);
+    ++epoch;
     copies.clear(); merges.clear(); staging.clear();
     for (uint32_t engine = 0; engine < 2; ++engine) {
         engines[engine].bg = {}; engines[engine].palette = {}; engines[engine].hiresBG = {};

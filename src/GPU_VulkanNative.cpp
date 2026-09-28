@@ -168,16 +168,18 @@ void VulkanRenderer::FinishNative2D(bool deferred) noexcept
         // Submit: CapturedState reads Revision/Snapshot without draining.
         if (deferred)
             NativePipeline->Submit(NativeQueue->Data().Words(), NativeQueue->Records(), NativeSource3D, BackBuffer,
-                NativeCapture.get(), NativeCaptures, NativeQueue->TakeCopies(), NativeQueue->Merges(), NativeDisplay3D);
+                NativeCapture.get(), NativeCaptures, NativeQueue->TakeCopies(), NativeQueue->Merges(), NativeDisplay3D,
+                NativeQueue->Epoch());
         else
             NativePipeline->Render(NativeQueue->Data().Words(), NativeQueue->Records(), NativeSource3D, BackBuffer,
-                NativeCapture.get(), NativeCaptures, NativeQueue->TakeCopies(), NativeQueue->Merges(), NativeDisplay3D);
+                NativeCapture.get(), NativeCaptures, NativeQueue->TakeCopies(), NativeQueue->Merges(), NativeDisplay3D,
+                NativeQueue->Epoch());
         for (u32 screen = 0; screen < 2; ++screen)
         {
             ResidentImages[BackBuffer][screen] = NativePipeline->Output(BackBuffer, screen);
             ResidentCPUValid[BackBuffer][screen] = false;
         }
-        NativeQueue->Retire();
+        NativeQueue->Retire(true);
         NativeCaptures.clear();
         NativeSource3D.reset();
         NativeDisplay3D.reset();

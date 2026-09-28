@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Native2DPipeline.h"
 #include "Native2DMemory.h"
+#include "RenderCost.h"
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -158,7 +159,8 @@ void Pipeline::PrepareInputs(size_t memoryBytes, size_t recordBytes)
     const size_t limit = owner->Properties().limits.maxStorageBufferRange;
     Require(memoryBytes && recordBytes && memoryBytes <= limit && recordBytes <= limit,
         "Native 2D buffer range exceeded");
-    constexpr VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    constexpr VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     const auto ensure = [&](std::shared_ptr<Device::Buffer>& buffer, size_t bytes) {
         if (buffer && buffer->Size() >= bytes) return;
         // No batch is pending here, so the old allocation can go first.
@@ -212,9 +214,9 @@ void Pipeline::Render(std::span<const uint32_t> bytes, std::span<const Record> l
     const std::shared_ptr<Device::Image>& native3D, uint32_t buffer,
     CapturePipeline* capture, std::span<const CaptureCommand> captures,
     std::vector<MemoryCopy> copies, std::span<const MemoryMerge> merges,
-    const std::shared_ptr<Device::Image>& display3D)
+    const std::shared_ptr<Device::Image>& display3D, uint64_t memoryEpoch)
 {
-    Submit(bytes, lines, native3D, buffer, capture, captures, std::move(copies), merges, display3D);
+    Submit(bytes, lines, native3D, buffer, capture, captures, std::move(copies), merges, display3D, memoryEpoch);
     Complete();
 }
 
@@ -231,13 +233,15 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
     const std::shared_ptr<Device::Image>& native3D, uint32_t buffer,
     CapturePipeline* capture, std::span<const CaptureCommand> captures,
     std::vector<MemoryCopy> copies, std::span<const MemoryMerge> merges,
-    const std::shared_ptr<Device::Image>& display3D)
+    const std::shared_ptr<Device::Image>& display3D, uint64_t memoryEpoch)
 {
     // Host inputs, descriptors and capture state below are reused in place.
     Complete();
     Require(buffer < 2 && !bytes.empty() && !lines.empty() && lines.size() <= MaxRecords,
         "Invalid native 2D batch");
     Require(captures.empty() || capture, "Native capture batch has no pipeline");
+    const size_t retainedBytes = memoryEpoch && memoryEpoch == uploadedEpoch ? uploadedBytes : 0;
+    Require(retainedBytes <= bytes.size_bytes(), "Native 2D arena shrank without a new epoch");
     for (const auto& copy : copies)
         Require(copy.source && copy.source->BelongsTo(*owner) &&
             (copy.source->Usage() & VK_BUFFER_USAGE_TRANSFER_SRC_BIT) && copy.words &&
@@ -383,7 +387,12 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
     // All allocation/validation precedes Begin: a host-side exception never
     // leaves the device's shared command buffer partially recording.
     const size_t memoryBytes = bytes.size_bytes() + merges.size_bytes();
+    // Growing a device buffer must preserve GPU-produced pages, not restore
+    // their intentionally incomplete CPU baselines. Lease the old allocation
+    // until its prefix has been copied to the new allocation on the device.
+    auto previousMemory = retainedBytes ? memory : std::shared_ptr<Device::Buffer>{};
     PrepareInputs(memoryBytes, lines.size_bytes());
+    if (previousMemory == memory) previousMemory.reset();
     EnsureBuffer(raw, lines.size() * 256 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false);
     if (scaledCaptures)
     {
@@ -400,12 +409,15 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
     const size_t recordOffset = stageMemory ? AlignRecords(memoryBytes) : 0;
     auto* const memoryTarget = stageMemory ? stage : static_cast<uint8_t*>(memory->Data());
     auto* const recordTarget = stageRecords ? stage + recordOffset : static_cast<uint8_t*>(records->Data());
-    std::memcpy(memoryTarget, bytes.data(), bytes.size_bytes());
+    std::memcpy(memoryTarget + retainedBytes,
+        reinterpret_cast<const uint8_t*>(bytes.data()) + retainedBytes, bytes.size_bytes() - retainedBytes);
     if (!merges.empty())
         std::memcpy(memoryTarget + bytes.size_bytes(), merges.data(), merges.size_bytes());
     std::memcpy(recordTarget, lines.data(), lines.size_bytes());
     for (uint32_t i = 0; i < lines.size(); ++i)
         reinterpret_cast<Record*>(recordTarget)[i].layers.reserved2 = slotFields[i];
+    if (owner->Costs()) owner->Costs()->Transfer(RenderCostVulkanMeter::UploadCopyBytes,
+        memoryBytes - retainedBytes + lines.size_bytes());
     const auto& f = owner->Functions(); const auto d = owner->Handle();
     const std::array<std::shared_ptr<Device::Buffer>, 8> buffers{memory, records, raw, history,
         nativeFrames, scaled, hires ? hires : raw, scaledHistory ? scaledHistory : raw};
@@ -433,11 +445,19 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
     if (!captures.empty()) capture->Prepare(captures, raw, uint32_t(lines.size()) * 256, native3D,
         scaledCaptures ? scaledRaw : std::shared_ptr<Device::Buffer>{}, display3D);
     const auto command = owner->Begin(Device::SubmitKind::Display);
+    if (previousMemory)
+    {
+        MemoryBarrier(*owner, command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT);
+        const VkBufferCopy prefix{0, 0, retainedBytes};
+        f.vkCmdCopyBuffer(command, previousMemory->Handle(), memory->Handle(), 1, &prefix);
+    }
     // The copy barrier (ALL_COMMANDS), merge barrier (TRANSFER) and dispatch
     // barrier (ALL_COMMANDS) each order these uploads before their readers.
-    if (stageMemory)
+    if (stageMemory && memoryBytes > retainedBytes)
     {
-        const VkBufferCopy region{0, 0, memoryBytes};
+        const VkBufferCopy region{retainedBytes, retainedBytes, memoryBytes - retainedBytes};
         f.vkCmdCopyBuffer(command, upload->Handle(), memory->Handle(), 1, &region);
     }
     if (stageRecords)
@@ -546,7 +566,10 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
     historyInitialized = blankInitialized = true;
     initialized[buffer * 2] = initialized[buffer * 2 + 1] = true;
     rawWords = uint32_t(lines.size()) * 256;
-    inFlight = {true, std::move(copies), std::move(previousScaledHistory), hires, native3D, display3D};
+    uploadedEpoch = memoryEpoch;
+    uploadedBytes = bytes.size_bytes();
+    inFlight = {true, std::move(copies), std::move(previousScaledHistory), hires,
+        std::move(previousMemory), native3D, display3D};
     owner->SetPendingCompletion([this] { Complete(); });
     if (!captures.empty())
     {

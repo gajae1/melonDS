@@ -35,8 +35,12 @@ public:
         const std::shared_ptr<Device::Image>& native3D, uint32_t buffer,
         CapturePipeline* capture = nullptr, std::span<const CaptureCommand> captures = {},
         std::vector<MemoryCopy> copies = {}, std::span<const MemoryMerge> merges = {},
-        const std::shared_ptr<Device::Image>& display3D = {});
-    // Deferred form. Completes any earlier batch, copies every host input, then
+        const std::shared_ptr<Device::Image>& display3D = {}, uint64_t memoryEpoch = 0);
+    // A nonzero memoryEpoch identifies an append-only immutable arena. Reuse
+    // it only while the prefix of memory is unchanged; advance it on reset.
+    // The device retains that prefix, including GPU copy/merge results, across
+    // submissions and allocation growth. Zero uploads all bytes (legacy API).
+    // Deferred form. Completes any earlier batch, copies new host input, then
     // queues this batch without waiting. On return the caller's spans may be
     // reused; copy sources, 3D images, hires capture storage and the replaced
     // scaled history stay leased until completion. Output() is published for
@@ -50,7 +54,7 @@ public:
         const std::shared_ptr<Device::Image>& native3D, uint32_t buffer,
         CapturePipeline* capture = nullptr, std::span<const CaptureCommand> captures = {},
         std::vector<MemoryCopy> copies = {}, std::span<const MemoryMerge> merges = {},
-        const std::shared_ptr<Device::Image>& display3D = {});
+        const std::shared_ptr<Device::Image>& display3D = {}, uint64_t memoryEpoch = 0);
     // Waits for a deferred batch and releases its leases. No-op when nothing
     // is pending; throws on device failure. Capture revisions are published
     // only by the synchronous capture branch inside Submit.
@@ -78,7 +82,7 @@ private:
     struct InFlight {
         bool active = false;
         std::vector<MemoryCopy> copies;
-        std::shared_ptr<Device::Buffer> scaledHistory, hires;
+        std::shared_ptr<Device::Buffer> scaledHistory, hires, inputPrefix;
         std::shared_ptr<Device::Image> native3D, display3D;
     };
     void Cleanup();
@@ -110,6 +114,8 @@ private:
     std::shared_ptr<Device::Image> blank3D;
     bool historyInitialized = false, blankInitialized = false;
     InFlight inFlight;
+    uint64_t uploadedEpoch = 0;
+    size_t uploadedBytes = 0;
     uint32_t inputTier = 0;
     uint32_t rawWords = 0;
     uint32_t displayScale = 1;
