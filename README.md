@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.202"><img src="https://img.shields.io/badge/fork_release-1.1.202-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.203"><img src="https://img.shields.io/badge/fork_release-1.1.203-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,7 +19,7 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.202 release record](plans/releases/1.1.202.md). 1.1.202 reduces x64 JIT reverse-subtraction copies while preserving overlapping operands and guest flags. This is an emitted-instruction reduction; a game FPS gain has not been established. Earlier changes include Vulkan final-batch compositing, empty GL compute tile skipping and x64 multiply copy reduction. GPU 2D remains opt-in after the measured 1.1.196 improvements. Results do not establish a universal Vulkan advantage over OpenGL or Metal.
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.203 release record](plans/releases/1.1.203.md). 1.1.203 packs opaque Vulkan tile attributes into the color word, removing about one third of tile scratch storage while preserving output. It adds integer packing work; an FPS improvement has not been established. Earlier changes include final-batch compositing and x64 JIT copy reductions. GPU 2D remains opt-in after the measured 1.1.196 improvements. Results do not establish a universal Vulkan advantage over OpenGL or Metal.
 
 ## How to use
 
