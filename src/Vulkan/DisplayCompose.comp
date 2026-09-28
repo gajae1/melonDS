@@ -7,10 +7,10 @@ struct Line {
     uint blendCnt, eva, evb, evy, masterBrightness;
     uint mode, sourceLine, xpos, abort;
 };
-layout(std430, set = 0, binding = 0) readonly buffer Contexts { Line lines[]; };
+layout(std430, set = 0, binding = 0) readonly buffer Contexts { Line lines[192]; uint groupRows[]; };
 layout(rgba8, set = 0, binding = 1) uniform readonly image2D Image3D;
 layout(r32ui, set = 0, binding = 2) uniform writeonly uimage2D Output;
-layout(push_constant) uniform Settings { uint scale, sourceScale; } settings;
+layout(push_constant) uniform Settings { uint scale, sourceScale, compactRows; } settings;
 
 // Keep the original unsigned component masks/overflow and rounding biases,
 // including out-of-range register states accepted by the CPU implementation.
@@ -69,6 +69,8 @@ uint composite(uint a, uint b, uint control, uint eva, uint evb, uint evy, uint 
 void main()
 {
     uvec2 xy = gl_GlobalInvocationID.xy;
+    if (settings.compactRows != 0u)
+        xy.y = groupRows[gl_WorkGroupID.y] * 8u + gl_LocalInvocationID.y;
     if (xy.x >= 256u * settings.scale || xy.y >= 192u * settings.scale) return;
     uint y = xy.y / settings.scale;
     uint mode = lines[y].mode;

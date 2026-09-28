@@ -87,26 +87,30 @@ Memory::View Memory::Capture(std::span<const uint8_t> bytes, View previous,
     if (!changedCount) return previous;
 
     // Reserve the whole transaction before changing storage or publishing a view.
-    // The local table also avoids pointers invalidated by vector growth.
-    std::array<uint32_t, MaxPages> pageMap;
-    if (valid)
-        std::copy_n(storage.data() + previous.table, count, pageMap.data());
+    // The previous table is copied by offset, not through a local table: vector
+    // growth can move storage but never an offset, and the ranges cannot overlap
+    // because previous.table + count never exceeds oldSize while the appended
+    // table starts at oldSize or later.
     const size_t oldSize = storage.size();
     const size_t extra = size_t(changedCount) * PageWords + count;
     Reserve(extra);
     storage.resize(oldSize + extra);
+    const uint32_t tableOffset = uint32_t(oldSize + size_t(changedCount) * PageWords);
+    if (valid)
+        std::copy_n(storage.data() + previous.table, count, storage.data() + tableOffset);
     size_t cursor = oldSize;
     for (uint32_t i = 0; i < changedCount; ++i)
     {
         const uint32_t page = changed[i];
-        pageMap[page] = uint32_t(cursor);
+        // valid == false records every page as changed, so this loop writes the
+        // whole table and no uninitialized entry can be published.
+        storage[tableOffset + page] = uint32_t(cursor);
         const auto* replacement = overrides.empty() ? nullptr : replaced[page];
         const void* source = replacement ? static_cast<const void*>(replacement->words.data()) : bytes.data() + page * PageBytes;
         std::memcpy(storage.data() + cursor, source, PageBytes);
         cursor += PageWords;
     }
-    std::copy_n(pageMap.data(), count, storage.data() + cursor);
-    return {uint32_t(cursor), count, generation};
+    return {tableOffset, count, generation};
 }
 
 uint32_t Memory::AppendWords(std::span<const uint32_t> words)

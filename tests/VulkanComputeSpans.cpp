@@ -82,7 +82,7 @@ struct Inputs {
     std::vector<SetupIndices> indices;
     MetaUniform meta{};
     const unsigned scale;
-    explicit Inputs(unsigned scale=1,bool boundary=false) : indices(Spans*scale),scale(scale) {
+    explicit Inputs(unsigned scale=1,bool boundary=false,bool offscreen=false) : indices(Spans*scale),scale(scale) {
         meta.NumPolygons=Polygons; meta.NumVariants=1; meta.DispCnt=(1<<3)|(1<<4);
         for (unsigned p=0;p<Polygons;++p) {
             Vertex vertices[4]{}; Polygon polygon{};
@@ -106,6 +106,7 @@ struct Inputs {
             }
             for (unsigned v=0;v<4;++v)
                 for (auto& coordinate:positions[v]) coordinate*=scale;
+            if(offscreen)for(auto& position:positions)position[0]+=256*scale;
             auto& out=polygons[p]; out.FirstXSpan=p*Lines*scale;
             out.YTop=0;out.YBot=(boundary&&p==5?1:Lines)*scale;out.XMin=256*scale;out.XMax=-1;
             out.Attr=((p%2?15u:31u)<<16)|(3<<6);out.Variant=0;
@@ -391,8 +392,8 @@ static void Frames(unsigned scale,const std::string& preferred)
     }
     pipeline.UploadClearBitmap(clearColors,clearDepths);
     for(unsigned mode=0;mode<2;++mode) {
-        for(unsigned scene=0;scene<9;++scene) {
-            Inputs input(scale,scene==8);input.meta.ClearDepth=0xFFFFFF;input.meta.ClearColor=0x1F020406;
+        for(unsigned scene=0;scene<10;++scene) {
+            Inputs input(scale,scene==8,scene==9);input.meta.ClearDepth=0xFFFFFF;input.meta.ClearColor=0x1F020406;
             if(scene==8) {input.meta.ClearColor=0;input.meta.AlphaRef=1;}
             for(unsigned i=0;i<34;++i) {
                 input.meta.ToonTable[i*4]=((i*11)%64)|(((i*7)%64)<<8)|(((i*3)%64)<<16);
@@ -467,8 +468,8 @@ static void Frames(unsigned scale,const std::string& preferred)
                     throw std::runtime_error("Boundary fixture missed opaque/translucent/rejected pixels");
             }
             unsigned changed=0;for(auto pixel:pixels)changed+=pixel!=pixels.back();
-            if(scene!=3&&changed<100)throw std::runtime_error("Compute graph produced no polygon coverage");
-            if(scene==3&&changed)throw std::runtime_error("Empty compute frame retained old polygons");
+            if(scene!=3&&scene!=9&&changed<100)throw std::runtime_error("Compute graph produced no polygon coverage");
+            if((scene==3||scene==9)&&changed)throw std::runtime_error("Empty compute frame retained old polygons");
             std::printf("Vulkan/GL %ux %s full graph scene=%u: all %zu pixels equal, %u non-background PASS\n",scale,mode?"W":"Z",scene,pixels.size(),changed);
             if(scene==1||scene>=4) {
                 // End the first batch after the shadow mask, so the following
@@ -485,6 +486,28 @@ static void Frames(unsigned scale,const std::string& preferred)
                 parts[1].indices=tailIndices;parts[1].meta.NumPolygons=Polygons-split;
                 if(pipeline.Render(parts)!=expected)throw std::runtime_error("Split Vulkan frame differs from combined GL frame");
                 std::printf("Vulkan %ux %s scene=%u two-batch depth/stencil/texture composition equal PASS\n",scale,mode?"W":"Z",scene);
+            }
+            if(scene==1||(scene>=4&&scene<=6)) {
+                // Every batch has one variant, including the shadow mask and
+                // its following shadow draw, or a textured/captured polygon.
+                auto singlePolygons=input.polygons;
+                std::array<std::vector<SetupIndices>,Polygons> singleIndices;
+                std::array<Vulkan::ComputePipeline::Variant,Polygons> singleVariants;
+                std::array<Vulkan::ComputePipeline::Batch,Polygons> parts;
+                for(unsigned p=0;p<Polygons;++p) {
+                    const auto& original=input.polygons[p];
+                    singleVariants[p]=variants[original.Variant];
+                    singlePolygons[p].Variant=0;singlePolygons[p].FirstXSpan=0;
+                    auto indices=batch.indices.subspan(original.FirstXSpan,original.YBot-original.YTop);
+                    singleIndices[p].assign(indices.begin(),indices.end());
+                    for(auto& index:singleIndices[p])index.PolyIdx=0;
+                    parts[p]=batch;
+                    parts[p].polygons={&singlePolygons[p],1};parts[p].indices=singleIndices[p];
+                    parts[p].variants={&singleVariants[p],1};
+                    parts[p].meta.NumPolygons=parts[p].meta.NumVariants=1;
+                }
+                if(pipeline.Render(parts)!=expected)throw std::runtime_error("Single-variant shadow/texture batches differ from GL");
+                std::printf("Vulkan %ux %s scene=%u single-variant batch ordering equal PASS\n",scale,mode?"W":"Z",scene);
             }
             if((scene==0||scene==8) && scale==1) {
                 // Alternate fused and neighbor-dependent final passes, including

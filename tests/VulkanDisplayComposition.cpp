@@ -691,6 +691,61 @@ void DirectDifferential(const std::shared_ptr<Vulkan::Device>& device, int scale
     Require(rejected, "mismatched mapped destination accepted");
     compared += oracle.size();
 }
+struct DispatchProbe
+{
+    static inline DispatchProbe* active = nullptr;
+    volk::VolkDeviceTable& f;
+    PFN_vkCmdDispatch original;
+    u64 groups = 0;
+    unsigned calls = 0;
+    explicit DispatchProbe(Vulkan::Device& device)
+        : f(const_cast<volk::VolkDeviceTable&>(device.Functions())), original(f.vkCmdDispatch)
+    { active = this; f.vkCmdDispatch = Dispatch; }
+    ~DispatchProbe() { f.vkCmdDispatch = original; active = nullptr; }
+    static VKAPI_ATTR void VKAPI_CALL Dispatch(VkCommandBuffer command, u32 x, u32 y, u32 z)
+    {
+        ++active->calls; active->groups += u64(x) * y * z;
+        active->original(command, x, y, z);
+    }
+};
+void CompactResident(const std::shared_ptr<Vulkan::Device>& device, u32 scale)
+{
+    Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale);
+    const size_t pixels = size_t(256) * 192 * scale * scale;
+    std::vector<Line> lines(192);
+    std::vector<u32> expected(pixels, 0xFFA739D2), output(pixels);
+    const std::vector<u32> blank3D(256 * 192);
+    std::array<bool, 192> unchanged{};
+    DispatchProbe probe(*device);
+    // Middle band, preserved image, full image, and isolated unaligned lines.
+    // Switching compact/full dispatch must never reuse a stale row map.
+    for (unsigned phase = 0; phase < 4; ++phase)
+    {
+        for (u32 y = 0; y < 192; ++y)
+        {
+            const bool active = phase == 0 ? y >= 64 && y < 128 :
+                phase == 1 ? false : phase == 2 || y == 1 || y == 190;
+            lines[y].mode = active ? Line::Flat : y % 2 ? Line::CaptureOverride : Line::Keep;
+            for (u32 x = 0; x < 256; ++x)
+                lines[y].pixels[x].top = 0xFF000000 | (phase << 20) | (y << 8) | x;
+        }
+        output = expected;
+        Vulkan::ComposeDisplayCPU(lines, blank3D, 1, scale, output);
+        probe.calls = 0; probe.groups = 0;
+        compositor.ComposeResident(0, lines, {}, 1, expected,
+            phase == 1 ? std::span<const bool>(unchanged) : std::span<const bool>{}, true);
+        // CPU rows and the pending submission must remain valid until completion.
+        compositor.Complete();
+        expected = output;
+        compositor.ReadbackResident(0, output);
+        Equal(output, expected, "compact resident groups changed or skipped pixels");
+        const u32 isolatedGroups = scale == 1 || scale == 3 ? 2 : 4;
+        const u32 groupRows = phase == 0 ? 8 * scale : phase == 1 ? 0 : phase == 2 ? 24 * scale : isolatedGroups;
+        Require(probe.calls == unsigned(groupRows != 0) && probe.groups == u64(32) * scale * groupRows,
+            "preserved display bands were still dispatched or compact bands were split");
+    }
+    std::printf("Resident display %ux: sparse/preserved/full/unaligned pixels and dispatch counts PASS\n", scale);
+}
 // Diagnostics must observe, not alter, real rendering or synchronization.
 struct DiagnosticEnvironment
 {
@@ -1007,7 +1062,9 @@ DiagnosticOutput DiagnosticRunFrame(bool enabled, int scale, int workload)
             for (u64 ns : sample.HostNs) accounted += ns;
             Require(accounted == sample.Total, "real RunFrame host accounting overlaps or loses its residual");
             const u64 expectedFull = (scale == 1 || workload == 2) ? u64(256) * 192 * scale * scale * 4 : 0;
-            const auto readbackProperties = raster.Pipeline->readback->MemoryProperties();
+            const auto& fullLanding = raster.Pipeline->readback;
+            Require(!expectedFull || bool(fullLanding), "full readback has no landing buffer");
+            const auto readbackProperties = fullLanding ? fullLanding->MemoryProperties() : 0;
             const u64 expectedFullCopy = (readbackProperties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? 0 : expectedFull;
             if (i == 0)
                 std::printf("DIAG FullCopy scale=%d workload=%d properties=0x%08x expected_bytes=%llu actual_bytes=%llu\n",
@@ -1225,6 +1282,7 @@ int main(int argc, char** argv)
         for (int scale : {1, 2, 3, 5, 16}) Differential(device, scale, scale, compared);
         Differential(device, 3, 1, compared);
         Differential(device, 3, 5, compared);
+        for (u32 scale : {1u, 3u, 5u, 16u}) CompactResident(device, scale);
         std::printf("Differential total: %zu pixel comparisons (%zu bytes), zero mismatches PASS\n", compared, compared * 4);
         return 0;
     }

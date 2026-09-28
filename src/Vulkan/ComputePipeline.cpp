@@ -600,12 +600,16 @@ void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,boo
         f.vkCmdDispatch(command, (batch.polygons.size()+31)/32,
             Resources.config.ScreenWidth/(8*Resources.config.TileSize), Resources.config.ScreenHeight/(Resources.config.CoarseTileCountY*Resources.config.TileSize));
         Barrier(command);
-        Bind(command, 22, setupSet, indicesSet);
-        f.vkCmdDispatch(command, (batch.variants.size()+31)/32, 1, 1);
-        Barrier(command);
-        Bind(command, 23, setupSet, indicesSet);
-        f.vkCmdDispatchIndirect(command, buffers[7]->Handle(), offsetof(ComputeData::BinResultHeader, SortWorkWorkCount));
-        Barrier(command);
+        // One variant needs no regrouping. Binning already wrote the sorted
+        // descriptors and its raster dispatch count, visible through Barrier above.
+        if (batch.variants.size() > 1) {
+            Bind(command, 22, setupSet, indicesSet);
+            f.vkCmdDispatch(command, (batch.variants.size()+31)/32, 1, 1);
+            Barrier(command);
+            Bind(command, 23, setupSet, indicesSet);
+            f.vkCmdDispatchIndirect(command, buffers[7]->Handle(), offsetof(ComputeData::BinResultHeader, SortWorkWorkCount));
+            Barrier(command);
+        }
         for (unsigned variant=0; variant<batch.variants.size(); ++variant) {
             const auto& state=batch.variants[variant];
             Bind(command, state.shader, rasterSet, indicesSet, textures[variant]);

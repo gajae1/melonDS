@@ -11,6 +11,7 @@ namespace melonDS::Vulkan {
 namespace {
 using Line = SoftRenderer2D::ScaledLineContext;
 using Cost = RenderCostVulkanMeter;
+constexpr u32 MaxGroupRows = 384;
 static_assert(sizeof(Line::Pixel) == 5 * sizeof(u32));
 static_assert(sizeof(Line) == (256 * 5 + 9) * sizeof(u32));
 static_assert(offsetof(Line, blendCnt) == 256 * sizeof(Line::Pixel));
@@ -125,7 +126,8 @@ void DisplayCompositor::Cleanup()
 }
 void DisplayCompositor::Init(std::span<const u32> shader)
 {
-    contexts = owner->CreateBuffer(sizeof(Line) * 192, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    contexts = owner->CreateBuffer(sizeof(Line) * 192 + MaxGroupRows * sizeof(u32),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
     for (auto& image : outputs)
         image = owner->CreateImage(256 * scale, 192 * scale, 1, VK_FORMAT_R32_UINT,
             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
@@ -138,7 +140,7 @@ void DisplayCompositor::Init(std::span<const u32> shader)
     VkDescriptorSetLayoutCreateInfo bindingInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     bindingInfo.bindingCount = 3; bindingInfo.pBindings = entries;
     Device::Check(f.vkCreateDescriptorSetLayout(device, &bindingInfo, nullptr, &bindings), "Create display bindings");
-    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 2 * sizeof(u32)};
+    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 3 * sizeof(u32)};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layoutInfo.setLayoutCount = 1; layoutInfo.pSetLayouts = &bindings;
     layoutInfo.pushConstantRangeCount = 1; layoutInfo.pPushConstantRanges = &push;
@@ -274,10 +276,27 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
     }
     const auto& input = image3D ? image3D : blank3D;
     if (!image3D) sourceScale = 1;
+    // Compaction: dispatch one 8-row workgroup band only when some guest line
+    // inside it is composed. A full map is skipped so the shader stays on the
+    // untranslated GlobalInvocationID path.
+    const u32 groupCount = 24 * scale;
+    std::array<u32, MaxGroupRows> groupRows{};
+    u32 activeGroups = 0;
+    for (u32 g = 0; g < groupCount; ++g)
+    {
+        const u32 first = g * 8 / scale, last = ((g + 1) * 8 - 1) / scale;
+        bool active = false;
+        for (u32 y = first; y <= last; ++y) active |= !Preserved(lines[y]);
+        if (active) groupRows[activeGroups++] = g;
+    }
+    const u32 compactRows = activeGroups != groupCount;
     {
         RenderCostVulkanScope copy(owner->Costs(), Cost::ContextCopy);
         std::memcpy(contexts->Data(), lines.data(), lines.size_bytes());
-        if (owner->Costs()) owner->Costs()->Transfer(Cost::ContextCopyBytes, lines.size_bytes());
+        const u32 mapBytes = compactRows ? activeGroups * sizeof(u32) : 0;
+        if (mapBytes)
+            std::memcpy(static_cast<char*>(contexts->Data()) + sizeof(Line) * 192, groupRows.data(), mapBytes);
+        if (owner->Costs()) owner->Costs()->Transfer(Cost::ContextCopyBytes, lines.size_bytes() + mapBytes);
     }
     const VkDescriptorImageInfo images[] = {{VK_NULL_HANDLE, input->View(), VK_IMAGE_LAYOUT_GENERAL},
         {VK_NULL_HANDLE, outputs[screen]->View(), VK_IMAGE_LAYOUT_GENERAL}};
@@ -309,9 +328,10 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
         VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT);
     f.vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     f.vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descriptors, 0, nullptr);
-    const u32 settings[] = {scale, sourceScale};
+    const u32 settings[] = {scale, sourceScale, compactRows};
     f.vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(settings), settings);
-    f.vkCmdDispatch(command, 32 * scale, 24 * scale, 1);
+    if (activeGroups)
+        f.vkCmdDispatch(command, 32 * scale, activeGroups, 1);
     owner->Timestamp(Device::TimestampStage::DisplayCompose);
     if (resident)
     {
