@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.210"><img src="https://img.shields.io/badge/fork_release-1.1.210-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.211"><img src="https://img.shields.io/badge/fork_release-1.1.211-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,7 +19,7 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.210 release record](plans/releases/1.1.210.md). 1.1.210 retains unchanged palettes for Vulkan captured-texture decoding and shares stereo history reads across both Sinc output phases. GPU palette allocation/pixel checks and old/new PCM comparisons passed; native ARM64 SIMD execution is covered by CI. These are bounded work reductions, not measured FPS gains. GPU 2D remains opt-in after the measured 1.1.196 improvements. Results do not establish a universal Vulkan advantage over OpenGL or Metal.
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.211 release record](plans/releases/1.1.211.md). 1.1.211 omits capture-buffer copy-on-write ranges that a batch fully overwrites before their old contents are read. Native GPU byte-count and complete snapshot comparisons passed; platform validation is covered by CI. These are bounded work reductions, not measured FPS gains. GPU 2D remains opt-in after the measured 1.1.196 improvements. Results do not establish a universal Vulkan advantage over OpenGL or Metal.
 
 ## How to use
 
