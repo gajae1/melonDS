@@ -12,6 +12,7 @@
 #include <QSemaphore>
 #include <QMutexLocker>
 #include <QDateTime>
+#include <algorithm>
 #include <array>
 #include <map>
 #include <memory>
@@ -35,6 +36,7 @@
 #include "GPU_Vulkan.h"
 #endif
 #include "frontend/qt_sdl/RendererSelection.h"
+#include "frontend/ScreenLayout.h"
 #include <cstring>
 
 using namespace melonDS;
@@ -45,6 +47,7 @@ struct NativeContext
     int currentCalls = 0, swaps = 0;
     bool failCurrent = false;
     bool failSwap = false;
+    void (*beforeSwap)() = nullptr;
 #ifdef _WIN32
     std::unique_ptr<GL::Context> native;
     bool Replace()
@@ -81,6 +84,7 @@ struct NativeContext
     {
         ++swaps;
         if (failSwap) return false;
+        if (beforeSwap) beforeSwap();
 #ifdef _WIN32
         if (native) return native->SwapBuffers();
 #endif
@@ -130,6 +134,7 @@ public:
     bool initOpenGL();
     bool deinitOpenGL();
     bool drawScreen();
+    bool screensCoverWindow(float w, float h) const;
     void transferLayout() {} // GUI-produced layout snapshot below.
     void osdUpdate();
     void calcSplashLayout() {}
@@ -188,6 +193,8 @@ public:
 
 #include "presentationInit.inc"
 #include "presentationDeinit.inc"
+#include "presentationColumnCovered.inc"
+#include "presentationCoverage.inc"
 #include "presentationDraw.inc"
 #include "presentationOSD.inc"
 
@@ -346,6 +353,132 @@ public:
     }
 };
 
+
+namespace ClearCoverage
+{
+PFNGLCLEARPROC driverClear;
+PFNGLCLEARCOLORPROC driverClearColor;
+bool forceClear = false;
+unsigned clears = 0, captures = 0;
+std::vector<u32> pixels;
+
+void APIENTRY Clear(GLbitfield mask)
+{
+    ++clears;
+    driverClear(mask);
+}
+
+void APIENTRY ClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
+{
+    driverClearColor(r, g, b, a);
+    // Restore the unconditional clear at its original point in drawScreen.
+    // Keep the production coverage decision and draw calls intact.
+    if (forceClear) Clear(GL_COLOR_BUFFER_BIT);
+}
+
+void Capture()
+{
+    ++captures;
+    pixels.resize(256u * 192u);
+    glReadBuffer(GL_BACK);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glReadPixels(0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+}
+
+bool Check(ScreenPanelGL& panel)
+{
+    NDSArgs args; args.JIT = std::nullopt;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    auto display = std::make_unique<DisplayFixture>(*nds);
+    display->Resize(1);
+    // Nonuniform input exercises both filters; exclude black and the magenta
+    // seed so missing draws and exposed backbuffer pixels cannot pass unnoticed.
+    for (auto& screen : display->Frames)
+        for (u32& pixel : screen) pixel |= 0xFF202020u;
+    nds->SetRenderer(std::move(display));
+    panel.emuInstance->console = nds.get();
+    panel.emuInstance->thread.active = true;
+    if (!panel.initOpenGL() || !panel.glContext->MakeCurrent()) return false;
+
+    struct Case
+    {
+        const char* name;
+        int screens;
+        float scale;
+        unsigned expectedClears;
+        float matrix[2][6];
+    };
+    const Case cases[] = {
+        {"full", 1, 1, 0, {{1, 0, 0, 1, 0, 0}}},
+        {"tiled", 2, 1, 0, {{0.5f, 0, 0, 1, 0, 0}, {0.5f, 0, 0, 1, 128, 0}}},
+        {"letterbox", 1, 1, 1, {{0.75f, 0, 0, 0.75f, 32, 24}}},
+        {"gap", 2, 1, 1, {{0.5f, 0, 0, 1, -1, 0}, {0.5f, 0, 0, 1, 129, 0}}},
+        {"rotate-90", 1, 1, 0, {{0, 0.75f, -4.f/3.f, 0, 256, 0}}},
+        {"fractional", 1, 1.25f, 0, {{0.8f, 0, 0, 0.8f, 0, 0}}},
+    };
+    driverClear = glad_glClear;
+    driverClearColor = glad_glClearColor;
+    glad_glClear = Clear;
+    glad_glClearColor = ClearColor;
+    panel.glContext->beforeSwap = Capture;
+
+    const auto draw = [&](bool forced) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDrawBuffer(GL_BACK);
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        driverClearColor(1, 0, 1, 1);
+        driverClear(GL_COLOR_BUFFER_BIT); // Seed calls are not presentation calls.
+        clears = captures = 0;
+        pixels.clear();
+        forceClear = forced;
+        const int swaps = panel.glContext->swaps;
+        const bool drawn = panel.drawScreen();
+        return drawn && captures == 1 && panel.glContext->swaps == swaps + 1 &&
+            glGetError() == GL_NO_ERROR;
+    };
+    bool passed = true;
+    for (bool linear : {false, true}) for (const auto& test : cases)
+    {
+        panel.filter = linear;
+        panel.numScreens = test.screens;
+        panel.windowInfo.surface_scale = test.scale;
+        for (int i = 0; i < test.screens; ++i)
+        {
+            panel.screenKind[i] = i;
+            std::copy_n(test.matrix[i], 6, panel.screenMatrix[i]);
+        }
+        bool ok = draw(false);
+        const unsigned actualClears = clears;
+        const auto actual = pixels;
+        ok &= actualClears == test.expectedClears;
+        ok &= draw(true);
+        // The forced baseline adds one clear, including when production already
+        // needs a background clear. Both execute the exact same production draw.
+        ok &= clears == test.expectedClears + 1 && actual == pixels;
+        const auto black = std::count_if(actual.begin(), actual.end(),
+            [](u32 p) { return (p & 0xFFFFFFu) == 0; });
+        ok &= !actual.empty() && size_t(black) < actual.size();
+        ok &= (black != 0) == (test.expectedClears != 0);
+        ok &= std::none_of(actual.begin(), actual.end(),
+            [](u32 p) { return (p & 0xFFFFFFu) == 0xFF00FFu; });
+        passed &= ok;
+        std::printf("clear-coverage %s %s: clears=%u forced=%u pixels=%zu %s\n",
+            test.name, linear ? "linear" : "nearest", actualClears, clears,
+            actual.size(), ok ? "PASS" : "FAIL");
+    }
+    panel.glContext->beforeSwap = nullptr;
+    glad_glClear = driverClear;
+    glad_glClearColor = driverClearColor;
+    panel.emuInstance->thread.active = false;
+    panel.emuInstance->console = nullptr;
+    passed &= panel.deinitOpenGL();
+    return passed;
+}
+}
 
 namespace DisplayResizeFault
 {
@@ -842,6 +975,7 @@ int main(int argc, char** argv)
             if (!std::strncmp(argv[1], "frame-lifetime-", 15)) passed = DisplayFrameLifecycle(panel, argv[1] + 15);
             else if (!std::strcmp(argv[1], "scaled-display")) passed = ScaledUpload(panel);
             else if (!std::strcmp(argv[1], "ff-throttle")) passed = PresentThrottle(panel);
+            else if (!std::strcmp(argv[1], "clear-coverage")) passed = ClearCoverage::Check(panel);
             else if (!std::strncmp(argv[1], "fail-", 5)) passed = InitFailure::Check(panel, argv[1]);
             else if (!std::strcmp(argv[1], "osd-reinit")) passed = InitFailure::OSD(panel);
             else if (!std::strcmp(argv[1], "runtime-current")) passed = RuntimeFailure(panel, true);

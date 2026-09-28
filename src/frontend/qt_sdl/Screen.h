@@ -298,6 +298,11 @@ private:
 
     GLuint logoTexture = 0;
 
+    // Whether the current layout's opaque screen quads cover every pixel of a
+    // w x h (logical units) surface, making the per-frame window clear dead
+    // fill work. EmuThread only; call with screenSettingsLock held.
+    bool screensCoverWindow(float w, float h) const;
+
     melonDS::RenderCostPresentMeter RenderCost;
 
     void osdRenderItem(OSDItem* item) override;

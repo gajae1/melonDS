@@ -964,14 +964,18 @@ endforeach()
 
 if (MELONDS_TEST_GPU)
     set(presentation_methods)
-    foreach(pair IN ITEMS "Init|initOpenGL" "Deinit|deinitOpenGL" "Draw|drawScreen")
+    foreach(pair IN ITEMS "Init|bool ScreenPanelGL::initOpenGL()"
+            "Deinit|bool ScreenPanelGL::deinitOpenGL()"
+            "ColumnCovered|static bool columnCovered(const float rects[][4], int numRects, float x, float h)"
+            "Coverage|bool ScreenPanelGL::screensCoverWindow(float w, float h) const"
+            "Draw|bool ScreenPanelGL::drawScreen()")
         string(REPLACE "|" ";" parts "${pair}")
         list(GET parts 0 name)
-        list(GET parts 1 method)
+        list(GET parts 1 signature)
         set(output "${CMAKE_CURRENT_BINARY_DIR}/presentation${name}.inc")
         add_custom_command(OUTPUT "${output}"
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
-                "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "bool ScreenPanelGL::${method}()" "${output}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp" "${signature}" "${output}"
             DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
         list(APPEND presentation_methods "${output}")
     endforeach()
@@ -1020,6 +1024,9 @@ Path(sys.argv[2]).write_text(body, encoding="utf-8")
     set_tests_properties(gl-presentation-scaled-display PROPERTIES TIMEOUT 20 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
     add_test(NAME gl-presentation-ff-throttle COMMAND GLPresentation ff-throttle)
     set_tests_properties(gl-presentation-ff-throttle PROPERTIES TIMEOUT 20 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
+    add_test(NAME gl-presentation-clear-coverage COMMAND GLPresentation clear-coverage)
+    set_tests_properties(gl-presentation-clear-coverage PROPERTIES TIMEOUT 20
+        RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
     target_include_directories(GLPresentation PRIVATE "${CMAKE_SOURCE_DIR}/src"
         "${CMAKE_SOURCE_DIR}/src/frontend" "${CMAKE_CURRENT_BINARY_DIR}")
     target_link_libraries(GLPresentation PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)

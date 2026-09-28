@@ -20,6 +20,7 @@
 
 #include <optional>
 #include <cmath>
+#include <algorithm>
 
 #include <QPaintEvent>
 #include <QPainter>
@@ -1454,6 +1455,91 @@ void ScreenPanelGL::osdDeleteItem(OSDItem* item)
     ScreenPanel::osdDeleteItem(item);
 }
 
+// Interval-chain coverage for one column x of the surface: do the y-intervals
+// of the rects spanning x join into [0, h)? x and the reach use half-open
+// semantics (left edge inclusive, right exclusive), matching how the fill
+// convention treats pixel centers on quad edges.
+static bool columnCovered(const float rects[][4], int numRects, float x, float h)
+{
+    float reach = 0.f;
+    for (;;)
+    {
+        float next = reach;
+        for (int i = 0; i < numRects; i++)
+            if (rects[i][0] <= x && x < rects[i][2] &&
+                rects[i][1] <= reach && rects[i][3] > next)
+                next = rects[i][3];
+        if (next == reach)
+            return reach >= h;
+        reach = next;
+    }
+}
+
+bool ScreenPanelGL::screensCoverWindow(float w, float h) const
+{
+    if (w <= 0.f || h <= 0.f || numScreens <= 0 || numScreens > kMaxScreenTransforms)
+        return false;
+
+    float rects[kMaxScreenTransforms][4];
+    int numRects = 0;
+    float edges[2*kMaxScreenTransforms + 2] = {0.f, w};
+    int numEdges = 2;
+
+    for (int i = 0; i < numScreens; i++)
+    {
+        const float* m = screenMatrix[i];
+
+        // The transform turns the source rect (0,0)-(256,192) into an
+        // axis-aligned rect only when each output axis depends on exactly one
+        // input axis and they are different ones. ScreenLayout builds only
+        // translate/scale and 90-degree-rotation transforms, whose off-diagonal
+        // entries stay exact zeros; anything else (shear, degenerate) is not
+        // provably rectangular, so keep the clear.
+        if (((m[0] != 0.f) == (m[2] != 0.f)) ||
+            ((m[1] != 0.f) == (m[3] != 0.f)) ||
+            ((m[0] != 0.f) == (m[1] != 0.f)))
+            return false;
+
+        float x0 = m[4], y0 = m[5];
+        float x1 = x0 + 256.f*m[0] + 192.f*m[2];
+        float y1 = y0 + 256.f*m[1] + 192.f*m[3];
+        if (x1 < x0) std::swap(x0, x1);
+        if (y1 < y0) std::swap(y0, y1);
+
+        // Only coverage inside the surface matters; rasterization is clipped
+        // to the viewport anyway.
+        float* rect = rects[numRects];
+        rect[0] = std::max(x0, 0.f);
+        rect[1] = std::max(y0, 0.f);
+        rect[2] = std::min(x1, w);
+        rect[3] = std::min(y1, h);
+        if (rect[2] <= rect[0] || rect[3] <= rect[1])
+            continue; // paints nothing inside the surface
+
+        edges[numEdges++] = rect[0];
+        edges[numEdges++] = rect[2];
+        numRects++;
+    }
+    if (numRects == 0)
+        return false;
+
+    std::sort(edges, edges + numEdges);
+    numEdges = int(std::unique(edges, edges + numEdges) - edges);
+
+    // Coverage along x can only change at a rect edge, so probing every slab
+    // midpoint plus every interior edge column decides the union exactly.
+    // Any gap, however small, keeps the clear.
+    for (int e = 0; e + 1 < numEdges; e++)
+    {
+        const float mid = float((double(edges[e]) + double(edges[e+1])) * 0.5);
+        if (!columnCovered(rects, numRects, mid, h))
+            return false;
+        if (edges[e+1] < w && !columnCovered(rects, numRects, edges[e+1], h))
+            return false;
+    }
+    return true;
+}
+
 bool ScreenPanelGL::drawScreen()
 {
     // Deinit is acknowledged before the GUI replaces or removes the panel.
@@ -1502,10 +1588,17 @@ bool ScreenPanelGL::drawScreen()
     glDisable(GL_BLEND);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_STENCIL_TEST);
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
 
     glViewport(0, 0, w, h);
+
+    glClearColor(0, 0, 0, 1);
+    // The screen quads below are opaque and drawn with blending, depth,
+    // stencil and scissor disabled, so where they provably cover the whole
+    // surface the window-sized clear is fully overwritten fill work. The
+    // decision needs the same layout snapshot the draw loop uses, so the
+    // clear is deferred; every path that ends up not drawing full-coverage
+    // quads still clears before anything else is painted.
+    bool clearPending = true;
 
     if (emuThread->emuIsActive())
     {
@@ -1601,6 +1694,12 @@ bool ScreenPanelGL::drawScreen()
             glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, filter);
             glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, filter);
 
+            // Same lock hold as the draws, so both see one screenMatrix
+            // snapshot. Full coverage makes the clear redundant fill.
+            if (!screensCoverWindow(w / factor, h / factor))
+                glClear(GL_COLOR_BUFFER_BIT);
+            clearPending = false;
+
             glBindBuffer(GL_ARRAY_BUFFER, screenVertexBuffer);
             glBindVertexArray(screenVertexArray);
 
@@ -1613,6 +1712,11 @@ bool ScreenPanelGL::drawScreen()
             screenSettingsLock.unlock();
         }
     }
+
+    // No full-coverage quads were drawn (inactive emulation, unavailable
+    // frame, or letterboxing): the surface still needs its black background.
+    if (clearPending)
+        glClear(GL_COLOR_BUFFER_BIT);
 
     osdUpdate();
 
@@ -1822,7 +1926,11 @@ QPaintEngine* ScreenPanelGL::paintEngine() const
 
 void ScreenPanelGL::setupScreenLayout()
 {
+    // The draw thread reads screenMatrix under this lock; taking it here too
+    // keeps the coverage decision and the draw loop on one layout snapshot.
+    screenSettingsLock.lock();
     ScreenPanel::setupScreenLayout();
+    screenSettingsLock.unlock();
     transferLayout();
 }
 
