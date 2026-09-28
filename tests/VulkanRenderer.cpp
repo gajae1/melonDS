@@ -2079,6 +2079,102 @@ void NativeCopyRuns()
     std::puts("Native GPU copies: 40 half-page inputs -> 6 commands, 10240 bytes, pixels/gaps preserved PASS");
 }
 
+void NativeCaptureCopyOnWrite()
+{
+    using namespace Vulkan::Native2D;
+    std::string error;
+    auto device = Vulkan::Device::Create(error);
+    Require(bool(device), error.c_str());
+    Pipeline pipeline(device, Vulkan::EmbeddedNative2D());
+    CapturePipeline capture(device, Vulkan::EmbeddedNative2DCapture());
+    std::array<u32, 1> memory{};
+    std::array<Record, 1> records{};
+    records[0].layers.enabled = records[0].layers.forcedBlank = 1;
+    records[0].object.historyRead = NoHistory;
+    records[0].objectWrite = 1024;
+    records[0].source3DAbort = 1;
+    records[0].finalDisplay.screensEnabled = 1;
+    records[0].finalDisplay.dispCnt = 1u << 16;
+    std::vector<u16> expected(4 * 65536);
+    auto command = [](u32 bank, u32 line, u16 value, bool narrow = false) {
+        CaptureCommand c{};
+        c.row.control = (1u << 29) | (bank << 16) | (narrow ? 0 : 3u << 20);
+        c.row.line = line; c.hasB = 1;
+        for (u32 i = 0; i < c.sourceB.size(); ++i) c.sourceB[i] = value + i * 13;
+        return c;
+    };
+    auto apply = [&](const auto& commands) {
+        for (const auto& c : commands) {
+            const u32 width = (c.row.control & (3u << 20)) ? 256 : 128;
+            const u32 bank = (c.row.control >> 16) & 3;
+            const u32 first = ((((c.row.control >> 18) & 3) << 14) + c.row.line * width) & 65535;
+            std::array<u16, 256> row{};
+            for (u32 x = 0; x < width; ++x)
+                row[x] = c.gpuMask & (1u << (x / 128))
+                    ? expected[c.sourceWord * 2 + x] : c.sourceB[x];
+            std::copy_n(row.begin(), width, expected.begin() + bank * 65536 + first);
+        }
+    };
+    auto read = [&](const std::shared_ptr<Vulkan::Device::Buffer>& source) {
+        auto landing = device->CreateBuffer(source->Size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+        const auto cmd = device->Begin();
+        const auto& f = device->Functions();
+        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 1, &barrier, 0, nullptr, 0, nullptr);
+        const VkBufferCopy copy{0, 0, source->Size()};
+        f.vkCmdCopyBuffer(cmd, source->Handle(), landing->Handle(), 1, &copy);
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+            0, 1, &barrier, 0, nullptr, 0, nullptr);
+        device->SubmitAndWait();
+        std::vector<u16> result(source->Size() / 2);
+        std::memcpy(result.data(), landing->Data(), source->Size());
+        return result;
+    };
+    std::vector<CaptureCommand> seed;
+    for (u32 bank = 0; bank < 4; ++bank)
+        for (u32 line = 0; line < 64; ++line) seed.push_back(command(bank, line, 1000 + bank * 997 + line * 31));
+    apply(seed);
+    pipeline.Render(memory, records, {}, 0, &capture, seed);
+    Require(read(capture.Snapshot()) == expected, "capture COW seed differs");
+    auto check = [&](const std::vector<CaptureCommand>& commands, u64 savedBytes) {
+        auto retained = capture.Snapshot();
+        const auto old = expected;
+        apply(commands);
+        {
+            NativeCopyProbe probe(*device, retained->Handle(), VK_NULL_HANDLE);
+            pipeline.Render(memory, records, {}, 0, &capture, commands);
+            Require(probe.calls == 1 && probe.bytes == 524288 - savedBytes,
+                "capture COW copied overwritten bytes or skipped old-value dependencies");
+        }
+        Require(read(capture.Snapshot()) == expected, "capture COW changed current or untouched bank pixels");
+        Require(read(retained) == old, "capture COW mutated a retained snapshot");
+    };
+    std::vector<CaptureCommand> overwrite;
+    for (u32 line = 0; line < 192; ++line) overwrite.push_back(command(1, line, 0x4100 + line * 19));
+    check(overwrite, 98304);
+    auto self = command(1, 0, 0); self.gpuMask = 3; self.sourceWord = 32768;
+    check({self}, 0);
+    auto before = command(2, 0, 0); before.gpuMask = 3; before.sourceWord = 32768;
+    auto replace = command(1, 0, 0x2600);
+    auto after = command(3, 0, 0); after.gpuMask = 3; after.sourceWord = 32768;
+    check({before, replace, after}, 1024); // WAR then RAW, across dispatch boundaries.
+    auto first = command(0, 1, 0x3600);
+    auto later = command(2, 3, 0); later.gpuMask = 3; later.sourceWord = 128;
+    auto selfAfter = first; selfAfter.gpuMask = 3; selfAfter.sourceWord = 128;
+    check({first, later, selfAfter}, 1024);
+    auto edge = command(3, 127, 0x5200, true); edge.row.control |= 3u << 18;
+    check({edge}, 256); // Last 256 bytes of the fourth bank.
+    Require(capture.EnableHires(Vulkan::EmbeddedNative2DCaptureHires(), 3), "hires COW fixture unavailable");
+    before.hiresWriteMask = replace.hiresWriteMask = after.hiresWriteMask = 3;
+    check({before, replace, after}, 1024); // Hires source B falls back to native captured bytes.
+    std::puts("Capture COW: 524288->425984 bytes for 192 rows; old snapshots, self-alias, RAW/WAR, bank edge and hires fallback PASS");
+}
+
 struct CapturedTextureInputProbe
 {
     static inline CapturedTextureInputProbe* active = nullptr;
@@ -2223,6 +2319,7 @@ void NativeDeferred()
 {
     NativeTextureInputReuse();
     NativeCopyRuns();
+    NativeCaptureCopyOnWrite();
     NativeCaptureBeginFailure();
     for (int scale : {1, 3})
     {

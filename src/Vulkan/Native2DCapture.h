@@ -61,7 +61,7 @@ private:
             if(pendingBanks&(1u<<bank)) bankRevisions[bank]=revision;
         pendingBanks=0;
         initialized=true;hiresInitialized=bool(hires);
-        dispatches.clear();previousBanks.reset();
+        dispatches.clear();bankCopies.clear();previousBanks.reset();
     }
     void Cleanup();
     std::shared_ptr<Device> owner;
@@ -81,5 +81,6 @@ private:
     std::array<uint64_t, 4> bankRevisions{};
     uint32_t pendingBanks = 0;
     std::vector<uint32_t> dispatches;
+    std::vector<VkBufferCopy> bankCopies;
 };
 }

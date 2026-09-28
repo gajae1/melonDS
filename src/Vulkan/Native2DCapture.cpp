@@ -136,6 +136,7 @@ void CapturePipeline::Prepare(std::span<const CaptureCommand> commands,
     if(hires) Require(scaled->BelongsTo(*owner) && (scaled->Usage()&VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) &&
         scaled!=hires && scaled!=banks,"Invalid hires capture raw buffer");
     dispatches.clear(); dispatches.push_back(0);
+    bankCopies.clear();
     // First use (or recovery) clears every bank, not just capture destinations.
     pendingBanks=initialized?0:0xF;
     std::array<std::bitset<512>,4> reads{}, writesSinceBarrier{};
@@ -182,10 +183,41 @@ void CapturePipeline::Prepare(std::span<const CaptureCommand> commands,
     }
     dispatches.push_back(uint32_t(commands.size()));
     // Old LCDC/page consumers keep this completed version immutable. Reuse the
-    // allocation when nobody retains it; otherwise copy entirely on-device.
-    if(initialized && banks.use_count()>1) {
-        auto next=owner->CreateBuffer(banks->Size(),banks->Usage(),false);
-        previousBanks=banks; banks=std::move(next);
+    // allocation when nobody retains it; otherwise preserve needed bytes on-device.
+    // Begin can fail after COW selection. Recompute for the retry's commands,
+    // retaining the original source even when the new bank has only one owner.
+    if(initialized && (previousBanks || banks.use_count()>1)) {
+        constexpr uint32_t segmentBytes=256, segmentCount=4*512;
+        std::bitset<segmentCount> written, initialReads;
+        for(const auto& c:commands) {
+            const uint32_t width=((c.row.control>>20)&3)?256:128, segments=width/128;
+            const uint32_t src=c.sourceWord/64, readMask=c.gpuMask|c.hiresMask;
+            // Both shaders can read B, including the hires native fallback.
+            // Read the entire command before marking any destination: self-alias
+            // needs its old value unless an earlier command already supplied it.
+            for(uint32_t s=0;s<segments;++s)
+                if((readMask&(1u<<s)) && !written[src+s]) initialReads.set(src+s);
+            const uint32_t dst=((c.row.control>>16)&3)*512+
+                (((((c.row.control>>18)&3)<<14)+c.row.line*width)&65535)/128;
+            // The native shader writes every destination word, regardless of
+            // capture mode or hiresWriteMask. These sets span dispatch barriers.
+            for(uint32_t s=0;s<segments;++s) written.set(dst+s);
+        }
+        const auto overwritten=written&~initialReads;
+        // At most 512 segments can be omitted; at least 1536 remain to copy.
+        // Each omitted segment can split a preserved run at most once.
+        bankCopies.reserve(commands.size()*2+1);
+        for(uint32_t s=0;s<segmentCount;) {
+            if(overwritten[s]) { ++s; continue; }
+            const uint32_t first=s++;
+            while(s<segmentCount && !overwritten[s]) ++s;
+            const VkDeviceSize offset=VkDeviceSize(first)*segmentBytes;
+            bankCopies.push_back({offset,offset,VkDeviceSize(s-first)*segmentBytes});
+        }
+        if(!previousBanks) {
+            auto next=owner->CreateBuffer(banks->Size(),banks->Usage(),false);
+            previousBanks=banks; banks=std::move(next);
+        }
     }
     std::memcpy(source->Data(),commands.data(),commands.size_bytes());
     const auto& f=owner->Functions(); const auto d=owner->Handle();
@@ -211,8 +243,8 @@ void CapturePipeline::Record(VkCommandBuffer cmd)
     if(previousBanks) {
         Barrier(*owner,cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT);
-        const VkBufferCopy copy{0,0,banks->Size()};
-        f.vkCmdCopyBuffer(cmd,previousBanks->Handle(),banks->Handle(),1,&copy);
+        f.vkCmdCopyBuffer(cmd,previousBanks->Handle(),banks->Handle(),
+            uint32_t(bankCopies.size()),bankCopies.data());
     }
     if(!initialized) {
         f.vkCmdFillBuffer(cmd,banks->Handle(),0,banks->Size(),0);
