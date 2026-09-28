@@ -231,9 +231,11 @@ void Compiler::T_Comp_BCOND()
     FixupBranch skipFailed = J(true);
     SetJumpTarget(skipExecute);
 
-    Comp_SpecialBranchBehaviour(false);
-
+    // A not-taken branch costs its fetch even when this path leaves the block
+    // because the trace followed the taken target.
     Comp_AddCycles_C(true);
+
+    Comp_SpecialBranchBehaviour(false);
     SetJumpTarget(skipFailed);
 }
 

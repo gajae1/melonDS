@@ -739,8 +739,88 @@ static int TestThumbStack(NDSArgs&& args, bool jit)
     return failures ? 1 : 0;
 }
 
+// A Thumb conditional branch that the JIT trace saw taken is followed inside
+// the block, so a later not-taken execution leaves the block right there. That
+// exit still owes the branch's own code fetch, like any not-taken branch.
+static void CheckFollowedThumbBCond(NDSArgs&& args, bool jit, unsigned& checked, unsigned& failures)
+{
+    if (args.JIT)
+        args.JIT->BranchOptimizations = true;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    NDS::Current = nds.get();
+    constexpr u32 cpsr = 0x000000FF; // Thumb system mode, IRQ and FIQ masked
+    for (bool arm7 : {false, true})
+    {
+        nds->CurCPU = arm7 ? 1 : 0;
+        ARM& cpu = arm7 ? static_cast<ARM&>(nds->ARM7) : static_cast<ARM&>(nds->ARM9);
+        const u32 code = arm7 ? 0x02009100 : 0x02009000;
+        nds->ARM9.MemTimings[code >> 12][0] = 1;
+        for (unsigned i = 0; i < 4; ++i) nds->ARM7MemTimings[code >> 15][i] = 1;
+        nds->ARM9Write16(code + 0, 0xD002); // beq code+8
+        nds->ARM9Write16(code + 2, 0xE7FE); // b . (sequential successor, another block)
+        nds->ARM9Write16(code + 4, 0xE7FE);
+        nds->ARM9Write16(code + 6, 0xE7FE);
+        nds->ARM9Write16(code + 8, 0xE7FA); // b code
+        auto& timestamp = arm7 ? nds->ARM7Timestamp : nds->ARM9Timestamp;
+        auto& target = arm7 ? nds->ARM7Target : nds->ARM9Target;
+        const auto start = [&](bool z)
+        {
+            cpu.CPSR = cpsr | (z ? 1u << 30 : 0);
+            cpu.JumpTo(code | 1);
+            cpu.Cycles = 0; // Exclude pipeline refill; measure the branch only.
+            timestamp = 0;
+            target = 1;
+        };
+        bool followed = true;
+        u64 cycles = 0;
+#ifdef JIT_ENABLED
+        if (jit)
+        {
+            // Compile while Z is set: the trace takes the branch and follows it.
+            start(true);
+            if (arm7) nds->ARM7.Execute<CPUExecuteMode::JIT>();
+            else nds->ARM9.Execute<CPUExecuteMode::JIT>();
+            auto& blocks = arm7 ? nds->JIT.JitBlocks7 : nds->JIT.JitBlocks9;
+            if (!blocks.contains(code | 1))
+            {
+                ++checked;
+                ++failures;
+                std::printf("jit ARM%d followed Thumb BEQ: FAIL block was not compiled\n", arm7 ? 7 : 9);
+                continue;
+            }
+            const JitBlockEntry entry = blocks.at(code | 1)->EntryPoint;
+            // The taken path runs the followed b code in the same block; a block
+            // that stopped at the branch would leave with the branch target.
+            start(true);
+            ARM_Dispatch(&cpu, entry);
+            followed = cpu.R[15] == code + 2;
+            start(false);
+            ARM_Dispatch(&cpu, entry);
+            cycles = cpu.Cycles;
+        }
+        else
+#endif
+        {
+            start(false);
+            if (arm7) nds->ARM7.Execute<CPUExecuteMode::Interpreter>();
+            else nds->ARM9.Execute<CPUExecuteMode::Interpreter>();
+            cycles = timestamp;
+        }
+        const bool ok = followed && cycles == 1 && cpu.R[15] == code + 4 && cpu.CPSR == cpsr;
+        ++checked;
+        failures += !ok;
+        std::printf("%s ARM%d followed Thumb BEQ not taken: %s followed=%d cycles=%llu expected=1 pc=%08X cpsr=%08X\n",
+            jit ? "dispatch" : "interpreter", arm7 ? 7 : 9, ok ? "PASS" : "FAIL", followed,
+            static_cast<unsigned long long>(cycles), cpu.R[15], cpu.CPSR);
+    }
+}
+
 static int TestConditionalCycles(NDSArgs&& args, bool jit)
 {
+    NDSArgs followArgs;
+    if (!args.JIT) followArgs.JIT = std::nullopt;
+    else followArgs.JIT->FastMemory = args.JIT->FastMemory;
     if (args.JIT)
     {
         args.JIT->MaxBlockSize = 1;
@@ -841,6 +921,8 @@ static int TestConditionalCycles(NDSArgs&& args, bool jit)
             }
         }
     }
+    nds.reset();
+    CheckFollowedThumbBCond(std::move(followArgs), jit, checked, failures);
     std::printf("core conditional cycles: %u checks, %u failures\n", checked, failures);
     return failures ? 1 : 0;
 }
