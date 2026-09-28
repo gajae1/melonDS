@@ -691,16 +691,23 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
         glDispatchCompute(((count + 31) / 32), ScreenWidth/CoarseTileW, ScreenHeight/CoarseTileH);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
 
-        // calculate list offsets
-        glUseProgram(ShaderCalculateWorkListOffset);
-        glDispatchCompute((numVariants + 31) / 32, 1, 1);
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
-
-        // sort shader work
-        glUseProgram(ShaderSortWork);
         glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, BinResultMemory);
-        glDispatchComputeIndirect(offsetof(BinResultHeader, SortWorkWorkCount));
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+
+        // One variant is already sorted: BinCombined wrote the final
+        // descriptors and its raster dispatch count, made visible to the
+        // indirect reads by the barrier above.
+        if (numVariants > 1)
+        {
+            // calculate list offsets
+            glUseProgram(ShaderCalculateWorkListOffset);
+            glDispatchCompute((numVariants + 31) / 32, 1, 1);
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+
+            // sort shader work
+            glUseProgram(ShaderSortWork);
+            glDispatchComputeIndirect(offsetof(BinResultHeader, SortWorkWorkCount));
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+        }
 
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D_ARRAY, Parent.CaptureOutput128Tex);
@@ -794,7 +801,7 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
                     else
                         glUniform1i(UniformIdxTexIsCapture, 0);
                 }
-                // Still bound to the indirect target from the sort dispatch above.
+                // Indirect target still bound to BinResultMemory since binning.
                 glDispatchComputeIndirect(offsetof(BinResultHeader, VariantWorkCount) + i*4*4);
             }
         }

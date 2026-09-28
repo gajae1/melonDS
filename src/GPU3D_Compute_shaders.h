@@ -864,11 +864,9 @@ void main()
     // there is only one variant. Both regions are consumed after the same barrier.
     if (gl_GlobalInvocationID.x < ((NumVariants + 31U) & ~31U))
         VariantWorkCount[gl_GlobalInvocationID.x] = uvec4(1, 1, 0, 0);
-#ifdef VULKAN
     // A single variant is already sorted; Binning writes its final descriptors.
     if (gl_GlobalInvocationID.x == 0U)
         SortedWorkOffset[0] = 0U;
-#endif
 }
 
 )";
@@ -1001,11 +999,9 @@ void main()
     if (binnedMask != 0U)
     {
         uint workOffset;
-#ifdef VULKAN
         if (NumVariants == 1U)
             workOffset = atomicAdd(VariantWorkCount[0].z, uint(bitCount(binnedMask)));
         else
-#endif
             workOffset = atomicAdd(VariantWorkCount[0].w, uint(bitCount(binnedMask)));
         BinningMaskAndOffset[BinningWorkOffsetsStart + linearTile * BinStride + groupIdx] = workOffset;
 
@@ -1018,7 +1014,6 @@ void main()
             binnedMask &= ~(1U << bit);
 
             int polygonIdx = groupIdx * 32 + bit;
-#ifdef VULKAN
             if (NumVariants == 1U)
             {
                 // Preserve each fine mask's polygon order and its scratch index.
@@ -1027,7 +1022,6 @@ void main()
                     bitfieldInsert(uint(polygonIdx), workIdx, 11, 21));
             }
             else
-#endif
             {
                 int variantIdx = Polygons[polygonIdx].Variant;
                 int inVariantOffset = int(atomicAdd(VariantWorkCount[variantIdx].z, 1));

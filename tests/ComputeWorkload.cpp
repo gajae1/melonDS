@@ -45,11 +45,12 @@ void APIENTRY Indirect(GLintptr offset)
         if (groups[axis] > GLuint(limit))
             throw std::runtime_error("producer exceeded indirect dispatch limit");
     }
-    // First variant's W is the producer's total work count. Binning can reach
-    // the sorted half of this buffer before the first indirect consumer; stop
+    // Single-variant binning counts directly in Z; the general path totals in
+    // W. Binning can reach the sorted half before the first indirect consumer; stop
     // there, before sorting/rasterising can access outside its allocation.
-    GLuint produced;
-    glGetBufferSubData(GL_DISPATCH_INDIRECT_BUFFER, 12, sizeof(produced), &produced);
+    GLuint counts[2];
+    glGetBufferSubData(GL_DISPATCH_INDIRECT_BUFFER, 8, sizeof(counts), counts);
+    const GLuint produced = std::max(counts[0], counts[1]);
     GLint workBuffer;
     DriverGetIndexed(GL_SHADER_STORAGE_BUFFER_BINDING, 7, &workBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, workBuffer);
@@ -214,6 +215,35 @@ bool CheckBlendContinuation()
     }
     return passed;
 }
+
+bool CheckSingleVariant()
+{
+    Scene scene(2), empty(0);
+    bool passed = true;
+    for (int scale : {1, 2})
+    {
+        std::vector<u32> single, multiple, clear;
+        scene.Polygons[0].Attr &= ~0x30u;
+        if (!Render(scene, scale, 0, single)) return false;
+        const unsigned singleCalls = IndirectCalls;
+        passed &= singleCalls == 1 && MaxProduced > 0;
+        // Untextured decal and modulation produce the same colors, but require
+        // distinct work lists. Compare all pixels against the general path.
+        scene.Polygons[0].Attr |= 0x10;
+        if (!Render(scene, scale, 0, multiple)) return false;
+        const unsigned multipleCalls = IndirectCalls;
+        passed &= multipleCalls == 3 && !single.empty() && single == multiple;
+        for (int y = scale; y < 191 * scale; ++y)
+            for (int x = scale; x < 255 * scale; ++x)
+                passed &= single[y * 256 * scale + x] == 0xFFFF0000;
+        if (!Render(empty, scale, 0, clear)) return false;
+        passed &= IndirectCalls == 0 && clear.size() == single.size();
+        passed &= std::all_of(clear.begin(), clear.end(), [](u32 p) { return p == 0xFF00FF00; });
+        std::printf("single_variant scale=%d pixels=%zu equal=%d indirect_calls=%u/%u empty=%u\n",
+            scale, single.size(), single == multiple, singleCalls, multipleCalls, IndirectCalls);
+    }
+    return passed;
+}
 }
 
 int CheckComputeWorkload(const char* name)
@@ -226,7 +256,9 @@ int CheckComputeWorkload(const char* name)
     glad_glDispatchComputeIndirect = Indirect;
     glad_glGetIntegeri_v = GetIndexed;
     bool passed = false;
-    if (!std::strcmp(name, "blend"))
+    if (!std::strcmp(name, "single-variant"))
+        passed = CheckSingleVariant();
+    else if (!std::strcmp(name, "blend"))
         passed = CheckBlendContinuation();
     else
     {

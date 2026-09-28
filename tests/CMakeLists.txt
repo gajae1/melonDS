@@ -510,7 +510,7 @@ if (MELONDS_TEST_GPU)
         set_tests_properties(gpu-gl-texture-${case}
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endforeach()
-    foreach(workload IN ITEMS storage dispatch spans control blend scratch-limits)
+    foreach(workload IN ITEMS storage dispatch spans control blend scratch-limits single-variant)
         add_test(NAME gpu-compute-workload-${workload} COMMAND GLFrameReadback compute-workload ${workload})
         set_tests_properties(gpu-compute-workload-${workload}
             PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
