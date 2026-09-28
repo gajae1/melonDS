@@ -125,16 +125,31 @@ void Queue::CaptureSprites(uint32_t engine, uint32_t line, const CapturedMemory&
     Memory::View obj;
     u8* bytes; u32 mask;
     reg.GetOBJVRAM(bytes, mask);
-    if (engine == 0) {
-        auto dirty = gpu.VRAMDirty_AOBJ.DeriveState(gpu.VRAMMap_AOBJ, gpu);
-        gpu.MakeVRAMFlat_AOBJCoherent(dirty);
-        if (reg.OBJEnable) obj = CaptureMapped({bytes, size_t(mask) + 1}, current.obj, dirty.Data,
-            gpu.VRAMMap_AOBJ, current.objGPU, current.objRevision, captured, &current.objSources);
-    } else {
-        auto dirty = gpu.VRAMDirty_BOBJ.DeriveState(gpu.VRAMMap_BOBJ, gpu);
-        gpu.MakeVRAMFlat_BOBJCoherent(dirty);
-        if (reg.OBJEnable) obj = CaptureMapped({bytes, size_t(mask) + 1}, current.obj, dirty.Data,
-            gpu.VRAMMap_BOBJ, current.objGPU, current.objRevision, captured, &current.objSources);
+    // The OBJ view is latched only while sprites are enabled; a disabled
+    // prefetch stores obj = {} and clears the GPU-source tracking below, so
+    // deriving dirty state and refreshing VRAMFlat here would update bytes no
+    // consumer reads.
+    if (reg.OBJEnable) {
+        // Resuming after a disabled gap cannot trust the incremental dirty
+        // state: the tracker's mapping snapshot is stale (a bank remapped
+        // away and back compares equal) and shared bank dirty bits may have
+        // been consumed by another mapping's DeriveState meanwhile. Refresh
+        // the whole flat once; current.obj == {} already makes CaptureMapped
+        // compare every page.
+        const bool resume = !current.object.enabled;
+        if (engine == 0) {
+            auto dirty = gpu.VRAMDirty_AOBJ.DeriveState(gpu.VRAMMap_AOBJ, gpu);
+            if (resume) std::memset(dirty.Data, 0xFF, sizeof(dirty.Data));
+            gpu.MakeVRAMFlat_AOBJCoherent(dirty);
+            obj = CaptureMapped({bytes, size_t(mask) + 1}, current.obj, dirty.Data,
+                gpu.VRAMMap_AOBJ, current.objGPU, current.objRevision, captured, &current.objSources);
+        } else {
+            auto dirty = gpu.VRAMDirty_BOBJ.DeriveState(gpu.VRAMMap_BOBJ, gpu);
+            if (resume) std::memset(dirty.Data, 0xFF, sizeof(dirty.Data));
+            gpu.MakeVRAMFlat_BOBJCoherent(dirty);
+            obj = CaptureMapped({bytes, size_t(mask) + 1}, current.obj, dirty.Data,
+                gpu.VRAMMap_BOBJ, current.objGPU, current.objRevision, captured, &current.objSources);
+        }
     }
     // Small OAM snapshots compare two pages and reuse identical data; no pixel
     // selection is done on the CPU and an unrelated dirty-bit consumer is safe.
