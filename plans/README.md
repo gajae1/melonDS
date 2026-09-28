@@ -7,6 +7,7 @@
 | 문서 | 내용 |
 |---|---|
 | [참고 프로젝트 반영 현황](Reference_Adoption.md) | 실제 소스·라이브러리 통합, 계수 생성, 설계 참고와 보류 후보 구분 |
+| [1.1.194 구현 기록](releases/1.1.194.md) | 선택형 Vulkan GPU 2D의 희소 스냅샷·장치 메모리 입력·비동기 제출 개선(기본 비활성 유지) |
 | [1.1.193 구현 기록](releases/1.1.193.md) | MinimumPhase 복사 제거·OpenGL 배경 clear 생략·Thumb JIT 사이클 수정·Vulkan 증분 빌드 |
 | [1.1.192 구현 기록](releases/1.1.192.md) | Vulkan 3D 셰이더가 후속 배치의 빈 타일 재기록을 생략(내장 GPU 4배율 3D 시간 약 29% 감소) |
 | [1.1.191 구현 기록](releases/1.1.191.md) | Vulkan 확대 화면 합성 대기를 VBlank와 겹쳐 2·4배율 프레임 시간 단축 |
