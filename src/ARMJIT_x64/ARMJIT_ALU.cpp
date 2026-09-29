@@ -536,7 +536,11 @@ OpArg Compiler::Comp_RegShiftReg(int op, Gen::OpArg rs, Gen::OpArg rm, bool S, b
     // Save the old count before shifting a Thumb destination that may be Rs.
     MOV(32, R(ECX), rs);
     if (result != rm) MOV(32, result, rm);
-    AND(32, R(ECX), Imm32(0xFF));
+    // ROR masks the count itself; only the low byte matters for zero.
+    if (op == 3)
+        TEST(8, R(ECX), R(ECX));
+    else
+        AND(32, R(ECX), Imm32(0xFF));
 
     FixupBranch zero = J_CC(CC_Z);
     if (op < 3)
