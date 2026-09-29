@@ -1,5 +1,7 @@
 # 과제 목록
 
+1.1.232는 SDL3 출력 스트림을 연 뒤 실제 버퍼 주기를 확인하지 못하면 연결 실패와 오류를 반환한다. 요청한 버퍼 크기를 적용값처럼 사용하는 폴백을 없애고 실패한 스트림은 기존 소유 스레드에서 정리한다. 더미 장치의 실패 주입 검사에서 오류 전달·힌트 복원·해제·정상 재열기를 확인했다. 정상 연결과 SDL2·WASAPI는 유지한다. WASAPI 틱 노이즈의 원인이나 물리 지연 개선을 입증한 변경은 아니다.
+
 1.1.231은 x64 JIT 레지스터 ROR(op==3)의 개수 0 검사를 AND ECX,255 대신 TEST CL,CL로 바꿔 레지스터 ROR마다 생성 코드를 4바이트 줄인다(74개 ARM 프로그램 코드 크기에서 정확히 4바이트 감소). 개수 0 분기·carry 흐름은 유지했고 LSL·LSR·ASR과 ARM64는 바꾸지 않았다. Thumb 3040건·ARM 2016건의 native/interpreter 레지스터·CPSR·guest 사이클 비교가 통과했고 ARM 고정 시험은 tests/CoreARMRegisterRotate.cpp(x64 전용 CI)로 승격했다. 같은 프로세스의 밀집 16 ROR 사이클 성분 측정은 혼재(ARM7 carry 미사용 count256 +2.28% 대 A/A 0.91%, ARM7 carry 사용 count32 +0.72% 대 0.63%)이므로 실행 속도 이득은 채택하지 않고 코드 크기 감소로만 기록한다. FPS·물리 오디오/입력·저사양 기기 검증과 Vulkan 저수준·JIT·오디오 로드맵은 남아 있다.
 
 1.1.230은 Vulkan native 2D의 연속 MemoryCopy 꼬리(8192바이트 이상, host target이 HOST_CACHED가 아니고 arena 소스 없음)에서 CPU memcpy와 staged 복사를 생략한다. 합성 CPU 준비에서 16KiB 연속 24.87%·64KiB 연속 39.36% 낮았으나 조각난 16KiB는 A/A 경계(+5.31% 대 5.30%)다. GPU 실행·게임 FPS·물리 오디오·입력 지연 검증과 Vulkan 저수준·JIT·오디오 로드맵은 남아 있다.
