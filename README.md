@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.229"><img src="https://img.shields.io/badge/fork_release-1.1.229-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.230"><img src="https://img.shields.io/badge/fork_release-1.1.230-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,11 +19,11 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.229 release record](plans/releases/1.1.229.md).
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.230 release record](plans/releases/1.1.230.md).
 
-1.1.229 reuses RGB6 palette pages in software 3D texture sampling, adding 256.5 KiB per renderer. Output matched the scalar baseline. In a short Solatorobo boot segment, total frame processing time was 2.25% lower (A/A median deviation 0.29%). Black frame results were within noise; its elapsed time including launch and output verification was 9.40% higher (A/A 4.97%). These measurements do not establish gameplay FPS or low-end-device performance. Sparse 256-color use can cost more in preparation. The release record gives the exact scope and remaining limits.
+1.1.230 avoids uploading large consecutive regions that GPU copies will replace in native Vulkan 2D. Synthetic CPU preparation on Radeon mapped memory took 24.87% less time for the 16 KiB case and 39.36% less for 64 KiB; these are not GPU execution or gameplay FPS gains. A fragmented fallback case was 5.31% slower, near its A/A variation of 5.30%. See the release record for eligibility, validation and limits.
 
-Earlier changes: [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
+Earlier changes: [1.1.229](plans/releases/1.1.229.md) reused RGB6 palette pages in software 3D texture sampling (+256.5 KiB per renderer); [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
 
 ## How to use
 
