@@ -392,6 +392,47 @@ static void ZeroTailTest()
                 static_cast<unsigned long long>(signature), outputs, states);
 }
 
+// Exercise every cached ratio plus nearby fallback phases on nonzero history.
+static void PhaseCacheTest()
+{
+    AudioSinc sinc;
+    u32 random = 0x459B71D3;
+    for (u32 i = 0; i < AudioSinc::Capacity + 17; ++i)
+    {
+        random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+        sinc.Push(s16(random));
+    }
+    u64 signature = 14695981039346656037ull;
+    unsigned outputs = 0;
+    auto record = [&](u32 elapsed, u32 period, u32 mix)
+    {
+        const s32 value = sinc.Output(elapsed, period, mix);
+        const u32 bits = std::bit_cast<u32>(value);
+        for (unsigned byte = 0; byte < 4; ++byte)
+        {
+            signature ^= (bits >> (8*byte)) & 0xFF;
+            signature *= 1099511628211ull;
+        }
+        ++outputs;
+    };
+    for (unsigned history = 0; history < 3; ++history)
+    {
+        for (u32 mix : {352u, 512u})
+            for (u32 period : {1u, 2u, 4u, 8u, 11u, 16u, 22u, 32u, 44u, 64u, 88u, 128u, 176u, 256u, 384u})
+                for (u32 elapsed : {0u, 1u, period/2, period-1, period, period+1})
+                    record(elapsed, period, mix);
+        for (unsigned i = 0; i < 17; ++i) sinc.Push(history ? s16(-32768 + i) : 0);
+    }
+    sinc.Reset(6000);
+    for (u32 mix : {352u, 512u})
+        for (u32 divisor = 2; divisor <= 512; divisor *= 2)
+            if (mix % divisor == 0)
+                Require(std::abs(sinc.Output(0, mix/divisor, mix) - 6000) <= 1,
+                        "Sinc zero-phase cache changed DC normalization");
+    std::printf("Sinc phase cache signature=%016llx outputs=%u\n",
+                static_cast<unsigned long long>(signature), outputs);
+}
+
 static void Capture(NDS& nds, unsigned period, unsigned bin, bool square,
                     const std::filesystem::path& path)
 {
@@ -441,6 +482,7 @@ int main(int argc, char** argv) try
         HistoryTest();
         OutputTest();
         ZeroTailTest();
+        PhaseCacheTest();
         return 0;
     }
     if (argc < 3) return 2;

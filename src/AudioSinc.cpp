@@ -74,6 +74,36 @@ const SincTables<Taps>& Tables()
     return tables;
 }
 
+// Exact original downsample weights for elapsed == 0 at the nine power-of-two
+// ratios 1/2..1/512 (support 48*n, so 48*(2+...+512) = 49056 floats, ~192KiB).
+// Ratio n starts at 48*(n-2); Sum holds the unnormalized double sum per ratio.
+struct SincZeroPhaseCache
+{
+    static constexpr unsigned MaxRatio = 512;
+    std::array<float, AudioSinc::Taps * (2*MaxRatio - 2)> Weights;
+    std::array<double, 9> Sum;
+
+    SincZeroPhaseCache()
+    {
+        const auto& tables = Tables();
+        for (unsigned n = 2, k = 0; n <= MaxRatio; n *= 2, ++k)
+        {
+            const double ratio = 1.0 / n; // Equals double(period)/mixPeriod.
+            float* row = Weights.data() + AudioSinc::Taps * (n - 2);
+            double sum = 0;
+            for (unsigned i = 0; i < AudioSinc::Taps * n; ++i)
+                sum += row[i] = tables.At((i+0.0)*ratio-AudioSinc::Taps/2);
+            Sum[k] = sum;
+        }
+    }
+};
+
+const SincZeroPhaseCache& ZeroPhaseCache()
+{
+    static const SincZeroPhaseCache cache;
+    return cache;
+}
+
 // Same result as std::lround (half away from zero) for |value| < 2^22, where
 // the remainder after truncation is exact, without a CRT call per sample.
 s32 RoundSample(float value) noexcept
@@ -90,6 +120,7 @@ AudioSinc::AudioSinc() : History(Capacity * 2)
 {
     // Prepare the shared table before the channel processing path.
     Tables();
+    ZeroPhaseCache();
 }
 
 void AudioSinc::Reset(s16 sample)
@@ -133,6 +164,19 @@ s32 AudioSinc::Output(u32 elapsed, u32 period, u32 mixPeriod) const
         const double ratio = double(period) / mixPeriod;
         const unsigned count = (unsigned(std::ceil(Taps/ratio)) + 15) & ~15u;
         if (ZeroTail >= count) return 0;
+        // Timer restarts and exact multiples repeat elapsed == 0 for period
+        // 1/n of the mixer; only that case (n = 2..512, powers of two) is cached.
+        const unsigned n = period ? mixPeriod / period : 0;
+        if (elapsed == 0 && period && mixPeriod % period == 0 && n >= 2
+            && n <= SincZeroPhaseCache::MaxRatio && std::has_single_bit(n))
+        {
+            const auto& cache = ZeroPhaseCache();
+            const float* weights = cache.Weights.data() + Taps * (n - 2);
+            for (unsigned i = 0; i < count; i += 16)
+                value += AudioInterpolationMath::DotFloat(History.data()+Head+i, weights+i, 16);
+            value /= cache.Sum[std::bit_width(n) - 2];
+            return RoundSample(value);
+        }
         double sum = 0;
         for (unsigned i = 0; i < count; i += 16)
         {
