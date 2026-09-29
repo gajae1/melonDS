@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.232"><img src="https://img.shields.io/badge/fork_release-1.1.232-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.233"><img src="https://img.shields.io/badge/fork_release-1.1.233-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,11 +19,11 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.232 release record](plans/releases/1.1.232.md).
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.233 release record](plans/releases/1.1.233.md).
 
-1.1.232 rejects SDL3 output opens when the bound device or its actual buffer period cannot be determined, instead of treating the requested buffer size as negotiated. Dummy-device failure injection verifies error reporting, stream cleanup and subsequent reopening. This does not establish a fix for WASAPI tick noise or a physical latency improvement.
+1.1.233 keeps a WASAPI device-reroute request pending until the existing owner-thread recovery reopens the output and refreshes its negotiated period and capacity. Native playback restart no longer hides that request. Mock backend checks passed with SDL2 and SDL3. Reopening may add a gap during device changes; this does not establish a fix for ticks during unchanged-device playback or a physical latency improvement.
 
-Earlier changes: [1.1.231](plans/releases/1.1.231.md) reduced x64 register-ROR generated code size (mixed timing); [1.1.230](plans/releases/1.1.230.md) skipped uploads of large consecutive regions that GPU copies replace in native Vulkan 2D (synthetic CPU preparation only; no gameplay FPS claim); [1.1.229](plans/releases/1.1.229.md) reused RGB6 palette pages in software 3D texture sampling (+256.5 KiB per renderer); [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
+Earlier changes: [1.1.232](plans/releases/1.1.232.md) rejected SDL3 opens with an unknown output period; [1.1.231](plans/releases/1.1.231.md) reduced x64 register-ROR generated code size (mixed timing); [1.1.230](plans/releases/1.1.230.md) skipped uploads of large consecutive regions that GPU copies replace in native Vulkan 2D (synthetic CPU preparation only; no gameplay FPS claim); [1.1.229](plans/releases/1.1.229.md) reused RGB6 palette pages in software 3D texture sampling (+256.5 KiB per renderer); [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
 
 ## How to use
 
