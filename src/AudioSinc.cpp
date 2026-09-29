@@ -182,7 +182,8 @@ s32 AudioSinc::Output(u32 elapsed, u32 period, u32 mixPeriod) const
         {
             std::array<float, 16> weights;
             for (unsigned j = 0; j < weights.size(); ++j)
-                sum += weights[j] = tables.At((i+j+phase)*ratio-Taps/2);
+                weights[j] = tables.At((i+j+phase)*ratio-Taps/2);
+            for (float weight : weights) sum += weight;
             value += AudioInterpolationMath::DotFloat(History.data()+Head+i, weights.data(), 16);
         }
         value /= sum;
