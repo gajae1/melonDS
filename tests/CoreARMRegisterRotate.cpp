@@ -40,7 +40,7 @@ const Follower CsAdds{"MOVCS+ADDS", {0x23A05007, 0xE2966001}, true};  // C live 
 
 enum Alias { Distinct, RdRm, RdRs, RmRs, All };
 struct Program {
-    const char* Op; unsigned Opcode; bool S; Alias Alias;
+    const char* Op; unsigned Opcode; bool S; Alias Aliasing;
     const Follower* Follow;
     unsigned Rd, Rm, Rs, Rn;
 };
@@ -108,8 +108,8 @@ int main(int argc, char** argv) {
 
                 // Rm-value sweeps only where Rm is independent of the count register.
                 std::vector<u32> values{0x80000001u};
-                if (p.Alias == Distinct || p.Alias == RdRm) values = {0, 0x80000001u};
-                if (p.Alias == RmRs || p.Alias == All) values = {0};
+                if (p.Aliasing == Distinct || p.Aliasing == RdRm) values = {0, 0x80000001u};
+                if (p.Aliasing == RmRs || p.Aliasing == All) values = {0};
 
                 u64 traceCycles = 0;
                 for (u32 value : values)
@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
                         nds->JIT.CompileBlock(&cpu);
                         traceCycles = cpu.Cycles;
                         if (verbose)
-                            std::printf("SIZE ARM%u %-5s %-8s %-11s %zu\n", cpuNum ? 7 : 9, p.Op, AliasName[p.Alias], p.Follow->Name,
+                            std::printf("SIZE ARM%u %-5s %-8s %-11s %zu\n", cpuNum ? 7 : 9, p.Op, AliasName[p.Aliasing], p.Follow->Name,
                                 size_t(nds->JIT.JITCompiler.GetCodePtr() - reinterpret_cast<const u8*>(blocks.at(key)->EntryPoint)));
                     }
                     Require(blocks.contains(key), "block was not compiled");
@@ -149,7 +149,7 @@ int main(int argc, char** argv) {
                     if (!(native == reference)) {
                         std::fprintf(stderr, "ARM%u %s S=%d %s follower=%s rd=r%u rm=r%u rs=r%u value=%08x count=%08x flagsIn=%08x\n"
                             "  native/reference pc=%08x/%08x cpsr=%08x/%08x cycles=%llu/%llu\n",
-                            cpuNum ? 7 : 9, p.Op, p.S, AliasName[p.Alias], p.Follow->Name, p.Rd, p.Rm, p.Rs, value, count, flags,
+                            cpuNum ? 7 : 9, p.Op, p.S, AliasName[p.Aliasing], p.Follow->Name, p.Rd, p.Rm, p.Rs, value, count, flags,
                             native.Registers[15], reference.Registers[15], native.CPSR, reference.CPSR,
                             (unsigned long long)native.Cycles, (unsigned long long)reference.Cycles);
                         for (unsigned r = 0; r < 15; ++r)
