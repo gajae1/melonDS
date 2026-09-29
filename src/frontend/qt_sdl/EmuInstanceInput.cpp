@@ -425,6 +425,7 @@ bool EmuInstance::joystickButtonDown(int val)
 void EmuInstance::inputProcess()
 {
     SDL_LockMutex(joyMutex.get());
+    // This also updates gamepads and their enabled motion sensors in SDL3.
     SDL_UpdateJoysticks();
 
     if (joystick)
@@ -464,13 +465,14 @@ void EmuInstance::inputProcess()
             Uint32(SDL_GetTicks() - joystickLastOpen) >= 1000))
         {
             openJoystick();
+#ifdef MELONDS_SDL3
+            // A newly opened gamepad can enable sensors after the update above.
+            // Refresh it now; steady-state SDL_UpdateGamepads would repeat the
+            // same global joystick update we already performed this frame.
+            if (controller) SDL_UpdateGamepads();
+#endif
         }
     }
-#ifdef MELONDS_SDL3
-    // Gamepad events are disabled; keep motion sensor data current when a
-    // controller is selected. Raw joystick buttons are updated above.
-    if (controller) SDL_UpdateGamepads();
-#endif
 
     joyInputMask = 0xFFF;
     if (joystick)

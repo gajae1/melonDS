@@ -227,6 +227,15 @@ foreach(case IN ITEMS controls transition capabilities detach open-failure close
     set_tests_properties(frontend-joystick-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()
 
+if(ENABLE_SDL3)
+    add_executable(SDL3JoystickPolling "${CMAKE_SOURCE_DIR}/tests/SDL3JoystickPolling.cpp" ${joystick_methods})
+    target_compile_definitions(SDL3JoystickPolling PRIVATE MELONDS_SDL3)
+    target_include_directories(SDL3JoystickPolling PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(SDL3JoystickPolling PRIVATE PkgConfig::SDL3 Threads::Threads)
+    add_test(NAME frontend-sdl3-joystick-polling COMMAND SDL3JoystickPolling)
+    set_tests_properties(frontend-sdl3-joystick-polling PROPERTIES TIMEOUT 15)
+endif()
+
 set(mic_methods)
 foreach(pair IN ITEMS "micOpen|void EmuInstance::micOpen()"
         "micGetNumSamplesIn|int EmuInstance::micGetNumSamplesIn(int inlen)"
