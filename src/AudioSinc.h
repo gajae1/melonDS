@@ -38,7 +38,22 @@ private:
 class AudioSincOutput
 {
 public:
+    static constexpr double ClockCorrectionMin = 0.999;
+    static constexpr double ClockCorrectionMax = 1.001;
+
+    // Sets the nominal rates and the anti-alias filter. The current clock
+    // correction is retained and applied on top of the new nominal step.
     void SetRates(double inputRate, double outputRate);
+    // Scales the effective input clock by correction (>1 consumes input faster,
+    // yielding fewer output samples). Accepts finite values in [0.999, 1.001]
+    // after SetRates; otherwise returns false and changes nothing. It never
+    // allocates, rebuilds coefficients, or touches history/pending samples.
+    bool SetClockCorrection(double correction);
+    // Zero means the nominal filter lacks upsampling headroom for the bound.
+    double ClockCorrectionStep() const
+    { return Count && NominalStep > 0 && NominalStep * ClockCorrectionMax <= 1 ? NominalStep : 0; }
+
+    // Clears history and pending output, and restores correction to 1.
     void Reset();
     void Push(const s16* stereo);
     std::span<const s16> Samples() const { return Pending; }
@@ -52,7 +67,9 @@ private:
     unsigned Capacity = 0;
     unsigned Count = 0;
     double Ratio = 0;
-    double Step = 1;
+    double NominalStep = 1;
+    double Correction = 1;
+    double Step = 1; // NominalStep * Correction
     double Position = 0;
 };
 }

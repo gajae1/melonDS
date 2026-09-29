@@ -290,6 +290,11 @@ public:
     int ReadOutput(s16* data, int samples);
     void SetOutputSampleRate(double rate);
     void SetOutputSkew(double skew);
+    // Only the Sinc output supports this; returns false (no change) otherwise
+    // or for a value outside AudioSincOutput's accepted range.
+    bool SetOutputClockCorrection(double correction);
+    double GetOutputClockCorrectionStep() const
+    { return SincOutput ? SincOutput->ClockCorrectionStep() : 0; }
 
     u8 Read8(u32 addr);
     u16 Read16(u32 addr);

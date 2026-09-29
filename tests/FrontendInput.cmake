@@ -106,7 +106,8 @@ foreach(case IN ITEMS filter-cancel buffer-preview-cancel buffer-accept
         output-preview-cancel output-failure output-unavailable
         time-stretch-preview-cancel time-stretch-failure
         interpolation-preview-cancel interpolation-accept interpolation-failure interpolation-sinc-accept
-        audio-sync-preview-cancel audio-sync-accept)
+        audio-sync-preview-cancel audio-sync-accept
+        clock-correction-preview-cancel clock-correction-accept)
     add_test(NAME audio-settings-ui-${case} COMMAND AudioSettingsUI ${case})
     set_tests_properties(audio-settings-ui-${case} PROPERTIES TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;SDL_AUDIODRIVER=dummy")
@@ -400,6 +401,9 @@ foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(const A
         "audioSetSpeed|void EmuInstance::audioSetSpeed(double speed)"
         "audioTimeStretchFailed|void EmuInstance::audioTimeStretchFailed()"
         "audioUpdateOutputState|void EmuInstance::audioUpdateOutputState(int previousRate)"
+        "audioResetClockCorrection|void EmuInstance::audioResetClockCorrection()"
+        "audioPrepareClockCorrection|void EmuInstance::audioPrepareClockCorrection(bool normalSpeed, double outputFPS)"
+        "audioFinishClockCorrection|void EmuInstance::audioFinishClockCorrection()"
         "audioSetOutput|bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::string& error)")
     string(REPLACE "|" ";" parts "${pair}")
     list(GET parts 0 method)
@@ -422,6 +426,8 @@ add_test(NAME audio-callback-buffer COMMAND FrontendAudio)
 add_test(NAME audio-device-loss-reopen COMMAND FrontendAudio --device-loss)
 add_test(NAME audio-device-async-owner COMMAND FrontendAudio --async-output)
 add_test(NAME audio-device-bounded-teardown COMMAND FrontendAudio --bounded-teardown)
+add_test(NAME audio-clock-lifecycle COMMAND FrontendAudio --clock-lifecycle)
+set_tests_properties(audio-clock-lifecycle PROPERTIES TIMEOUT 20)
 set_tests_properties(audio-device-async-owner PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-device-loss-reopen PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-device-bounded-teardown PROPERTIES TIMEOUT 20)
@@ -500,7 +506,7 @@ add_executable(SavestateLoad "${CMAKE_SOURCE_DIR}/tests/SavestateLoad.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/applyState.inc")
 target_include_directories(SavestateLoad PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(SavestateLoad PRIVATE core Threads::Threads)
-target_sources(SavestateLoad PRIVATE "${audio_callback}")
+target_sources(SavestateLoad PRIVATE "${audio_callback}" "${CMAKE_CURRENT_BINARY_DIR}/audioResetClockCorrection.inc")
 foreach(pair IN ITEMS "stateAudioEnable|audioEnable" "stateAudioDisable|audioDisable"
         "stateAudioStartPending|audioStartPending"
         "stateAudioReport|audioReportDiagnostics" "stateAudioReset|audioResetOutput")

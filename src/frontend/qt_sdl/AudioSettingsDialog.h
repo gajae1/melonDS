@@ -72,6 +72,7 @@ private slots:
     void on_chkLowPass_toggled(bool checked);
     void on_chkTimeStretch_toggled(bool checked);
     void on_chkAudioSync_toggled(bool checked);
+    void on_chkClockCorrection_toggled(bool checked);
     void on_cbOutputBackend_currentIndexChanged(int idx);
     void on_cbOutputDevice_currentIndexChanged(int idx);
     void on_btnApplyBuffer_clicked();
@@ -85,6 +86,7 @@ private:
     bool applyInterpolation(int mode, QString& error);
     bool applyOutput(int frames, int backend, const QString& device, QString& error);
     bool applyTimeStretch(bool enabled, QString& error);
+    void updateClockCorrectionEnabled();
 
     Ui::AudioSettingsDialog* ui;
 
@@ -98,6 +100,7 @@ private:
     QString oldOutputDevice;
     bool oldTimeStretch;
     bool oldAudioSync;
+    bool oldClockCorrection;
     int oldVolume;
     bool oldDSiSync;
     QButtonGroup* grpMicMode;

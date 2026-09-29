@@ -125,6 +125,7 @@ RangeList IntRanges =
 DefaultList<bool> DefaultBools =
 {
     {"Audio.TimeStretch", false},
+    {"Audio.ClockCorrection", false},
     {"Screen.Filter", true},
     // Ignored for the Vulkan renderer on Windows; see RendererImpliesVulkanDisplay.
     {"Screen.UseVulkan", false},

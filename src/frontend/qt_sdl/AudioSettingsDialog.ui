@@ -56,6 +56,12 @@
         <property name="toolTip"><string>Applies to audio output only. Off keeps the existing low-latency path. Processing adds tens of milliseconds independently of the output-device buffer; the actual delay varies. Not recommended for latency-sensitive rhythm games. Changes are previewed immediately; Cancel restores the previous setting.</string></property>
        </widget>
       </item>
+      <item row="14" column="0" colspan="3">
+       <widget class="QCheckBox" name="chkClockCorrection">
+        <property name="text"><string>Correct asynchronous audio clock drift</string></property>
+        <property name="toolTip"><string>Optional asynchronous clock correction. Requires Sinc (sharp), audio sync and pitch-preserving speed off, and normal speed-limited emulation. It adjusts audio resampling by up to 0.1&#37; without changing emulation speed or buffer capacity. Pitch can change slightly and queued audio can vary. Output rates too close to or below the emulated sample rate are ineligible (for example, DSi 47 kHz audio at 44.1 kHz output). Timing interruptions restart calibration; sustained overload suspends correction. Changes are previewed immediately; Cancel restores the previous setting.</string></property>
+       </widget>
+      </item>
       <item row="10" column="0">
        <widget class="QCheckBox" name="chkLowPass">
         <property name="text"><string>Low-pass filter:</string></property>

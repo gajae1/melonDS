@@ -17,6 +17,7 @@
 */
 
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <exception>
 #include <utility>
@@ -40,6 +41,7 @@ void EmuInstance::audioInit()
     audioDSiVolumeSync = localCfg.GetBool("Audio.DSiVolumeSync");
     audioLowPassCutoff = globalCfg.GetInt("Audio.LowPassCutoff");
     audioTimeStretchEnabled = globalCfg.GetBool("Audio.TimeStretch");
+    doAudioClockCorrection = globalCfg.GetBool("Audio.ClockCorrection");
 
     audioMutedToggle = false;
     audioMutedByFastForward = false;
@@ -138,6 +140,7 @@ bool EmuInstance::audioSetOutput(const AudioOutput::Settings& requested, std::st
 
 void EmuInstance::audioUpdateOutputState(int previousRate)
 {
+    audioResetClockCorrection();
     if (nds)
     {
         if (audioFreq != previousRate) nds->SPU.SetOutputSampleRate(audioFreq);
@@ -167,6 +170,20 @@ QString EmuInstance::audioOutputDescription() const
         description += QObject::tr("; device capacity %1 frames").arg(spec.bufferFrames);
     if (audioTimeStretchEnabled)
         description += QObject::tr("; pitch preservation adds processing delay");
+    if (doAudioClockCorrection.load(std::memory_order_relaxed))
+    {
+        switch (audioClockStatus.load(std::memory_order_relaxed))
+        {
+        case AudioClockCorrection::Status::Active:
+            description += QObject::tr("; audio clock correction active"); break;
+        case AudioClockCorrection::Status::Suspended:
+            description += QObject::tr("; clock correction suspended: delivery cannot be stabilized"); break;
+        case AudioClockCorrection::Status::Qualifying:
+            description += QObject::tr("; clock correction waiting for stable timing"); break;
+        default:
+            description += QObject::tr("; clock correction inactive for current output or mode"); break;
+        }
+    }
     if (audioRecoveryFallback)
         description += QObject::tr("; temporary fallback (saved output preference retained)");
     return description;
@@ -522,10 +539,15 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
     // The core resampler already converts to the device rate. Always fill the
     // requested device buffer; changing its length here leaves stale samples.
     const Uint64 started = inst->audioDiagnostics.Begin();
+    const bool trackClock = inst->doAudioClockCorrection.load(std::memory_order_relaxed);
+    const Uint64 clockStarted = trackClock ? SDL_GetPerformanceCounter() : 0;
     SDL_LockMutex(inst->audioSyncLock);
     int num_in = inst->audioTimeStretchEnabled
         ? static_cast<int>(inst->audioTimeStretch.Read(reinterpret_cast<s16*>(stream), len))
         : inst->nds->SPU.ReadOutput((s16*) stream, len);
+    if (trackClock)
+        inst->audioClockDelivery.Record(len, num_in, clockStarted,
+            double(SDL_GetPerformanceFrequency()), inst->audioFreq);
     SDL_SignalCondition(inst->audioSyncCond);
     SDL_UnlockMutex(inst->audioSyncLock);
     inst->audioDiagnostics.Record(len, num_in, started);
@@ -556,6 +578,78 @@ void EmuInstance::audioCallback(void* data, Uint8* stream, int len)
     inst->audioOutputRamp.Process(reinterpret_cast<s16*>(stream), num_in, len);
     inst->audioLowPass.Process(reinterpret_cast<s16*>(stream), len, targetHz, blockSeconds);
     inst->audioDiagnostics.FinishProcessing(started);
+}
+
+void EmuInstance::audioResetClockCorrection()
+{
+    // Producer thread, or UI only after the producer has acknowledged pause.
+    if (nds) nds->SPU.SetOutputClockCorrection(1.0);
+    audioClockCorrection.Reset();
+    audioClockEligible = false;
+    audioClockStep = audioClockFPS = 0;
+    audioClockStatus.store(AudioClockCorrection::Status::Inactive, std::memory_order_relaxed);
+}
+
+void EmuInstance::audioPrepareClockCorrection(bool normalSpeed, double outputFPS)
+{
+    const double step = nds ? nds->SPU.GetOutputClockCorrectionStep() : 0;
+    const bool eligible = normalSpeed && doAudioClockCorrection.load(std::memory_order_relaxed) &&
+        !doAudioSync.load(std::memory_order_relaxed) && !audioTimeStretchEnabled &&
+        audioIsRunning() && step > 0 && std::isfinite(outputFPS) && outputFPS > 0;
+    if (!eligible)
+    {
+        if (audioClockEligible) audioResetClockCorrection();
+        return;
+    }
+    if (!audioClockEligible || step != audioClockStep || outputFPS != audioClockFPS)
+    {
+        nds->SPU.SetOutputClockCorrection(1.0);
+        audioClockCorrection.Reset(audioFreq, outputFPS);
+        audioClockStep = step;
+        audioClockFPS = outputFPS;
+        audioClockEligible = true;
+    }
+}
+
+void EmuInstance::audioFinishClockCorrection()
+{
+    if (!audioClockEligible) return;
+    // Guest mix-rate changes can occur during this frame. The core clears an
+    // unsupported correction immediately; also discard this observation epoch.
+    if (nds->SPU.GetOutputClockCorrectionStep() != audioClockStep)
+    {
+        audioResetClockCorrection();
+        return;
+    }
+    const double frequency = double(SDL_GetPerformanceFrequency());
+    AudioClockCorrection::Observation observation{};
+#ifdef MELONDS_SDL3
+    const bool locked = SDL_TryLockMutex(audioSyncLock);
+#else
+    const bool locked = SDL_TryLockMutex(audioSyncLock) == 0;
+#endif
+    double now;
+    if (locked)
+    {
+        observation.callbackTime = audioClockDelivery.lastTick / frequency;
+        observation.callbackFrames = audioClockDelivery.lastFrames;
+        observation.requested = audioClockDelivery.requested;
+        observation.supplied = audioClockDelivery.supplied;
+        observation.gapSerial = audioClockDelivery.gapSerial;
+        observation.queued = nds->SPU.GetOutputSize();
+        observation.dropped = nds->SPU.GetOutputDroppedFrames();
+        observation.capacity = nds->SPU.GetOutputCapacity();
+        now = SDL_GetPerformanceCounter() / frequency;
+        SDL_UnlockMutex(audioSyncLock);
+    }
+    else now = SDL_GetPerformanceCounter() / frequency;
+    const double correction = audioClockCorrection.Update(now, locked ? &observation : nullptr);
+    if (!nds->SPU.SetOutputClockCorrection(correction))
+    {
+        audioResetClockCorrection();
+        return;
+    }
+    audioClockStatus.store(audioClockCorrection.GetStatus(), std::memory_order_relaxed);
 }
 
 void EmuInstance::audioReportDiagnostics()
@@ -1037,6 +1131,7 @@ void EmuInstance::audioUpdateSettings()
 
 void EmuInstance::audioResetOutput()
 {
+    audioResetClockCorrection();
     // The caller has paused the device; discard every host output history while
     // retaining the user's output rate, volume and current filter cutoff.
     nds->SPU.ResetOutputHistory();
@@ -1050,9 +1145,12 @@ void EmuInstance::audioResetOutput()
 void EmuInstance::audioEnable()
 {
     audioDevice.Stop();
+    audioResetClockCorrection();
     // Device setup can block. Complete capture setup before allowing playback
     // to consume the retained queue while the producer is still stopped here.
     if (micStarted) micOpen();
+    audioClockDelivery.lastTick = 0; // device is stopped; exclude paused time
+    audioClockDelivery.lastFrames = 0;
     audioStartRequested = static_cast<bool>(audioDevice);
     if (audioDevice)
     {
@@ -1081,6 +1179,7 @@ void EmuInstance::audioStartPending()
 
 void EmuInstance::audioDisable()
 {
+    audioResetClockCorrection();
     audioStartRequested = false;
     audioDevice.Stop();
     audioReportDiagnostics();

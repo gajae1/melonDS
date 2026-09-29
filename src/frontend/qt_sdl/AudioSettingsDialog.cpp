@@ -17,9 +17,11 @@
 */
 
 #include <bit>
+#include <atomic>
 #include "SDLCompat.h"
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QTimer>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
 
@@ -55,6 +57,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     oldOutputDevice = cfg.GetQString("Audio.OutputDevice");
     oldTimeStretch = cfg.GetBool("Audio.TimeStretch");
     oldAudioSync = cfg.GetBool("AudioSync");
+    oldClockCorrection = cfg.GetBool("Audio.ClockCorrection");
     oldVolume = instcfg.GetInt("Audio.Volume");
     oldDSiSync = instcfg.GetBool("Audio.DSiVolumeSync");
 
@@ -108,6 +111,13 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     }
     restoreOutputSelection();
     ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
+    // The dialog stays open while emulation runs; qualification and device
+    // recovery can change the output status without another settings edit.
+    auto* outputStatusTimer = new QTimer(this);
+    connect(outputStatusTimer, &QTimer::timeout, this, [this] {
+        ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
+    });
+    outputStatusTimer->start(1000);
 
     {
         const QSignalBlocker blocker(ui->chkTimeStretch);
@@ -117,6 +127,11 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
         const QSignalBlocker blocker(ui->chkAudioSync);
         ui->chkAudioSync->setChecked(oldAudioSync);
     }
+    {
+        const QSignalBlocker blocker(ui->chkClockCorrection);
+        ui->chkClockCorrection->setChecked(oldClockCorrection);
+    }
+    updateClockCorrectionEnabled();
 
     ui->sbLowPassCutoff->blockSignals(true);
     ui->sbLowPassCutoff->setValue(oldLowPassCutoff > 0 ? oldLowPassCutoff : 20000);
@@ -210,6 +225,7 @@ AudioSettingsDialog::AudioSettingsDialog(QWidget* parent) : QDialog(parent), ui(
         ui->chkLowPass->setEnabled(false);
         ui->chkTimeStretch->setEnabled(false);
         ui->chkAudioSync->setEnabled(false);
+        ui->chkClockCorrection->setEnabled(false);
         ui->sbLowPassCutoff->setEnabled(false);
         for (QAbstractButton* btn : grpMicMode->buttons())
             btn->setEnabled(false);
@@ -297,6 +313,12 @@ void AudioSettingsDialog::on_AudioSettingsDialog_rejected()
         cfg.SetBool("AudioSync", oldAudioSync);
         emit updateAudioSync(oldAudioSync);
     }
+    if (cfg.GetBool("Audio.ClockCorrection") != oldClockCorrection ||
+        emuInstance->doAudioClockCorrection.load(std::memory_order_relaxed) != oldClockCorrection)
+    {
+        cfg.SetBool("Audio.ClockCorrection", oldClockCorrection);
+        emuInstance->doAudioClockCorrection.store(oldClockCorrection, std::memory_order_relaxed);
+    }
     instcfg.SetInt("Audio.Volume", oldVolume);
     instcfg.SetBool("Audio.DSiVolumeSync", oldDSiSync);
 
@@ -331,6 +353,7 @@ void AudioSettingsDialog::on_cbInterpolation_currentIndexChanged(int idx)
             tr("The requested interpolation mode could not be applied.\n%1").arg(error));
     }
     ui->lblInterpolationInfo->setVisible(ui->cbInterpolation->currentIndex() == int(AudioInterpolation::MinimumPhase));
+    updateClockCorrectionEnabled();
 }
 
 void AudioSettingsDialog::on_slVolume_valueChanged(int val)
@@ -382,6 +405,7 @@ void AudioSettingsDialog::on_chkTimeStretch_toggled(bool checked)
             tr("The pitch-preserving speed setting could not be applied.\n%1").arg(error));
     }
     ui->lblBufferStatus->setText(emuInstance->audioOutputDescription());
+    updateClockCorrectionEnabled();
 }
 
 void AudioSettingsDialog::on_chkAudioSync_toggled(bool checked)
@@ -389,6 +413,21 @@ void AudioSettingsDialog::on_chkAudioSync_toggled(bool checked)
     // The main window applies the running setting; Cancel restores oldAudioSync.
     emuInstance->getGlobalConfig().SetBool("AudioSync", checked);
     emit updateAudioSync(checked);
+    updateClockCorrectionEnabled();
+}
+
+void AudioSettingsDialog::on_chkClockCorrection_toggled(bool checked)
+{
+    // The running emulation reads the flag directly; Cancel restores oldClockCorrection.
+    emuInstance->getGlobalConfig().SetBool("Audio.ClockCorrection", checked);
+    emuInstance->doAudioClockCorrection.store(checked, std::memory_order_relaxed);
+}
+
+void AudioSettingsDialog::updateClockCorrectionEnabled()
+{
+    const bool sinc = ui->cbInterpolation->currentIndex() == int(AudioInterpolation::Sinc);
+    const bool eligible = sinc && !ui->chkAudioSync->isChecked() && !ui->chkTimeStretch->isChecked();
+    ui->chkClockCorrection->setEnabled(emuInstance->getInstanceID() == 0 && eligible);
 }
 
 void AudioSettingsDialog::populateOutputDevices(int backend, const QString& device)

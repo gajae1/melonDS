@@ -164,10 +164,18 @@ void AudioSinc::DoSavestate(Savestate* file)
 
 void AudioSincOutput::SetRates(double inputRate, double outputRate)
 {
-    const double step = inputRate / outputRate;
+    const double nominal = inputRate / outputRate;
+    // A guest rate change may happen inside RunFrame. Drop host correction
+    // before further mixing if the new nominal filter would need retuning.
+    if (!(nominal > 0 && nominal * ClockCorrectionMax <= 1)) Correction = 1;
+    const double step = nominal * Correction;
     Position *= step / Step; // Retain the time remaining until the next output.
+    NominalStep = nominal;
     Step = step;
-    const double ratio = std::min(1.0, 1.0 / step);
+    // Leave room for the fastest allowed output rate (smallest step).
+    Pending.reserve(2 * (unsigned(std::ceil(192 / (nominal * ClockCorrectionMin))) + 1));
+    // The anti-alias filter follows the nominal rate only, never the correction.
+    const double ratio = std::min(1.0, 1.0 / nominal);
     if (ratio == Ratio) return;
 
     // Downsampling scales support as well as cutoff. The stereo stage shares
@@ -201,7 +209,18 @@ void AudioSincOutput::SetRates(double inputRate, double outputRate)
     Weights = std::move(weights);
     Count = count;
     Ratio = ratio;
-    Pending.reserve(2 * (unsigned(std::ceil(192 / step)) + 1));
+}
+
+bool AudioSincOutput::SetClockCorrection(double correction)
+{
+    if (!(correction >= ClockCorrectionMin && correction <= ClockCorrectionMax) || Count == 0)
+        return false;
+    if (correction != 1.0 && !ClockCorrectionStep()) return false;
+    const double step = NominalStep * correction;
+    Position *= step / Step; // Preserve the fractional phase across the change.
+    Step = step;
+    Correction = correction;
+    return true;
 }
 
 void AudioSincOutput::Reset()
@@ -209,6 +228,8 @@ void AudioSincOutput::Reset()
     for (auto& history : History) std::fill(history.begin(), history.end(), 0);
     Head = 0;
     Position = 0;
+    Correction = 1;
+    Step = NominalStep;
     Pending.clear();
 }
 

@@ -36,6 +36,7 @@
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
+#include "AudioClockCorrection.h"
 #include "AudioOutput.h"
 #include "AudioTimeStretch.h"
 
@@ -252,6 +253,9 @@ private:
     void audioSetSpeed(double speed);
     void audioTimeStretchFailed();
     void audioReportDiagnostics();
+    void audioResetClockCorrection();
+    void audioPrepareClockCorrection(bool normalSpeed, double outputFPS);
+    void audioFinishClockCorrection();
     void audioUpdateSettings();
 
     void micOpen();
@@ -334,6 +338,7 @@ public:
     bool fastForwardToggled;
     bool slowmoToggled;
     std::atomic<bool> doAudioSync;
+    std::atomic<bool> doAudioClockCorrection{false};
 private:
 
     std::unique_ptr<melonDS::Savestate> backupState;
@@ -366,6 +371,12 @@ private:
     AudioLowPass audioLowPass;
     AudioOutputRamp audioOutputRamp;
     AudioDiagnostics audioDiagnostics;
+    AudioClockDelivery audioClockDelivery;
+    AudioClockCorrection audioClockCorrection;
+    std::atomic<AudioClockCorrection::Status> audioClockStatus{AudioClockCorrection::Status::Inactive};
+    bool audioClockEligible = false;
+    double audioClockStep = 0, audioClockFPS = 0;
+
     std::atomic<int> audioLowPassCutoff;
     std::atomic<bool> audioMutedToggle;
     std::atomic<bool> audioMutedByFastForward;

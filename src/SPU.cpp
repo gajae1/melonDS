@@ -1432,6 +1432,11 @@ void SPU::SetOutputSkew(double skew)
 }
 
 
+bool SPU::SetOutputClockCorrection(double correction)
+{
+    return SincOutput && SincOutput->SetClockCorrection(correction);
+}
+
 u8 SPU::Read8(u32 addr)
 {
     if (addr < 0x04000500)

@@ -316,7 +316,10 @@ void EmuThread::run()
             // Rebase after potentially blocking renderer/control work, before
             // this frame starts. Retain normal running-frame rounding error.
             if (framePacingResetRequested)
+            {
+                emuInstance->audioResetClockCorrection();
                 rebaseFramePacing(SDL_GetPerformanceCounter() * perfCountsSec, lastTime, frameLimitError);
+            }
 
             // process input and hotkeys
             emuInstance->nds->SetKeyMask(emuInstance->inputMask);
@@ -376,10 +379,15 @@ void EmuThread::run()
             emuInstance->audioSetSpeed(outputFPS / 59.8260982880808);
             emuInstance->nds->SPU.SetOutputSkew(emuInstance->audioTimeStretchEnabled
                 ? 1.0 : outputFPS / 59.8260982880808);
+            emuInstance->audioPrepareClockCorrection(
+                emuStatus == emuStatus_Running && emuInstance->doLimitFPS &&
+                !fastforward && !slowmo && !emuInstance->nds->IsGdbInterpreter() &&
+                outputFPS == emuInstance->curFPS.load(std::memory_order_relaxed), outputFPS);
             u32 nlines;
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
             {
                 framePacingResetRequested = true;
+                emuInstance->audioResetClockCorrection();
                 compileShaders();
                 nlines = 1;
             }
@@ -455,6 +463,8 @@ void EmuThread::run()
 #endif
                     nlines = runFrame();
                 }
+                if (nlines > 1) emuInstance->audioFinishClockCorrection();
+                else emuInstance->audioResetClockCorrection();
                 if (emuInstance->nds->GetRenderer().HasRenderFailure())
                 {
                     // Native painting may still be copying the previous frame.

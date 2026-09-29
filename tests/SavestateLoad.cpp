@@ -23,6 +23,7 @@
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
+#include "AudioClockCorrection.h"
 #include "AudioOutput.h"
 #include "AudioTimeStretch.h"
 using namespace melonDS;
@@ -106,6 +107,14 @@ struct StateReader
     AudioLowPass audioLowPass;
     AudioOutputRamp audioOutputRamp;
     AudioDiagnostics audioDiagnostics;
+    AudioClockDelivery audioClockDelivery;
+    AudioClockCorrection audioClockCorrection;
+    std::atomic<bool> doAudioClockCorrection{false};
+    std::atomic<AudioClockCorrection::Status> audioClockStatus{AudioClockCorrection::Status::Inactive};
+    bool audioClockEligible = false;
+    double audioClockStep = 0, audioClockFPS = 0;
+    void audioResetClockCorrection();
+
     std::atomic<int> audioLowPassCutoff{1000}, audioVolume{256};
     bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
     bool micStarted = false, received = false;
@@ -164,6 +173,7 @@ struct StateReader
 };
 #define EmuInstance StateReader
 #include "audioCallback.inc"
+#include "audioResetClockCorrection.inc"
 #include "stateAudioEnable.inc"
 #include "stateAudioStartPending.inc"
 #include "stateAudioDisable.inc"

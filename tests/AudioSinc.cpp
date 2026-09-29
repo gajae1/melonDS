@@ -2,6 +2,8 @@
 // Exercises PCM16 decoding, loop history, the mixer and the real 48 kHz PCM
 // output. The companion spectrum check measures these files, not FIR taps.
 #include "NDS.h"
+#include "AudioSinc.h"
+#include <limits>
 #include "AudioInterpolationMath.h"
 #include <array>
 #include <bit>
@@ -19,6 +21,70 @@ using namespace melonDS;
 static void Require(bool condition, const char* message)
 {
     if (!condition) throw std::runtime_error(message);
+}
+
+
+static void ClockCorrectionTest()
+{
+    AudioSincOutput output;
+    Require(!output.SetClockCorrection(1.0), "Unconfigured clock correction accepted");
+    output.SetRates(32768, 48000);
+    const s16 dc[] = {6000, -3000};
+    for (unsigned i = 0; i < 256; ++i) output.Push(dc);
+    output.ClearSamples();
+    for (double correction : {0.999, 1.001, 1.0})
+    {
+        Require(output.SetClockCorrection(correction), "Valid clock correction rejected");
+        for (unsigned i = 0; i < 32768; ++i) output.Push(dc);
+        const auto pcm = output.Samples();
+        Require(std::abs(pcm.size()/2.0 - 48000/correction) < 2,
+                "Correction did not change output rate in the expected direction");
+        for (size_t i = 0; i < pcm.size(); i += 2)
+            Require(pcm[i] == dc[0] && pcm[i+1] == dc[1],
+                    "Correction reset warmed stereo history or changed DC gain");
+        output.ClearSamples();
+    }
+    for (double invalid : {0.998, 1.002, std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity()})
+    {
+        auto reference = output;
+        Require(!output.SetClockCorrection(invalid), "Invalid correction accepted");
+        for (unsigned i = 0; i < 128; ++i)
+        {
+            const s16 sample[] = {s16(i*13), s16(-int(i)*17)};
+            output.Push(sample); reference.Push(sample);
+        }
+        Require(std::ranges::equal(output.Samples(), reference.Samples()),
+                "Rejected correction changed output state");
+        output.ClearSamples();
+    }
+    Require(output.SetClockCorrection(0.999), "Correction setup failed");
+    output.SetRates(47605, 48000);
+    for (unsigned i = 0; i < 47605; ++i) output.Push(dc);
+    Require(std::abs(output.Samples().size()/2.0 - 48000/0.999) < 2,
+            "Nominal rate update lost the correction");
+    const auto pending = std::vector<s16>(output.Samples().begin(), output.Samples().end());
+    Require(output.SetClockCorrection(1.001), "Correction update failed");
+    Require(std::ranges::equal(output.Samples(), pending), "Correction changed queued PCM");
+    output.ClearSamples();
+    for (unsigned i = 0; i < 47605; ++i) output.Push(dc);
+    Require(std::abs(output.Samples().size()/2.0 - 48000/1.001) < 2,
+            "Nominal rates and correction were not composed");
+    output.Reset();
+    AudioSincOutput fresh;
+    fresh.SetRates(47605, 48000);
+    for (unsigned i = 0; i < 1000; ++i) { output.Push(dc); fresh.Push(dc); }
+    Require(std::ranges::equal(output.Samples(), fresh.Samples()),
+            "Reset retained a clock correction or output history");
+    output.ClearSamples();
+    Require(output.SetClockCorrection(1.001), "Clock guard setup failed");
+    output.SetRates(47605, 44100); // guest rate/output change loses upsampling headroom
+    Require(output.ClockCorrectionStep() == 0 && !output.SetClockCorrection(0.999),
+            "Unsupported downsampling correction accepted");
+    for (unsigned i = 0; i < 47605; ++i) output.Push(dc);
+    Require(std::abs(output.Samples().size()/2.0 - 44100) < 2,
+            "Rate change retained correction without anti-alias headroom");
+    std::puts("Sinc clock correction rate, history, rejection and reset PASS");
 }
 
 static void PairedPhaseTest()
@@ -275,6 +341,11 @@ static void Capture(NDS& nds, unsigned period, unsigned bin, bool square,
 
 int main(int argc, char** argv) try
 {
+    if (argc == 2 && std::string(argv[1]) == "--clock-correction")
+    {
+        ClockCorrectionTest();
+        return 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "--history")
     {
         PairedPhaseTest();

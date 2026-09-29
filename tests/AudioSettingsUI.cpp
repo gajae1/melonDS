@@ -31,6 +31,7 @@ struct AudioInstance
     int activeBackend = 0;
     QString activeDevice;
     bool activeTimeStretch = false;
+    std::atomic<bool> doAudioClockCorrection{false};
     int failTimeStretch = -1;
     int failBuffer = -1;
     QString failDevice;
@@ -325,6 +326,12 @@ static void Scenario(const QString& name)
     // Explicit saved values; the fixture root also seeds AudioSync = false.
     if (name == "audio-sync-preview-cancel") cfg.SetBool("AudioSync", false);
     if (name == "audio-sync-accept") cfg.SetBool("AudioSync", true);
+    if (name.startsWith("clock-correction-"))
+    {
+        cfg.SetInt("Audio.Interpolation", 6);
+        instance.activeInterpolation = 6;
+        Require(!cfg.GetBool("Audio.ClockCorrection"), "Clock correction enabled by default");
+    }
     auto dialog = Open(window);
 
     if (name == "filter-cancel")
@@ -630,6 +637,51 @@ static void Scenario(const QString& name)
 #endif
         Finish(*dialog, QDialogButtonBox::Cancel);
         Require(instance.calls.size() == 1, "Refreshing availability reopened an active output");
+    }
+    else if (name.startsWith("clock-correction-"))
+    {
+        auto* correction = Widget<QCheckBox>(*dialog, "chkClockCorrection");
+        Require(correction->isEnabled() && !correction->isChecked(), "Optional correction initial state wrong");
+        Click(correction);
+        Require(cfg.GetBool("Audio.ClockCorrection") && instance.doAudioClockCorrection,
+                "Correction preview did not reach running preference");
+        auto* sync = Widget<QCheckBox>(*dialog, "chkAudioSync");
+        Click(sync);
+        Require(!correction->isEnabled() && correction->isChecked(), "Sync gate discarded correction preference");
+        Click(sync);
+        auto* stretch = Widget<QCheckBox>(*dialog, "chkTimeStretch");
+        Click(stretch);
+        Require(!correction->isEnabled() && correction->isChecked(), "Stretch gate discarded correction preference");
+        Click(stretch);
+        auto* interpolation = Widget<QComboBox>(*dialog, "cbInterpolation");
+        interpolation->setCurrentIndex(0);
+        Require(!correction->isEnabled() && correction->isChecked(), "Filter gate discarded correction preference");
+        interpolation->setCurrentIndex(6);
+        Require(correction->isEnabled() && correction->isChecked(), "Eligible correction control stayed disabled");
+        const bool accept = name == "clock-correction-accept";
+        Finish(*dialog, accept ? QDialogButtonBox::Ok : QDialogButtonBox::Cancel);
+        Require(cfg.GetBool("Audio.ClockCorrection") == accept &&
+                instance.doAudioClockCorrection.load() == accept,
+                "Correction accept/cancel left saved and runtime preferences inconsistent");
+        if (accept)
+        {
+            cfg.SetBool("Audio.ClockCorrection", false);
+            Require(Config::Load() && Config::GetGlobalTable().GetBool("Audio.ClockCorrection"),
+                    "Accepted clock correction did not survive config reload");
+            // Reopening a saved true preference and cancelling a false preview
+            // must restore true too, not just the default-off case.
+            AudioWindow savedWindow;
+            savedWindow.instance.activeInterpolation = 6;
+            savedWindow.instance.doAudioClockCorrection = true;
+            auto restored = Open(savedWindow);
+            correction = Widget<QCheckBox>(*restored, "chkClockCorrection");
+            Require(correction->isChecked(), "Saved correction not displayed");
+            Click(correction);
+            Require(!savedWindow.instance.doAudioClockCorrection, "False preview not applied");
+            Finish(*restored, QDialogButtonBox::Cancel);
+            Require(savedWindow.instance.doAudioClockCorrection && Config::GetGlobalTable().GetBool("Audio.ClockCorrection"),
+                    "Cancel failed to restore saved true correction");
+        }
     }
     else if (name == "audio-sync-preview-cancel" || name == "audio-sync-accept")
     {

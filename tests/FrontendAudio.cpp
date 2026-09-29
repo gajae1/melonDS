@@ -9,6 +9,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <future>
+#include <limits>
 #include <semaphore>
 #include <stop_token>
 #include <thread>
@@ -18,6 +19,7 @@
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
+#include "AudioClockCorrection.h"
 #include "AudioOutput.h"
 #include "AudioTimeStretch.h"
 #include "Platform.h"
@@ -45,11 +47,21 @@ struct SampleSource
     int rateChanges = 0;
     int queuedFrames = 0;
     int historyResets = 0;
+    double clockCorrection = 1;
+    double clockStep = 0;
+    bool acceptCorrection = true;
+    int outputCapacity = 2047;
+    u64 droppedFrames = 0;
+    // Frontend-visible SPU queries. Queue getters may only run under the audio lock.
+    mutable std::atomic<int> stepQueries{0}, queueQueries{0};
+    bool SetOutputClockCorrection(double correction) { clockCorrection = correction; return acceptCorrection; }
+    double GetOutputClockCorrectionStep() const { ++stepQueries; return clockStep; }
+    u64 GetOutputDroppedFrames() const { ++queueQueries; return droppedFrames; }
     void ResetOutputHistory() { ++historyResets; queuedFrames = 0; }
     void SetOutputSampleRate(double) { ++rateChanges; }
-    int GetOutputSize() const { return queuedFrames; }
-    // Mirrors SPU's default 2048-entry ring minus the kept-empty slot.
-    int GetOutputCapacity() const { return 2047; }
+    int GetOutputSize() const { ++queueQueries; return queuedFrames; }
+    // Defaults to SPU's 2048-entry ring minus the kept-empty slot.
+    int GetOutputCapacity() const { ++queueQueries; return outputCapacity; }
     int ReadOutput(s16* output, int frames)
     {
         const int count = std::min(available, frames);
@@ -72,6 +84,17 @@ struct AudioState
     AudioLowPass audioLowPass;
     AudioOutputRamp audioOutputRamp;
     AudioDiagnostics audioDiagnostics;
+    AudioClockDelivery audioClockDelivery;
+    AudioClockCorrection audioClockCorrection;
+    std::atomic<bool> doAudioClockCorrection{false};
+    std::atomic<AudioClockCorrection::Status> audioClockStatus{AudioClockCorrection::Status::Inactive};
+    bool audioClockEligible = false;
+    double audioClockStep = 0, audioClockFPS = 0;
+    std::atomic<bool> doAudioSync{false};
+    void audioResetClockCorrection();
+    void audioPrepareClockCorrection(bool normalSpeed, double outputFPS);
+    void audioFinishClockCorrection();
+
     std::atomic<int> audioLowPassCutoff{0};
     std::atomic<int> audioVolume{256};
     bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
@@ -175,6 +198,9 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 #undef SDL_GetAudioDeviceStatus
 #define EmuInstance AudioState
 #include "audioCallback.inc"
+#include "audioResetClockCorrection.inc"
+#include "audioPrepareClockCorrection.inc"
+#include "audioFinishClockCorrection.inc"
 #define SDL_CondWaitTimeout ObserveSyncWait
 #include "audioSync.inc"
 #undef SDL_CondWaitTimeout
@@ -412,6 +438,165 @@ int main(int argc, char** argv)
         manualOutput = false; outputDisconnected = false; SDL_AudioQuit();
         std::printf("audio device loss / same settings reopen: %s\n", passed ? "PASS" : "FAIL");
         return passed ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--clock-lifecycle") == 0)
+    {
+        using namespace std::chrono_literals;
+        int failures = 0;
+        const auto check = [&](bool ok, const char* message) {
+            if (!ok) { ++failures; std::fprintf(stderr, "%s\n", message); }
+        };
+        constexpr double applied = 1.0004;
+        constexpr double step = 0.0005;
+        constexpr double quiet = std::numeric_limits<double>::quiet_NaN();
+        constexpr double infinite = std::numeric_limits<double>::infinity();
+        Console console;
+        AudioState state{&console};
+        state.audioLowPass.Init(state.audioFreq);
+        state.audioOutputRamp.Init(state.audioFreq);
+        std::array<s16, 2048> output;
+        const auto reset = [&] {
+            state.audioResetClockCorrection();
+            state.doAudioClockCorrection = true;
+            state.doAudioSync = false;
+            state.audioTimeStretchEnabled = false;
+            state.fakeRunning = true;
+            state.audioClockDelivery = {};
+            console.SPU.clockStep = step;
+            console.SPU.acceptCorrection = true;
+            console.SPU.outputCapacity = 2047;
+            console.SPU.queuedFrames = 700;
+            console.SPU.available = 96;
+            console.SPU.clockCorrection = 1;
+            console.SPU.historyResets = console.SPU.rateChanges = 0;
+            console.SPU.stepQueries = console.SPU.queueQueries = 0;
+        };
+        const auto callback = [&](int frames) {
+            AudioState::audioCallback(&state, reinterpret_cast<Uint8*>(output.data()), frames * 4);
+        };
+
+        // Every independent eligibility gate must stop a running correction and
+        // restore unity without touching queued PCM or the resampler history.
+        const char* names[] = {"mode", "filter", "option", "sync", "stretch", "output", "NaN fps", "zero fps", "infinite fps"};
+        for (int gate = 0; gate < 9; ++gate)
+        {
+            const auto prepare = [&](bool open) {
+                if (!open)
+                {
+                    if (gate == 1) console.SPU.clockStep = 0;
+                    if (gate == 2) state.doAudioClockCorrection = false;
+                    if (gate == 3) state.doAudioSync = true;
+                    if (gate == 4) state.audioTimeStretchEnabled = true;
+                    if (gate == 5) state.fakeRunning = false;
+                }
+                const double fps = !open && gate == 6 ? quiet : !open && gate == 7 ? 0 : !open && gate == 8 ? infinite : 60;
+                state.audioPrepareClockCorrection(open || gate != 0, fps);
+            };
+            reset();
+            prepare(false);
+            check(!state.audioClockEligible && console.SPU.stepQueries == 1 && console.SPU.clockCorrection == 1,
+                  names[gate]);
+            console.SPU.clockCorrection = applied;
+            prepare(false); // Never-eligible state must not rewrite an unrelated correction.
+            check(!state.audioClockEligible && console.SPU.clockCorrection == applied, names[gate]);
+
+            reset();
+            prepare(true);
+            check(state.audioClockEligible && state.audioClockStep == step && state.audioClockFPS == 60 &&
+                  state.audioClockCorrection.GetStatus() == AudioClockCorrection::Status::Qualifying,
+                  "Fully eligible correction did not start");
+            console.SPU.clockCorrection = applied;
+            prepare(true);
+            check(state.audioClockEligible && console.SPU.clockCorrection == applied,
+                  "Unchanged eligible frame restarted correction");
+            prepare(false);
+            const bool cleared = !state.audioClockEligible && state.audioClockStep == 0 && state.audioClockFPS == 0 &&
+                console.SPU.clockCorrection == 1 &&
+                state.audioClockStatus == AudioClockCorrection::Status::Inactive &&
+                state.audioClockCorrection.GetStatus() == AudioClockCorrection::Status::Inactive;
+            check(cleared, names[gate]);
+            check(console.SPU.queuedFrames == 700 && console.SPU.historyResets == 0 && console.SPU.rateChanges == 0,
+                  "Clock reset changed queued PCM or resampler history");
+            state.audioFinishClockCorrection();
+            check(console.SPU.queueQueries == 0, "Ineligible finish queried the SPU queue");
+        }
+
+        // A changed SPU step or output FPS is a new epoch. Finish also discards
+        // a frame if the guest changes the mix rate while it runs.
+        reset();
+        state.audioPrepareClockCorrection(true, 60);
+        console.SPU.clockStep = 0.001;
+        console.SPU.clockCorrection = applied;
+        state.audioPrepareClockCorrection(true, 60);
+        check(state.audioClockEligible && state.audioClockStep == 0.001 && console.SPU.clockCorrection == 1,
+              "Changed SPU step did not restart correction");
+        console.SPU.clockCorrection = applied;
+        state.audioPrepareClockCorrection(true, 50);
+        check(state.audioClockEligible && state.audioClockFPS == 50 && console.SPU.clockCorrection == 1,
+              "Changed output FPS did not restart correction");
+        console.SPU.clockStep = step;
+        console.SPU.clockCorrection = applied;
+        console.SPU.queueQueries = 0;
+        state.audioFinishClockCorrection();
+        check(!state.audioClockEligible && console.SPU.clockCorrection == 1 && console.SPU.queueQueries == 0 &&
+              console.SPU.queuedFrames == 700 && console.SPU.historyResets == 0,
+              "Mid-frame SPU step change did not discard the observation and preserve PCM");
+
+        reset();
+        state.audioPrepareClockCorrection(true, 60);
+        console.SPU.acceptCorrection = false;
+        state.audioFinishClockCorrection();
+        check(!state.audioClockEligible && console.SPU.clockCorrection == 1 && console.SPU.queuedFrames == 700,
+              "Rejected correction did not reset to unity");
+
+        // The production callback records requested/supplied frames only when
+        // correction is enabled, under the same lock Finish later samples.
+        reset();
+        state.doAudioClockCorrection = false;
+        callback(128);
+        check(state.audioClockDelivery.callbacks == 0 && state.audioClockDelivery.requested == 0,
+              "Disabled correction recorded callback delivery");
+        state.doAudioClockCorrection = true;
+        callback(128);
+        console.SPU.available = 128;
+        callback(128);
+        const auto& delivery = state.audioClockDelivery;
+        check(delivery.callbacks == 2 && delivery.requested == 256 && delivery.supplied == 224 &&
+              delivery.lastFrames == 128 && delivery.lastTick != 0,
+              "Callback did not record delivered frames");
+
+        // A missed try-lock must not touch any SPU queue getter. The worker is
+        // the only thread requesting the lock while this thread owns it. Capacity
+        // is deliberately too small for a valid observation, so a locked finish
+        // becomes Inactive but a missed lock stays Qualifying.
+        reset();
+        console.SPU.outputCapacity = 900;
+        state.audioPrepareClockCorrection(true, 60);
+        callback(128);
+        console.SPU.queueQueries = 0;
+        std::binary_semaphore started(0), finished(0);
+        SDL_LockMutex(state.audioSyncLock);
+        std::thread worker([&] {
+            started.release();
+            state.audioFinishClockCorrection();
+            finished.release();
+        });
+        check(started.try_acquire_for(5s), "Clock worker did not start");
+        const bool returned = finished.try_acquire_for(5s); // Failure means Finish blocked on the audio lock.
+        check(returned, "Clock finish blocked on a contended audio lock");
+        check(console.SPU.queueQueries == 0, "Clock finish read the SPU queue without the audio lock");
+        check(state.audioClockEligible && console.SPU.clockCorrection == 1 &&
+              state.audioClockStatus == AudioClockCorrection::Status::Qualifying,
+              "Missed audio lock did not keep the previous qualification state");
+        SDL_UnlockMutex(state.audioSyncLock);
+        worker.join();
+        SDL_Delay(2); // Guarantee a strictly later completed-frame timestamp on coarse clocks.
+        state.audioFinishClockCorrection();
+        check(console.SPU.queueQueries > 0 &&
+              state.audioClockStatus == AudioClockCorrection::Status::Inactive,
+              "Uncontended finish did not sample the callback and SPU queue");
+        std::printf("audio clock correction lifecycle: %s\n", failures ? "FAIL" : "PASS");
+        return failures ? 1 : 0;
     }
     static_assert(int(AudioLowPass::Backend::Auto) == 0 &&
                   int(AudioLowPass::Backend::Scalar) == 1 &&
