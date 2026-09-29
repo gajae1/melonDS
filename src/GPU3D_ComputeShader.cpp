@@ -59,8 +59,9 @@ std::string BuildSource(unsigned variant, const Config& config, bool vulkan)
         {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define UseTexture\n#define Modulate\n#define FusedRaster\n#define DepthBlend\n#define FinalBlend\n#define ZBuffer\n"},
         {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define UseTexture\n#define Modulate\n#define FusedRaster\n#define DepthBlend\n#define FinalBlend\n#define WBuffer\n"},
     }};
-    if (variant >= VulkanCount || (!vulkan && variant >= Count
-        && (variant < FusedRasterFirst || variant >= FusedRasterFirst + 2)))
+    const bool glFused = (variant >= FusedRasterFirst && variant < FusedRasterFirst + 2)
+        || (variant >= TexturedFusedRasterFirst && variant < TexturedFusedRasterFirst + 2);
+    if (variant >= VulkanCount || (!vulkan && variant >= Count && !glFused))
         throw std::out_of_range("Compute shader variant");
     std::string source = vulkan ? "#version 450\n" : "#version 430 core\n";
     source += programs[variant].defines;

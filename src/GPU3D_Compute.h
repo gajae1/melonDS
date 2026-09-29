@@ -70,6 +70,7 @@ private:
     GLuint ShaderBinCombined{};
     GLuint ShaderDepthBlend[2]{};
     GLuint ShaderDepthBlendFused[2]{};
+    GLuint ShaderDepthBlendFusedTexture[2]{};
     GLuint ShaderRasteriseNoTexture[2]{};
     GLuint ShaderRasteriseNoTextureToon[2]{};
     GLuint ShaderRasteriseNoTextureHighlight[2]{};

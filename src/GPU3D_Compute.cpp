@@ -80,13 +80,18 @@ bool ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
         &ShaderFinalPass[7],
         &ShaderDepthBlendFused[0],
         &ShaderDepthBlendFused[1],
+        &ShaderDepthBlendFusedTexture[0],
+        &ShaderDepthBlendFusedTexture[1],
 };
     static_assert(std::size(programs) == ComputeShader::GLCount);
     const ComputeShader::Config config{ScreenWidth, ScreenHeight, MaxWorkTiles, TileSize, CoarseTileCountY, CoarseTileArea, ClearCoarseBinMaskLocalSize};
-    // Steps after the ordinary programs map to the fused non-final Z/W variants.
+    // Steps after the ordinary programs map to the fused non-final Z/W variants:
+    // NoTexture first, then UseTexture+Modulate.
     const unsigned variant = ShaderStepIdx < int(ComputeShader::Count)
         ? unsigned(ShaderStepIdx)
-        : ComputeShader::FusedRasterFirst + unsigned(ShaderStepIdx - int(ComputeShader::Count));
+        : ShaderStepIdx < int(ComputeShader::Count) + 2
+            ? ComputeShader::FusedRasterFirst + unsigned(ShaderStepIdx - int(ComputeShader::Count))
+            : ComputeShader::TexturedFusedRasterFirst + unsigned(ShaderStepIdx - int(ComputeShader::Count) - 2);
     const auto source = ComputeShader::BuildSource(variant, config, false);
     const auto name = "Compute variant " + std::to_string(variant);
     if (!OpenGL::CompileComputeProgram(*programs[ShaderStepIdx++], source.c_str(), name.c_str()))
@@ -234,6 +239,8 @@ void ComputeRenderer3D::DeleteShaders()
         &ShaderFinalPass[7],
         &ShaderDepthBlendFused[0],
         &ShaderDepthBlendFused[1],
+        &ShaderDepthBlendFusedTexture[0],
+        &ShaderDepthBlendFusedTexture[1],
     };
     for (GLuint* program : allPrograms)
     {
@@ -523,6 +530,7 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
     int numYSpans = 0;
     int numSetupIndices = 0;
     bool fused = false;
+    bool fusedTexture = false;
 
     /*
         Some games really like to spam small textures, often
@@ -691,11 +699,19 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
 
         // Plain NoTexture batches of one variant can rasterise inside the
         // ordered depth-blend pass, skipping the tile-buffer round trip.
-        // Toon/highlight (2) and shadow mask (4) stay on the ordinary path.
-        fused = FusedRasterEnabled && TileSize == 8 && count <= 8 && numVariants == 1
-            && variants[0].Texture == 0
-            && (variants[0].BlendMode <= 1 || variants[0].BlendMode == 3)
-            && ShaderDepthBlendFused[wbuffer] != 0;
+        // Textured batches fuse only for Modulate (0), including captures
+        // (-1/-2). Decal (1/3), toon/highlight (2) and shadow mask (4) stay
+        // on the ordinary path.
+        fused = FusedRasterEnabled && TileSize == 8 && count <= 8 && numVariants == 1;
+        if (fused)
+        {
+            const auto& variant = variants[0];
+            fusedTexture = variant.Texture != 0 && variant.BlendMode == 0
+                && ShaderDepthBlendFusedTexture[wbuffer] != 0;
+            fused = fusedTexture
+                || (variant.Texture == 0 && (variant.BlendMode <= 1 || variant.BlendMode == 3)
+                    && ShaderDepthBlendFused[wbuffer] != 0);
+        }
 
         // calculate x-spans
         glBindImageTexture(0, YSpanIndicesTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16UI);
@@ -736,8 +752,9 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
         for (int i = 0; i < tilememoryLayer_Num; i++)
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2+i, TileMemory[i]);
 
-        // rasterise
-        if (!fused)
+        // rasterise; a fused textured batch runs only the texture binding
+        // part of the loop and rasterises inside the depth-blend program.
+        if (!fused || fusedTexture)
         {
             bool highLightMode = GPU3D.RenderDispCnt & (1<<1);
 
@@ -774,6 +791,8 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
                 else
                 {
                     shader = shadersUseTexture[variants[i].BlendMode];
+                    if (fusedTexture)
+                        shader = ShaderDepthBlendFusedTexture[wbuffer];
 
                     // Sampler-only variants still use the capture texture's
                     // unit, even when the texture binding itself is unchanged.
@@ -802,7 +821,9 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
                     prevShader = shader;
                 }
 
-                glUniform1ui(UniformIdxCurVariant, i);
+                // The fused program has no CurVariant; location 0 is FirstBatch.
+                if (!fusedTexture)
+                    glUniform1ui(UniformIdxCurVariant, i);
                 // The rasterise template declares every uniform at a fixed
                 // location, but NoTexture and ShadowMask builds never reference
                 // the texture ones, so strict drivers raise GL_INVALID_OPERATION
@@ -820,24 +841,47 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
                         glUniform1i(UniformIdxTexIsCapture, 0);
                 }
                 // Indirect target still bound to BinResultMemory since binning.
-                glDispatchComputeIndirect(offsetof(BinResultHeader, VariantWorkCount) + i*4*4);
+                if (!fused)
+                    glDispatchComputeIndirect(offsetof(BinResultHeader, VariantWorkCount) + i*4*4);
             }
         }
     }
     if (!fused)
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    glBindSampler(0, 0);
-    glBindSampler(1, 0);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[0]);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[1]);
+    if (fusedTexture)
+    {
+        // Units 0..2 keep the raster texture and its sampler for the fused
+        // dispatch; the program reads the clear bitmaps from units 3/4.
+        glBindSampler(3, 0);
+        glBindSampler(4, 0);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[0]);
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[1]);
+    }
+    else
+    {
+        glBindSampler(0, 0);
+        glBindSampler(1, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[0]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[1]);
+    }
 
     // compose final image
-    glUseProgram(fused ? ShaderDepthBlendFused[wbuffer] : ShaderDepthBlend[wbuffer]);
+    glUseProgram(fusedTexture ? ShaderDepthBlendFusedTexture[wbuffer]
+        : fused ? ShaderDepthBlendFused[wbuffer] : ShaderDepthBlend[wbuffer]);
     glUniform1i(0, first == 0);
     glDispatchCompute(ScreenWidth/TileSize, ScreenHeight/TileSize, 1);
+    if (fusedTexture)
+    {
+        glBindSampler(0, 0);
+        glBindSampler(1, 0);
+        glBindSampler(2, 0);
+        glActiveTexture(GL_TEXTURE0);
+    }
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 }
 
