@@ -197,6 +197,9 @@ void ComputePipeline::Init(const Shaders& shaders)
     Device::Check(f.vkCreatePipelineLayout(device,&layoutInfo,nullptr,&layout),"Create compute pipeline layout");
     const auto cache=owner->GetPipelineCache();
     for(unsigned i=0;i<shaders.size();++i) {
+        // Larger workgroups retain the ordinary path; avoid compiling unused
+        // fusion pipelines whose register pressure has not been characterized.
+        if(i>=ComputeShader::FusedRasterFirst && Resources.config.TileSize!=8)continue;
         VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};moduleInfo.codeSize=shaders[i].size_bytes();moduleInfo.pCode=shaders[i].data();VkShaderModule module{};
         Device::Check(f.vkCreateShaderModule(device,&moduleInfo,nullptr,&module),"Create compute shader");
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};info.layout=layout;info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_COMPUTE_BIT,module,"main",nullptr};
@@ -575,6 +578,12 @@ void ComputePipeline::Validate(const Batch& batch) const
 
 void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,bool first,bool final,std::span<const VkDescriptorSet> textures)
 {
+    const unsigned finalEffects=((batch.meta.DispCnt>>7)&1)|((batch.meta.DispCnt>>3)&2);
+    // Only this bounded, plain-texture-free case has a measured fused path.
+    // Polygon attributes still vary and retain their original processing order.
+    const bool fuseRaster=fusedRaster && Resources.config.TileSize==8 &&
+        !batch.polygons.empty() && batch.polygons.size()<=8 && batch.variants.size()==1 &&
+        batch.variants[0].shader==5+unsigned(batch.wbuffer) && (!final || finalEffects==0);
     auto upload=[&](unsigned index,const void* data,size_t size) {
         const auto* bytes=static_cast<const unsigned char*>(data);
         for(size_t offset=0;offset<size;offset+=65536)f.vkCmdUpdateBuffer(command,buffers[index]->Handle(),offset,std::min(size-offset,size_t(65536)),bytes+offset);
@@ -610,7 +619,7 @@ void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,boo
             f.vkCmdDispatchIndirect(command, buffers[7]->Handle(), offsetof(ComputeData::BinResultHeader, SortWorkWorkCount));
             Barrier(command);
         }
-        for (unsigned variant=0; variant<batch.variants.size(); ++variant) {
+        for (unsigned variant=0; !fuseRaster && variant<batch.variants.size(); ++variant) {
             const auto& state=batch.variants[variant];
             Bind(command, state.shader, rasterSet, indicesSet, textures[variant]);
             struct Push {
@@ -630,8 +639,9 @@ void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,boo
         }
     }
     Barrier(command);
-    const unsigned finalEffects=((batch.meta.DispCnt>>7)&1)|((batch.meta.DispCnt>>3)&2);
-    const unsigned blendShader=final ? ComputeShader::Count+2*finalEffects+unsigned(batch.wbuffer) : batch.wbuffer?4:3;
+    const unsigned blendShader=fuseRaster
+        ? ComputeShader::FusedRasterFirst+2*unsigned(final)+unsigned(batch.wbuffer)
+        : final ? ComputeShader::Count+2*finalEffects+unsigned(batch.wbuffer) : batch.wbuffer?4:3;
     Bind(command,blendShader,rasterSet,final?outputSet:indicesSet);
     const uint32_t firstBatch=first;
     f.vkCmdPushConstants(command,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(firstBatch),&firstBatch);

@@ -92,8 +92,9 @@ bool Check(VkResult failure)
         if(i!=0) Require(expected==pixels,"recreated cached pipeline changed output");
     }
     std::printf("cache failure=%d creates=%u pipelines=%u cached=%u\n",int(failure),Creates,Pipelines,Cached);
-    Require(Creates==1 && Pipelines==64,"pipeline cache was not retained on its device");
-    Require(Cached==(failure==VK_SUCCESS?64u:0u),"optional cache fallback was not respected");
+    const auto expectedPipelines=2*EmbeddedShaders().size();
+    Require(Creates==1 && Pipelines==expectedPipelines,"pipeline cache was not retained on its device");
+    Require(Cached==(failure==VK_SUCCESS?expectedPipelines:0u),"optional cache fallback was not respected");
     if (failure==VK_SUCCESS) CheckControls(*device);
     return true;
 }

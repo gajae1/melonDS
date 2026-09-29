@@ -368,6 +368,24 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
     return result;
 }
 
+static PFN_vkCmdDispatchIndirect DriverIndirect;
+static unsigned IndirectCalls;
+static VKAPI_ATTR void VKAPI_CALL CountIndirect(VkCommandBuffer command,VkBuffer buffer,VkDeviceSize offset)
+{
+    ++IndirectCalls;
+    DriverIndirect(command,buffer,offset);
+}
+struct ObserveIndirect {
+    volk::VolkDeviceTable& functions;
+    explicit ObserveIndirect(Vulkan::Device& device)
+        :functions(const_cast<volk::VolkDeviceTable&>(device.Functions())) {
+        DriverIndirect=functions.vkCmdDispatchIndirect;
+        functions.vkCmdDispatchIndirect=CountIndirect;
+        IndirectCalls=0;
+    }
+    ~ObserveIndirect(){functions.vkCmdDispatchIndirect=DriverIndirect;}
+};
+
 static void Frames(unsigned scale,const std::string& preferred)
 {
     const auto& shaders=Vulkan::EmbeddedShaders(scale);
@@ -521,7 +539,17 @@ static void Frames(unsigned scale,const std::string& preferred)
                     parts[p].variants={&singleVariants[p],1};
                     parts[p].meta.NumPolygons=parts[p].meta.NumVariants=1;
                 }
+                ObserveIndirect observe(*device);
                 if(pipeline.Render(parts)!=expected)throw std::runtime_error("Single-variant shadow/texture batches differ from GL");
+                const unsigned fusedCalls=IndirectCalls;
+                if(scene==1||scene==4) {
+                    pipeline.SetFusedRaster(false);IndirectCalls=0;
+                    if(pipeline.Render(parts)!=expected)throw std::runtime_error("Ordinary single-variant batches differ from GL");
+                    pipeline.SetFusedRaster(true);
+                    const unsigned saved=scene==1&&pipeline.TileSize()==8?2:0;
+                    if(IndirectCalls!=Polygons||fusedCalls+saved!=IndirectCalls)
+                        throw std::runtime_error("Shadow fusion or textured fallback dispatch path not exercised");
+                }
                 std::printf("Vulkan %ux %s scene=%u single-variant batch ordering equal PASS\n",scale,mode?"W":"Z",scene);
             }
             if((scene==0||scene==8) && scale==1) {
@@ -533,7 +561,16 @@ static void Frames(unsigned scale,const std::string& preferred)
                 for(unsigned effect=0;effect<8;++effect) {
                     batch.meta.DispCnt=(1u<<3)|((effect&1u)<<5)|((effect&2u)<<6)|((effect&4u)<<2);
                     const auto reference=GLFrame(batch,scale,sources,clearColors,clearDepths);
+                    ObserveIndirect observe(*device);
                     if(pipeline.Render(batch)!=reference)throw std::runtime_error("Final effect combination differs from GL");
+                    if((effect==0&&IndirectCalls!=0)||((effect==2||effect==4)&&IndirectCalls!=1))
+                        throw std::runtime_error("Final raster fusion or fog/AA fallback dispatch path not exercised");
+                    if(effect==0) {
+                        pipeline.SetFusedRaster(false);IndirectCalls=0;
+                        if(pipeline.Render(batch)!=reference||IndirectCalls!=1)
+                            throw std::runtime_error("Ordinary final raster control differs");
+                        pipeline.SetFusedRaster(true);
+                    }
                     std::array<Vulkan::ComputePipeline::Batch,2> parts{batch,batch};
                     auto& empty=parts.back();
                     empty.polygons={};empty.edges={};empty.indices={};empty.variants={};

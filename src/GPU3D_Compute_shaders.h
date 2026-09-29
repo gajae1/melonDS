@@ -1081,12 +1081,7 @@ void main()
 
 )";
 
-const std::string Rasterise =
-    PolygonBuffer +
-    WorkDescBuffer +
-    XSpanSetupBuffer +
-    BinningBuffer +
-    Tilebuffers + R"(
+const std::string RasteriseDecls = R"(
 
 layout (local_size_x = TileSize, local_size_y = TileSize) in;
 
@@ -1108,12 +1103,26 @@ layout (location = 2) uniform int TexIsCapture;
 layout (location = 3) uniform float CaptureYOffset;
 #endif
 
+)";
+
+// Original raster main. With FusedRaster (Vulkan DepthBlend only) the same body is
+// compiled as a per-fragment function called from the ordered blend loop:
+// it returns the color-tile word (0 = rejected) and writes the depth-tile word.
+const std::string RasteriseMain = R"(
+#ifdef FusedRaster
+uint FusedFragment(uint polygonIdx, out uint outdepth)
+{
+    outdepth = 0U;
+    Polygon polygon = Polygons[polygonIdx];
+    ivec2 position = ivec2(gl_GlobalInvocationID.xy); // tile origin + local id of the old work item
+#else
 void main()
 {
     uvec2 workDesc = WorkDescs[WorkDescsSortedStart + SortedWorkOffset[CurVariant] + gl_WorkGroupID.z];
     Polygon polygon = Polygons[bitfieldExtract(workDesc.y, 0, 11)];
     ivec2 position = ivec2(bitfieldExtract(workDesc.x, 0, 16), bitfieldExtract(workDesc.x, 16, 16)) + ivec2(gl_LocalInvocationID.xy);
     int tileOffset = int(bitfieldExtract(workDesc.y, 11, 21)) * TileSize * TileSize + TileSize * int(gl_LocalInvocationID.y) + int(gl_LocalInvocationID.x);
+#endif
 
     uint color = 0U;
     if (position.y >= polygon.YTop && position.y < polygon.YBot)
@@ -1287,7 +1296,11 @@ void main()
             {
                 color = r | (g << 8) | (b << 16) | (a << 24);
 
+#ifdef FusedRaster
+                outdepth = z;
+#else
                 DepthTiles[tileOffset] = z;
+#endif
 #ifdef VULKAN
                 // Translucent fragments never consume tile attributes. For
                 // opaque ones, reuse the alpha byte: 31..33 encode no side
@@ -1306,15 +1319,32 @@ void main()
             }
 #else
             color = 0xFFFFFFFF; // doesn't really matter as long as it's not 0
+#ifdef FusedRaster
+            outdepth = z;
+#else
             DepthTiles[tileOffset] = z;
+#endif
 #endif
         }
     }
 
+#ifdef FusedRaster
+    return color;
+#else
     ColorTiles[tileOffset] = color;
+#endif
 }
 
 )";
+
+const std::string Rasterise =
+    PolygonBuffer +
+    WorkDescBuffer +
+    XSpanSetupBuffer +
+    BinningBuffer +
+    Tilebuffers +
+    RasteriseDecls +
+    RasteriseMain;
 
 const std::string FinalPixelHeader = R"(
 #ifdef VULKAN
@@ -1455,6 +1485,10 @@ layout (location = 0) uniform int FirstBatch;
 
 layout (local_size_x = TileSize, local_size_y = TileSize) in;
 
+#ifdef FusedRaster
+)" + XSpanSetupBuffer + RasteriseMain + R"(
+#endif
+
 void PlotTranslucent(inout uint color, inout uint depth, inout uint attr, bool isShadow, uint tileColor, uint srcA, uint tileDepth, uint srcAttr, bool writeDepth)
 {
     uint blendAttr = (srcAttr & 0xE0F0U) | ((srcAttr >> 8) & 0xFF0000U) | (1U<<22) | (attr & 0xFF001F0FU);
@@ -1492,7 +1526,9 @@ void ProcessCoarseMask(int linearTile, uint coarseMask, uint coarseOffset,
     inout uvec2 color, inout uvec2 depth, inout uvec2 attr, inout uint stencil,
     inout bool prevIsShadowMask)
 {
+#ifndef FusedRaster
     int tileInnerOffset = int(gl_LocalInvocationID.x) + int(gl_LocalInvocationID.y) * TileSize;
+#endif
 
     while (coarseMask != 0U)
     {
@@ -1502,18 +1538,26 @@ void ProcessCoarseMask(int linearTile, uint coarseMask, uint coarseOffset,
         uint tileOffset = linearTile * BinStride + coarseBit + coarseOffset;
 
         uint fineMask = BinningMaskAndOffset[BinningMaskStart + tileOffset];
+#ifndef FusedRaster
         uint workIdx = BinningMaskAndOffset[BinningWorkOffsetsStart + tileOffset];
+#endif
 
         while (fineMask != 0U)
         {
             uint fineIdx = findLSB(fineMask);
             fineMask &= ~(1U << fineIdx);
 
+#ifdef FusedRaster
+            uint polygonIdx = fineIdx + (coarseBit + coarseOffset) * 32;
+            uint tileDepth;
+            uint tileColor = FusedFragment(polygonIdx, tileDepth);
+#else
             uint pixelindex = tileInnerOffset + workIdx * TileSize * TileSize;
             uint tileColor = ColorTiles[pixelindex];
             workIdx++;
 
             uint polygonIdx = fineIdx + (coarseBit + coarseOffset) * 32;
+#endif
 
             if (tileColor != 0U)
             {
@@ -1525,7 +1569,9 @@ void ProcessCoarseMask(int linearTile, uint coarseMask, uint coarseOffset,
 
                 bool equalDepthTest = (polygonAttr & (1U << 14)) != 0U;
 
+#ifndef FusedRaster
                 uint tileDepth = DepthTiles[pixelindex];
+#endif
 #ifndef VULKAN
                 uint tileAttr = AttrTiles[pixelindex];
 #endif

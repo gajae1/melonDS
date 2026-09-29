@@ -93,6 +93,8 @@ public:
     // RenderView. No command buffer is left recording between upload calls.
     // The default remains synchronous for other pipeline users.
     void SetUploadBatching(bool enabled);
+    // Keep the ordinary raster path available for comparisons and fallback.
+    void SetFusedRaster(bool enabled) { fusedRaster = enabled; }
     void FlushUploads();
     uint32_t WorkCapacity() const { return Resources.BatchWork; }
     uint32_t SpanCapacity() const { return Resources.MaxSpans; }
@@ -111,6 +113,7 @@ private:
     void RecordFullReadback(VkCommandBuffer command);
     std::span<const uint32_t> FullReadbackPixels() const;
     bool viewPending=false;
+    bool fusedRaster=true;
     Readback pendingMode=Readback::None;
     std::vector<std::shared_ptr<const Texture>> pendingTextures;
     void Bind(VkCommandBuffer command,unsigned shader,VkDescriptorSet storage,VkDescriptorSet image,
