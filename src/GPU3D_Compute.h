@@ -25,6 +25,7 @@
 
 #include "GPU3D.h"
 #include "GPU3D_ComputeData.h"
+#include "GPU3D_ComputeShader.h"
 
 #include "OpenGLSupport.h"
 
@@ -51,8 +52,13 @@ public:
     void RestartFrame() override;
     u32* GetLine(int line) override;
 
-    bool NeedsShaderCompile() override { return !ShaderCompileFailed && ShaderStepIdx != 32; }
+    bool NeedsShaderCompile() override { return !ShaderCompileFailed && ShaderStepIdx != ShaderProgramCount(); }
     bool ShaderCompileStep(int& current, int& count) override;
+
+    // Fused ordered raster+depth-blend for eligible batches (default on).
+    // Programs are always compiled with the other shaders; this only selects
+    // the path at draw time, for same-build A/B comparison.
+    void SetFusedRaster(bool enable) { FusedRasterEnabled = enable; }
 
 private:
     GLRenderer& Parent;
@@ -63,6 +69,7 @@ private:
     GLuint ShaderInterpXSpans[2]{};
     GLuint ShaderBinCombined{};
     GLuint ShaderDepthBlend[2]{};
+    GLuint ShaderDepthBlendFused[2]{};
     GLuint ShaderRasteriseNoTexture[2]{};
     GLuint ShaderRasteriseNoTextureToon[2]{};
     GLuint ShaderRasteriseNoTextureHighlight[2]{};
@@ -100,7 +107,7 @@ private:
     using SetupIndices = ComputeData::SetupIndices;
     using RenderPolygon = ComputeData::RenderPolygon;
 
-    int TileSize;
+    int TileSize = 0;
     static constexpr int CoarseTileCountX = 8;
     int CoarseTileCountY;
     int CoarseTileArea;
@@ -149,7 +156,10 @@ private:
     bool HiresCoordinates;
 
     int ShaderStepIdx = 0;
+    bool FusedRasterEnabled = true;
 
+    // The fused programs are only used at TileSize 8, so they are only built there.
+    int ShaderProgramCount() const { return TileSize == 8 ? int(ComputeShader::GLCount) : int(ComputeShader::Count); }
     void DeleteShaders();
     int BatchSize(int first) const;
     void RenderBatch(int first, int count, const int* captureinfo);

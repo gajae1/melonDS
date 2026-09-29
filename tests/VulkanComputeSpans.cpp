@@ -232,11 +232,14 @@ struct TextureInput {
 };
 
 static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch,unsigned scale,
-    std::span<const TextureInput> sources={},std::span<const uint32_t> clearColors={},std::span<const uint32_t> clearDepths={})
+    std::span<const TextureInput> sources={},std::span<const uint32_t> clearColors={},std::span<const uint32_t> clearDepths={},bool fused=false)
 {
     const auto config=ComputeShader::VulkanConfig(scale);
+    const bool fuse=fused && config.TileSize==8 && !batch.polygons.empty()
+        && batch.polygons.size()<=8 && batch.variants.size()==1
+        && !batch.variants[0].texture && batch.variants[0].shader==(batch.wbuffer?6u:5u);
     struct Resources {
-        GLuint buffers[11]{},textures[4]{},programs[32]{};
+        GLuint buffers[11]{},textures[4]{},programs[ComputeShader::VulkanCount]{};
         std::vector<GLuint> materials;
         ~Resources() {
             glUseProgram(0);
@@ -327,7 +330,7 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
         glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER,resources.buffers[7]);
         use(23);glDispatchComputeIndirect(offsetof(BinResultHeader,SortWorkWorkCount));barrier();
         for(unsigned i=0;i<3;++i)glBindBufferBase(GL_SHADER_STORAGE_BUFFER,2+i,resources.buffers[3+i]);
-        for(unsigned i=0;i<batch.variants.size();++i) {
+        for(unsigned i=0;!fuse && i<batch.variants.size();++i) {
             const auto& variant=batch.variants[i];
             for(unsigned unit=0;unit<3;++unit) {
                 glActiveTexture(GL_TEXTURE0+unit);glBindSampler(unit,0);
@@ -354,7 +357,7 @@ static std::vector<uint32_t> GLFrame(const Vulkan::ComputePipeline::Batch& batch
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
     }
-    use(batch.wbuffer?4:3);glUniform1i(0,1);glDispatchCompute(config.ScreenWidth/tile,config.ScreenHeight/tile,1);barrier();
+    use(fuse?ComputeShader::FusedRasterFirst+unsigned(batch.wbuffer):(batch.wbuffer?4:3));glUniform1i(0,1);glDispatchCompute(config.ScreenWidth/tile,config.ScreenHeight/tile,1);barrier();
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,resources.textures[1]);
     glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,256*scale,192*scale);
     glBindImageTexture(0,resources.textures[1],0,GL_FALSE,0,GL_WRITE_ONLY,GL_RGBA8);
@@ -473,6 +476,9 @@ static void Frames(unsigned scale,const std::string& preferred)
             }
             const auto pixels=pipeline.Render(batch);
             const auto expected=GLFrame(batch,scale,sources,clearColors,clearDepths);
+            if((scene==0 || scene==8 || scene==4) &&
+                GLFrame(batch,scale,sources,clearColors,clearDepths,true)!=expected)
+                throw std::runtime_error("Fused GL raster/depth blend or textured fallback differs");
             if(scene==1) {
                 // The mask is behind the surface, but its shadow draw is in
                 // front. Replacing that draw with another mask must change
@@ -561,6 +567,8 @@ static void Frames(unsigned scale,const std::string& preferred)
                 for(unsigned effect=0;effect<8;++effect) {
                     batch.meta.DispCnt=(1u<<3)|((effect&1u)<<5)|((effect&2u)<<6)|((effect&4u)<<2);
                     const auto reference=GLFrame(batch,scale,sources,clearColors,clearDepths);
+                    if(GLFrame(batch,scale,sources,clearColors,clearDepths,true)!=reference)
+                        throw std::runtime_error("Fused GL raster changed final effect pixels");
                     ObserveIndirect observe(*device);
                     if(pipeline.Render(batch)!=reference)throw std::runtime_error("Final effect combination differs from GL");
                     if((effect==0&&IndirectCalls!=0)||((effect==2||effect==4)&&IndirectCalls!=1))

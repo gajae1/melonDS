@@ -42,7 +42,7 @@ ComputeRenderer3D::ComputeRenderer3D(melonDS::GPU3D& gpu3D, GLRenderer& parent)
 bool ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
 {
     current = ShaderStepIdx;
-    count = ComputeShader::Count;
+    count = ShaderProgramCount();
     if (ShaderCompileFailed) return false;
     if (ShaderStepIdx == count) return true;
     GLuint* programs[] = {
@@ -78,11 +78,17 @@ bool ComputeRenderer3D::ShaderCompileStep(int& current, int& count)
         &ShaderFinalPass[5],
         &ShaderFinalPass[6],
         &ShaderFinalPass[7],
+        &ShaderDepthBlendFused[0],
+        &ShaderDepthBlendFused[1],
 };
-    static_assert(std::size(programs) == ComputeShader::Count);
+    static_assert(std::size(programs) == ComputeShader::GLCount);
     const ComputeShader::Config config{ScreenWidth, ScreenHeight, MaxWorkTiles, TileSize, CoarseTileCountY, CoarseTileArea, ClearCoarseBinMaskLocalSize};
-    const auto source = ComputeShader::BuildSource(ShaderStepIdx, config, false);
-    const auto name = "Compute variant " + std::to_string(ShaderStepIdx);
+    // Steps after the ordinary programs map to the fused non-final Z/W variants.
+    const unsigned variant = ShaderStepIdx < int(ComputeShader::Count)
+        ? unsigned(ShaderStepIdx)
+        : ComputeShader::FusedRasterFirst + unsigned(ShaderStepIdx - int(ComputeShader::Count));
+    const auto source = ComputeShader::BuildSource(variant, config, false);
+    const auto name = "Compute variant " + std::to_string(variant);
     if (!OpenGL::CompileComputeProgram(*programs[ShaderStepIdx++], source.c_str(), name.c_str()))
     {
         ShaderCompileFailed = true;
@@ -226,6 +232,8 @@ void ComputeRenderer3D::DeleteShaders()
         &ShaderFinalPass[5],
         &ShaderFinalPass[6],
         &ShaderFinalPass[7],
+        &ShaderDepthBlendFused[0],
+        &ShaderDepthBlendFused[1],
     };
     for (GLuint* program : allPrograms)
     {
@@ -514,6 +522,7 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
 {
     int numYSpans = 0;
     int numSetupIndices = 0;
+    bool fused = false;
 
     /*
         Some games really like to spam small textures, often
@@ -680,6 +689,14 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
     {
         wbuffer = GPU3D.RenderPolygonRAM[0]->WBuffer;
 
+        // Plain NoTexture batches of one variant can rasterise inside the
+        // ordered depth-blend pass, skipping the tile-buffer round trip.
+        // Toon/highlight (2) and shadow mask (4) stay on the ordinary path.
+        fused = FusedRasterEnabled && TileSize == 8 && count <= 8 && numVariants == 1
+            && variants[0].Texture == 0
+            && (variants[0].BlendMode <= 1 || variants[0].BlendMode == 3)
+            && ShaderDepthBlendFused[wbuffer] != 0;
+
         // calculate x-spans
         glBindImageTexture(0, YSpanIndicesTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16UI);
         glUseProgram(ShaderInterpXSpans[wbuffer]);
@@ -720,6 +737,7 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2+i, TileMemory[i]);
 
         // rasterise
+        if (!fused)
         {
             bool highLightMode = GPU3D.RenderDispCnt & (1<<1);
 
@@ -806,7 +824,8 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
             }
         }
     }
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    if (!fused)
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     glBindSampler(0, 0);
     glBindSampler(1, 0);
@@ -816,7 +835,7 @@ void ComputeRenderer3D::RenderBatch(int first, int count, const int* captureinfo
     glBindTexture(GL_TEXTURE_2D, ClearBitmapTex[1]);
 
     // compose final image
-    glUseProgram(ShaderDepthBlend[wbuffer]);
+    glUseProgram(fused ? ShaderDepthBlendFused[wbuffer] : ShaderDepthBlend[wbuffer]);
     glUniform1i(0, first == 0);
     glDispatchCompute(ScreenWidth/TileSize, ScreenHeight/TileSize, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);

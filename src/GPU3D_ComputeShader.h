@@ -5,10 +5,11 @@
 
 namespace melonDS::ComputeShader {
 inline constexpr unsigned Count = 32;
+inline constexpr unsigned GLCount = Count + 2;
 // Z/W pairs for the four neighbor-independent final-effect combinations.
 inline constexpr unsigned FusedRasterFirst = Count + 8;
-// Vulkan-only ordered raster+blend variants (NoTexture): normal Z/W, then final
-// (no fog/no AA) Z/W.
+// Ordered raster+blend variants (NoTexture): normal Z/W shared by GL/Vulkan,
+// then Vulkan-only final (no fog/no AA) Z/W.
 inline constexpr unsigned VulkanCount = FusedRasterFirst + 4;
 struct Config {
     int ScreenWidth;

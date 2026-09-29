@@ -1105,14 +1105,21 @@ layout (location = 3) uniform float CaptureYOffset;
 
 )";
 
-// Original raster main. With FusedRaster (Vulkan DepthBlend only) the same body is
+// Original raster main. With FusedRaster the same body is
 // compiled as a per-fragment function called from the ordered blend loop:
 // it returns the color-tile word (0 = rejected) and writes the depth-tile word.
 const std::string RasteriseMain = R"(
 #ifdef FusedRaster
-uint FusedFragment(uint polygonIdx, out uint outdepth)
+uint FusedFragment(uint polygonIdx, out uint outdepth
+#ifndef VULKAN
+    , out uint outattr
+#endif
+)
 {
     outdepth = 0U;
+#ifndef VULKAN
+    outattr = 0U;
+#endif
     Polygon polygon = Polygons[polygonIdx];
     ivec2 position = ivec2(gl_GlobalInvocationID.xy); // tile origin + local id of the old work item
 #else
@@ -1314,7 +1321,11 @@ void main()
                     color = (color & 0x00FFFFFFU) | (tag << 24);
                 }
 #else
+#ifdef FusedRaster
+                outattr = attr;
+#else
                 AttrTiles[tileOffset] = attr;
+#endif
 #endif
             }
 #else
@@ -1550,7 +1561,12 @@ void ProcessCoarseMask(int linearTile, uint coarseMask, uint coarseOffset,
 #ifdef FusedRaster
             uint polygonIdx = fineIdx + (coarseBit + coarseOffset) * 32;
             uint tileDepth;
+#ifdef VULKAN
             uint tileColor = FusedFragment(polygonIdx, tileDepth);
+#else
+            uint tileAttr;
+            uint tileColor = FusedFragment(polygonIdx, tileDepth, tileAttr);
+#endif
 #else
             uint pixelindex = tileInnerOffset + workIdx * TileSize * TileSize;
             uint tileColor = ColorTiles[pixelindex];
@@ -1572,7 +1588,7 @@ void ProcessCoarseMask(int linearTile, uint coarseMask, uint coarseOffset,
 #ifndef FusedRaster
                 uint tileDepth = DepthTiles[pixelindex];
 #endif
-#ifndef VULKAN
+#if !defined(VULKAN) && !defined(FusedRaster)
                 uint tileAttr = AttrTiles[pixelindex];
 #endif
 

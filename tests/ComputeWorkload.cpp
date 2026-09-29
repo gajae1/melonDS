@@ -102,7 +102,14 @@ struct Scene
     }
 };
 
-bool Render(Scene& scene, int scale, GLint limit, std::vector<u32>& pixels, u32 effects = 0)
+class WorkloadRenderer : public GLRenderer
+{
+public:
+    explicit WorkloadRenderer(NDS& nds) : GLRenderer(nds, true) {}
+    void SetFusion(bool enabled) { static_cast<ComputeRenderer3D*>(Rend3D.get())->SetFusedRaster(enabled); }
+};
+
+bool Render(Scene& scene, int scale, GLint limit, std::vector<u32>& pixels, u32 effects = 0, bool fused = false)
 {
     LimitZ = limit;
     IndirectCalls = MaxProduced = 0;
@@ -110,9 +117,10 @@ bool Render(Scene& scene, int scale, GLint limit, std::vector<u32>& pixels, u32 
     args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
-    nds->SetRenderer(std::make_unique<GLRenderer>(*nds, true));
-    auto* renderer = dynamic_cast<GLRenderer*>(&nds->GetRenderer());
+    nds->SetRenderer(std::make_unique<WorkloadRenderer>(*nds));
+    auto* renderer = dynamic_cast<WorkloadRenderer*>(&nds->GetRenderer());
     if (!renderer) return false;
+    renderer->SetFusion(fused);
     RendererSettings settings{scale, false, false, false};
     if (!renderer->SetRenderSettings(settings)) return false;
     while (renderer->NeedsShaderCompile())
@@ -210,6 +218,8 @@ bool CheckBlendContinuation()
         const unsigned togetherCalls = IndirectCalls;
         passed &= Render(scene, 1, 1536, split, effects);
         passed &= IndirectCalls > togetherCalls && !together.empty() && together == split;
+        std::vector<u32> fusedSplit;
+        passed &= Render(scene, 1, 1536, fusedSplit, effects, true) && fusedSplit == together;
         std::printf("blend_continuation w=%d effects=%u pixels=%zu equal=%d calls=%u/%u\n",
             wbuffer, effects, together.size(), together == split, togetherCalls, IndirectCalls);
     }
@@ -227,6 +237,8 @@ bool CheckSingleVariant()
         if (!Render(scene, scale, 0, single)) return false;
         const unsigned singleCalls = IndirectCalls;
         passed &= singleCalls == 1 && MaxProduced > 0;
+        std::vector<u32> fused;
+        passed &= Render(scene, scale, 0, fused, 0, true) && IndirectCalls == 0 && fused == single;
         // Untextured decal and modulation produce the same colors, but require
         // distinct work lists. Compare all pixels against the general path.
         scene.Polygons[0].Attr |= 0x10;
