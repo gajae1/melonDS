@@ -13,6 +13,12 @@ void ComposeDisplayCPU(std::span<const SoftRenderer2D::ScaledLineContext> lines,
 
 class DisplayCompositor final {
 public:
+    struct ResidentRequest {
+        u32 screen;
+        std::span<const SoftRenderer2D::ScaledLineContext> lines;
+        std::span<u32> cpuRows;
+        std::span<const bool> changedRows;
+    };
     DisplayCompositor(std::shared_ptr<Device> device, std::span<const u32> shader, u32 scale, u32 buffers = 1);
     ~DisplayCompositor();
     DisplayCompositor(const DisplayCompositor&) = delete;
@@ -35,15 +41,41 @@ public:
         std::span<const SoftRenderer2D::ScaledLineContext> lines,
         const std::shared_ptr<Device::Image>& image3D, u32 sourceScale,
         std::span<u32> cpuRows, std::span<const bool> changedRows = {}, bool deferred = false);
+    // Composes two distinct resident screens with one Device Begin/Submit. Both
+    // requests are validated before completion; lazy resources are reserved
+    // before either resident image is invalidated or recording begins. Input and scale are shared. Returned
+    // images are in request order and follow ComposeResident's borrowing rules;
+    // deferred callers must Complete before consuming either image. A pending
+    // pair marks both screens resident-valid only after its fence succeeds.
+    std::array<std::shared_ptr<Device::Image>, 2> ComposeResidentPair(
+        const std::array<ResidentRequest, 2>& requests,
+        const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, bool deferred = false);
     void Complete();
     // Explicit CPU demand (screenshot/fallback). Valid only after this screen's
     // latest successful ComposeResident and before it is overwritten.
     void ReadbackResident(u32 screen, std::span<u32> destination);
 private:
+    struct Work;
+    struct ScratchSet {
+        VkDescriptorSet descriptors{};
+        std::shared_ptr<Device::Buffer> contexts, overrides;
+    };
     void ComposeImpl(u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines,
         const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, std::span<u32> destination,
         const Device::Buffer* direct, bool resident, std::span<const bool> changedRows = {}, bool deferred = false);
-    void Submit(u32 screen, bool resident, const std::shared_ptr<Device::Image>& input,
+    void Validate(u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines, u32 sourceScale,
+        std::span<u32> destination, std::span<const bool> changedRows,
+        const std::shared_ptr<Device::Image>& image3D, const Device::Buffer* direct) const;
+    void Reserve(u32 set, u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines,
+        std::span<const bool> changedRows, bool resident, size_t bytes);
+    void Prepare(Work& work, u32 set, u32 screen, std::span<const SoftRenderer2D::ScaledLineContext> lines,
+        std::span<u32> destination, std::span<const bool> changedRows, bool resident,
+        const std::shared_ptr<Device::Image>& input);
+    void Record(VkCommandBuffer command, const Work& work, const std::shared_ptr<Device::Image>& input,
+        u32 sourceScale);
+    void RecordResidentTail(VkCommandBuffer command, u32 screen,
+        std::span<const SoftRenderer2D::ScaledLineContext> lines);
+    void Submit(std::span<const u32> screens, bool resident, const std::shared_ptr<Device::Image>& input,
         std::span<const SoftRenderer2D::ScaledLineContext> lines, std::span<u32> destination,
         const Device::Buffer* direct, bool deferred);
     void Init(std::span<const u32> shader);
@@ -54,16 +86,19 @@ private:
     u32 scale;
     VkDescriptorSetLayout bindings{};
     VkDescriptorPool pool{};
-    VkDescriptorSet descriptors{};
     VkPipelineLayout layout{};
     VkPipeline pipeline{};
-    std::shared_ptr<Device::Buffer> contexts, readback;
-    std::shared_ptr<Device::Buffer> overrides;
+    // Two scratch sets cover the only simultaneous use (a screen pair); the
+    // second context buffer is created on first pair use; overrides on demand.
+    // Outputs are not tied to scratch.
+    std::array<ScratchSet, 2> scratch;
+    std::shared_ptr<Device::Buffer> readback;
     std::vector<std::shared_ptr<Device::Image>> outputs;
     std::vector<bool> residentValid;
     std::shared_ptr<Device::Image> blank3D;
     bool pending = false, pendingResident = false;
-    u32 pendingScreen = 0;
+    std::array<u32, 2> pendingScreens{};
+    u32 pendingScreenCount = 0;
     std::shared_ptr<Device::Image> pendingInput;
     std::span<u32> pendingCopy;
     std::array<bool, 192> pendingRows{};

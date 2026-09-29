@@ -751,6 +751,209 @@ void CompactResident(const std::shared_ptr<Vulkan::Device>& device, u32 scale)
     }
     std::printf("Resident display %ux: sparse/preserved/full/unaligned pixels and dispatch counts PASS\n", scale);
 }
+// Counts real submissions/waits only, to verify pair lifecycle without
+// touching frame rate or composition work.
+struct PairProbe
+{
+    static inline PairProbe* active = nullptr;
+    volk::VolkDeviceTable& f;
+    PFN_vkQueueSubmit submit;
+    PFN_vkWaitForFences wait;
+    u64 submits = 0, waits = 0;
+    explicit PairProbe(Vulkan::Device& device)
+        : f(const_cast<volk::VolkDeviceTable&>(device.Functions())),
+          submit(f.vkQueueSubmit), wait(f.vkWaitForFences)
+    { active = this; f.vkQueueSubmit = Submit; f.vkWaitForFences = Wait; }
+    ~PairProbe() { f.vkQueueSubmit = submit; f.vkWaitForFences = wait; active = nullptr; }
+    static VKAPI_ATTR VkResult VKAPI_CALL Submit(VkQueue queue, u32 count, const VkSubmitInfo* info, VkFence fence)
+    {
+        ++active->submits;
+        return active->submit(queue, count, info, fence);
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Wait(VkDevice device, u32 count, const VkFence* fences,
+        VkBool32 all, u64 timeout)
+    {
+        ++active->waits;
+        return active->wait(device, count, fences, all, timeout);
+    }
+};
+// Two distinct resident screens per pair, checked against the ComposeDisplayCPU
+// oracle, across full/sparse/all-preserved layouts and both output buffers.
+void ResidentPairFrames(const std::shared_ptr<Vulkan::Device>& device, u32 scale)
+{
+    using Request = Vulkan::DisplayCompositor::ResidentRequest;
+    const u32 rowPixels = 256 * scale * scale;
+    const size_t pixels = size_t(256) * 192 * scale * scale;
+    const std::vector<u32> blank3D(size_t(256) * 192, 0);
+    Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale, 2);
+    PairProbe probe(*device);
+    std::array<std::vector<Line>, 4> lines;
+    std::array<std::vector<u32>, 4> cpu, image;
+    std::array<bool, 4> valid{};
+    for (u32 s = 0; s < 4; ++s)
+    {
+        lines[s].resize(192);
+        cpu[s].assign(pixels, 0);
+        image[s].assign(pixels, 0xC0DEC0DEu ^ (s << 24));
+    }
+    // layout 0 = every row composed; 1 = isolated composed rows; 2 = none composed.
+    auto shape = [&](u32 s, u32 phase, int layout)
+    {
+        for (u32 y = 0; y < 192; ++y)
+        {
+            const bool composed = layout == 0 || (layout == 1 && (y % 16 == 0 || y == 191));
+            auto& line = lines[s][y];
+            line.mode = composed ? Line::Flat : (y % 2 ? Line::CaptureOverride : Line::Keep);
+            for (u32 x = 0; x < 256; ++x)
+                line.pixels[x].top = 0xFF000000u | (u32(phase * 4 + s) << 20) | (y << 8) | x;
+        }
+    };
+    auto retain = [&](u32 s, u32 tag)
+    {
+        for (u32 y = 0; y < 192; ++y)
+            for (u32 x = 0; x < rowPixels; ++x)
+                cpu[s][size_t(y) * rowPixels + x] = 0xB0000000u | (tag << 20) | (s << 18) | (y << 10) | x;
+    };
+    auto oracle = [&](u32 s, std::span<const bool> changed)
+    {
+        std::vector<u32> expected = image[s];
+        Vulkan::ComposeDisplayCPU(lines[s], blank3D, 1, scale, expected);
+        const bool keep = valid[s] && !changed.empty();
+        for (u32 y = 0; y < 192; ++y)
+        {
+            const auto mode = lines[s][y].mode;
+            const bool preserved = mode == Line::Keep || mode == Line::CaptureOverride;
+            if (preserved && (!keep || changed[y]))
+                std::copy_n(cpu[s].data() + size_t(y) * rowPixels, rowPixels, expected.data() + size_t(y) * rowPixels);
+        }
+        return expected;
+    };
+    // lifecycle 0 = synchronous; 1 = deferred then explicit Complete; 2 = deferred
+    // then resolved by the next Device::Begin callback.
+    auto check = [&](u32 a, u32 b, std::span<const bool> changedA, std::span<const bool> changedB, int lifecycle)
+    {
+        const auto expectedA = oracle(a, changedA);
+        const auto expectedB = oracle(b, changedB);
+        const std::array<Request, 2> requests = {
+            Request{a, lines[a], cpu[a], changedA}, Request{b, lines[b], cpu[b], changedB}};
+        probe.submits = 0; probe.waits = 0;
+        const auto images = compositor.ComposeResidentPair(requests, {}, 1, lifecycle != 0);
+        Require(probe.submits == 1, "resident pair did not issue exactly one submission");
+        Require(images[0] && images[1] && images[0] != images[1],
+            "resident pair did not return two distinct per-screen images");
+        if (lifecycle == 0)
+            Require(probe.waits >= 1, "synchronous resident pair did not complete before returning");
+        else
+        {
+            Require(probe.waits == 0, "deferred resident pair waited before completion");
+            if (lifecycle == 1)
+            {
+                compositor.Complete();
+                Require(probe.waits >= 1, "explicit Complete did not wait for the deferred pair");
+            }
+            else
+            {
+                (void)device->Begin();
+                device->SubmitAndWait();
+                Require(probe.waits >= 1, "next Device::Begin did not complete the pending pair");
+            }
+        }
+        std::vector<u32> outA(pixels), outB(pixels);
+        compositor.ReadbackResident(a, outA);
+        compositor.ReadbackResident(b, outB);
+        Equal(outA, expectedA, "resident pair first screen != oracle");
+        Equal(outB, expectedB, "resident pair second screen != oracle");
+        image[a] = expectedA; image[b] = expectedB;
+        valid[a] = valid[b] = true;
+    };
+    // Full then sparse layouts, synchronous and deferred, both buffer pairs.
+    shape(0, 0, 0); shape(1, 0, 0);
+    check(0, 1, {}, {}, 0);
+    shape(2, 1, 1); shape(3, 1, 1);
+    check(2, 3, {}, {}, 1);
+    // All-preserved pair, completed by the next Device::Begin callback.
+    shape(0, 2, 2); shape(1, 2, 2); retain(0, 5); retain(1, 6);
+    check(0, 1, {}, {}, 2);
+    // Changed-row retention: unmarked preserved rows must keep the previous pair.
+    std::array<bool, 192> changedA{}, changedB{};
+    for (u32 y = 0; y < 192; ++y) { changedA[y] = y < 64 || y >= 160; changedB[y] = y < 32; }
+    retain(0, 9); retain(1, 10);
+    check(0, 1, changedA, changedB, 0);
+    // Rejections must precede any submission, and later valid use must still work.
+    {
+        const std::array<Request, 2> duplicate = {
+            Request{0, lines[0], cpu[0], {}}, Request{0, lines[1], cpu[1], {}}};
+        const std::array<Request, 2> outOfRange = {
+            Request{0, lines[0], cpu[0], {}}, Request{4, lines[1], cpu[1], {}}};
+        probe.submits = 0; probe.waits = 0;
+        bool rejected = false;
+        try { compositor.ComposeResidentPair(duplicate, {}, 1, false); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        Require(rejected && probe.submits == 0, "duplicate pair screen was not rejected before submission");
+        rejected = false;
+        try { compositor.ComposeResidentPair(outOfRange, {}, 1, false); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        Require(rejected && probe.submits == 0 && probe.waits == 0,
+            "out-of-range pair screen was not rejected before submission");
+        check(0, 1, {}, {}, 0);
+    }
+    std::printf("Resident pair %ux: full/sparse/preserved/retained, buffers 0-1/2-3, sync+deferred+Begin PASS\n", scale);
+}
+// Low-memory regression: the second scratch's lazy allocation must fail the pair
+// before recording, and the compositor must still work once memory is available.
+void ResidentPairAllocationFailure(const std::shared_ptr<Vulkan::Device>& device)
+{
+    using Request = Vulkan::DisplayCompositor::ResidentRequest;
+    constexpr u32 scale = 3;
+    const size_t pixels = size_t(256) * 192 * scale * scale;
+    const std::vector<u32> blank3D(size_t(256) * 192, 0);
+    Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale, 2);
+    std::array<std::vector<Line>, 2> lines;
+    std::array<std::vector<u32>, 2> cpu;
+    for (u32 s = 0; s < 2; ++s)
+    {
+        lines[s].resize(192);
+        for (u32 y = 0; y < 192; ++y)
+        {
+            lines[s][y].mode = Line::Flat; // No preserved rows: only contexts allocate.
+            for (u32 x = 0; x < 256; ++x)
+                lines[s][y].pixels[x].top = 0xFF000000u | (s << 20) | (y << 8) | x;
+        }
+        cpu[s].assign(pixels, 0);
+    }
+    const std::array<Request, 2> requests = {
+        Request{0, lines[0], cpu[0], {}}, Request{1, lines[1], cpu[1], {}}};
+    PairProbe probe(*device);
+    {
+        FailDisplayMemory failure(*device, FailDisplayMemory::Allocation, 1);
+        probe.submits = 0; probe.waits = 0;
+        bool threw = false;
+        try { compositor.ComposeResidentPair(requests, {}, 1, false); }
+        catch (const std::exception&) { threw = true; }
+        Require(threw && failure.injected && probe.submits == 0 && probe.waits == 0,
+            "lazy pair allocation failure still recorded or submitted work");
+        std::printf("Resident pair OOM: denied_allocations=%u freed=%u submits=%llu PASS\n",
+            failure.attempts, failure.freed, static_cast<unsigned long long>(probe.submits));
+    }
+    probe.submits = 0; probe.waits = 0;
+    const auto images = compositor.ComposeResidentPair(requests, {}, 1, false);
+    Require(probe.submits == 1 && images[0] && images[1] && images[0] != images[1],
+        "pair after restored allocation hook did not submit or return distinct images");
+    std::vector<u32> expected(pixels), output(pixels);
+    for (u32 s = 0; s < 2; ++s)
+    {
+        Vulkan::ComposeDisplayCPU(lines[s], blank3D, 1, scale, expected);
+        compositor.ReadbackResident(s, output);
+        Equal(output, expected, "pair after restored hook != ComposeDisplayCPU");
+    }
+    std::puts("Resident pair lazy-allocation OOM recovery PASS");
+}
+void ResidentPair(const std::shared_ptr<Vulkan::Device>& device)
+{
+    ResidentPairFrames(device, 3);
+    ResidentPairFrames(device, 1);
+    ResidentPairAllocationFailure(device);
+}
 // Diagnostics must observe, not alter, real rendering or synchronization.
 struct DiagnosticEnvironment
 {
@@ -1258,6 +1461,17 @@ int main(int argc, char** argv)
                 "renderer composition still allocates intermediate display staging");
             AllocationFallback();
             BackingLifecycle();
+            return 0;
+        }
+        if (argc > 1 && std::strcmp(argv[1], "resident-pair") == 0)
+        {
+            std::string error;
+            const std::string adapter = argc > 2 ? std::string(argv[2]) : std::string();
+            auto device = Vulkan::Device::Create(error, adapter);
+            if (!device) throw std::runtime_error(error);
+            std::printf("Resident pair device=%s adapter=%s\n", device->Properties().deviceName,
+                adapter.empty() ? "(default)" : adapter.c_str());
+            ResidentPair(device);
             return 0;
         }
         if (argc > 1 && (std::strcmp(argv[1], "benchmark") == 0 || std::strcmp(argv[1], "benchmark-staging") == 0))

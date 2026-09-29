@@ -81,8 +81,8 @@ static void RunRenderer(const std::string& adapter) {
         const auto submitsBefore = renderer->TotalSubmissionCount();
         renderer->VBlank();
         const auto submitted = renderer->TotalSubmissionCount() - submitsBefore;
-        Require(submitted > 0 && waits - waitsBefore < submitted,
-            "VBlank did not leave display work overlapping emulation");
+        Require(submitted == 1 && waits - waitsBefore == 0,
+            "VBlank did not batch both resident screens without an intermediate wait");
         if (frame & 1) {
             // [observed] A different device user must complete the display first.
             renderer->DisplayDevice()->Begin();
@@ -262,12 +262,12 @@ static void RunNative2D(const std::string& adapter, bool memoryPressure = false)
         "NATIVE2D scale1/3 resident, one-submission CPU readback, exact pixels, repeated demand PASS");
 }
 
-int main() {
+int main(int argc, char** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     int result=0;
     try {
         std::string reason;
-        auto device=Vulkan::Device::Create(reason,{},true); Require(bool(device),reason.c_str());
+        auto device=Vulkan::Device::Create(reason,argc > 1 ? argv[1] : "",true); Require(bool(device),reason.c_str());
         std::printf("Vulkan=%s\n",device->Properties().deviceName);
         // RunRenderer owns a device of its own. Patch this table first so the
         // counter's pristine entry point is valid for either adapter.

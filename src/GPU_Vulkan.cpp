@@ -313,22 +313,28 @@ void VulkanRenderer::FinishDisplayComposition(bool deferred) noexcept
             }
             else
             {
-                for (u32 screen = 0; screen < 2; ++screen)
-                    if (DirectDisplay)
-                    {
-                        ResidentImages[BackBuffer][screen] = rasterizer.Compositor->ComposeResident(
-                            BackBuffer * 2 + screen, CompositionLines[screen], rasterizer.RenderedImage,
-                            rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen],
-                            ResidentImages[BackBuffer][screen] ? std::span<const bool>(ChangedDisplayRows) : std::span<const bool>{}, deferred);
-                        ResidentCPUValid[BackBuffer][screen] = false;
-                    }
-                    else if (pending(CompositionLines[screen]))
-                    {
-                        ReadbackDisplay(BackBuffer);
-                        rasterizer.Compositor->Compose(screen, CompositionLines[screen], rasterizer.RenderedImage,
-                            rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen], ScaledMemory[BackBuffer][screen].get(), deferred);
-                        ResidentImages[BackBuffer][screen].reset();
-                    }
+                if (DirectDisplay)
+                {
+                    std::array<Vulkan::DisplayCompositor::ResidentRequest, 2> requests;
+                    for (u32 screen = 0; screen < 2; ++screen)
+                        requests[screen] = {BackBuffer * 2 + screen, CompositionLines[screen],
+                            ScaledBuffers[BackBuffer][screen], ResidentImages[BackBuffer][screen] ?
+                                std::span<const bool>(ChangedDisplayRows) : std::span<const bool>{}};
+                    ResidentImages[BackBuffer] = rasterizer.Compositor->ComposeResidentPair(requests,
+                        rasterizer.RenderedImage, rasterizer.RenderedScale, deferred);
+                    ResidentCPUValid[BackBuffer].fill(false);
+                }
+                else
+                {
+                    for (u32 screen = 0; screen < 2; ++screen)
+                        if (pending(CompositionLines[screen]))
+                        {
+                            ReadbackDisplay(BackBuffer);
+                            rasterizer.Compositor->Compose(screen, CompositionLines[screen], rasterizer.RenderedImage,
+                                rasterizer.RenderedScale, ScaledBuffers[BackBuffer][screen], ScaledMemory[BackBuffer][screen].get(), deferred);
+                            ResidentImages[BackBuffer][screen].reset();
+                        }
+                }
                 if (deferred)
                 {
                     CompositionSubmitted = true;
