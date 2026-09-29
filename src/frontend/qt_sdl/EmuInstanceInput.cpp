@@ -434,31 +434,37 @@ void EmuInstance::inputProcess()
             closeJoystick();
         }
     }
-    // Query cheap session IDs every frame; enumerate/open for identity only on
-    // topology changes. Missing or ambiguous selections must not open every
-    // other device on every frame.
-    bool topologyChanged;
+    // Without an identity or pending legacy migration, Resolve cannot select
+    // a device until an explicit choice. Keep SDL updates above for discovery,
+    // but avoid topology allocation and futile reopen retries in this state.
+    if (joystick || joystickSelection.allowLegacy || !joystickSelection.device.guid.empty())
     {
-        JoystickListLock devicesLock;
+        // Query cheap session IDs every frame; enumerate/open for identity only on
+        // topology changes. Missing or ambiguous selections must not open every
+        // other device on every frame.
+        bool topologyChanged;
+        {
+            JoystickListLock devicesLock;
 #ifdef MELONDS_SDL3
-        int count = 0;
-        SDL_JoystickID* ids = SDL_GetJoysticks(&count);
-        topologyChanged = !ids || count != static_cast<int>(joystickTopology.size());
-        for (int i = 0; !topologyChanged && i < count; ++i)
-            topologyChanged = joystickTopology[i] != ids[i];
-        SDL_free(ids);
+            int count = 0;
+            SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+            topologyChanged = !ids || count != static_cast<int>(joystickTopology.size());
+            for (int i = 0; !topologyChanged && i < count; ++i)
+                topologyChanged = joystickTopology[i] != ids[i];
+            SDL_free(ids);
 #else
-        const int count = SDL_NumJoysticks();
-        topologyChanged = count < 0 || count != static_cast<int>(joystickTopology.size());
-        for (int i = 0; !topologyChanged && i < count; ++i)
-            topologyChanged = joystickTopology[i] != SDL_JoystickGetDeviceInstanceID(i);
+            const int count = SDL_NumJoysticks();
+            topologyChanged = count < 0 || count != static_cast<int>(joystickTopology.size());
+            for (int i = 0; !topologyChanged && i < count; ++i)
+                topologyChanged = joystickTopology[i] != SDL_JoystickGetDeviceInstanceID(i);
 #endif
-    }
-    if (topologyChanged || (!joystick &&
-        joystickSelection.status == JoystickSelection::Status::Missing &&
-        Uint32(SDL_GetTicks() - joystickLastOpen) >= 1000))
-    {
-        openJoystick();
+        }
+        if (topologyChanged || (!joystick &&
+            joystickSelection.status == JoystickSelection::Status::Missing &&
+            Uint32(SDL_GetTicks() - joystickLastOpen) >= 1000))
+        {
+            openJoystick();
+        }
     }
 #ifdef MELONDS_SDL3
     // Gamepad events are disabled; keep motion sensor data current when a

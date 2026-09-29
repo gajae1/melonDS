@@ -57,6 +57,17 @@ static std::vector<SDL_GameController*> controllers;
 static bool failJoystickOpen = false, failControllerOpen = false;
 static SDL_JoystickID sensorDevice = -1;
 static int staleUses = 0;
+static int topologyQueries = 0, joystickUpdates = 0;
+static int CountJoysticks()
+{
+    ++topologyQueries;
+    return SDL_NumJoysticks();
+}
+static void UpdateJoysticks()
+{
+    ++joystickUpdates;
+    SDL_JoystickUpdate();
+}
 
 static bool Live(SDL_GameController* controller)
 {
@@ -164,6 +175,8 @@ struct JoystickInput
 };
 
 #define EmuInstance JoystickInput
+#define SDL_NumJoysticks CountJoysticks
+#define SDL_JoystickUpdate UpdateJoysticks
 #define SDL_JoystickOpen OpenJoystick
 #define SDL_JoystickClose CloseJoystick
 #define SDL_GameControllerOpen OpenController
@@ -193,6 +206,8 @@ struct JoystickInput
 #undef SDL_JoystickClose
 #undef SDL_JoystickOpen
 #undef EmuInstance
+#undef SDL_JoystickUpdate
+#undef SDL_NumJoysticks
 
 struct VirtualDevice
 {
@@ -271,7 +286,7 @@ int main(int argc, char** argv)
     if (scenario != "controls" && scenario != "transition" && scenario != "capabilities" &&
         scenario != "detach" && scenario != "open-failure" && scenario != "close" &&
         scenario != "reorder" && scenario != "ambiguous" && scenario != "serial-reconnect" &&
-        scenario != "duplicate-serial" && scenario != "guid-filter") return 2;
+        scenario != "duplicate-serial" && scenario != "guid-filter" && scenario != "unbound") return 2;
     SDL_SetMainReady();
     // Only this process's synthetic devices may be opened, polled or rumbled.
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
@@ -428,6 +443,49 @@ int main(int argc, char** argv)
                 Check(!(input.inputMask & 1) && !(second.inputMask & 1),
                       "Explicit shared assignment was incorrectly forbidden");
             }
+        }
+        else if (scenario == "unbound")
+        {
+            for (int legacyIndex : {-1, 999})
+            {
+                JoystickSelection selection;
+                selection.legacyIndex = legacyIndex;
+                input.setJoystickSelection(selection);
+                Require(!input.joystick && input.joystickSelection.device.guid.empty() &&
+                        !input.joystickSelection.allowLegacy, "Fixture did not reach an unbound selection");
+                const auto status = input.joystickSelection.status;
+                input.joystickLastOpen = SDL_GetTicks() - 1001;
+                topologyQueries = joystickUpdates = 0;
+                enumerationOpens.clear();
+                input.keyInputMask = 0xFFF & ~(1 << 1);
+                input.keyHotkeyMask = 2;
+                input.lastHotkeyMask = 0;
+                input.inputProcess();
+                Check(input.inputMask == (0xFFF & ~(1 << 1)) && input.hotkeyPress == 2,
+                      "Unbound selection stopped sampling keyboard press");
+                input.keyInputMask = 0xFFF;
+                input.keyHotkeyMask = 0;
+                input.inputProcess();
+                Check(input.inputMask == 0xFFF && input.hotkeyRelease == 2,
+                      "Unbound selection stopped sampling keyboard release");
+                for (int i = 2; i < 300; ++i) input.inputProcess();
+                std::printf("unbound legacy=%d topology=%d updates=%d identity_opens=%zu\n",
+                            legacyIndex, topologyQueries, joystickUpdates, enumerationOpens.size());
+                Check(topologyQueries == 0 && enumerationOpens.empty(),
+                      "Unbound selection repeatedly queried topology or opened identities");
+                Check(joystickUpdates == 300 && !input.joystick && input.joystickSelection.status == status,
+                      "Skipping unbound resolution changed SDL polling or selection state");
+            }
+            // Explicit selection must still discover and use a device, even
+            // when the last unbound pass never refreshed its topology cache.
+            other = std::make_unique<VirtualDevice>(false, false, "", 0x4D33);
+            input.setJoystick(other->index());
+            Require(input.joystick && SDL_JoystickInstanceID(input.joystick) == other->id,
+                    "Explicit selection after unbound polling did not open the chosen device");
+            topologyQueries = 0;
+            PressButton(input, true);
+            Check(topologyQueries > 0 && (input.inputMask & 1) == 0,
+                  "Explicitly selected joystick no longer used normal topology/input polling");
         }
         else if (scenario == "guid-filter")
         {
