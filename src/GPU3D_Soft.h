@@ -549,7 +549,15 @@ private:
     s16 PolygonStartNext[2048];
     s16 PolygonEndNext[2048];
     void SetupPolygonRows(int npolys);
-    void TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* color, u8* alpha) const;
+    // RGB6 texture palette for formats 3/4, 16 colors per page. An entry is
+    // valid only if its PaletteValid bit was set during the current
+    // RenderPolygons call; the table is never initialized.
+    u32 PaletteRGB6[65536];
+    u64 PaletteValid[64];
+    void PrepareTexturePalette(u32 param, u32 palette);
+    // returns RGB6 in bits 0-5/8-13/16-21 and alpha in bits 24-28
+    u32 TextureLookup(const TextureInfo& tex, s16 s, s16 t) const;
+    u32 TextureLookupUncached(const TextureInfo& tex, s16 s, s16 t) const;
     u32 RenderPixel(const PolygonPixelState& state, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const;
     void PlotTranslucentPixel(u32 pixeladdr, u32 color, u32 z, u32 polyattr, u32 shadow);
     void SetupPolygonLeftEdge(RendererPolygon* rp, s32 y) const;

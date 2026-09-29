@@ -130,7 +130,42 @@ void SoftRenderer3D::SetThreaded(bool threaded) noexcept
     }
 }
 
-void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* color, u8* alpha) const
+// Expand the 16-color pages used by a paletted texture to RGB6 once per
+// frame. PaletteRGB6 entries are only read while their page's PaletteValid
+// bit is set, so the table itself is never cleared.
+void SoftRenderer3D::PrepareTexturePalette(u32 param, u32 palette)
+{
+    const u32 fmt = (param >> 26) & 0x7;
+    u32 count;
+    if (fmt == 3) count = 16;
+    else if (fmt == 4) count = 256;
+    else return;
+
+    const u32 start = ((palette << 4) & 0x1FFFF) >> 1;
+    const u32 firstpage = start >> 4;
+    const u32 lastpage = (start + count - 1) >> 4;
+
+    for (u32 page = firstpage; page <= lastpage; page++)
+    {
+        const u32 p = page & 0xFFF;
+        u64& word = PaletteValid[p >> 6];
+        const u64 bit = 1ULL << (p & 63);
+        if (word & bit) continue;
+        word |= bit;
+
+        const u32 base = p << 4;
+        for (u32 i = 0; i < 16; i++)
+        {
+            const u16 c = GPU.ReadVRAMFlat_TexPal<u16>((base + i) * 2);
+            u32 r = (c << 1) & 0x3E; if (r) r++;
+            u32 g = (c >> 4) & 0x3E; if (g) g++;
+            u32 b = (c >> 9) & 0x3E; if (b) b++;
+            PaletteRGB6[base + i] = r | (g << 8) | (b << 16);
+        }
+    }
+}
+
+inline u32 SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t) const
 {
     // TODO: consider using texture cache
     // however, I like the idea of having a "hardware accurate" path
@@ -183,6 +218,44 @@ void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* co
     }
 
     const u8 alpha0 = tex.Alpha0;
+    switch (tex.Format)
+    {
+    case 3: // 16-color
+        {
+            vramaddr += (((t * width) + s) >> 1);
+            u8 pixel = GPU.ReadVRAMFlat_Texture<u8>(vramaddr);
+            if (s & 0x1) pixel >>= 4;
+            else         pixel &= 0xF;
+
+            // the palette page was expanded by PrepareTexturePalette
+            texpal <<= 4;
+            return PaletteRGB6[((texpal >> 1) + pixel) & 0xFFFF] | (u32((pixel==0) ? alpha0 : 31) << 24);
+        }
+
+    case 4: // 256-color
+        {
+            vramaddr += ((t * width) + s);
+            u8 pixel = GPU.ReadVRAMFlat_Texture<u8>(vramaddr);
+
+            texpal <<= 4;
+            return PaletteRGB6[((texpal >> 1) + pixel) & 0xFFFF] | (u32((pixel==0) ? alpha0 : 31) << 24);
+        }
+
+    default:
+        return TextureLookupUncached(tex, s, t);
+    }
+}
+
+// Coordinates have already been wrapped; keep the larger scalar formats out
+// of the common paletted sampling path.
+u32 SoftRenderer3D::TextureLookupUncached(const TextureInfo& tex, s16 s, s16 t) const
+{
+    u32 texpal = tex.Palette;
+    u32 vramaddr = tex.VRAMAddr;
+    const s32 width = tex.Width;
+    const u8 alpha0 = tex.Alpha0;
+    u16 color = 0;
+    u8 alpha = 0;
 
     switch (tex.Format)
     {
@@ -192,8 +265,8 @@ void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* co
             u8 pixel = GPU.ReadVRAMFlat_Texture<u8>(vramaddr);
 
             texpal <<= 4;
-            *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + ((pixel&0x1F)<<1));
-            *alpha = ((pixel >> 3) & 0x1C) + (pixel >> 6);
+            color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + ((pixel&0x1F)<<1));
+            alpha = ((pixel >> 3) & 0x1C) + (pixel >> 6);
         }
         break;
 
@@ -205,32 +278,8 @@ void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* co
             pixel &= 0x3;
 
             texpal <<= 3;
-            *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + (pixel<<1));
-            *alpha = (pixel==0) ? alpha0 : 31;
-        }
-        break;
-
-    case 3: // 16-color
-        {
-            vramaddr += (((t * width) + s) >> 1);
-            u8 pixel = GPU.ReadVRAMFlat_Texture<u8>(vramaddr);
-            if (s & 0x1) pixel >>= 4;
-            else         pixel &= 0xF;
-
-            texpal <<= 4;
-            *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + (pixel<<1));
-            *alpha = (pixel==0) ? alpha0 : 31;
-        }
-        break;
-
-    case 4: // 256-color
-        {
-            vramaddr += ((t * width) + s);
-            u8 pixel = GPU.ReadVRAMFlat_Texture<u8>(vramaddr);
-
-            texpal <<= 4;
-            *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + (pixel<<1));
-            *alpha = (pixel==0) ? alpha0 : 31;
+            color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + (pixel<<1));
+            alpha = (pixel==0) ? alpha0 : 31;
         }
         break;
 
@@ -260,13 +309,13 @@ void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* co
             switch (val & 0x3)
             {
             case 0:
-                *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + paloffset);
-                *alpha = 31;
+                color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + paloffset);
+                alpha = 31;
                 break;
 
             case 1:
-                *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + paloffset + 2);
-                *alpha = 31;
+                color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + paloffset + 2);
+                alpha = 31;
                 break;
 
             case 2:
@@ -286,7 +335,7 @@ void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* co
                     u32 g = ((g0 + g1) >> 1) & 0x03E0;
                     u32 b = ((b0 + b1) >> 1) & 0x7C00;
 
-                    *color = r | g | b;
+                    color = r | g | b;
                 }
                 else if ((palinfo >> 14) == 3)
                 {
@@ -304,18 +353,18 @@ void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* co
                     u32 g = ((g0*5 + g1*3) >> 3) & 0x03E0;
                     u32 b = ((b0*5 + b1*3) >> 3) & 0x7C00;
 
-                    *color = r | g | b;
+                    color = r | g | b;
                 }
                 else
-                    *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + paloffset + 4);
-                *alpha = 31;
+                    color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + paloffset + 4);
+                alpha = 31;
                 break;
 
             case 3:
                 if ((palinfo >> 14) == 2)
                 {
-                    *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + paloffset + 6);
-                    *alpha = 31;
+                    color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + paloffset + 6);
+                    alpha = 31;
                 }
                 else if ((palinfo >> 14) == 3)
                 {
@@ -333,13 +382,13 @@ void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* co
                     u32 g = ((g0*3 + g1*5) >> 3) & 0x03E0;
                     u32 b = ((b0*3 + b1*5) >> 3) & 0x7C00;
 
-                    *color = r | g | b;
-                    *alpha = 31;
+                    color = r | g | b;
+                    alpha = 31;
                 }
                 else
                 {
-                    *color = 0;
-                    *alpha = 0;
+                    color = 0;
+                    alpha = 0;
                 }
                 break;
             }
@@ -352,19 +401,25 @@ void SoftRenderer3D::TextureLookup(const TextureInfo& tex, s16 s, s16 t, u16* co
             u8 pixel = GPU.ReadVRAMFlat_Texture<u8>(vramaddr);
 
             texpal <<= 4;
-            *color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + ((pixel&0x7)<<1));
-            *alpha = (pixel >> 3);
+            color = GPU.ReadVRAMFlat_TexPal<u16>(texpal + ((pixel&0x7)<<1));
+            alpha = (pixel >> 3);
         }
         break;
 
     case 7: // direct color
         {
             vramaddr += (((t * width) + s) << 1);
-            *color = GPU.ReadVRAMFlat_Texture<u16>(vramaddr);
-            *alpha = (*color & 0x8000) ? 31 : 0;
+            color = GPU.ReadVRAMFlat_Texture<u16>(vramaddr);
+            alpha = (color & 0x8000) ? 31 : 0;
         }
         break;
     }
+
+    // expand RGB555 to RGB6 (2*x + (x != 0) per channel)
+    u32 r = (color << 1) & 0x3E; if (r) r++;
+    u32 g = (color >> 4) & 0x3E; if (g) g++;
+    u32 b = (color >> 9) & 0x3E; if (b) b++;
+    return r | (g << 8) | (b << 16) | (u32(alpha) << 24);
 }
 
 // depth test is 'less or equal' instead of 'less than' under the following conditions:
@@ -476,14 +531,11 @@ u32 SoftRenderer3D::RenderPixel(const PolygonPixelState& state, u8 vr, u8 vg, u8
 
     if (state.Tex)
     {
-        u8 tr, tg, tb;
-
-        u16 tcolor; u8 talpha;
-        TextureLookup(*state.Tex, s, t, &tcolor, &talpha);
-
-        tr = (tcolor << 1) & 0x3E; if (tr) tr++;
-        tg = (tcolor >> 4) & 0x3E; if (tg) tg++;
-        tb = (tcolor >> 9) & 0x3E; if (tb) tb++;
+        const u32 sample = TextureLookup(*state.Tex, s, t);
+        const u8 talpha = sample >> 24;
+        const u8 tr = sample & 0x3F;
+        const u8 tg = (sample >> 8) & 0x3F;
+        const u8 tb = (sample >> 16) & 0x3F;
 
         if (blendmode & 0x1)
         {
@@ -1791,11 +1843,17 @@ void SoftRenderer3D::ClearBuffers()
 
 void SoftRenderer3D::RenderPolygons(bool threaded, Polygon** polygons, int npolys)
 {
+    // palette pages are prepared per call, so no state survives a restart,
+    // reset or state load
+    memset(PaletteValid, 0, sizeof(PaletteValid));
+
     int j = 0;
     for (int i = 0; i < npolys; i++)
     {
         if (polygons[i]->Degenerate) continue;
         SetupPolygon(&PolygonList[j++], polygons[i]);
+        if (GPU3D.RenderDispCnt & 1)
+            PrepareTexturePalette(polygons[i]->TexParam, polygons[i]->TexPalette);
     }
     SetupPolygonRows(j);
 

@@ -212,6 +212,14 @@ if (TARGET core)
         "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/software-bitmap-bg.bin"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/SoftwareBitmapBG.cmake")
     set_tests_properties(software-bitmap-bg-output PROPERTIES TIMEOUT 60)
+    add_executable(SoftwareTexturePalette SoftwareTexturePalette.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_include_directories(SoftwareTexturePalette PRIVATE ../src)
+    target_link_libraries(SoftwareTexturePalette PRIVATE core Threads::Threads)
+    add_test(NAME software-texture-palette-output COMMAND "${CMAKE_COMMAND}"
+        "-DEXECUTABLE=$<TARGET_FILE:SoftwareTexturePalette>"
+        "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/software-texture-palette.bin"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/SoftwareTexturePalette.cmake")
+    set_tests_properties(software-texture-palette-output PROPERTIES TIMEOUT 60)
     if(ENABLE_JIT AND ARCHITECTURE STREQUAL "x86_64")
         add_executable(CoreThumbCarry Optimization161A3.cpp PlatformSync.cpp PlatformHeadless.cpp)
         target_link_libraries(CoreThumbCarry PRIVATE core Threads::Threads)
