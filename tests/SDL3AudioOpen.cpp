@@ -67,13 +67,46 @@ static bool SetHint(const char* name, const char* value)
     SDL_SetError("hint write replaced the error");
     return result;
 }
+// Post-open failure injection. The pre-open device-format query passes a null
+// sample_frames and must stay normal; only the post-open query (non-null) or a
+// missing bound logical device is sabotaged here.
+static bool failLogicalDevice = false;
+static bool failDeviceFormat = false;
+static int openedFramesOverride = -1;
+static SDL_AudioDeviceID StreamDevice(SDL_AudioStream* stream)
+{
+    if (failLogicalDevice) return 0;
+    return SDL_GetAudioStreamDevice(stream);
+}
+static bool DeviceFormat(SDL_AudioDeviceID device, SDL_AudioSpec* spec, int* sample_frames)
+{
+    if (sample_frames)
+    {
+        if (failDeviceFormat) { SDL_SetError("injected device-format failure"); return false; }
+        if (openedFramesOverride >= 0)
+        {
+            if (!SDL_GetAudioDeviceFormat(device, spec, nullptr)) return false;
+            *sample_frames = openedFramesOverride;
+            return true;
+        }
+    }
+    return SDL_GetAudioDeviceFormat(device, spec, sample_frames);
+}
+static int destroyCalls = 0;
+static void DestroyStream(SDL_AudioStream* stream) { ++destroyCalls; SDL_DestroyAudioStream(stream); }
 #define SDL_OpenAudioDeviceStream OpenStream
 #define SDL_SetHint SetHint
+#define SDL_GetAudioStreamDevice StreamDevice
+#define SDL_GetAudioDeviceFormat DeviceFormat
+#define SDL_DestroyAudioStream DestroyStream
 #define SDL_ResumeAudioStreamDevice ResumeStream
 #define SDL_PutAudioStreamData PutStream
 #include "AudioOutput.cpp"
 #undef SDL_PutAudioStreamData
 #undef SDL_ResumeAudioStreamDevice
+#undef SDL_DestroyAudioStream
+#undef SDL_GetAudioDeviceFormat
+#undef SDL_GetAudioStreamDevice
 #undef SDL_SetHint
 #undef SDL_OpenAudioDeviceStream
 
@@ -187,6 +220,31 @@ int main()
             passed &= observedHint == "256" && hint && std::strcmp(hint, "768") == 0;
             if (fail) passed &= error == "injected stream-open failure";
             passed &= output.Close();
+        }
+
+        // Post-open failures must fail the open instead of reporting the
+        // requested frames as the negotiated period, and each retired stream
+        // is destroyed exactly once by the local Impl on the owner thread.
+        for (int mode = 0; mode < 3; ++mode)
+        {
+            failLogicalDevice = mode == 0;
+            failDeviceFormat = mode == 1;
+            openedFramesOverride = mode == 2 ? 0 : -1;
+            destroyCalls = 0;
+            passed &= !output.Open({AudioOutput::SDL, {}, 256}, silent, nullptr, error);
+            passed &= !output;
+            passed &= destroyCalls == 1;
+            const char* hint = SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES);
+            passed &= observedHint == "256" && hint && std::strcmp(hint, "768") == 0;
+            if (mode == 0) passed &= error == "SDL3 stream opened without a bound logical audio device";
+            if (mode == 1) passed &= error == "injected device-format failure";
+            if (mode == 2) passed &= error == "SDL3 opened audio device reported an invalid period";
+            failLogicalDevice = failDeviceFormat = false;
+            openedFramesOverride = -1;
+            passed &= output.Open({AudioOutput::SDL, {}, 256}, silent, nullptr, error);
+            passed &= static_cast<bool>(output) && output.GetSpec().frames > 0;
+            passed &= output.Close();
+            passed &= destroyCalls == 2;
         }
     }
     passed &= TestFirstCallbackAllocation();

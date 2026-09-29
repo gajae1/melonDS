@@ -497,8 +497,26 @@ AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, C
         SDL_AudioSpec openedSpec{};
         int openedFrames = 0;
         const SDL_AudioDeviceID logical = SDL_GetAudioStreamDevice(output->sdl);
-        if (!logical || !SDL_GetAudioDeviceFormat(logical, &openedSpec, &openedFrames) || openedFrames <= 0)
-            openedFrames = next.frames;
+        if (!logical)
+        {
+            // An unbound stream has no useful format error; do not reuse
+            // a stale error left by restoring the global buffer hint.
+            error = "SDL3 stream opened without a bound logical audio device";
+            return opened;
+        }
+        if (!SDL_GetAudioDeviceFormat(logical, &openedSpec, &openedFrames))
+        {
+            error = SDL_GetError();
+            if (error.empty()) error = "SDL3 could not query the opened device format";
+            return opened;
+        }
+        if (openedFrames <= 0)
+        {
+            // Synthetic: the query succeeded but reported no real period, so
+            // the requested size must not stand in as the negotiated one.
+            error = "SDL3 opened audio device reported an invalid period";
+            return opened;
+        }
         obtained.frames = openedFrames;
         // Prepare the first negotiated block on the output owner thread, while
         // the stream is paused. This is scratch capacity, not queued audio.
