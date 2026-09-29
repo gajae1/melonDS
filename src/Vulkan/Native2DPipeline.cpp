@@ -267,9 +267,16 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
             "Invalid native 2D GPU memory copy");
     std::vector<VkBuffer> copySources;
     copySources.reserve(copies.size());
+    const uint64_t copyBegin = copies.empty() ? 0 : copies.front().destinationWord;
+    uint64_t copyEnd = copyBegin;
+    bool consecutiveCopies = !copies.empty();
     for (auto& copy : copies)
     {
         copySources.push_back(copy.source->Handle());
+        // Discover one overwritten span while visiting the existing leases.
+        // Self-copies can read the CPU baseline, including across buffer growth.
+        consecutiveCopies &= copy.destinationWord == copyEnd && copy.source != memory;
+        copyEnd = uint64_t(copy.destinationWord) + copy.words;
         // These input leases are consumed by this call, before capture writes.
         // CapturePipeline itself retains this source as banks or previousBanks
         // through the fence. Drop only our lease so ordinary LCDC feedback can
@@ -426,15 +433,38 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
     const size_t recordOffset = stageMemory ? AlignRecords(memoryBytes) : 0;
     auto* const memoryTarget = stageMemory ? stage : static_cast<uint8_t*>(memory->Data());
     auto* const recordTarget = stageRecords ? stage + recordOffset : static_cast<uint8_t*>(records->Data());
-    std::memcpy(memoryTarget + retainedBytes,
-        reinterpret_cast<const uint8_t*>(bytes.data()) + retainedBytes, bytes.size_bytes() - retainedBytes);
+    // Splitting small or fragmented stores is slower than one sequential upload
+    // on write-combined memory. Only omit a consecutive span of at least 8 KiB;
+    // cached host buffers retain the sequential path. Merge records lie beyond
+    // every validated copy destination and are always uploaded.
+    std::array<VkBufferCopy, 2> uploads{{{retainedBytes, retainedBytes, memoryBytes - retainedBytes}}};
+    uint32_t uploadCount = memoryBytes > retainedBytes ? 1 : 0;
+    const size_t skipBegin = std::max<size_t>(retainedBytes, copyBegin * 4);
+    const size_t skipEnd = size_t(copyEnd * 4);
+    if (consecutiveCopies && skipEnd > skipBegin && skipEnd - skipBegin >= 8192 &&
+        !((stageMemory ? upload : memory)->MemoryProperties() & VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+    {
+        uploadCount = 0;
+        if (skipBegin > retainedBytes) uploads[uploadCount++] = {retainedBytes, retainedBytes, skipBegin - retainedBytes};
+        if (skipEnd < memoryBytes) uploads[uploadCount++] = {skipEnd, skipEnd, memoryBytes - skipEnd};
+    }
+    size_t uploadBytes = 0;
+    for (uint32_t i = 0; i < uploadCount; ++i)
+    {
+        const auto& region = uploads[i];
+        const size_t end = std::min<size_t>(region.dstOffset + region.size, bytes.size_bytes());
+        if (end > region.dstOffset)
+            std::memcpy(memoryTarget + region.dstOffset,
+                reinterpret_cast<const uint8_t*>(bytes.data()) + region.srcOffset, end - region.dstOffset);
+        uploadBytes += region.size;
+    }
     if (!merges.empty())
         std::memcpy(memoryTarget + bytes.size_bytes(), merges.data(), merges.size_bytes());
     std::memcpy(recordTarget, lines.data(), lines.size_bytes());
     for (uint32_t i = 0; i < lines.size(); ++i)
         reinterpret_cast<Record*>(recordTarget)[i].layers.reserved2 = slotFields[i];
     if (owner->Costs()) owner->Costs()->Transfer(RenderCostVulkanMeter::UploadCopyBytes,
-        memoryBytes - retainedBytes + lines.size_bytes());
+        uploadBytes + lines.size_bytes());
     const auto& f = owner->Functions(); const auto d = owner->Handle();
     const std::array<std::shared_ptr<Device::Buffer>, 8> buffers{memory, records, raw, history,
         nativeFrames, scaled, hires ? hires : raw, scaledHistory ? scaledHistory : raw};
@@ -472,10 +502,9 @@ void Pipeline::Submit(std::span<const uint32_t> bytes, std::span<const Record> l
     }
     // The copy barrier (ALL_COMMANDS), merge barrier (TRANSFER) and dispatch
     // barrier (ALL_COMMANDS) each order these uploads before their readers.
-    if (stageMemory && memoryBytes > retainedBytes)
+    if (stageMemory && uploadCount)
     {
-        const VkBufferCopy region{retainedBytes, retainedBytes, memoryBytes - retainedBytes};
-        f.vkCmdCopyBuffer(command, upload->Handle(), memory->Handle(), 1, &region);
+        f.vkCmdCopyBuffer(command, upload->Handle(), memory->Handle(), uploadCount, uploads.data());
     }
     if (stageRecords)
     {

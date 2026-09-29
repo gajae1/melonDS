@@ -6,6 +6,7 @@
 #include "Vulkan/EmbeddedShaders.h"
 #include "Vulkan/Native2DPipeline.h"
 #include "Savestate.h"
+#include "RenderCost.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -17,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <optional>
 #include <stdexcept>
 #include <span>
 #include <vector>
@@ -2023,11 +2025,324 @@ struct NativeCopyProbe
         active->original(command, source, destination, count, regions);
     }
 };
-void NativeCopyRuns()
+struct NativeCopyLog
+{
+    struct Call { VkBuffer source, destination; std::vector<VkBufferCopy> regions; };
+    static inline NativeCopyLog* active = nullptr;
+    volk::VolkDeviceTable& functions;
+    PFN_vkCmdCopyBuffer original;
+    std::vector<Call> calls;
+    explicit NativeCopyLog(Vulkan::Device& device)
+        : functions(const_cast<volk::VolkDeviceTable&>(device.Functions())), original(functions.vkCmdCopyBuffer)
+    { active = this; functions.vkCmdCopyBuffer = Copy; }
+    ~NativeCopyLog() { functions.vkCmdCopyBuffer = original; active = nullptr; }
+    static VKAPI_ATTR void VKAPI_CALL Copy(VkCommandBuffer command, VkBuffer source,
+        VkBuffer destination, u32 count, const VkBufferCopy* regions)
+    {
+        active->calls.push_back({source, destination, {regions, regions + count}});
+        active->original(command, source, destination, count, regions);
+    }
+};
+
+// Observes vkAllocateMemory and the first successful vkMapMemory after
+// installation; optionally fails that first map. Input preparation maps the
+// memory buffer first, so failing it makes tier 0 fall back to staged tier 1.
+// Either way, the first successful map is the host upload target: memory in
+// tiers 0 and 2, or the upload buffer in tier 1.
+struct NativeMapProbe
+{
+    static inline NativeMapProbe* active = nullptr;
+    volk::VolkDeviceTable& functions;
+    PFN_vkMapMemory originalMap;
+    PFN_vkAllocateMemory originalAllocate;
+    VkPhysicalDeviceMemoryProperties memory{};
+    std::vector<std::pair<VkDeviceMemory, u32>> types;
+    bool failFirst;
+    u32 calls = 0, failures = 0;
+    std::optional<VkMemoryPropertyFlags> firstMapped;
+    NativeMapProbe(Vulkan::Device& device, bool failFirst)
+        : functions(const_cast<volk::VolkDeviceTable&>(device.Functions())), originalMap(functions.vkMapMemory),
+          originalAllocate(functions.vkAllocateMemory), failFirst(failFirst)
+    {
+        volk::VolkInstanceTable instance{};
+        volk::volkLoadInstanceTable(&instance, device.Instance());
+        instance.vkGetPhysicalDeviceMemoryProperties(device.PhysicalDevice(), &memory);
+        active = this; functions.vkMapMemory = Map; functions.vkAllocateMemory = Allocate;
+    }
+    ~NativeMapProbe() { functions.vkMapMemory = originalMap; functions.vkAllocateMemory = originalAllocate; active = nullptr; }
+    static VKAPI_ATTR VkResult VKAPI_CALL Allocate(VkDevice device, const VkMemoryAllocateInfo* info,
+        const VkAllocationCallbacks* callbacks, VkDeviceMemory* allocated)
+    {
+        const VkResult result = active->originalAllocate(device, info, callbacks, allocated);
+        if (result == VK_SUCCESS) active->types.push_back({*allocated, info->memoryTypeIndex});
+        return result;
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Map(VkDevice device, VkDeviceMemory memory,
+        VkDeviceSize offset, VkDeviceSize size, VkMemoryMapFlags flags, void** data)
+    {
+        if (active->calls++ == 0 && active->failFirst) { ++active->failures; return VK_ERROR_MEMORY_MAP_FAILED; }
+        const VkResult result = active->originalMap(device, memory, offset, size, flags, data);
+        if (result == VK_SUCCESS && !active->firstMapped)
+            for (auto it = active->types.rbegin(); it != active->types.rend(); ++it)
+                if (it->first == memory)
+                {
+                    active->firstMapped = active->memory.memoryTypes[it->second].propertyFlags;
+                    break;
+                }
+        return result;
+    }
+};
+
+void SetRenderDiagnostics(const char* value)
+{
+#ifdef _WIN32
+    _putenv_s("MELONDS_RENDER_DIAGNOSTICS", value ? value : "");
+#else
+    if (value) setenv("MELONDS_RENDER_DIAGNOSTICS", value, 1);
+    else unsetenv("MELONDS_RENDER_DIAGNOSTICS");
+#endif
+}
+
+// The meter is chosen when the device is created. Enable it only for that call.
+std::shared_ptr<Vulkan::Device> CreateMeteredDevice(const std::string& preferred)
+{
+    std::optional<std::string> previous;
+    if (const char* value = std::getenv("MELONDS_RENDER_DIAGNOSTICS")) previous = value;
+    SetRenderDiagnostics("1");
+    std::string error;
+    auto device = Vulkan::Device::Create(error, preferred);
+    SetRenderDiagnostics(previous ? previous->c_str() : nullptr);
+    Require(bool(device), error.c_str());
+    Require(device->Costs() != nullptr, "render cost meter unavailable");
+    return device;
+}
+
+u32 NativeCopyWord(u32 index, u32 seed)
+{
+    u32 x = (index + 1) * 0x9E3779B1u ^ seed * 0x85EBCA6Bu;
+    x ^= x >> 15; x *= 0x2C1B3C6Du; x ^= x >> 12;
+    return x;
+}
+
+// Native2D final-display rows read 128 memory words each (mode 3, row i at word
+// i*128), so pixels expose whether GPU copies, retained pages and merges hold the
+// right words. Returns the input tier that was exercised.
+u32 NativeCopyOmissionPass(const std::string& preferred, bool injectMapFailure)
+{
+    using namespace Vulkan::Native2D;
+    using Meter = RenderCostVulkanMeter;
+    auto device = CreateMeteredDevice(preferred);
+    Pipeline pipeline(device, Vulkan::EmbeddedNative2D(), Vulkan::EmbeddedNative2DMerge());
+    Pipeline oracle(device, Vulkan::EmbeddedNative2D());
+    std::vector<u32> sourceA(4096), sourceB(4096);
+    for (u32 i = 0; i < 4096; ++i) { sourceA[i] = NativeCopyWord(i, 11); sourceB[i] = NativeCopyWord(i, 12); }
+    auto a = device->CreateBuffer(sourceA.size() * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    auto b = device->CreateBuffer(sourceB.size() * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    std::memcpy(a->Data(), sourceA.data(), sourceA.size() * 4);
+    std::memcpy(b->Data(), sourceB.data(), sourceB.size() * 4);
+    struct Step
+    {
+        u32 words, rows, seed;
+        u64 epoch;
+        u32 retained;              // words already uploaded for this epoch
+        // Caller words the upload skips on an uncached host target: the consecutive
+        // copy span within the new tail, only when it is at least 8 KiB. Empty for
+        // controls that must upload every word (fragmented, reordered, too small).
+        u32 omitBegin, omitEnd;
+        std::vector<MemoryCopy> copies;
+        std::vector<MemoryMerge> merges;
+    };
+    // Neighbouring copies use different sources, so each stays one GPU command.
+    // Word counts are 32-bit words: 2048 words are 8 KiB.
+    const std::vector<Step> steps{
+        // 0 control: no GPU copies, every word is uploaded.
+        {4096, 32, 1, 1, 0, 0, 0, {}, {}},
+        // 1 three consecutive destinations (12 KiB) from alternating sources.
+        {4096, 32, 2, 2, 0, 1000, 4072, {
+            {a, 0, 1000, 1024}, {b, 0, 2024, 1024}, {a, 1024, 3048, 1024}}, {}},
+        // 2 a gap between destinations: the whole tail is uploaded.
+        {4096, 32, 3, 3, 0, 0, 0, {{a, 0, 1000, 1024}, {b, 0, 2100, 1024}}, {}},
+        // 3 tiny consecutive span (256 B): the whole tail is uploaded.
+        {4096, 32, 4, 4, 0, 0, 0, {{a, 0, 2000, 32}, {b, 0, 2032, 32}}, {}},
+        // 4 exactly 8 KiB is large enough.
+        {4096, 32, 5, 5, 0, 1000, 3048, {{a, 0, 1000, 1024}, {b, 0, 2024, 1024}}, {}},
+        // 5 one word short of 8 KiB is not truncated to a smaller skip.
+        {4096, 32, 6, 6, 0, 0, 0, {{a, 0, 1000, 1024}, {b, 0, 2024, 1023}}, {}},
+        // 6 adjacent destinations submitted in reverse order: the whole tail is uploaded.
+        {4096, 32, 7, 7, 0, 0, 0, {{b, 0, 2024, 1024}, {a, 0, 1000, 1024}}, {}},
+        // 7 append; the span starts in the retained prefix, so only its new-tail part
+        // is skipped. The merge reads GPU-copied words and writes an uploaded word.
+        {8192, 64, 7, 7, 4096, 4096, 8096, {
+            {b, 1000, 3000, 1096}, {a, 1000, 4096, 2500}, {b, 0, 6596, 1500}}, {{4150, 8100, 40}}},
+        // 8 growth past the 64 KiB input allocation (136 rows expose every word): the retained pages move on the
+        // device, the old merge-record slots are replaced, and a 24 KiB span is skipped.
+        {17408, 136, 7, 7, 8192, 8192, 14192, {
+            {a, 100, 7000, 1192}, {b, 0, 8192, 3000}, {a, 1000, 11192, 3000}}, {{8300, 14500, 40}}},
+        // 9 consecutive copies entirely inside the retained prefix: nothing to skip.
+        {17472, 136, 8, 7, 17408, 0, 0, {{a, 10, 1000, 64}, {b, 20, 1064, 64}}, {}},
+        // 10 a 14 KiB span of which only 128 B lies in the new tail: the whole tail is uploaded.
+        {17536, 136, 9, 7, 17472, 0, 0, {{a, 0, 14000, 3000}, {b, 0, 17000, 504}}, {}},
+    };
+    constexpr size_t GrowthStep = 8;
+
+    const auto frame = [&](const std::vector<u32>& memory, const std::vector<Record>& records) {
+        std::vector<u32> pixels(256 * 192);
+        oracle.Render(memory, records, {}, 0);
+        oracle.ReadFrame(0, 0, pixels);
+        return pixels;
+    };
+    std::vector<u32> cpu, expected;
+    VkBuffer previousMemory = VK_NULL_HANDLE;
+    u32 tier = 0;
+    VkMemoryPropertyFlags targetFlags = 0;
+    for (size_t index = 0; index < steps.size(); ++index)
+    {
+        const auto& step = steps[index];
+        if (!step.retained) { cpu.clear(); expected.clear(); }
+        Require(cpu.size() == step.retained, "upload omission fixture arena drifted");
+        const u32 first = u32(cpu.size());
+        cpu.resize(step.words);
+        for (u32 i = first; i < step.words; ++i) cpu[i] = NativeCopyWord(i, step.seed);
+        // Caller bytes under GPU-overwritten tail words are stale and never read.
+        for (const auto& copy : step.copies)
+            for (u32 x = 0; x < copy.words; ++x)
+                if (copy.destinationWord + x >= first) cpu[copy.destinationWord + x] = 0x5A5A5A5Au;
+        expected.insert(expected.end(), cpu.begin() + first, cpu.end());
+        for (const auto& copy : step.copies)
+            std::copy_n((copy.source == a ? sourceA : sourceB).begin() + copy.sourceWord, copy.words,
+                expected.begin() + copy.destinationWord);
+        for (const auto& merge : step.merges)
+            for (u32 x = 0; x < merge.words; ++x) expected[merge.destinationWord + x] |= expected[merge.sourceWord + x];
+
+        std::vector<Record> records(step.rows);
+        for (u32 i = 0; i < step.rows; ++i)
+        {
+            auto& row = records[i];
+            row.layers.enabled = row.layers.forcedBlank = 1;
+            row.object.historyRead = NoHistory;
+            row.objectWrite = (i + 2) * 512; row.rawOutput = i * 256;
+            row.physicalLine = i; row.source3DAbort = 1;
+            row.finalDisplay = {3u << 16, 0, 1, i, i * 128, 0, 0, 0};
+        }
+        const auto want = frame(expected, records);
+        if (!step.copies.empty())
+        {
+            const auto stale = frame(cpu, records);
+            Require(!std::equal(stale.begin(), stale.begin() + step.rows * 256, want.begin()),
+                "upload omission fixture is insensitive to GPU copies");
+        }
+
+        // The first submission's first successful map is the host upload target.
+        std::optional<NativeMapProbe> probe;
+        if (!index) probe.emplace(*device, injectMapFailure);
+        std::vector<NativeCopyLog::Call> calls;
+        {
+            RenderCostVulkanFrame metered(device->Costs());
+            NativeCopyLog log(*device);
+            pipeline.Submit(cpu, records, {}, 0, nullptr, {}, step.copies, step.merges, {}, step.epoch);
+            if (probe)
+            {
+                Require(!injectMapFailure || probe->failures == 1, "map failure injection was not consumed by input preparation");
+                Require(probe->firstMapped.has_value(), "host upload target mapping was not observed");
+                targetFlags = *probe->firstMapped;
+                probe.reset(); // Restore the driver entry points before completion and readback.
+            }
+            Require(pipeline.Pending(), "upload omission batch did not defer");
+            pipeline.Complete();
+            calls = std::move(log.calls);
+        }
+        if (injectMapFailure && !index)
+            Require(pipeline.InputTier() == 1, "injected map failure did not select staged input");
+        if (!index) tier = pipeline.InputTier();
+        Require(pipeline.InputTier() == tier, "input tier changed during upload omission fixture");
+
+        std::vector<u32> actual(256 * 192);
+        pipeline.ReadFrame(0, 0, actual);
+        Require(std::equal(actual.begin(), actual.begin() + step.rows * 256, want.begin()),
+            "upload omission changed pixels, retained pages or merge output");
+
+        // Uploaded caller words are the new tail (merge records included, always
+        // uploaded) with or without the skipped span; each row adds one record.
+        // Host-cached targets keep the sequential full upload.
+        const bool cachedTarget = targetFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        const bool skips = !cachedTarget && step.omitEnd > step.omitBegin;
+        const u32 mergeWords = u32(step.merges.size() * 3);
+        std::vector<bool> wantWords(step.words + mergeWords);
+        for (u32 i = step.retained; i < wantWords.size(); ++i)
+            wantWords[i] = !(skips && i >= step.omitBegin && i < step.omitEnd);
+        const u64 wantBytes = u64(step.rows) * sizeof(Record) +
+            4 * u64(std::count(wantWords.begin(), wantWords.end(), true));
+        Require(device->Costs()->Last().Bytes[Meter::UploadCopyBytes] == wantBytes,
+            "native upload bytes did not match the expected skipped span");
+
+        VkBuffer memoryHandle = VK_NULL_HANDLE;
+        std::vector<NativeCopyLog::Call> gpuCopies;
+        for (const auto& call : calls)
+            if (call.source == a->Handle() || call.source == b->Handle())
+            {
+                memoryHandle = call.destination;
+                gpuCopies.push_back(call);
+            }
+        Require(gpuCopies.size() == step.copies.size(), "GPU copy command count changed");
+        if (step.copies.empty()) continue;
+        for (size_t i = 0; i < gpuCopies.size(); ++i)
+        {
+            const auto& copy = step.copies[i];
+            Require(gpuCopies[i].regions.size() == 1 && gpuCopies[i].source == copy.source->Handle() &&
+                gpuCopies[i].regions[0].srcOffset == VkDeviceSize(copy.sourceWord) * 4 &&
+                gpuCopies[i].regions[0].dstOffset == VkDeviceSize(copy.destinationWord) * 4 &&
+                gpuCopies[i].regions[0].size == VkDeviceSize(copy.words) * 4, "GPU copy order or ranges changed");
+        }
+        const bool grown = step.retained && previousMemory != VK_NULL_HANDLE && memoryHandle != previousMemory;
+        Require(index != GrowthStep || grown, "input allocation did not grow at the large append");
+        std::vector<bool> staged(step.words + mergeWords);
+        u32 prefixCopies = 0;
+        for (const auto& call : calls)
+        {
+            if (call.destination != memoryHandle || call.source == a->Handle() || call.source == b->Handle() ||
+                call.source == memoryHandle) continue;
+            if (step.retained && call.source == previousMemory)
+            {
+                ++prefixCopies;
+                Require(call.regions.size() == 1 && call.regions[0].srcOffset == 0 && call.regions[0].dstOffset == 0 &&
+                    call.regions[0].size == VkDeviceSize(step.retained) * 4, "retained prefix was not copied as one device range");
+                continue;
+            }
+            for (const auto& region : call.regions)
+            {
+                Require(region.srcOffset == region.dstOffset && !(region.srcOffset & 3) && !(region.size & 3) &&
+                    (region.dstOffset + region.size) / 4 <= staged.size(), "staged upload region is invalid");
+                for (u64 word = region.dstOffset / 4; word < (region.dstOffset + region.size) / 4; ++word)
+                {
+                    Require(!staged[word], "staged upload regions overlap");
+                    staged[word] = true;
+                }
+            }
+        }
+        Require(prefixCopies == (grown ? 1u : 0u), "growth prefix copy count is wrong");
+        if (tier == 1) Require(staged == wantWords, "staged upload skipped the wrong words");
+        else Require(std::none_of(staged.begin(), staged.end(), [](bool v) { return v; }),
+            "mapped input unexpectedly used staged copies");
+        previousMemory = memoryHandle;
+    }
+    std::printf("Native GPU-overwrite upload omission on %s: tier %u, target flags 0x%x, spans, thresholds, prefix, growth and merges PASS\n",
+        device->Properties().deviceName, tier, unsigned(targetFlags));
+    return tier;
+}
+
+void NativeCopyUploadOmission(const std::string& preferred)
+{
+    // Natural placement first. Only a mapped tier can be forced onto the staged path.
+    if (NativeCopyOmissionPass(preferred, false) == 0)
+        Require(NativeCopyOmissionPass(preferred, true) == 1, "forced staged upload omission pass failed");
+}
+
+
+void NativeCopyRuns(const std::string& preferred = {})
 {
     using namespace Vulkan::Native2D;
     std::string error;
-    auto device = Vulkan::Device::Create(error);
+    auto device = Vulkan::Device::Create(error, preferred);
     Require(bool(device), error.c_str());
     Pipeline pipeline(device, Vulkan::EmbeddedNative2D());
     std::vector<u32> sourceA(4096), sourceB(4096), memory(4096, 0x12345678);
@@ -2077,6 +2392,7 @@ void NativeCopyRuns()
     Require(probe.calls == 6 && probe.bytes == 40 * 256,
         "native adjacent copy runs did not reduce calls while preserving transfer bytes");
     std::puts("Native GPU copies: 40 half-page inputs -> 6 commands, 10240 bytes, pixels/gaps preserved PASS");
+    NativeCopyUploadOmission(preferred);
 }
 
 void NativeCaptureCopyOnWrite()
@@ -2381,6 +2697,23 @@ int main(int argc, char** argv)
             return 0;
         }
         if (!available) { std::fprintf(stderr, "%s\n", error.c_str()); return 77; }
+        if (argc == 2 && std::strcmp(argv[1], "native-copy") == 0)
+        {
+            // Explicit iGPU run: report the adapter that owns the measured input tier.
+            std::string adapterError;
+            const auto adapters = Vulkan::Device::Enumerate(adapterError);
+            const auto integrated = std::find_if(adapters.begin(), adapters.end(), [](const auto& adapter) {
+                return adapter.type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+            });
+            if (integrated == adapters.end())
+            {
+                std::fprintf(stderr, "native-copy: no integrated Vulkan adapter (%s)\n", adapterError.c_str());
+                return 77;
+            }
+            std::printf("native-copy adapter: %s id=%s\n", integrated->name.c_str(), integrated->id.c_str());
+            NativeCopyRuns(integrated->id);
+            return 0;
+        }
         if (argc == 2 && std::strcmp(argv[1], "native-deferred") == 0) { NativeDeferred(); return 0; }
         if (argc == 2 && std::strcmp(argv[1], "upload-lifetime") == 0) { UploadLifetime(); return 0; }
         if (argc == 3 && (std::strcmp(argv[1], "upload-batching") == 0 ||
