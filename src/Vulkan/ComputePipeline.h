@@ -120,7 +120,8 @@ private:
         VkDescriptorSet textures=VK_NULL_HANDLE);
     void Validate(const Batch& batch) const;
     void RecordBatch(VkCommandBuffer command,const Batch& batch,bool first,bool final,std::span<const VkDescriptorSet> textures);
-    void WriteTextureSet(VkDescriptorSet set,const Variant& variant);
+    unsigned FusedShader(const Batch& batch, bool final) const;
+    void WriteTextureSet(VkDescriptorSet set,const Variant& variant,bool fusedTexture);
     void UploadImage(const std::shared_ptr<Device::Image>& image,uint32_t width,uint32_t height,
         uint32_t layers,std::span<const uint32_t> pixels,VkImageLayout oldLayout,uint32_t firstLayer=0);
     struct ImageUpload {

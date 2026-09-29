@@ -1484,11 +1484,26 @@ void WriteFinalPixel(uvec2 color, uvec2 depth, uvec2 attr)
 }
 #endif
 
+// Textured fused programs (Vulkan only) share the raster texture bindings at 0..2
+// and move the clear bitmaps to 3/4; every other program keeps clear at 0/1.
+#if defined(FusedRaster) && defined(UseTexture)
+TEXTURE_BINDING(0) uniform usampler2DArray CurrentTexture;
+TEXTURE_BINDING(1) uniform sampler2DArray Capture128Texture;
+TEXTURE_BINDING(2) uniform sampler2DArray Capture256Texture;
+TEXTURE_BINDING(3) uniform usampler2D ClearBitmapColor;
+TEXTURE_BINDING(4) uniform usampler2D ClearBitmapDepth;
+#else
 TEXTURE_BINDING(0) uniform usampler2D ClearBitmapColor;
 TEXTURE_BINDING(1) uniform usampler2D ClearBitmapDepth;
+#endif
 #ifdef VULKAN
 layout(push_constant) uniform DepthPush {
     layout(offset = 0) int FirstBatch;
+#if defined(FusedRaster) && defined(UseTexture)
+    layout(offset = 8) vec2 InvTextureSize;
+    layout(offset = 16) int TexIsCapture;
+    layout(offset = 20) float CaptureYOffset;
+#endif
 };
 #else
 layout (location = 0) uniform int FirstBatch;

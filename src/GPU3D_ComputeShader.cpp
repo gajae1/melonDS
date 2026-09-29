@@ -54,6 +54,10 @@ std::string BuildSource(unsigned variant, const Config& config, bool vulkan)
         {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define NoTexture\n#define FusedRaster\n#define DepthBlend\n#define WBuffer\n"},
         {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define NoTexture\n#define FusedRaster\n#define DepthBlend\n#define FinalBlend\n#define ZBuffer\n"},
         {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define NoTexture\n#define FusedRaster\n#define DepthBlend\n#define FinalBlend\n#define WBuffer\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define UseTexture\n#define Modulate\n#define FusedRaster\n#define DepthBlend\n#define ZBuffer\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define UseTexture\n#define Modulate\n#define FusedRaster\n#define DepthBlend\n#define WBuffer\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define UseTexture\n#define Modulate\n#define FusedRaster\n#define DepthBlend\n#define FinalBlend\n#define ZBuffer\n"},
+        {&ComputeRendererShaders::DepthBlend, "#define Rasterise\n#define UseTexture\n#define Modulate\n#define FusedRaster\n#define DepthBlend\n#define FinalBlend\n#define WBuffer\n"},
     }};
     if (variant >= VulkanCount || (!vulkan && variant >= Count
         && (variant < FusedRasterFirst || variant >= FusedRasterFirst + 2)))

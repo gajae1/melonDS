@@ -183,7 +183,7 @@ void ComputePipeline::Init(const Shaders& shaders)
     // Set 3 keeps setup indices and final output at distinct bindings.
     for(unsigned set=0;set<4;++set) {
         std::vector<VkDescriptorSetLayoutBinding> bindings;
-        unsigned count=set==0?8:set==1?1:set==2?3:2;
+        unsigned count=set==0?8:set==1?1:set==2?5:2;
         for(unsigned i=0;i<count;++i) {
             const auto type=set==0?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:set==1?VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
                 set==2?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:i==0?VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -207,10 +207,10 @@ void ComputePipeline::Init(const Shaders& shaders)
     }
     owner->TrimPipelineCache();
     const VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,16},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,3},{VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,1},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,5},{VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,1},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1}};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};poolInfo.maxSets=5;poolInfo.poolSizeCount=5;poolInfo.pPoolSizes=sizes;
     Device::Check(f.vkCreateDescriptorPool(device,&poolInfo,nullptr,&pool),"Create compute descriptor pool");
-    const VkDescriptorPoolSize textureSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,2048*3};
+    const VkDescriptorPoolSize textureSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,2048*5};
     poolInfo.maxSets=2048;poolInfo.poolSizeCount=1;poolInfo.pPoolSizes=&textureSize;
     Device::Check(f.vkCreateDescriptorPool(device,&poolInfo,nullptr,&texturePool),"Create texture descriptor pool");
     VkDescriptorSetLayout allocateLayouts[]={setLayouts[0],setLayouts[0],setLayouts[1],setLayouts[2],setLayouts[3]};
@@ -509,7 +509,7 @@ void ComputePipeline::UploadClearBitmap(std::span<const uint32_t> colors,std::sp
     SubmitUploadsIfNeeded();
 }
 
-void ComputePipeline::WriteTextureSet(VkDescriptorSet set,const Variant& variant)
+void ComputePipeline::WriteTextureSet(VkDescriptorSet set,const Variant& variant,bool fusedTexture)
 {
     const auto& integerTexture=variant.texture&&!variant.texture->capture?variant.texture:dummyTexture;
     const auto& captureTexture=variant.texture&&variant.texture->capture?variant.texture:dummyCapture;
@@ -517,13 +517,16 @@ void ComputePipeline::WriteTextureSet(VkDescriptorSet set,const Variant& variant
     const VkDescriptorImageInfo images[]={
         {sampler,integerTexture->image->View(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {sampler,captureTexture->image->View(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {sampler,captureTexture->image->View(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
-    VkWriteDescriptorSet writes[3]{};
-    for(unsigned i=0;i<3;++i) {
+        {sampler,captureTexture->image->View(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {this->sampler,clearColor->View(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {this->sampler,clearDepth->View(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    const unsigned count=fusedTexture?5:3;
+    VkWriteDescriptorSet writes[5]{};
+    for(unsigned i=0;i<count;++i) {
         writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;writes[i].dstSet=set;writes[i].dstBinding=i;
         writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;writes[i].pImageInfo=&images[i];
     }
-    f.vkUpdateDescriptorSets(device,3,writes,0,nullptr);
+    f.vkUpdateDescriptorSets(device,count,writes,0,nullptr);
 }
 
 void ComputePipeline::Bind(VkCommandBuffer command,unsigned shader,VkDescriptorSet storage,VkDescriptorSet image,VkDescriptorSet textures)
@@ -576,14 +579,41 @@ void ComputePipeline::Validate(const Batch& batch) const
     for(const auto& index:batch.indices)if(index.PolyIdx>=batch.polygons.size()||index.SpanIdxL>=batch.edges.size()||index.SpanIdxR>=batch.edges.size())throw std::invalid_argument("Invalid edge index");
 }
 
+unsigned ComputePipeline::FusedShader(const Batch& batch, bool final) const
+{
+    const unsigned effects=((batch.meta.DispCnt>>7)&1)|((batch.meta.DispCnt>>3)&2);
+    if(!fusedRaster || Resources.config.TileSize!=8 || batch.polygons.empty() ||
+        batch.polygons.size()>8 || batch.variants.size()!=1 || (final && effects))return 0;
+    const auto& variant=batch.variants.front();
+    const unsigned depth=unsigned(batch.wbuffer);
+    if(variant.shader==5+depth)return ComputeShader::FusedRasterFirst+2*unsigned(final)+depth;
+    if(variant.shader==13+depth && variant.texture)
+        return ComputeShader::TexturedFusedRasterFirst+2*unsigned(final)+depth;
+    return 0;
+}
+
 void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,bool first,bool final,std::span<const VkDescriptorSet> textures)
 {
     const unsigned finalEffects=((batch.meta.DispCnt>>7)&1)|((batch.meta.DispCnt>>3)&2);
-    // Only this bounded, plain-texture-free case has a measured fused path.
-    // Polygon attributes still vary and retain their original processing order.
-    const bool fuseRaster=fusedRaster && Resources.config.TileSize==8 &&
-        !batch.polygons.empty() && batch.polygons.size()<=8 && batch.variants.size()==1 &&
-        batch.variants[0].shader==5+unsigned(batch.wbuffer) && (!final || finalEffects==0);
+    const unsigned fusedShader=FusedShader(batch,final);
+    const bool fuseRaster=fusedShader!=0;
+    const bool fuseTexture=fusedShader>=ComputeShader::TexturedFusedRasterFirst;
+    struct Push {
+        uint32_t firstOrVariant,padding;
+        float invWidth,invHeight;
+        int32_t capture;
+        float captureYOffset;
+    };
+    static_assert(sizeof(Push)==24);
+    auto texturePush=[](uint32_t firstOrVariant,const Variant& state) {
+        Push push{firstOrVariant,0,0,0,0,state.captureYOffset};
+        if(state.texture) {
+            const uint32_t scale=state.texture->capture?state.captureScale:1;
+            push.invWidth=float(scale)/state.texture->width;push.invHeight=float(scale)/state.texture->height;
+            if(state.texture->capture)push.capture=state.texture->width/scale==128?1:2;
+        }
+        return push;
+    };
     auto upload=[&](unsigned index,const void* data,size_t size) {
         const auto* bytes=static_cast<const unsigned char*>(data);
         for(size_t offset=0;offset<size;offset+=65536)f.vkCmdUpdateBuffer(command,buffers[index]->Handle(),offset,std::min(size-offset,size_t(65536)),bytes+offset);
@@ -622,29 +652,23 @@ void ComputePipeline::RecordBatch(VkCommandBuffer command,const Batch& batch,boo
         for (unsigned variant=0; !fuseRaster && variant<batch.variants.size(); ++variant) {
             const auto& state=batch.variants[variant];
             Bind(command, state.shader, rasterSet, indicesSet, textures[variant]);
-            struct Push {
-                uint32_t variant,padding;
-                float invWidth,invHeight;
-                int32_t capture;
-                float captureYOffset;
-            } push{variant,0,0,0,0,state.captureYOffset};
-            static_assert(sizeof(Push)==24);
-            if(state.texture) {
-                const uint32_t scale=state.texture->capture?state.captureScale:1;
-                push.invWidth=float(scale)/state.texture->width;push.invHeight=float(scale)/state.texture->height;
-                if(state.texture->capture)push.capture=state.texture->width/scale==128?1:2;
-            }
+            const auto push=texturePush(variant,state);
             f.vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
             f.vkCmdDispatchIndirect(command, buffers[7]->Handle(), variant*16);
         }
     }
     Barrier(command);
     const unsigned blendShader=fuseRaster
-        ? ComputeShader::FusedRasterFirst+2*unsigned(final)+unsigned(batch.wbuffer)
+        ? fusedShader
         : final ? ComputeShader::Count+2*finalEffects+unsigned(batch.wbuffer) : batch.wbuffer?4:3;
-    Bind(command,blendShader,rasterSet,final?outputSet:indicesSet);
-    const uint32_t firstBatch=first;
-    f.vkCmdPushConstants(command,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(firstBatch),&firstBatch);
+    Bind(command,blendShader,rasterSet,final?outputSet:indicesSet,fuseTexture?textures[0]:VK_NULL_HANDLE);
+    if(fuseTexture) {
+        const auto push=texturePush(first,batch.variants[0]);
+        f.vkCmdPushConstants(command,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
+    } else {
+        const uint32_t firstBatch=first;
+        f.vkCmdPushConstants(command,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(firstBatch),&firstBatch);
+    }
     f.vkCmdDispatch(command,Resources.config.ScreenWidth/Resources.config.TileSize,Resources.config.ScreenHeight/Resources.config.TileSize,1);Barrier(command);
 }
 
@@ -703,7 +727,9 @@ void ComputePipeline::SubmitView(std::span<const Batch> batches,Readback mode)
         pendingTextures.reserve(variantCount);
         size_t index=0;
         for(const auto& batch:batches)for(const auto& variant:batch.variants) {
-            WriteTextureSet(textures[index++],variant);
+            const bool final=&batch==&batches.back() && !(batch.meta.DispCnt&(1u<<5));
+            const bool fusedTexture=FusedShader(batch,final)>=ComputeShader::TexturedFusedRasterFirst;
+            WriteTextureSet(textures[index++],variant,fusedTexture);
             if(variant.texture)pendingTextures.push_back(variant.texture);
         }
     }

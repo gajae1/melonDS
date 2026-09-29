@@ -10,7 +10,9 @@ inline constexpr unsigned GLCount = Count + 2;
 inline constexpr unsigned FusedRasterFirst = Count + 8;
 // Ordered raster+blend variants (NoTexture): normal Z/W shared by GL/Vulkan,
 // then Vulkan-only final (no fog/no AA) Z/W.
-inline constexpr unsigned VulkanCount = FusedRasterFirst + 4;
+// Vulkan-only UseTexture+Modulate versions of the same four programs follow.
+inline constexpr unsigned TexturedFusedRasterFirst = FusedRasterFirst + 4;
+inline constexpr unsigned VulkanCount = TexturedFusedRasterFirst + 4;
 struct Config {
     int ScreenWidth;
     int ScreenHeight;

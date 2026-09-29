@@ -552,11 +552,34 @@ static void Frames(unsigned scale,const std::string& preferred)
                     pipeline.SetFusedRaster(false);IndirectCalls=0;
                     if(pipeline.Render(parts)!=expected)throw std::runtime_error("Ordinary single-variant batches differ from GL");
                     pipeline.SetFusedRaster(true);
-                    const unsigned saved=scene==1&&pipeline.TileSize()==8?2:0;
+                    const unsigned saved=pipeline.TileSize()==8?(scene==1?2:1):0;
                     if(IndirectCalls!=Polygons||fusedCalls+saved!=IndirectCalls)
                         throw std::runtime_error("Shadow fusion or textured fallback dispatch path not exercised");
                 }
                 std::printf("Vulkan %ux %s scene=%u single-variant batch ordering equal PASS\n",scale,mode?"W":"Z",scene);
+            }
+            if(scene>=4 && scene<=6) {
+                // One modulated texture covers integer and both capture widths.
+                // Clear bitmap sampling must coexist with the raster samplers.
+                auto texturedPolygons=input.polygons;
+                for(auto& p:texturedPolygons)p.Variant=0;
+                const std::array<Vulkan::ComputePipeline::Variant,1> modulate{variants[1]};
+                auto single=batch;single.polygons=texturedPolygons;single.variants=modulate;
+                single.meta.NumVariants=1;single.meta.DispCnt=(1u<<3)|1u|(1u<<14);
+                single.meta.ClearBitmapOffset[0]=17.f/256;single.meta.ClearBitmapOffset[1]=239.f/256;
+                const auto reference=GLFrame(single,scale,sources,clearColors,clearDepths);
+                ObserveIndirect observe(*device);
+                if(pipeline.Render(single)!=reference || IndirectCalls!=(pipeline.TileSize()==8?0u:1u))
+                    throw std::runtime_error("Textured fusion/clear bitmap output or dispatch differs");
+                pipeline.SetFusedRaster(false);IndirectCalls=0;
+                if(pipeline.Render(single)!=reference || IndirectCalls!=1)
+                    throw std::runtime_error("Ordinary textured control differs");
+                pipeline.SetFusedRaster(true);
+                if(scale==1 && scene==4)for(unsigned effect:{1u<<7,1u<<4}) {
+                    auto fallback=single;fallback.meta.DispCnt|=effect;IndirectCalls=0;
+                    if(pipeline.Render(fallback)!=GLFrame(fallback,scale,sources,clearColors,clearDepths) || IndirectCalls!=1)
+                        throw std::runtime_error("Textured final fog/AA fallback differs");
+                }
             }
             if((scene==0||scene==8) && scale==1) {
                 // Alternate fused and neighbor-dependent final passes, including
