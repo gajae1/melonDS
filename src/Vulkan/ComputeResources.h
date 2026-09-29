@@ -31,7 +31,7 @@ struct ComputeResources {
               VkDeviceSize(BatchWork) * config.TileSize * config.TileSize * 4,
               VkDeviceSize(BatchWork) * config.TileSize * config.TileSize * 4,
               4, // Retain the descriptor slot; opaque tile attributes use color alpha.
-              VkDeviceSize(Pixels) * 7 * 4,
+              VkDeviceSize(Pixels) * 6 * 4, // Shadow state uses spare top-layer attribute bits.
               sizeof(ComputeData::BinResultHeader) + VkDeviceSize(Tiles) * (2 + 64 + 64) * 4,
               VkDeviceSize(Work) * 16, sizeof(ComputeData::MetaUniform),
               VkDeviceSize(MaxSpans) * sizeof(ComputeData::SetupIndices)}

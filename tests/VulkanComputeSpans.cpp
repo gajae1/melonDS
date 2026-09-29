@@ -82,7 +82,7 @@ struct Inputs {
     std::vector<SetupIndices> indices;
     MetaUniform meta{};
     const unsigned scale;
-    explicit Inputs(unsigned scale=1,bool boundary=false,bool offscreen=false) : indices(Spans*scale),scale(scale) {
+    explicit Inputs(unsigned scale=1,bool boundary=false,bool offscreen=false,bool shadowFront=false) : indices(Spans*scale),scale(scale) {
         meta.NumPolygons=Polygons; meta.NumVariants=1; meta.DispCnt=(1<<3)|(1<<4);
         for (unsigned p=0;p<Polygons;++p) {
             Vertex vertices[4]{}; Polygon polygon{};
@@ -99,6 +99,10 @@ struct Inputs {
                 polygon.Vertices[v]=&vertices[v];
                 polygon.FinalZ[v]=0x10000+p*0x20000+v*0x1234;
                 polygon.FinalW[v]=p%2 ? 0x1000+v*0x321 : 0x1000;
+                if(shadowFront&&p==4) {
+                    polygon.FinalZ[v]=0x8000;
+                    polygon.FinalW[v]=0x800;
+                }
                 for (unsigned c=0;c<3;++c) vertices[v].FinalColor[c]=((p*7+v*11+c*13)%64)<<3;
                 if(boundary)for(auto& color:vertices[v].FinalColor)color=(p%2?63:0)<<3;
                 vertices[v].TexCoords[0]=int(v)*123-int(p)*71;
@@ -393,7 +397,7 @@ static void Frames(unsigned scale,const std::string& preferred)
     pipeline.UploadClearBitmap(clearColors,clearDepths);
     for(unsigned mode=0;mode<2;++mode) {
         for(unsigned scene=0;scene<10;++scene) {
-            Inputs input(scale,scene==8,scene==9);input.meta.ClearDepth=0xFFFFFF;input.meta.ClearColor=0x1F020406;
+            Inputs input(scale,scene==8,scene==9,scene==1);input.meta.ClearDepth=0xFFFFFF;input.meta.ClearColor=0x1F020406;
             if(scene==8) {input.meta.ClearColor=0;input.meta.AlphaRef=1;}
             for(unsigned i=0;i<34;++i) {
                 input.meta.ToonTable[i*4]=((i*11)%64)|(((i*7)%64)<<8)|(((i*3)%64)<<16);
@@ -451,6 +455,17 @@ static void Frames(unsigned scale,const std::string& preferred)
             }
             const auto pixels=pipeline.Render(batch);
             const auto expected=GLFrame(batch,scale,sources,clearColors,clearDepths);
+            if(scene==1) {
+                // The mask is behind the surface, but its shadow draw is in
+                // front. Replacing that draw with another mask must change
+                // visible pixels, so losing stencil at the split cannot pass.
+                auto noDrawPolygons=input.polygons;
+                noDrawPolygons[4].Attr&=~0x3F000000u;
+                noDrawPolygons[4].Variant=3;
+                auto noDraw=batch;noDraw.polygons=noDrawPolygons;
+                if(GLFrame(noDraw,scale,sources,clearColors,clearDepths)==expected)
+                    throw std::runtime_error("Shadow fixture produced no visible shadow draw");
+            }
             if(pixels.size()!=size_t(256*192*scale*scale))throw std::runtime_error("Unexpected compute output dimensions");
             if(pixels!=expected) {
                 for(unsigned i=0;i<pixels.size();++i)if(pixels[i]!=expected[i]) {

@@ -336,7 +336,9 @@ STORAGE_BINDING(5) buffer ResultBuffer
 const uint ResultColorStart = 0;
 const uint ResultDepthStart = ResultColorStart+ScreenWidth*ScreenHeight*2;
 const uint ResultAttrStart = ResultDepthStart+ScreenWidth*ScreenHeight*2;
+#ifndef VULKAN
 const uint ResultStencilStart = ResultAttrStart+ScreenWidth*ScreenHeight*2;
+#endif
 )"};
 
 const char* Common = R"(
@@ -1699,7 +1701,12 @@ void main()
         color = uvec2(ResultValue[ResultColorStart+resultOffset], ResultValue[ResultColorStart+resultOffset+FramebufferStride]);
         depth = uvec2(ResultValue[ResultDepthStart+resultOffset], ResultValue[ResultDepthStart+resultOffset+FramebufferStride]);
         attr = uvec2(ResultValue[ResultAttrStart+resultOffset], ResultValue[ResultAttrStart+resultOffset+FramebufferStride]);
+#ifdef VULKAN
+        uint state = (attr.x >> 4) & 7U;
+        attr.x &= ~0x70U;
+#else
         uint state = ResultValue[ResultStencilStart+resultOffset];
+#endif
         stencil = state & 3U;
         prevIsShadowMask = (state & 4U) != 0U;
     }
@@ -1730,9 +1737,18 @@ void main()
     ResultValue[ResultColorStart+resultOffset+FramebufferStride] = color.y;
     ResultValue[ResultDepthStart+resultOffset] = depth.x;
     ResultValue[ResultDepthStart+resultOffset+FramebufferStride] = depth.y;
+#ifdef VULKAN
+    // Bits 4..6 are unused by clear, opaque and translucent attributes.
+    // Final effects only consume edges, coverage, fog and polygon IDs.
+    ResultValue[ResultAttrStart+resultOffset] = attr.x
+        | ((stencil | (prevIsShadowMask ? 4U : 0U)) << 4);
+#else
     ResultValue[ResultAttrStart+resultOffset] = attr.x;
+#endif
     ResultValue[ResultAttrStart+resultOffset+FramebufferStride] = attr.y;
+#ifndef VULKAN
     ResultValue[ResultStencilStart+resultOffset] = stencil | (prevIsShadowMask ? 4U : 0U);
+#endif
 }
 
 )";
