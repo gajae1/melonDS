@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.235"><img src="https://img.shields.io/badge/fork_release-1.1.235-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.236"><img src="https://img.shields.io/badge/fork_release-1.1.236-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,11 +19,11 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.235 release record](plans/releases/1.1.235.md).
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.236 release record](plans/releases/1.1.236.md).
 
-1.1.235 batches RAM display composition when both screens need GPU work and each has its own cached direct output buffer. This removes the fence wait between screens without allocating an image-sized staging buffer. Single-screen work and vector fallback retain their existing paths. A synthetic within-frame 3D screen swap on Radeon verifies two display submissions becoming one, with exact pixels; no game FPS or physical latency improvement is claimed.
+1.1.236 removes a duplicate SDL3 joystick update during steady gamepad input polling. SDL_UpdateGamepads delegates to the same joystick update; devices and enabled sensors remain refreshed once per frame. The extra update after topology/reopen work is retained for newly enabled sensors. Physical input latency and game FPS are unmeasured.
 
-Earlier changes: [1.1.234](plans/releases/1.1.234.md) batched the two GPU-resident composition screens; [1.1.233](plans/releases/1.1.233.md) refreshed output state after WASAPI device reroutes; [1.1.232](plans/releases/1.1.232.md) rejected SDL3 opens with an unknown output period; [1.1.231](plans/releases/1.1.231.md) reduced x64 register-ROR generated code size (mixed timing); [1.1.230](plans/releases/1.1.230.md) skipped uploads of large consecutive regions that GPU copies replace in native Vulkan 2D (synthetic CPU preparation only; no gameplay FPS claim); [1.1.229](plans/releases/1.1.229.md) reused RGB6 palette pages in software 3D texture sampling (+256.5 KiB per renderer); [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
+Earlier changes: [1.1.235](plans/releases/1.1.235.md) batched direct-backed RAM display composition; [1.1.234](plans/releases/1.1.234.md) batched the two GPU-resident composition screens; [1.1.233](plans/releases/1.1.233.md) refreshed output state after WASAPI device reroutes; [1.1.232](plans/releases/1.1.232.md) rejected SDL3 opens with an unknown output period; [1.1.231](plans/releases/1.1.231.md) reduced x64 register-ROR generated code size (mixed timing); [1.1.230](plans/releases/1.1.230.md) skipped uploads of large consecutive regions that GPU copies replace in native Vulkan 2D (synthetic CPU preparation only; no gameplay FPS claim); [1.1.229](plans/releases/1.1.229.md) reused RGB6 palette pages in software 3D texture sampling (+256.5 KiB per renderer); [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
 
 ## How to use
 
