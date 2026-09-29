@@ -9,12 +9,14 @@
 #include <bit>
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <numbers>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace melonDS;
 
@@ -303,6 +305,93 @@ static void HistoryTest()
     std::puts("Sinc loop, wrapped history, full-state roundtrip, HOLD, stop and reset PASS");
 }
 
+// Compare this deterministic public-API trace between baseline/current builds.
+// No filter kernel or production silence counter is duplicated here.
+static void ZeroTailTest()
+{
+    u64 signature = 14695981039346656037ull;
+    unsigned outputs = 0, states = 0;
+    auto hash = [&](const void* data, size_t size)
+    {
+        const auto* bytes = static_cast<const u8*>(data);
+        for (size_t i = 0; i < size; ++i) { signature ^= bytes[i]; signature *= 1099511628211ull; }
+    };
+    auto save = [&](AudioSinc& sinc)
+    {
+        Savestate state(1u << 18);
+        sinc.DoSavestate(&state);
+        state.Finish();
+        Require(!state.Error, "Sinc zero-tail save failed");
+        const auto* data = static_cast<const u8*>(state.Buffer());
+        return std::vector<u8>(data, data + state.Length());
+    };
+    auto probe = [&](const AudioSinc& sinc)
+    {
+        std::vector<s32> values;
+        for (u32 mix : {352u, 512u})
+            for (u32 period : {1u, 256u, 352u, 512u, 2048u})
+                for (u32 elapsed : {0u, period/2, period})
+                    values.push_back(sinc.Output(elapsed, period, mix));
+        hash(values.data(), values.size()*sizeof(s32));
+        outputs += values.size();
+        const u8 empty = sinc.Empty();
+        hash(&empty, sizeof(empty));
+        return values;
+    };
+
+    AudioSinc sinc;
+    Require(sinc.Empty(), "Fresh Sinc retained history");
+    const auto fresh = probe(sinc);
+    Require(std::all_of(fresh.begin(), fresh.end(), [](s32 x) { return x == 0; }),
+            "Fresh Sinc produced nonzero output");
+    sinc.Reset(-1234);
+    Require(!sinc.Empty(), "Nonzero Sinc reset reported Empty");
+    sinc.Reset();
+    Require(sinc.Empty() && probe(sinc) == fresh, "Zero Sinc reset retained history");
+    sinc.Reset(6000);
+    // Cross the ring boundary and leave Head offset before the note ends.
+    for (u32 i = 0; i < AudioSinc::Capacity + 17; ++i) sinc.Push(6000);
+    constexpr std::array<u32, 14> depths{0, 18, 24, 47, 48, 95, 96, 12288,
+        16896, 24575, 24576, 32767, 32768, 32769};
+    for (u32 depth = 0; depth <= AudioSinc::Capacity + 1; ++depth)
+    {
+        if (depth) sinc.Push(0);
+        if (std::ranges::find(depths, depth) == depths.end()) continue;
+        Require(sinc.Empty() == (depth >= AudioSinc::Capacity),
+                "Sinc discarded history before whole-ring eviction");
+        probe(sinc);
+        if (depth >= AudioSinc::Taps)
+            Require(sinc.Output(0, 512, 512) == 0, "Sinc fixed support retained a stale tail");
+        if (depth == 48)
+            Require(sinc.Output(0, 1, 512) > 1000,
+                    "Sinc period change discarded history beyond fixed support");
+        if (depth != 18 && depth != 48 && depth != 24576 && depth != 32767 && depth != 32768) continue;
+
+        auto data = save(sinc);
+        hash(data.data(), data.size());
+        ++states;
+        AudioSinc restored;
+        restored.Reset(-3000); // Loading must replace derived state as well as history.
+        Savestate load(data.data(), static_cast<u32>(data.size()), false);
+        restored.DoSavestate(&load);
+        Require(!load.Error && restored.Empty() == sinc.Empty() &&
+                probe(restored) == probe(sinc) && save(restored) == data,
+                "Sinc mid-silence roundtrip changed output or serialized history");
+        auto continued = sinc;
+        continued.Push(-16384);
+        restored.Push(-16384);
+        for (u32 gap = 0; gap <= 96; ++gap)
+        {
+            if (gap) { continued.Push(0); restored.Push(0); }
+            if (gap == 0 || gap == 24 || gap == 48 || gap == 96)
+                Require(!restored.Empty() && probe(restored) == probe(continued),
+                        "Sinc new note after restored silence was lost");
+        }
+    }
+    std::printf("Sinc zero support signature=%016llx outputs=%u states=%u\n",
+                static_cast<unsigned long long>(signature), outputs, states);
+}
+
 static void Capture(NDS& nds, unsigned period, unsigned bin, bool square,
                     const std::filesystem::path& path)
 {
@@ -351,6 +440,7 @@ int main(int argc, char** argv) try
         PairedPhaseTest();
         HistoryTest();
         OutputTest();
+        ZeroTailTest();
         return 0;
     }
     if (argc < 3) return 2;

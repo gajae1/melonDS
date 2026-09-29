@@ -66,14 +66,14 @@ jobs:
         include:
           - runner: ubuntu-24.04
             jit: "ON"
-            tests: "core-.*execution|teakra-execution-events-state"
+            tests: "core-.*execution|teakra-execution-events-state|^audio-sinc-history"
           - runner: ubuntu-24.04
             jit: "OFF"
-            tests: "core-.*execution|teakra-execution-events-state"
+            tests: "core-.*execution|teakra-execution-events-state|^audio-sinc-history"
           # The only CI host that executes the ARM64 JIT backend.
           - runner: ubuntu-24.04-arm
             jit: "ON"
-            tests: "^core-|^arm64-"
+            tests: "^core-|^arm64-|^audio-sinc-history"
     name: C++26 core JIT ${{ matrix.jit }} (${{ matrix.runner }})
     steps:
       - uses: actions/checkout@v6
@@ -95,5 +95,5 @@ jobs:
           -DENABLE_JIT=${{ matrix.jit }}
       - name: Compile full core
         run: cmake --build build-core --parallel 2
-      - name: Execute CPU and DSP integration checks
+      - name: Execute CPU, DSP and Sinc integration checks
         run: ctest --test-dir build-core -R '${{ matrix.tests }}' --output-on-failure

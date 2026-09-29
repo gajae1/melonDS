@@ -96,14 +96,14 @@ void AudioSinc::Reset(s16 sample)
 {
     std::fill(History.begin(), History.end(), sample);
     Head = 0;
-    Nonzero = sample ? Capacity : 0;
+    ZeroTail = sample ? 0 : Capacity;
 }
 
 void AudioSinc::Push(s16 sample)
 {
     Head = (Head-1) & (Capacity-1);
-    Nonzero -= History[Head] != 0;
-    Nonzero += sample != 0;
+    // A zero extends the newest-run; evicting the last nonzero ends in Capacity.
+    ZeroTail = sample ? 0 : std::min(ZeroTail+1, Capacity);
     History[Head] = History[Head+Capacity] = sample;
 }
 
@@ -116,6 +116,7 @@ s32 AudioSinc::Output(u32 elapsed, u32 period, u32 mixPeriod) const
     {
         const double position = phase * Phases;
         const unsigned index = std::min(unsigned(position), Phases-1);
+        if (ZeroTail >= Taps) return 0;
         // Interpolate adjacent phases to avoid phase-quantization sidebands.
         // Pair coefficient phases, not channels. Finite products commute;
         // the paired kernel shares history loads with the same accumulation.
@@ -131,6 +132,7 @@ s32 AudioSinc::Output(u32 elapsed, u32 period, u32 mixPeriod) const
         // Sampling the shared kernel avoids one large bank per timer period.
         const double ratio = double(period) / mixPeriod;
         const unsigned count = (unsigned(std::ceil(Taps/ratio)) + 15) & ~15u;
+        if (ZeroTail >= count) return 0;
         double sum = 0;
         for (unsigned i = 0; i < count; i += 16)
         {
@@ -157,8 +159,8 @@ void AudioSinc::DoSavestate(Savestate* file)
             return;
         }
         std::copy_n(History.begin(), Capacity, History.begin()+Capacity);
-        Nonzero = std::count_if(History.begin(), History.begin()+Capacity,
-                               [](float value) { return value != 0; });
+        const float* history = History.data() + Head;
+        for (ZeroTail = 0; ZeroTail < Capacity && history[ZeroTail] == 0; ++ZeroTail) {}
     }
 }
 

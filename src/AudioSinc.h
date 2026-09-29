@@ -25,12 +25,12 @@ public:
     void Push(s16 sample);
     s32 Output(u32 elapsed, u32 period, u32 mixPeriod = 512) const;
     void DoSavestate(Savestate* file);
-    bool Empty() const { return Nonzero == 0; }
+    bool Empty() const { return ZeroTail == Capacity; }
 
 private:
     std::vector<float> History;
     u32 Head = 0;
-    u32 Nonzero = 0;
+    u32 ZeroTail = Capacity; // Consecutive zeros from Head (saturated); all-zero means Empty.
 };
 
 // Host-only stereo reconstruction, downstream of the guest mixer and capture.
