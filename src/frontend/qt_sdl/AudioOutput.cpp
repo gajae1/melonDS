@@ -114,6 +114,7 @@ struct AudioOutput::Impl
     ma_context context{};
     ma_device device{};
     bool contextReady = false, deviceReady = false;
+    std::atomic<bool> rerouted{false};
     static void Render(ma_device* device, void* output, const void*, ma_uint32 frames)
     {
         RenderOutput(device->pUserData, static_cast<uint8_t*>(output), static_cast<int>(frames * 4));
@@ -178,6 +179,11 @@ struct AudioOutput::Impl
             self.running.store(true, std::memory_order_relaxed);
         else if (notification->type == ma_device_notification_type_stopped)
             self.running.store(false, std::memory_order_relaxed);
+        else if (notification->type == ma_device_notification_type_rerouted)
+            // The backend can negotiate another period/capacity on the new
+            // endpoint. Let the normal owner-thread reopen refresh the spec;
+            // do not read mutable native device fields on the UI thread.
+            self.rerouted.store(true, std::memory_order_relaxed);
     }
 #endif
     ~Impl()
@@ -331,6 +337,9 @@ bool AudioOutput::NeedsRecovery() const
     // SDL updates enabled on removal, but this wrapper's last Start cannot
     // observe it. Querying status reads SDL's atomic enabled/paused flags.
     if (impl->sdl) return SDL_GetAudioDeviceStatus(impl->sdl) == SDL_AUDIO_STOPPED;
+#endif
+#ifdef _WIN32
+    if (impl->rerouted.load(std::memory_order_relaxed)) return true;
 #endif
     return !impl->running.load(std::memory_order_relaxed);
 }
