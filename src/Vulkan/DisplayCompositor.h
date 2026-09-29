@@ -19,6 +19,12 @@ public:
         std::span<u32> cpuRows;
         std::span<const bool> changedRows;
     };
+    struct DirectRequest {
+        u32 screen;
+        std::span<const SoftRenderer2D::ScaledLineContext> lines;
+        std::span<u32> destination;
+        const Device::Buffer* direct;
+    };
     DisplayCompositor(std::shared_ptr<Device> device, std::span<const u32> shader, u32 scale, u32 buffers = 1);
     ~DisplayCompositor();
     DisplayCompositor(const DisplayCompositor&) = delete;
@@ -50,6 +56,16 @@ public:
     std::array<std::shared_ptr<Device::Image>, 2> ComposeResidentPair(
         const std::array<ResidentRequest, 2>& requests,
         const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, bool deferred = false);
+    // Composes two distinct screens into their own direct backings with one Device
+    // Begin/Submit. Both backings are required, must pass Compose's direct validation
+    // (cached/coherent, exact mapped extent) and must not alias each other. Duplicate
+    // screens, null or aliasing backings throw before any state changes. Only composed
+    // rows are transferred; Keep/CaptureOverride CPU rows are untouched, no staging
+    // buffer is used, and resident images are not marked valid. Backing lifetime is
+    // borrowed exactly as in Compose: with deferred completion both destinations stay
+    // alive and untouched until Complete. One fence completes the pair.
+    void ComposeDirectPair(const std::array<DirectRequest, 2>& requests,
+        const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, bool deferred = false);
     void Complete();
     // Explicit CPU demand (screenshot/fallback). Valid only after this screen's
     // latest successful ComposeResident and before it is overwritten.
@@ -75,6 +91,10 @@ private:
         u32 sourceScale);
     void RecordResidentTail(VkCommandBuffer command, u32 screen,
         std::span<const SoftRenderer2D::ScaledLineContext> lines);
+    // Image->buffer transfer of composed rows plus host-visibility barriers. Uses the
+    // direct backing, or the staging readback when null. Returns transferred rows.
+    u32 RecordReadback(VkCommandBuffer command, u32 screen,
+        std::span<const SoftRenderer2D::ScaledLineContext> lines, const Device::Buffer* direct);
     void Submit(std::span<const u32> screens, bool resident, const std::shared_ptr<Device::Image>& input,
         std::span<const SoftRenderer2D::ScaledLineContext> lines, std::span<u32> destination,
         const Device::Buffer* direct, bool deferred);

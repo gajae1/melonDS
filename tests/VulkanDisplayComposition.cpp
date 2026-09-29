@@ -281,7 +281,7 @@ struct FailOneBegin
 };
 
 std::vector<u32> IntegrationFrame(NDS& nds, bool unavailable, bool deferred, bool failBegin = false,
-    bool switchScreens = false, unsigned failSkip = 0)
+    bool switchScreens = false, unsigned failSkip = 0, int expectedDisplaySubmits = -1)
 {
     auto& renderer = static_cast<VulkanRenderer&>(nds.GetRenderer());
     auto& raster = RendererAccess::Rasterizer(renderer);
@@ -301,6 +301,7 @@ std::vector<u32> IntegrationFrame(NDS& nds, bool unavailable, bool deferred, boo
     g3.RenderFrameIdentical = false;
     const u64 totalBefore = renderer.TotalSubmissionCount();
     const u64 rasterBefore = renderer.SubmissionCount();
+    const u64 displayBefore = raster.DisplaySubmissions;
     renderer.Start3DRendering();
     Require(!renderer.HasRenderFailure(), "3D failed before integration");
     if (raster.Compositor)
@@ -334,6 +335,9 @@ std::vector<u32> IntegrationFrame(NDS& nds, bool unavailable, bool deferred, boo
     renderer.SwapBuffers();
     const u64 total = renderer.TotalSubmissionCount() - totalBefore;
     const u64 rasterSubmits = renderer.SubmissionCount() - rasterBefore;
+    if (expectedDisplaySubmits >= 0)
+        Require(raster.DisplaySubmissions - displayBefore == u64(expectedDisplaySubmits),
+            "unexpected RAM display submission count");
     Require(total >= rasterSubmits, "total submission diagnostic lost raster work");
     if (failBegin)
         Require(FailOneBegin::observed && !raster.Compositor && !renderer.HasRenderFailure(),
@@ -420,11 +424,11 @@ struct FailDisplayMemory
         if (Fail(MemoryType)) requirements->memoryTypeBits = 0;
     }
 };
-std::unique_ptr<NDS> Console(int scale = 3, bool forceVector = false)
+std::unique_ptr<NDS> Console(int scale = 3, bool forceVector = false, const std::string& adapter = {})
 {
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args)); nds->Reset();
-    nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds));
+    nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds, adapter));
     Require(dynamic_cast<VulkanRenderer*>(&nds->GetRenderer()), "Vulkan initialization unavailable");
     std::optional<FailDisplayMemory> failure;
     if (forceVector && scale > 1)
@@ -465,11 +469,12 @@ void AllocationFallback()
         Equal(IntegrationFrame(*nds, false, false), expected, "vector/staging allocation fallback changed output");
         Require(bool(raster.Compositor->readback), "vector fallback did not use the legacy staging path");
     }
-    auto mixed = Console(); auto late = Console();
+    // Vector backing retains separate submissions, including its late failure path.
+    auto mixed = Console(); auto late = Console(3, true);
     const auto mixedExpected = IntegrationFrame(*mixed, false, false, false, true);
     Equal(IntegrationFrame(*late, false, false, true, true, 1), mixedExpected,
         "failure after first screen transfer changed CPU replay/backing");
-    std::puts("Allocation/map/type fallback and late second-screen failure: byte-identical PASS");
+    std::puts("Allocation/map/type fallback and late vector second-screen failure: byte-identical PASS");
 }
 
 void BackingLifecycle()
@@ -953,6 +958,90 @@ void ResidentPair(const std::shared_ptr<Vulkan::Device>& device)
     ResidentPairFrames(device, 3);
     ResidentPairFrames(device, 1);
     ResidentPairAllocationFailure(device);
+}
+// RAM composition reuses two independent cached outputs, preserving CPU-owned rows.
+void DirectPair(const std::string& adapter)
+{
+    std::string error;
+    auto device = Vulkan::Device::Create(error, adapter);
+    Require(bool(device), error.c_str());
+    std::printf("Direct pair device=%s\n", device->Properties().deviceName);
+    {
+        constexpr u32 scale = 3;
+        const size_t pixels = size_t(256) * 192 * scale * scale;
+        Vulkan::DisplayCompositor compositor(device, Vulkan::EmbeddedDisplayCompose(), scale);
+        std::array<std::shared_ptr<Vulkan::Device::Buffer>, 2> buffers;
+        std::array<std::vector<Line>, 2> lines;
+        std::array<std::vector<u32>, 2> expected;
+        std::array<Vulkan::DisplayCompositor::DirectRequest, 2> requests;
+        const std::vector<u32> blank3D(256 * 192);
+        for (u32 screen = 0; screen < 2; ++screen)
+        {
+            buffers[screen] = device->CreateBuffer(pixels * sizeof(u32), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                true, 0, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            lines[screen].resize(192);
+            for (u32 y = 0; y < 192; ++y)
+            {
+                auto& line = lines[screen][y];
+                line.mode = y % 5 == 0 ? Line::Keep : y % 5 == 1 ? Line::CaptureOverride : Line::Flat;
+                for (u32 x = 0; x < 256; ++x)
+                    line.pixels[x].top = 0xFF000000 | (screen << 20) | (y << 8) | x;
+            }
+            requests[screen] = {screen, lines[screen],
+                {static_cast<u32*>(buffers[screen]->Data()), pixels}, buffers[screen].get()};
+        }
+        PairProbe probe(*device);
+        for (bool deferred : {false, true})
+        {
+            for (u32 screen = 0; screen < 2; ++screen)
+            {
+                expected[screen].assign(pixels, 0xAD123456u + screen + unsigned(deferred) * 16);
+                std::copy(expected[screen].begin(), expected[screen].end(), requests[screen].destination.begin());
+                Vulkan::ComposeDisplayCPU(lines[screen], blank3D, 1, scale, expected[screen]);
+            }
+            probe.submits = probe.waits = 0;
+            compositor.ComposeDirectPair(requests, {}, 1, deferred);
+            Require(probe.submits == 1 && probe.waits == unsigned(!deferred),
+                "RAM pair did not use one submission with requested completion");
+            if (deferred)
+            {
+                device->Begin(); // The next owner completes the pending output first.
+                Require(probe.waits == 1, "next Begin did not complete the RAM pair");
+                device->SubmitAndWait();
+            }
+            for (u32 screen = 0; screen < 2; ++screen)
+                Equal(requests[screen].destination, expected[screen], "RAM pair changed pixels or preserved CPU rows");
+            Require(!compositor.readback, "RAM pair allocated image-sized staging");
+        }
+        for (unsigned failure = 0; failure < 3; ++failure)
+        {
+            auto invalid = requests;
+            if (failure == 0) { invalid[1].direct = buffers[0].get(); invalid[1].destination = requests[0].destination; }
+            else if (failure == 1) invalid[1].direct = nullptr;
+            else invalid[1].destination = invalid[1].destination.first(pixels - 1);
+            probe.submits = probe.waits = 0;
+            bool rejected = false;
+            try { compositor.ComposeDirectPair(invalid, {}, 1); }
+            catch (const std::invalid_argument&) { rejected = true; }
+            Require(rejected && !probe.submits && !probe.waits, "invalid RAM pair reached submission");
+        }
+        compositor.ComposeDirectPair(requests, {}, 1);
+        for (u32 screen = 0; screen < 2; ++screen)
+            Equal(requests[screen].destination, expected[screen], "RAM pair retry changed pixels");
+    }
+    // Switch the physical 3D screen mid-frame to generate composed rows on both.
+    // Compare the real renderer path with CPU replay, including vector fallback.
+    auto frame = [&](bool vector, bool replay, bool swap, bool fail, int submissions) {
+        auto nds = Console(3, vector, adapter);
+        return IntegrationFrame(*nds, replay, false, fail, swap, 0, submissions);
+    };
+    const auto expected = frame(false, true, true, false, -1);
+    Equal(frame(false, false, true, false, 1), expected, "RAM pair renderer != CPU replay");
+    Equal(frame(true, false, true, false, 2), expected, "vector two-screen fallback != CPU replay");
+    Equal(frame(false, false, true, true, -1), expected, "RAM pair Begin failure != CPU replay");
+    frame(false, false, false, false, 1);
+    std::puts("RAM pair: mixed CPU rows, sync/deferred, invalid backing, exact renderer pixels, "
+        "paired=1/vector=2/single=1 submits and Begin failure replay PASS");
 }
 // Diagnostics must observe, not alter, real rendering or synchronization.
 struct DiagnosticEnvironment
@@ -1461,6 +1550,11 @@ int main(int argc, char** argv)
                 "renderer composition still allocates intermediate display staging");
             AllocationFallback();
             BackingLifecycle();
+            return 0;
+        }
+        if (argc > 1 && std::strcmp(argv[1], "direct-pair") == 0)
+        {
+            DirectPair(argc > 2 ? argv[2] : "");
             return 0;
         }
         if (argc > 1 && std::strcmp(argv[1], "resident-pair") == 0)

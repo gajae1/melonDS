@@ -5,6 +5,7 @@
 #include "PixelConvert.h"
 #include <algorithm>
 #include <cstring>
+#include <cstdint>
 #include <stdexcept>
 
 namespace melonDS::Vulkan {
@@ -452,53 +453,100 @@ void DisplayCompositor::ComposeImpl(u32 screen, std::span<const Line> lines,
     if (resident) RecordResidentTail(command, screen, lines);
     else
     {
-        u32 transferredRows = 0;
-        ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        if (direct)
-        {
-            VkBufferMemoryBarrier target{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-            target.srcAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
-            target.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            target.srcQueueFamilyIndex = target.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            target.buffer = direct->Handle(); target.size = direct->Size();
-            f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 0, nullptr, 1, &target, 0, nullptr);
-        }
-        std::array<VkBufferImageCopy, 192> copies{};
-        u32 count = 0;
-        for (u32 y = 0; y < 192;)
-        {
-            if (Preserved(lines[y])) { ++y; continue; }
-            const u32 first = y++;
-            while (y < 192 && !Preserved(lines[y])) ++y;
-            auto& copy = copies[count++];
-            copy.bufferOffset = VkDeviceSize(first) * 256 * scale * scale * sizeof(u32);
-            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-            copy.imageOffset.y = static_cast<int32_t>(first * scale);
-            copy.imageExtent = {256 * scale, (y - first) * scale, 1};
-            transferredRows += y - first;
-        }
-        if (count)
-            f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                direct ? direct->Handle() : readback->Handle(), count, copies.data());
-        ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-        VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-        download.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        download.dstAccessMask = VK_ACCESS_HOST_READ_BIT | (direct ? VK_ACCESS_HOST_WRITE_BIT : 0);
-        f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-            0, 1, &download, 0, nullptr, 0, nullptr);
+        const u32 transferredRows = RecordReadback(command, screen, lines, direct);
         if (transferredRows)
         {
             owner->Timestamp(Device::TimestampStage::DisplayReadback);
             if (owner->Costs()) owner->Costs()->Transfer(Cost::DisplayReadbackBytes,
                 uint64_t(transferredRows) * 256 * scale * scale * sizeof(u32), transferredRows);
         }
-        if (owner->Costs()) owner->Costs()->Transfer(Cost::ComposedRows, 0,
-            std::count_if(lines.begin(), lines.end(), [](const Line& line) { return !Preserved(line); }));
     }
     Submit(std::span<const u32>(&screen, 1), resident, input, lines, destination, resident ? nullptr : direct, deferred);
+}
+
+u32 DisplayCompositor::RecordReadback(VkCommandBuffer command, u32 screen, std::span<const Line> lines,
+    const Device::Buffer* direct)
+{
+    u32 transferredRows = 0;
+    ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    if (direct)
+    {
+        VkBufferMemoryBarrier target{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        target.srcAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
+        target.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        target.srcQueueFamilyIndex = target.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        target.buffer = direct->Handle(); target.size = direct->Size();
+        f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 1, &target, 0, nullptr);
+    }
+    std::array<VkBufferImageCopy, 192> copies{};
+    u32 count = 0;
+    for (u32 y = 0; y < 192;)
+    {
+        if (Preserved(lines[y])) { ++y; continue; }
+        const u32 first = y++;
+        while (y < 192 && !Preserved(lines[y])) ++y;
+        auto& copy = copies[count++];
+        copy.bufferOffset = VkDeviceSize(first) * 256 * scale * scale * sizeof(u32);
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageOffset.y = static_cast<int32_t>(first * scale);
+        copy.imageExtent = {256 * scale, (y - first) * scale, 1};
+        transferredRows += y - first;
+    }
+    if (count)
+        f.vkCmdCopyImageToBuffer(command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            direct ? direct->Handle() : readback->Handle(), count, copies.data());
+    ImageBarrier(f, command, outputs[screen]->Handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+    VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    download.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    download.dstAccessMask = VK_ACCESS_HOST_READ_BIT | (direct ? VK_ACCESS_HOST_WRITE_BIT : 0);
+    f.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+        0, 1, &download, 0, nullptr, 0, nullptr);
+    if (owner->Costs()) owner->Costs()->Transfer(Cost::ComposedRows, 0,
+        std::count_if(lines.begin(), lines.end(), [](const Line& line) { return !Preserved(line); }));
+    return transferredRows;
+}
+
+void DisplayCompositor::ComposeDirectPair(const std::array<DirectRequest, 2>& requests,
+    const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, bool deferred)
+{
+    if (!requests[0].direct || !requests[1].direct) throw std::invalid_argument("Display pair requires direct backings");
+    if (requests[0].screen == requests[1].screen) throw std::invalid_argument("Duplicate display pair screen");
+    for (const auto& request : requests)
+        Validate(request.screen, request.lines, sourceScale, request.destination, {}, image3D, request.direct);
+    // Validate proved each backing's data/size equals its destination; reject any overlap.
+    const auto begin = [](const DirectRequest& r) { return reinterpret_cast<std::uintptr_t>(r.direct->Data()); };
+    if (requests[0].direct->Handle() == requests[1].direct->Handle() ||
+        (begin(requests[0]) < begin(requests[1]) + requests[1].direct->Size() &&
+         begin(requests[1]) < begin(requests[0]) + requests[0].direct->Size()))
+        throw std::invalid_argument("Aliasing display pair backings");
+    // Scratch sets and mapped uploads may still be in use by the previous submission.
+    Complete();
+    RenderCostVulkanScope cost(owner->Costs(), Cost::RecordDisplay);
+    const auto& input = image3D ? image3D : blank3D;
+    if (!image3D) sourceScale = 1;
+    for (u32 i = 0; i < 2; ++i)
+        Reserve(i, requests[i].screen, requests[i].lines, {}, false, 0);
+    std::array<Work, 2> works;
+    for (u32 i = 0; i < 2; ++i)
+        Prepare(works[i], i, requests[i].screen, requests[i].lines, requests[i].destination, {}, false, input);
+    const auto command = owner->Begin(Device::SubmitKind::Display);
+    for (const auto& work : works) Record(command, work, input, sourceScale);
+    owner->Timestamp(Device::TimestampStage::DisplayCompose);
+    u32 transferredRows = 0;
+    for (const auto& request : requests)
+        transferredRows += RecordReadback(command, request.screen, request.lines, request.direct);
+    if (transferredRows)
+    {
+        owner->Timestamp(Device::TimestampStage::DisplayReadback);
+        if (owner->Costs()) owner->Costs()->Transfer(Cost::DisplayReadbackBytes,
+            uint64_t(transferredRows) * 256 * scale * scale * sizeof(u32), transferredRows);
+    }
+    // Direct backing means Submit retains no pendingCopy; residentValid stays false.
+    const u32 screens[] = {requests[0].screen, requests[1].screen};
+    Submit(screens, false, input, requests[0].lines, {}, requests[0].direct, deferred);
 }
 
 void DisplayCompositor::Submit(std::span<const u32> screens, bool resident, const std::shared_ptr<Device::Image>& input,

@@ -324,6 +324,17 @@ void VulkanRenderer::FinishDisplayComposition(bool deferred) noexcept
                         rasterizer.RenderedImage, rasterizer.RenderedScale, deferred);
                     ResidentCPUValid[BackBuffer].fill(false);
                 }
+                else if (pending(CompositionLines[0]) && pending(CompositionLines[1]) &&
+                    ScaledMemory[BackBuffer][0] && ScaledMemory[BackBuffer][1])
+                {
+                    ReadbackDisplay(BackBuffer);
+                    const std::array<Vulkan::DisplayCompositor::DirectRequest, 2> requests = {{
+                        {0, CompositionLines[0], ScaledBuffers[BackBuffer][0], ScaledMemory[BackBuffer][0].get()},
+                        {1, CompositionLines[1], ScaledBuffers[BackBuffer][1], ScaledMemory[BackBuffer][1].get()}}};
+                    rasterizer.Compositor->ComposeDirectPair(requests, rasterizer.RenderedImage,
+                        rasterizer.RenderedScale, deferred);
+                    ResidentImages[BackBuffer] = {};
+                }
                 else
                 {
                     for (u32 screen = 0; screen < 2; ++screen)
