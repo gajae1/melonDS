@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.223"><img src="https://img.shields.io/badge/fork_release-1.1.223-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.224"><img src="https://img.shields.io/badge/fork_release-1.1.224-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,7 +19,7 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.223 release record](plans/releases/1.1.223.md). 1.1.223 fuses raster math into the ordered depth/blend shader for small untextured Vulkan batches (1 to 8 polygons, up to 4x), skipping one indirect raster dispatch and the intermediate color/depth tile accesses for eligible batches. In a synthetic full-height GPU 3D benchmark on one Radeon integrated GPU, paired medians were 6.77 to 14.97% lower with pixels identical to OpenGL and ordinary Vulkan; no full-game FPS, audio/input-latency or startup improvement has been established. GPU 2D remains opt-in; a universal Vulkan advantage over OpenGL or Metal has not been established.
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.224 release record](plans/releases/1.1.224.md). 1.1.224 fuses raster math into the ordered depth/blend shader for small untextured OpenGL Compute batches (1 to 8 polygons, 1x to 4x), skipping one indirect raster dispatch, its barrier and the intermediate color/depth/attribute accesses for eligible batches; Vulkan received the same fusion in 1.1.223. Through the real OpenGL renderer on one Radeon integrated GPU, all 32 synthetic cases had identical pixels and GPU elapsed time was lower in 30 of them (16.93 to 58.85% lower for broad overlapping polygons). Two narrow single-polygon 1x cases were 0.42% and 0.65% slower, within the 2.56%/2.55% A/A variation, so no gain is established there. No full-game FPS, audio/input-latency or startup improvement has been established. GPU 2D remains opt-in; a universal OpenGL or Vulkan advantage over other renderers has not been established.
 
 ## How to use
 
