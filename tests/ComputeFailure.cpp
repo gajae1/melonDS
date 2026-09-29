@@ -64,6 +64,8 @@ struct FixtureInstance
     ObservedRenderMutex renderLock;
     unsigned Errors = 0;
     unsigned Progress = 0;
+    void audioSuspendForHostWork() {}
+    void audioStartPending() {}
     FixtureConfig& getGlobalConfig() { return Config; }
     void osdAddMessage(u32 color, const char*, ...)
     {

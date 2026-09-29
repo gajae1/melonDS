@@ -244,6 +244,7 @@ private:
     void audioDeInit();
     void audioEnable();
     void audioStartPending();
+    void audioSuspendForHostWork();
     void audioDisable();
     void updateAudioMuteByWindowFocus();
     void toggleAudioMute();

@@ -52,6 +52,7 @@ struct SampleSource
     bool acceptCorrection = true;
     int outputCapacity = 2047;
     u64 droppedFrames = 0;
+    int reads = 0;
     // Frontend-visible SPU queries. Queue getters may only run under the audio lock.
     mutable std::atomic<int> stepQueries{0}, queueQueries{0};
     bool SetOutputClockCorrection(double correction) { clockCorrection = correction; return acceptCorrection; }
@@ -64,6 +65,7 @@ struct SampleSource
     int GetOutputCapacity() const { ++queueQueries; return outputCapacity; }
     int ReadOutput(s16* output, int frames)
     {
+        ++reads;
         const int count = std::min(available, frames);
         for (int i = 0; i < count; ++i)
         {
@@ -123,6 +125,7 @@ struct AudioState
     void audioReportDiagnostics() {}
     void audioEnable();
     void audioStartPending();
+    void audioSuspendForHostWork();
     bool micStarted = false;
     void micOpen() {}
 };
@@ -209,6 +212,7 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 #include "audioUpdateOutputState.inc"
 #include "audioEnable.inc"
 #include "audioStartPending.inc"
+#include "audioSuspendForHostWork.inc"
 #include "audioPumpTimeStretch.inc"
 #include "audioSetSpeed.inc"
 #include "audioTimeStretchFailed.inc"
@@ -216,6 +220,93 @@ static int ObserveSyncWait(SDL_cond* cond, SDL_mutex* mutex, Uint32 timeout)
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--host-work") == 0)
+    {
+        if (SDL_AudioInit("dummy") != 0) return 2;
+        int failures = 0;
+        const auto check = [&](bool ok, const char* message) {
+            if (!ok) { ++failures; std::fprintf(stderr, "%s\n", message); }
+        };
+        manualOutput = true;
+        manualPaused = true;
+        Console console;
+        console.SPU.queuedFrames = 128;
+        AudioState state{&console};
+        state.audioLowPass.Init(state.audioFreq);
+        state.audioLowPass.SetCutoffNow(6000);
+        state.audioLowPassCutoff = 6000;
+        const double cutoff = state.audioLowPass.Cutoff();
+        state.audioOutputRamp.Init(state.audioFreq);
+        state.audioDiagnostics.Enabled = true;
+        std::string error;
+        std::array<s16, 256> output;
+        // Native delivery may keep calling while suspended; source reads must stop.
+        const auto pump = [&](int count) {
+            for (int i = 0; i < count && !manualPaused; ++i)
+                manualSpec.callback(manualSpec.userdata, reinterpret_cast<Uint8*>(output.data()), 128 * 4);
+        };
+        const auto retained = [&](const char* message) {
+            check(console.SPU.queuedFrames == 128 && console.SPU.historyResets == 0 &&
+                  state.audioLowPass.Cutoff() == cutoff && state.audioClockDelivery.lastTick == 0 &&
+                  state.audioClockDelivery.lastFrames == 0 && state.audioDiagnostics.PreviousStart == 0,
+                  message);
+        };
+        check(state.audioDevice.Open({AudioOutput::SDL, {}, 128}, AudioState::audioCallback, &state, error),
+              "Host-work device open failed");
+        state.audioEnable();
+        pump(4);
+        check(state.audioDevice.IsRunning() && console.SPU.reads > 0, "Active output did not consume source PCM");
+        const auto supplied = state.audioDiagnostics.SuppliedFrames;
+
+        // Repeated suspension keeps the pending resume and no source callback runs.
+        state.audioClockDelivery.lastTick = state.audioDiagnostics.PreviousStart = 1;
+        state.audioClockDelivery.lastFrames = 1;
+        state.audioSuspendForHostWork();
+        int reads = console.SPU.reads;
+        auto callbacks = state.audioDiagnostics.Callbacks;
+        pump(4);
+        state.audioSuspendForHostWork();
+        pump(4);
+        check(!state.audioDevice.IsRunning() && state.audioStartRequested,
+              "Suspended active output lost its pending request");
+        check(console.SPU.reads == reads && state.audioDiagnostics.Callbacks == callbacks &&
+              state.audioDiagnostics.SuppliedFrames == supplied, "Source callback ran during host work");
+        retained("Host-work suspension changed retained audio state");
+
+        // A prepared queue resumes without reopening or resetting the source.
+        state.audioStartPending();
+        pump(4);
+        check(state.audioDevice.IsRunning() && !state.audioStartRequested && console.SPU.reads > reads &&
+              state.audioDiagnostics.SuppliedFrames > supplied && state.audioDiagnostics.Underruns == 0,
+              "Prepared PCM did not resume after host work");
+        check(console.SPU.historyResets == 0, "Resume reset the source queue");
+
+        // Inactive output is not armed by suspension.
+        state.audioDevice.Stop();
+        state.audioStartRequested = false;
+        state.audioSuspendForHostWork();
+        state.audioStartPending();
+        reads = console.SPU.reads;
+        pump(4);
+        check(!state.audioDevice.IsRunning() && !state.audioStartRequested && console.SPU.reads == reads,
+              "Host-work suspension armed inactive output");
+
+        // A pending start stays pending until PCM exists.
+        console.SPU.queuedFrames = 0;
+        state.audioStartRequested = true;
+        state.audioSuspendForHostWork();
+        state.audioSuspendForHostWork();
+        state.audioStartPending();
+        check(state.audioStartRequested && !state.audioDevice.IsRunning(), "Empty pending start was consumed");
+        console.SPU.queuedFrames = 128;
+        state.audioStartPending();
+        check(state.audioDevice.IsRunning() && !state.audioStartRequested, "Pending start did not resume");
+        state.audioDevice.Close();
+        manualOutput = false;
+        SDL_AudioQuit();
+        std::printf("audio host-work suspension: %s\n", failures ? "FAIL" : "PASS");
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--async-output") == 0)
     {
         if (SDL_AudioInit("dummy") != 0) return 2;

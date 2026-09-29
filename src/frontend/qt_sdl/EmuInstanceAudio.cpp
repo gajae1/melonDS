@@ -1177,6 +1177,20 @@ void EmuInstance::audioStartPending()
         Platform::Log(Platform::LogLevel::Error, "Audio start failed: %s\n", error.c_str());
 }
 
+void EmuInstance::audioSuspendForHostWork()
+{
+    // Producer thread only. Long renderer work stops source consumption while
+    // retaining queued PCM, filter/ramp state, counters, capture and the native
+    // device. An inactive output with no pending start stays inactive.
+    const bool shouldResume = audioStartRequested || audioDevice.IsRunning();
+    audioDevice.Stop(); // drains an active callback before delivery fields reset
+    audioResetClockCorrection();
+    audioStartRequested = shouldResume;
+    audioClockDelivery.lastTick = 0;
+    audioClockDelivery.lastFrames = 0;
+    audioDiagnostics.PreviousStart = 0;
+}
+
 void EmuInstance::audioDisable()
 {
     audioResetClockCorrection();

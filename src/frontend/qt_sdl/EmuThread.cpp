@@ -486,7 +486,10 @@ void EmuThread::run()
             const int outputFrameSamples = static_cast<int>(std::ceil(
                 emuInstance->audioFreq * nlines / (outputFPS * 263.0)));
             emuInstance->audioPumpTimeStretch(std::max(emuInstance->audioBufSize, outputFrameSamples));
-            emuInstance->audioStartPending();
+            // A compile-only pass must not restart retained PCM between
+            // shader chunks while the producer is still suspended.
+            if (!emuInstance->nds->GetRenderer().NeedsShaderCompile())
+                emuInstance->audioStartPending();
 
             emuInstance->retrySaveCapture();
             if (emuInstance->ndsSave)
@@ -1454,6 +1457,9 @@ void EmuThread::enableCheats(bool enable)
 
 void EmuThread::updateRenderer()
 {
+    // Renderer allocation/compilation can outlast the retained audio queue.
+    // Preserve that queue while this thread cannot produce another frame.
+    emuInstance->audioSuspendForHostWork();
     auto nds = emuInstance->nds;
     bool failed = false;
     auto& cfg = emuInstance->getGlobalConfig();
@@ -1525,10 +1531,13 @@ void EmuThread::updateRenderer()
         emuInstance->osdAddMessage(0xFFA0A0, "3D resolution or allocation failed; using software rendering");
     }
     publishVideoSettings(failed);
+    if (!nds->GetRenderer().NeedsShaderCompile())
+        emuInstance->audioStartPending();
 }
 
 void EmuThread::compileShaders()
 {
+    emuInstance->audioSuspendForHostWork();
     auto& renderer = emuInstance->nds->GPU.GetRenderer();
     int currentShader, shadersCount;
     u64 startTime = SDL_GetPerformanceCounter();
@@ -1550,7 +1559,13 @@ void EmuThread::compileShaders()
     while (renderer.NeedsShaderCompile() &&
              (SDL_GetPerformanceCounter() - startTime) * perfCountsSec < 1.0 / 6.0);
     emuInstance->osdAddMessage(0, "Compiling shader %d/%d", currentShader+1, shadersCount);
-    if (!renderer.NeedsShaderCompile()) publishVideoSettings();
+    if (!renderer.NeedsShaderCompile())
+    {
+        // Retained PCM can resume immediately; an empty source still waits
+        // for production through the existing pending-start path.
+        emuInstance->audioStartPending();
+        publishVideoSettings();
+    }
 }
 
 EmuThread::VideoSettingsStatus EmuThread::videoSettingsStatus()

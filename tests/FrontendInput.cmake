@@ -397,6 +397,7 @@ set(audio_device_methods)
 foreach(pair IN ITEMS "audioOpenOutput|bool EmuInstance::audioOpenOutput(const AudioOutput::Settings& settings, std::string& error)"
         "audioEnable|void EmuInstance::audioEnable()"
         "audioStartPending|void EmuInstance::audioStartPending()"
+        "audioSuspendForHostWork|void EmuInstance::audioSuspendForHostWork()"
         "audioPumpTimeStretch|void EmuInstance::audioPumpTimeStretch(int maxQueued)"
         "audioSetSpeed|void EmuInstance::audioSetSpeed(double speed)"
         "audioTimeStretchFailed|void EmuInstance::audioTimeStretchFailed()"
@@ -427,6 +428,8 @@ add_test(NAME audio-device-loss-reopen COMMAND FrontendAudio --device-loss)
 add_test(NAME audio-device-async-owner COMMAND FrontendAudio --async-output)
 add_test(NAME audio-device-bounded-teardown COMMAND FrontendAudio --bounded-teardown)
 add_test(NAME audio-clock-lifecycle COMMAND FrontendAudio --clock-lifecycle)
+add_test(NAME audio-host-work COMMAND FrontendAudio --host-work)
+set_tests_properties(audio-host-work PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-clock-lifecycle PROPERTIES TIMEOUT 20)
 set_tests_properties(audio-device-async-owner PROPERTIES TIMEOUT 10)
 set_tests_properties(audio-device-loss-reopen PROPERTIES TIMEOUT 10)

@@ -45,6 +45,8 @@ struct Instance
     NDS* nds;
     Config Settings;
     unsigned Errors = 0;
+    void audioSuspendForHostWork() {}
+    void audioStartPending() {}
     Config& getGlobalConfig() { return Settings; }
     void osdAddMessage(u32 color, const char*, ...) { if (color) ++Errors; }
 };
