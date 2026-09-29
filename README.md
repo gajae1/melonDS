@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.230"><img src="https://img.shields.io/badge/fork_release-1.1.230-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.231"><img src="https://img.shields.io/badge/fork_release-1.1.231-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,11 +19,11 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.230 release record](plans/releases/1.1.230.md).
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.231 release record](plans/releases/1.1.231.md).
 
-1.1.230 avoids uploading large consecutive regions that GPU copies will replace in native Vulkan 2D. Synthetic CPU preparation on Radeon mapped memory took 24.87% less time for the 16 KiB case and 39.36% less for 64 KiB; these are not GPU execution or gameplay FPS gains. A fragmented fallback case was 5.31% slower, near its A/A variation of 5.30%. See the release record for eligibility, validation and limits.
+1.1.231 shortens the x64 JIT's register-controlled ROR: the zero-count check tests only the low count byte (`TEST CL,CL` instead of `AND ECX,255`), since ROR masks the count itself. Each generated register ROR is 4 bytes smaller; the zero-count branch and carry flow are unchanged, and the ARM64 JIT is untouched. Native/interpreter registers, CPSR and guest cycles matched in 3,040 Thumb and 2,016 ARM cases. Synthetic timing was mixed, so this is adopted only as a code-size reduction; no FPS, physical audio/input or low-end hardware claim is made. See the release record for limits.
 
-Earlier changes: [1.1.229](plans/releases/1.1.229.md) reused RGB6 palette pages in software 3D texture sampling (+256.5 KiB per renderer); [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
+Earlier changes: [1.1.230](plans/releases/1.1.230.md) skipped uploads of large consecutive regions that GPU copies replace in native Vulkan 2D (synthetic CPU preparation only; no gameplay FPS claim); [1.1.229](plans/releases/1.1.229.md) reused RGB6 palette pages in software 3D texture sampling (+256.5 KiB per renderer); [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
 
 ## How to use
 

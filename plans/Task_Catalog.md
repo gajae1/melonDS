@@ -1,5 +1,7 @@
 # 과제 목록
 
+1.1.231은 x64 JIT 레지스터 ROR(op==3)의 개수 0 검사를 AND ECX,255 대신 TEST CL,CL로 바꿔 레지스터 ROR마다 생성 코드를 4바이트 줄인다(74개 ARM 프로그램 코드 크기에서 정확히 4바이트 감소). 개수 0 분기·carry 흐름은 유지했고 LSL·LSR·ASR과 ARM64는 바꾸지 않았다. Thumb 3040건·ARM 2016건의 native/interpreter 레지스터·CPSR·guest 사이클 비교가 통과했고 ARM 고정 시험은 tests/CoreARMRegisterRotate.cpp(x64 전용 CI)로 승격했다. 같은 프로세스의 밀집 16 ROR 사이클 성분 측정은 혼재(ARM7 carry 미사용 count256 +2.28% 대 A/A 0.91%, ARM7 carry 사용 count32 +0.72% 대 0.63%)이므로 실행 속도 이득은 채택하지 않고 코드 크기 감소로만 기록한다. FPS·물리 오디오/입력·저사양 기기 검증과 Vulkan 저수준·JIT·오디오 로드맵은 남아 있다.
+
 1.1.230은 Vulkan native 2D의 연속 MemoryCopy 꼬리(8192바이트 이상, host target이 HOST_CACHED가 아니고 arena 소스 없음)에서 CPU memcpy와 staged 복사를 생략한다. 합성 CPU 준비에서 16KiB 연속 24.87%·64KiB 연속 39.36% 낮았으나 조각난 16KiB는 A/A 경계(+5.31% 대 5.30%)다. GPU 실행·게임 FPS·물리 오디오·입력 지연 검증과 Vulkan 저수준·JIT·오디오 로드맵은 남아 있다.
 
 1.1.229는 소프트웨어 3D의 format 3·4 팔레트 텍스처를 RenderPolygons 호출마다 16색 페이지 단위로 한 번 RGB6로 변환한다(렌더러당 256.5KiB 추가). 내장 DS ROM 부팅 구간에서 Solatorobo는 쌍별 중앙값이 프레임 총시간 2.25%·사이클 4.19% 낮았고 자기 A/A를 넘었으나, Black은 잡음 수준이고 실행·산출물 확인 경과 시간은 더 느렸다. 게임플레이 FPS·물리 오디오/입력·저사양 CPU 검증과 Vulkan 저수준·JIT·오디오 로드맵은 남아 있다.

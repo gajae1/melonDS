@@ -57,6 +57,8 @@
 
 1.1.230의 Vulkan native 2D 연속 업로드 복사 생략은 이 포크의 자체 구현이며 새 외부 코드나 라이브러리 도입은 없다. 일반 union 후보와 캐시된 host 대상의 이전 탐침은 기각했다.
 
+1.1.231의 x64 JIT 레지스터 ROR 개수 검사 축약은 이 포크의 자체 구현이며 새 외부 코드나 라이브러리 도입은 없다. ISA 기준선과 ARM64 JIT은 바뀌지 않았다. 이전에 검토한 zero 분기 제거 후보는 보류로 남는다.
+
 근거: [참고 자료 원목록](Reference_Notes_2026-09-11.md), [작업 카탈로그](Task_Catalog.md), [진행 기록](Execution_Order.md), [현재 상태](Current_Status.md), [버전별 기록](releases/), [계수 출처·재생성](../src/audio_interpolation/README.md). 코드 연결점은 `src/jit/`, `src/ARMJIT_Memory.cpp`, `src/AudioInterpolationRenderer.cpp`, `src/frontend/qt_sdl/AudioTimeStretch.cpp`, `src/frontend/qt_sdl/AudioOutput.cpp`, `src/FATStorage.cpp`, `src/DSi_NAND.cpp`다.
 
 ## OpenGL·Vulkan의 다음 범위
