@@ -1,20 +1,65 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <SDL3/SDL.h>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <new>
 #include <string>
 #include "Platform.h"
 namespace melonDS::Platform { void Log(LogLevel, const char*, ...) {} }
 
+// Ordinary allocation counter, active only on the thread and window that set it.
+static thread_local bool trackAllocs = false;
+static thread_local unsigned trackedAllocs = 0;
+static void* CountedAlloc(std::size_t size)
+{
+    if (trackAllocs) ++trackedAllocs;
+    if (void* p = std::malloc(size ? size : 1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new(std::size_t size) { return CountedAlloc(size); }
+void* operator new[](std::size_t size) { return CountedAlloc(size); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+
 static bool failOpen = false;
 static std::string observedHint;
+static SDL_AudioStreamCallback capturedCallback = nullptr;
+static void* capturedUserdata = nullptr;
+static SDL_AudioStream* capturedStream = nullptr;
 static SDL_AudioStream* OpenStream(SDL_AudioDeviceID device, const SDL_AudioSpec* spec,
                                    SDL_AudioStreamCallback callback, void* userdata)
 {
     const char* hint = SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES);
     observedHint = hint ? hint : "";
     if (failOpen) { SDL_SetError("injected stream-open failure"); return nullptr; }
-    return SDL_OpenAudioDeviceStream(device, spec, callback, userdata);
+    SDL_AudioStream* stream = SDL_OpenAudioDeviceStream(device, spec, callback, userdata);
+    capturedCallback = callback;
+    capturedUserdata = userdata;
+    capturedStream = stream;
+    return stream;
+}
+// Manual mode leaves the dummy stream physically paused so no device thread
+// competes with the captured callback, and collects PCM in fixed storage.
+static bool manualResume = false, capturing = false;
+alignas(int16_t) static uint8_t putStorage[1 << 16];
+static int putCalls = 0, putBytes = 0;
+static bool putOverflow = false;
+static bool ResumeStream(SDL_AudioStream* stream)
+{
+    return manualResume ? true : SDL_ResumeAudioStreamDevice(stream);
+}
+static bool PutStream(SDL_AudioStream* stream, const void* data, int bytes)
+{
+    if (!capturing) return SDL_PutAudioStreamData(stream, data, bytes);
+    ++putCalls;
+    if (bytes < 0 || bytes > static_cast<int>(sizeof(putStorage)) - putBytes) { putOverflow = true; return false; }
+    std::memcpy(putStorage + putBytes, data, bytes);
+    putBytes += bytes;
+    return true;
 }
 static bool SetHint(const char* name, const char* value)
 {
@@ -24,9 +69,101 @@ static bool SetHint(const char* name, const char* value)
 }
 #define SDL_OpenAudioDeviceStream OpenStream
 #define SDL_SetHint SetHint
+#define SDL_ResumeAudioStreamDevice ResumeStream
+#define SDL_PutAudioStreamData PutStream
 #include "AudioOutput.cpp"
+#undef SDL_PutAudioStreamData
+#undef SDL_ResumeAudioStreamDevice
 #undef SDL_SetHint
 #undef SDL_OpenAudioDeviceStream
+
+static int producerCalls = 0, producerBytes = 0;
+static uint32_t producerFrame = 0;
+// Left ramps up from 1; right is its negation, so swapped or shifted channels show.
+static void PatternProducer(void*, uint8_t* data, int bytes)
+{
+    ++producerCalls;
+    producerBytes += bytes;
+    auto* samples = reinterpret_cast<int16_t*>(data);
+    for (int i = 0; i < bytes / 4; ++i)
+    {
+        const int16_t value = static_cast<int16_t>((producerFrame++ & 0x3fff) + 1);
+        samples[2 * i] = value;
+        samples[2 * i + 1] = static_cast<int16_t>(-value);
+    }
+}
+
+struct Drive { unsigned allocs; int producerCalls, producerBytes, putCalls, putBytes; bool pcmOk; };
+// One captured SDL request. Allocations are counted only across the callback.
+static Drive DriveRequest(int request, int warmupFrames)
+{
+    producerCalls = producerBytes = putCalls = putBytes = 0;
+    putOverflow = false;
+    const uint32_t first = producerFrame;
+    trackedAllocs = 0;
+    trackAllocs = true;
+    capturing = true;
+    capturedCallback(capturedUserdata, capturedStream, request, 0);
+    capturing = false;
+    trackAllocs = false;
+    Drive result{trackedAllocs, producerCalls, producerBytes, putCalls, putBytes, !putOverflow};
+    const auto* pcm = reinterpret_cast<const int16_t*>(putStorage);
+    for (int i = 0; i < putBytes / 4; ++i)
+    {
+        const int left = pcm[2 * i], right = pcm[2 * i + 1];
+        if (left < 0 || right != -left) result.pcmOk = false; // holds through the resume ramp
+        if (i >= warmupFrames && left != static_cast<int>(((first + i) & 0x3fff) + 1)) result.pcmOk = false;
+    }
+    return result;
+}
+
+static bool TestFirstCallbackAllocation()
+{
+    bool passed = true;
+    AudioOutput output;
+    std::string error;
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, nullptr);
+    manualResume = true;
+    passed &= output.Open({AudioOutput::SDL, {}, 256}, PatternProducer, nullptr, error);
+    passed &= capturedCallback && capturedUserdata && capturedStream;
+    passed &= output.Start(error);
+    const int frames = output.GetSpec().frames;
+    const int period = frames * 4;
+    if (!passed || frames <= 0 || period * 2 > static_cast<int>(sizeof(putStorage)))
+    {
+        manualResume = false;
+        output.Close();
+        return false;
+    }
+
+    const Drive first = DriveRequest(period, 64);
+    const Drive repeat = DriveRequest(period, 0);
+    std::printf("first-callback allocations: first=%u repeat=%u (frames=%d)\n", first.allocs, repeat.allocs, frames);
+    for (const Drive& d : {first, repeat})
+    {
+        passed &= d.allocs == 0 && d.producerCalls == 1 && d.producerBytes == period;
+        passed &= d.putCalls == 1 && d.putBytes == period && d.pcmOk;
+    }
+
+    for (int ignored : {0, 1, 3, -1})
+    {
+        const Drive d = DriveRequest(ignored, 0);
+        passed &= d.producerCalls == 0 && d.putCalls == 0 && d.putBytes == 0;
+    }
+    // A partial trailing frame is dropped; the whole frames go out in one callback.
+    const Drive partial = DriveRequest(period + 3, 0);
+    passed &= partial.producerCalls == 1 && partial.producerBytes == period;
+    passed &= partial.putCalls == 1 && partial.putBytes == period && partial.pcmOk;
+    // A larger request may allocate to grow, but is still one producer callback.
+    const Drive larger = DriveRequest(period * 2, 0);
+    passed &= larger.producerCalls == 1 && larger.producerBytes == period * 2;
+    passed &= larger.putCalls == 1 && larger.putBytes == period * 2 && larger.pcmOk;
+
+    output.Stop();
+    passed &= output.Close();
+    manualResume = false;
+    return passed;
+}
 
 int main()
 {
@@ -52,7 +189,8 @@ int main()
             passed &= output.Close();
         }
     }
+    passed &= TestFirstCallbackAllocation();
     SDL_Quit();
-    std::printf("SDL3 output hint isolation and failure preservation: %s\n", passed ? "PASS" : "FAIL");
+    std::printf("SDL3 output hint isolation, failure preservation, first-callback allocation: %s\n", passed ? "PASS" : "FAIL");
     return passed ? 0 : 1;
 }

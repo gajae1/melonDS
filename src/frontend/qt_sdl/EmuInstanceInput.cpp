@@ -270,7 +270,9 @@ void EmuInstance::openJoystick()
 {
     joystickLastOpen = SDL_GetTicks();
     JoystickListLock devicesLock;
-    const auto devices = ListJoysticks();
+    // The saved GUID is known here, so an unrelated device cannot match:
+    // enumerate it without opening it.
+    const auto devices = ListJoysticks(joystickSelection.device.guid);
     joystickID = joystickSelection.Resolve(devices);
     joystickTopology.clear();
     for (const auto& device : devices) joystickTopology.push_back(device.instance);

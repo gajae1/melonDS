@@ -20,14 +20,26 @@
 #include "Platform.h"
 // Virtual SDL2 devices cannot report serials. Supply only that identity
 // boundary for serial reconnect cases; enumeration/handles/input remain SDL.
+// Enumeration opens are observed through a wrapper installed ahead of the
+// selection header, so a filtered pass can be proven to open only its target.
 static std::map<SDL_JoystickID, std::string> deviceSerials;
 static const char* DeviceSerial(SDL_Joystick* joystick)
 {
     const auto found = deviceSerials.find(SDL_JoystickInstanceID(joystick));
     return found == deviceSerials.end() ? SDL_JoystickGetSerial(joystick) : found->second.c_str();
 }
+static std::vector<std::string> enumerationOpens;
+static SDL_Joystick* EnumerationOpen(int index)
+{
+    char guid[33];
+    SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(index), guid, sizeof(guid));
+    enumerationOpens.push_back(guid);
+    return SDL_JoystickOpen(index);
+}
 #define SDL_JoystickGetSerial DeviceSerial
+#define SDL_JoystickOpen EnumerationOpen
 #include "../src/frontend/qt_sdl/JoystickSelection.h"
+#undef SDL_JoystickOpen
 #undef SDL_JoystickGetSerial
 
 static int failures = 0;
@@ -186,12 +198,13 @@ struct VirtualDevice
 {
     SDL_JoystickID id = -1;
     int rumbleStarts = 0;
-    VirtualDevice(bool controller, bool rumble, const char* serial = "") { attach(controller, rumble, serial); }
-    void attach(bool controller, bool rumble, const char* serial = "")
+    VirtualDevice(bool controller, bool rumble, const char* serial = "", Uint16 productId = 0) { attach(controller, rumble, serial, productId); }
+    void attach(bool controller, bool rumble, const char* serial = "", Uint16 productId = 0)
     {
         SDL_VirtualJoystickDesc desc{};
         desc.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION;
         desc.type = controller ? SDL_JOYSTICK_TYPE_GAMECONTROLLER : SDL_JOYSTICK_TYPE_FLIGHT_STICK;
+        desc.product_id = productId;
         desc.naxes = 2;
         desc.nbuttons = 2;
         desc.nhats = 1;
@@ -258,7 +271,7 @@ int main(int argc, char** argv)
     if (scenario != "controls" && scenario != "transition" && scenario != "capabilities" &&
         scenario != "detach" && scenario != "open-failure" && scenario != "close" &&
         scenario != "reorder" && scenario != "ambiguous" && scenario != "serial-reconnect" &&
-        scenario != "duplicate-serial") return 2;
+        scenario != "duplicate-serial" && scenario != "guid-filter") return 2;
     SDL_SetMainReady();
     // Only this process's synthetic devices may be opened, polled or rumbled.
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
@@ -415,6 +428,53 @@ int main(int argc, char** argv)
                 Check(!(input.inputMask & 1) && !(second.inputMask & 1),
                       "Explicit shared assignment was incorrectly forbidden");
             }
+        }
+        else if (scenario == "guid-filter")
+        {
+            // Same-model controllers share a GUID; the unrelated joystick gets a
+            // distinct product id so its GUID is provably different.
+            other = std::make_unique<VirtualDevice>(false, false, "", 0x4D32);
+            // Empty filter keeps the full UI/legacy enumeration: every present
+            // device is opened for its serial.
+            enumerationOpens.clear(); // Fixture setup already enumerated once.
+            const auto devices = ListJoysticks();
+            Check(devices.size() == 2 && enumerationOpens.size() == 2,
+                  "Unfiltered enumeration did not open every present device");
+            std::string selectedGuid, unrelatedGuid;
+            for (const auto& device : devices)
+            {
+                if (device.instance == pad.id) selectedGuid = device.guid;
+                if (device.instance == other->id) unrelatedGuid = device.guid;
+            }
+            Require(!selectedGuid.empty() && !unrelatedGuid.empty(), "Fixture GUID enumeration failed");
+            Check(selectedGuid != unrelatedGuid,
+                  "Fixture devices share a GUID; distinct-GUID enumeration is not exercised");
+            // A known selection reads only its own identity, never the unrelated
+            // device that is present but cannot match.
+            enumerationOpens.clear();
+            input.getJoystickSelection();
+            Check(enumerationOpens.size() == 1 && enumerationOpens.front() == selectedGuid,
+                  "Filtered enumeration opened a device outside the selected GUID");
+            // The selected device is gone: the retry must not open the unrelated
+            // device that happens to still be present.
+            pad.detach();
+            enumerationOpens.clear();
+            input.keyInputMask = 0xFFF & ~(1 << 1);
+            input.inputProcess();
+            Check(enumerationOpens.empty(), "Retry opened a device that cannot match the selected GUID");
+            Check(!input.joystick && input.getJoystickSelection().status == JoystickSelection::Status::Missing,
+                  "Filtered retry did not leave the missing selection unopened");
+            Check(input.inputMask == (0xFFF & ~(1 << 1)),
+                  "Unresolved filtered retry stopped sampling the keyboard mask");
+            // Topology is now stable, so a still-Missing selection retries on
+            // the elapsed-time rule instead of a detach; that pass must not open
+            // the unrelated device either.
+            input.joystickLastOpen = SDL_GetTicks() - 1001;
+            enumerationOpens.clear();
+            input.inputProcess();
+            Check(enumerationOpens.empty() && !input.joystick &&
+                  input.inputMask == (0xFFF & ~(1 << 1)),
+                  "Elapsed-time missing retry opened another device or dropped keyboard input");
         }
         else // close, including a repeated close while rumbling.
         {

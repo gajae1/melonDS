@@ -500,6 +500,11 @@ AudioOutput::Owner::Result AudioOutput::Owner::Open(const Settings& requested, C
         if (!logical || !SDL_GetAudioDeviceFormat(logical, &openedSpec, &openedFrames) || openedFrames <= 0)
             openedFrames = next.frames;
         obtained.frames = openedFrames;
+        // Prepare the first negotiated block on the output owner thread, while
+        // the stream is paused. This is scratch capacity, not queued audio.
+        // Larger SDL requests still grow in RenderRequest and remain a single
+        // producer callback, preserving delivery timing and clock telemetry.
+        output->sdlScratch.resize(static_cast<size_t>(openedFrames) * 4);
         output->outputRamp.Init(rate);
         const char* driver = SDL_GetCurrentAudioDriver();
         obtained.backend = std::string("SDL3 / ") + (driver ? driver : "unknown");

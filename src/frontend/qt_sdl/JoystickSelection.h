@@ -22,7 +22,11 @@ struct JoystickDevice
     std::string guid, serial, name;
 };
 
-inline std::vector<JoystickDevice> ListJoysticks()
+// Serial is only reachable through an open handle, so enumeration opens each
+// device. Callers that already know which GUID they are resolving pass it here:
+// every index/instance/name/GUID is still listed, but only devices that can
+// match are opened. An empty filter keeps the full UI/legacy enumeration.
+inline std::vector<JoystickDevice> ListJoysticks(const std::string& guidFilter = {})
 {
     std::vector<JoystickDevice> devices;
     int count = 0;
@@ -39,10 +43,13 @@ inline std::vector<JoystickDevice> ListJoysticks()
         // Serial is available since SDL 2.0.14, below the existing rumble API
         // floor. SDL paths are implementation dependent (and may be reused for
         // a different device); they are not a portable physical identity.
-        if (SDL_Joystick* joystick = SDL_OpenJoystick(ids[i]))
+        if (guidFilter.empty() || device.guid == guidFilter)
         {
-            if (const char* serial = SDL_GetJoystickSerial(joystick)) device.serial = serial;
-            SDL_CloseJoystick(joystick);
+            if (SDL_Joystick* joystick = SDL_OpenJoystick(ids[i]))
+            {
+                if (const char* serial = SDL_GetJoystickSerial(joystick)) device.serial = serial;
+                SDL_CloseJoystick(joystick);
+            }
         }
         devices.push_back(std::move(device));
     }

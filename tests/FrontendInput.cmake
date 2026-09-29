@@ -222,7 +222,7 @@ add_executable(FrontendJoystick "${CMAKE_SOURCE_DIR}/tests/FrontendJoystick.cpp"
 target_sources(InputConfigUI PRIVATE ${joystick_methods})
 target_include_directories(FrontendJoystick PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(FrontendJoystick PRIVATE PkgConfig::SDL2 Threads::Threads)
-foreach(case IN ITEMS controls transition capabilities detach open-failure close reorder ambiguous serial-reconnect duplicate-serial)
+foreach(case IN ITEMS controls transition capabilities detach open-failure close reorder ambiguous serial-reconnect duplicate-serial guid-filter)
     add_test(NAME frontend-joystick-${case} COMMAND FrontendJoystick ${case})
     set_tests_properties(frontend-joystick-${case} PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endforeach()
