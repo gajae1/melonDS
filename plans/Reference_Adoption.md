@@ -1,6 +1,6 @@
 # 참고 프로젝트 반영 현황
 
-2026-09-29, 1.1.222 코드 기준. 참고 목록에는 실제 포함한 소스, 오프라인 계수 생성기, 설계·검증 참고 자료가 섞여 있다. 공통 완료 기준이 없으므로 하나의 구현 비율로 합산하지 않는다. 아래는 현재 코드에서 확인한 범위이며 다른 프로젝트의 전체 기능이나 성능을 이식했다는 뜻이 아니다.
+2026-09-29, 1.1.223 코드 기준. 참고 목록에는 실제 포함한 소스, 오프라인 계수 생성기, 설계·검증 참고 자료가 섞여 있다. 공통 완료 기준이 없으므로 하나의 구현 비율로 합산하지 않는다. 아래는 현재 코드에서 확인한 범위이며 다른 프로젝트의 전체 기능이나 성능을 이식했다는 뜻이 아니다.
 
 | 프로젝트·자료 | 현재 반영 범위 | 남은 범위·구분 |
 | --- | --- | --- |
@@ -40,6 +40,8 @@
 1.1.221은 기존 Sinc 커널의 일반 경로 루프를 분리한다. 새 외부 라이브러리나 코드를 도입하지 않았다.
 
 1.1.222는 기존 Vulkan compute 결과 형식의 미사용 속성 비트에 그림자 상태를 통합한다. 새 외부 코드나 라이브러리 도입은 없다.
+
+1.1.223은 기존 Vulkan 래스터·깊이 블렌드 셰이더가 공유하던 계산을 이 포크의 융합 pipeline으로 합친다. 새 외부 코드나 라이브러리 도입은 없다.
 
 근거: [참고 자료 원목록](Reference_Notes_2026-09-11.md), [작업 카탈로그](Task_Catalog.md), [진행 기록](Execution_Order.md), [현재 상태](Current_Status.md), [버전별 기록](releases/), [계수 출처·재생성](../src/audio_interpolation/README.md). 코드 연결점은 `src/jit/`, `src/ARMJIT_Memory.cpp`, `src/AudioInterpolationRenderer.cpp`, `src/frontend/qt_sdl/AudioTimeStretch.cpp`, `src/frontend/qt_sdl/AudioOutput.cpp`, `src/FATStorage.cpp`, `src/DSi_NAND.cpp`다.
 
