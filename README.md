@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.215"><img src="https://img.shields.io/badge/fork_release-1.1.215-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.216"><img src="https://img.shields.io/badge/fork_release-1.1.216-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,7 +19,7 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.215 release record](plans/releases/1.1.215.md). 1.1.215 samples input after GL preparation and pending renderer changes, so the first frame after this host work uses a fresh input sample. Paused hotkeys and GL failure handling are retained; edits received after sampling wait until the next iteration. Physical latency and steady-state FPS gains have not been measured. GPU 2D remains opt-in; a universal Vulkan advantage over OpenGL or Metal has not been established.
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.216 release record](plans/releases/1.1.216.md). 1.1.216 adds optional Sinc audio clock correction with AudioSync off. It adjusts audio resampling by up to 0.1% while preserving emulation speed and buffer capacity. The option defaults off and requires normal speed-limited execution, pitch preservation off, and a compatible output rate. Virtual-clock tests cover drift, stalls and jitter; actual-device click elimination and physical latency gains have not been established. GPU 2D remains opt-in; a universal Vulkan advantage over OpenGL or Metal has not been established.
 
 ## How to use
 
