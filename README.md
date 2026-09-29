@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.228"><img src="https://img.shields.io/badge/fork_release-1.1.228-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.229"><img src="https://img.shields.io/badge/fork_release-1.1.229-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,7 +19,11 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.228 release record](plans/releases/1.1.228.md). 1.1.228 processes identity-affine direct-color non-mosaic BG2/BG3 bitmap rows four pixels at a time with SSE2 in the software 2D path shared with classic GL; other architectures, capture and mosaic use the scalar path. Synthetic real-renderer paired medians were 23.02 to 67.19% lower across 8 conditions on a busy 9800X3D host (A/A absolute medians 4.21 to 28.92%, each gain above its own A/A median, no significance claim). Game FPS, other hardware, audio and input are not claimed. Earlier: [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches (96 cases, median 19.53% lower GPU time). Audio changes are in the [1.1.226 release](plans/releases/1.1.226.md).
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.229 release record](plans/releases/1.1.229.md).
+
+1.1.229 reuses RGB6 palette pages in software 3D texture sampling, adding 256.5 KiB per renderer. Output matched the scalar baseline. In a short Solatorobo boot segment, total frame processing time was 2.25% lower (A/A median deviation 0.29%). Black frame results were within noise; its elapsed time including launch and output verification was 9.40% higher (A/A 4.97%). These measurements do not establish gameplay FPS or low-end-device performance. Sparse 256-color use can cost more in preparation. The release record gives the exact scope and remaining limits.
+
+Earlier changes: [1.1.228](plans/releases/1.1.228.md) added SSE2 software bitmap-BG spans; [1.1.227](plans/releases/1.1.227.md) fused OpenGL Compute textured Modulate batches; [1.1.226](plans/releases/1.1.226.md) covers audio changes.
 
 ## How to use
 
