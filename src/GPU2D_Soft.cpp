@@ -22,6 +22,10 @@
 #include <bit>
 #include "Platform.h"
 
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 namespace melonDS
 {
 
@@ -797,6 +801,71 @@ static inline u32 MakePixel(u16 color, u32 flag)
     return r | (g << 8) | (b << 16) | flag;
 }
 
+#if defined(__SSE2__)
+// Direct-color bitmap span for the identity-affine, non-mosaic, non-capture path.
+// Handles pixels iLo..iHi (0..255, non-empty); xidx is the bitmap column of iLo,
+// already masked with xmask. Equivalent to the scalar loop with DrawPixel.
+static void DrawDirectBitmapSSE2(const u8* vram, u32 vrammask, u32 tilebase, u32 ypart,
+                                 u32 xmask, u32 xidx, const u8* window, u32 windowbit,
+                                 u32 flag, u32* dst, int iLo, int iHi)
+{
+    const __m128i zero = _mm_setzero_si128();
+    const __m128i wbit = _mm_set1_epi32((int)windowbit);
+    const __m128i opq = _mm_set1_epi32(0x8000);
+    const __m128i m1f = _mm_set1_epi32(0x1f), m3e0 = _mm_set1_epi32(0x3e0), m7c00 = _mm_set1_epi32(0x7c00);
+    const __m128i vflag = _mm_set1_epi32((int)flag);
+
+    int i = iLo;
+    while (i <= iHi)
+    {
+        const u32 addr = (tilebase + ((ypart + xidx) << 1)) & vrammask;
+
+        // longest run without an x wrap, a VRAM wrap, or passing iHi
+        u32 n = (u32)(iHi - i + 1);
+        const u32 nx = xmask - xidx + 1;
+        const u32 nv = (vrammask + 1 - addr) >> 1;
+        if (nx < n) n = nx;
+        if (nv < n) n = nv;
+
+        u32 k = 0;
+        for (; k + 4 <= n; k += 4)
+        {
+            const __m128i c = _mm_unpacklo_epi16(_mm_loadl_epi64((const __m128i*)(vram + addr + 2*k)), zero);
+            u32 w4;
+            memcpy(&w4, window + i + k, 4);
+            const __m128i w = _mm_unpacklo_epi16(_mm_unpacklo_epi8(_mm_cvtsi32_si128((int)w4), zero), zero);
+            const __m128i wz = _mm_cmpeq_epi32(_mm_and_si128(w, wbit), zero);
+            const __m128i op = _mm_cmpeq_epi32(_mm_and_si128(c, opq), opq);
+            const __m128i m = _mm_andnot_si128(wz, op);
+            const __m128i px = _mm_or_si128(
+                _mm_or_si128(_mm_slli_epi32(_mm_and_si128(c, m1f), 1), _mm_slli_epi32(_mm_and_si128(c, m3e0), 4)),
+                _mm_or_si128(_mm_slli_epi32(_mm_and_si128(c, m7c00), 7), vflag));
+            __m128i* top = (__m128i*)(dst + i + k);
+            __m128i* bot = (__m128i*)(dst + i + k + 256);
+            const __m128i ot = _mm_loadu_si128(top), ob = _mm_loadu_si128(bot);
+            _mm_storeu_si128(bot, _mm_or_si128(_mm_and_si128(m, ot), _mm_andnot_si128(m, ob)));
+            _mm_storeu_si128(top, _mm_or_si128(_mm_and_si128(m, px), _mm_andnot_si128(m, ot)));
+        }
+        for (; k < n; k++)
+        {
+            if (window[i + k] & windowbit)
+            {
+                u16 color;
+                memcpy(&color, vram + addr + 2*k, 2);
+                if (color & 0x8000)
+                {
+                    dst[i + k + 256] = dst[i + k];
+                    dst[i + k] = MakePixel(color & 0x7FFF, flag);
+                }
+            }
+        }
+
+        i += (int)n;
+        xidx = (xidx + n) & xmask;
+    }
+}
+#endif
+
 void SoftRenderer2D::DrawPixel(u32* dst, u16 color, u32 flag)
 {
     *(dst+256) = *dst;
@@ -1289,6 +1358,15 @@ void SoftRenderer2D::DrawBG_Extended(u32 line, u32 bgnum)
                         }
 
                         u32 xidx = (xidx0 + (u32)iLo) & xwmask;
+#if defined(__SSE2__)
+                        if (!CaptureLayersActive)
+                        {
+                            if (iLo <= iHi)
+                                DrawDirectBitmapSSE2(bgvram, bgvrammask, tilemapaddr, ypart, xwmask, xidx,
+                                                     WindowMask, 1u<<bgnum, flag, BGOBJLine, iLo, iHi);
+                        }
+                        else
+#endif
                         for (int i = iLo; i <= iHi; i++)
                         {
                             if (WindowMask[i] & (1<<bgnum))

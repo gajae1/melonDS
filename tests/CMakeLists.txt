@@ -204,6 +204,14 @@ if (TARGET core)
         "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/software-text-bg.bin"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/Optimization162TextBG.cmake")
     set_tests_properties(software-text-bg-output PROPERTIES TIMEOUT 60)
+    add_executable(SoftwareBitmapBG SoftwareBitmapBG.cpp PlatformSync.cpp PlatformHeadless.cpp)
+    target_include_directories(SoftwareBitmapBG PRIVATE ../src)
+    target_link_libraries(SoftwareBitmapBG PRIVATE core Threads::Threads)
+    add_test(NAME software-bitmap-bg-output COMMAND "${CMAKE_COMMAND}"
+        "-DEXECUTABLE=$<TARGET_FILE:SoftwareBitmapBG>"
+        "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/software-bitmap-bg.bin"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/SoftwareBitmapBG.cmake")
+    set_tests_properties(software-bitmap-bg-output PROPERTIES TIMEOUT 60)
     if(ENABLE_JIT AND ARCHITECTURE STREQUAL "x86_64")
         add_executable(CoreThumbCarry Optimization161A3.cpp PlatformSync.cpp PlatformHeadless.cpp)
         target_link_libraries(CoreThumbCarry PRIVATE core Threads::Threads)
