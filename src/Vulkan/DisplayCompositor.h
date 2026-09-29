@@ -67,6 +67,14 @@ public:
     void ComposeDirectPair(const std::array<DirectRequest, 2>& requests,
         const std::shared_ptr<Device::Image>& image3D, u32 sourceScale, bool deferred = false);
     void Complete();
+    // Idempotent. Replaces every resident output with an exportable external
+    // image, carrying over the content of the already-valid outputs and keeping
+    // the resident-valid flags. Every replacement is allocated before any GPU
+    // work, so a failure leaves the previous outputs usable and rethrows.
+    void EnableExternalOutputs();
+    // Bounded accessor for a resident output image. Used to repoint renderer
+    // handles after EnableExternalOutputs swaps the output array.
+    const std::shared_ptr<Device::Image>& Output(u32 screen) const;
     // Explicit CPU demand (screenshot/fallback). Valid only after this screen's
     // latest successful ComposeResident and before it is overwritten.
     void ReadbackResident(u32 screen, std::span<u32> destination);
@@ -115,6 +123,7 @@ private:
     std::shared_ptr<Device::Buffer> readback;
     std::vector<std::shared_ptr<Device::Image>> outputs;
     std::vector<bool> residentValid;
+    bool externalOutputs = false;
     std::shared_ptr<Device::Image> blank3D;
     bool pending = false, pendingResident = false;
     std::array<u32, 2> pendingScreens{};

@@ -31,7 +31,10 @@ ComputePipeline::~ComputePipeline(){Cleanup();}
 
 void ComputePipeline::Cleanup()
 {
-    f.vkDeviceWaitIdle(device);
+    // ExternalDisplay only starts after compute completion and retains its
+    // own pending images/commands on failure. Its external wait may have no
+    // valid GL signal, so fallback must not wait on the entire device here.
+    if (!owner->ExternalWorkFailed()) f.vkDeviceWaitIdle(device);
     CleanupNativeReadback();
     for(auto pipeline:pipelines)if(pipeline)f.vkDestroyPipeline(device,pipeline,nullptr);
     if(layout)f.vkDestroyPipelineLayout(device,layout,nullptr);

@@ -908,12 +908,17 @@ void EmuThread::handleMessages()
                 // Drain captures and retire core objects in the root context
                 // before the GUI destroys it or builds a new, unrelated one.
                 QMutexLocker lock(&emuInstance->renderLock);
-                if (!emuInstance->makeCurrentGL() || !emuInstance->preserveFrame())
+                const bool rendererFailed = emuInstance->nds->GetRenderer().HasRenderFailure();
+                // A failed external handoff has already retired its Vulkan
+                // device. Reading GPU-only pixels would prevent recovery; its
+                // unresolved imports retain themselves until process exit.
+                if (!emuInstance->makeCurrentGL() ||
+                    (!rendererFailed && !emuInstance->preserveFrame()))
                 {
                     reportGLFailure(0);
                     break;
                 }
-                if (RendererUsesOpenGL(videoRenderer))
+                if (rendererFailed || RendererUsesOpenGL(videoRenderer))
                 {
                     videoRenderer = renderer3D_Software;
                     updateRenderer();

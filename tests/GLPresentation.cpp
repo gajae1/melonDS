@@ -21,8 +21,9 @@
 #include <cstdio>
 #include "frontend/glad/glad.h"
 #include "frontend/graphics/window_info.h"
-#ifdef _WIN32
 #include "frontend/graphics/gl/context.h"
+#ifdef VULKANRENDERER_ENABLED
+#include "frontend/graphics/gl/external_display.h"
 #endif
 #include "frontend/qt_sdl/main_shaders.h"
 #include "frontend/qt_sdl/OSD_shaders.h"
@@ -40,13 +41,33 @@
 #include <cstring>
 
 using namespace melonDS;
+#ifdef _WIN32
+// Real GL::Context adapter for the extracted external-display presenter: it
+// constructs GL::ExternalDisplay from *glContext and asks this context for the
+// WGL extension entry points. Off Windows no GL::Context implementation is
+// linked, so NativeContext stays a plain SDL wrapper.
+struct NativeContext final : GL::Context
+{
+    NativeContext(SDL_Window* w, SDL_GLContext c)
+        : GL::Context(WindowInfo{}), window(w), context(c) {}
+    // GL::Context surface methods the presentation handoff never calls.
+    void* GetProcAddress(const char* name)
+    { return native ? native->GetProcAddress(name) : reinterpret_cast<void*>(SDL_GL_GetProcAddress(name)); }
+    bool ChangeSurface(const WindowInfo& wi) { return native ? native->ChangeSurface(wi) : false; }
+    void ResizeSurface(u32 = 0, u32 = 0) {}
+    std::unique_ptr<GL::Context> CreateSharedContext(const WindowInfo& wi)
+    { return native ? native->CreateSharedContext(wi) : nullptr; }
+#else
 struct NativeContext
 {
+    NativeContext(SDL_Window* w, SDL_GLContext c) : window(w), context(c) {}
+#endif
     SDL_Window* window;
     SDL_GLContext context;
     int currentCalls = 0, swaps = 0;
     bool failCurrent = false;
     bool failSwap = false;
+    bool skipSwap = false;
     void (*beforeSwap)() = nullptr;
 #ifdef _WIN32
     std::unique_ptr<GL::Context> native;
@@ -85,6 +106,7 @@ struct NativeContext
         ++swaps;
         if (failSwap) return false;
         if (beforeSwap) beforeSwap();
+        if (skipSwap) return true;
 #ifdef _WIN32
         if (native) return native->SwapBuffers();
 #endif
@@ -107,8 +129,11 @@ struct NativeContext
     }
 };
 struct EmuThread { bool active = false; bool running = false;
+    QString vulkanStatus;
+    void setVulkanDisplayStatus(const QString& value) { vulkanStatus = value; }
     bool emuIsActive() const { return active; }
-    bool emuIsRunning() const { return running; } };
+    bool emuIsRunning() const { return running; }
+};
 struct PresentationWindow { int getWindowID() const { return 0; } };
 struct EmuInstance
 {
@@ -188,6 +213,13 @@ public:
     bool osdEnabled = false, filter = false;
     int numScreens = 0, screenKind[4]{};
     float screenMatrix[4][6]{};
+#ifdef VULKANRENDERER_ENABLED
+    bool drawVulkanScreen(VulkanRenderer& renderer, int width, int height, float factor, bool& drawn);
+    std::unique_ptr<GL::ExternalDisplay> vulkanGL;
+    std::weak_ptr<melonDS::Vulkan::Device> vulkanGLAttempt;
+    GLuint vulkanScreenShader = 0;
+    GLint vulkanScreenTransform = -1, vulkanScreenSize = -1, vulkanScreenFilter = -1;
+#endif
     static constexpr int kLogoWidth = 32, kOSDMargin = 4;
 };
 
@@ -197,6 +229,16 @@ public:
 #include "presentationCoverage.inc"
 #include "presentationDraw.inc"
 #include "presentationOSD.inc"
+#ifdef VULKANRENDERER_ENABLED
+#ifdef _WIN32
+// The actual production external-display presenter (Vulkan screen images
+// imported as GL textures), extracted from Screen.cpp.
+#include "presentationVulkanDraw.inc"
+#else
+// No GL::Context/WGL interop off Windows; the presenter keeps the safe path.
+bool ScreenPanelGL::drawVulkanScreen(VulkanRenderer&, int, int, float, bool&) { return true; }
+#endif
+#endif
 
 namespace InitFailure
 {
@@ -809,6 +851,132 @@ bool DisplayFrameLifecycle(ScreenPanelGL& panel, const char* backend)
     return passed;
 }
 
+#if defined(VULKANRENDERER_ENABLED) && defined(_WIN32)
+namespace ExternalCheck
+{
+static PFN_vkCmdCopyImageToBuffer copy;
+static unsigned downloads;
+static VKAPI_ATTR void VKAPI_CALL Download(VkCommandBuffer cmd, VkImage image, VkImageLayout layout,
+    VkBuffer buffer, uint32_t count, const VkBufferImageCopy* regions)
+{
+    ++downloads;
+    copy(cmd, image, layout, buffer, count, regions);
+}
+static std::vector<u32> pixels;
+static void Capture()
+{
+    pixels.resize(256u * 192u);
+    glReadBuffer(GL_BACK);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glReadPixels(0, 0, 256, 192, GL_BGRA, GL_UNSIGNED_BYTE, pixels.data());
+}
+}
+
+// Real producers, actual Screen draw and software pixel oracle. No game/window
+// activation or swap. Only positively detected missing capabilities may skip.
+bool ExternalDisplayCheck(ScreenPanelGL& panel, bool& unavailable)
+{
+    using namespace ExternalCheck;
+    const auto require = [](bool ok, const char* text) { if (!ok) throw std::runtime_error(text); };
+    if (!panel.initOpenGL() || !panel.glContext->MakeCurrent()) return false;
+    const auto getUuid = reinterpret_cast<void(APIENTRY*)(GLenum,GLuint,GLubyte*)>(SDL_GL_GetProcAddress("glGetUnsignedBytei_vEXT"));
+    const auto getDriver = reinterpret_cast<void(APIENTRY*)(GLenum,GLubyte*)>(SDL_GL_GetProcAddress("glGetUnsignedBytevEXT"));
+    const auto hasExtension = [](const char* name) {
+        GLint n = 0; glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+        for (GLint i = 0; i < n; ++i)
+            if (!std::strcmp(reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i)), name)) return true;
+        return false;
+    };
+    for (const auto* name : {"GL_EXT_memory_object", "GL_EXT_memory_object_win32", "GL_EXT_semaphore", "GL_EXT_semaphore_win32"})
+        unavailable |= !hasExtension(name);
+    unavailable |= !getUuid || !getDriver;
+    if (unavailable) { panel.deinitOpenGL(); return false; }
+    std::array<GLubyte,16> uuid{}, driver{};
+    getUuid(0x9597,0,uuid.data()); getDriver(0x9598,driver.data());
+    char id[33]{}; for (unsigned i=0;i<16;++i) std::snprintf(id+2*i,3,"%02x",uuid[i]);
+    std::string error;
+    auto device=Vulkan::Device::Create(error,id,true);
+    if (!device || !device->ExternalImagesSupported())
+    { unavailable=true; panel.deinitOpenGL(); return false; }
+    require(device->DriverUUID()==driver,"GL/Vulkan driver UUID mismatch");
+    device.reset();
+
+    NDSArgs args; args.JIT=std::nullopt;
+    auto nds=std::make_unique<NDS>(std::move(args)); nds->Reset();
+    NDSArgs oracleArgs; oracleArgs.JIT=std::nullopt;
+    auto oracle=std::make_unique<NDS>(std::move(oracleArgs)); oracle->Reset();
+    oracle->SetRenderer(std::make_unique<SoftRenderer>(*oracle));
+    bool passed=false;
+    try
+    {
+        panel.emuInstance->console=nds.get(); panel.emuInstance->thread.active=true;
+        panel.glContext->skipSwap=true; panel.glContext->beforeSwap=Capture;
+        panel.numScreens=2;
+        for(int screen=0;screen<2;++screen) {
+            panel.screenKind[screen]=screen;
+            const float m[6]={0.5f,0,0,0.5f,float(screen*128),0};
+            std::copy_n(m,6,panel.screenMatrix[screen]);
+        }
+        const auto draw = [&] {
+            const auto before=downloads;
+            require(panel.drawScreen(),"external Screen draw failed");
+            require(panel.vulkanGL && panel.vulkanGL->Healthy(),"Screen did not retain healthy external presenter");
+            require(panel.screenTextureGeneration==0 && downloads==before,"external Screen materialized CPU pixels");
+            require(panel.emuInstance->thread.vulkanStatus=="GPU display (Vulkan/GL)","external status missing");
+            Renderer::DisplayFrame expected;
+            require(oracle->GetRenderer().GetDisplayFrame(expected),"software oracle unavailable");
+            const u32* sources[]={static_cast<const u32*>(expected.top),static_cast<const u32*>(expected.bottom)};
+            for(unsigned y=0;y<192;++y) for(unsigned x=0;x<256;++x) {
+                const u32 want=y<96?sources[x/128][(2*y+1)*256+(2*(x%128)+1)]:0xFF000000u;
+                require((pixels[(191-y)*256+x]&0xFFFFFFu)==(want&0xFFFFFFu),"external Screen differs from software oracle");
+            }
+            require(sources[0][96*256+128]!=sources[1][96*256+128],"oracle screens not distinct");
+            require(glGetError()==GL_NO_ERROR,"GL error after external Screen");
+        };
+        for(int scale:{1,3}) {
+            nds->SetRenderer(std::make_unique<VulkanRenderer>(*nds,id));
+            auto* renderer=dynamic_cast<VulkanRenderer*>(&nds->GetRenderer());
+            require(renderer,"Vulkan producer fell back");
+            RendererSettings settings{scale,false,false,false}; settings.VulkanNative2D=scale==1;
+            require(renderer->SetRenderSettings(settings),"producer settings failed");
+            require(renderer->EnableDirectDisplay(true),"external outputs unavailable");
+            auto& table=const_cast<volk::VolkDeviceTable&>(renderer->DisplayDevice()->Functions());
+            copy=table.vkCmdCopyImageToBuffer; table.vkCmdCopyImageToBuffer=Download;
+            for(int frame=0;frame<2;++frame) {
+                for(auto* n:{nds.get(),oracle.get()}) {
+                    n->ARM9Write16(0x04000304,0x020F); n->ARM9Write32(0x04000000,0x00010108);
+                    n->ARM9Write32(0x04001000,0x00010000); n->ARM9Write16(0x05000400,0x7C00);
+                    n->GPU.ScreensEnabled=true;
+                    auto& g=n->GPU.GPU3D; g.RenderNumPolygons=0;
+                    g.RenderClearAttr1=(31u<<16)|(frame?0x3E0:0x1F); g.RenderClearAttr2=0x7FFF;g.RenderFrameIdentical=false;
+                    n->GetRenderer().Start3DRendering();
+                }
+                for(u32 y=0;y<192;++y) for(auto* n:{nds.get(),oracle.get()}) {
+                    n->GPU.VCount=y;n->GPU.GPU2D_A.UpdateWindows(y);n->GPU.GPU2D_B.UpdateWindows(y);
+                    n->GPU.GPU2D_A.UpdateRegistersPreDraw(y==0);n->GPU.GPU2D_B.UpdateRegistersPreDraw(y==0);
+                    n->GetRenderer().DrawSprites(y);n->GetRenderer().DrawScanline(y);
+                    n->GPU.GPU2D_A.UpdateRegistersPostDraw(y==0);n->GPU.GPU2D_B.UpdateRegistersPostDraw(y==0);
+                }
+                for(auto* n:{nds.get(),oracle.get()}) {n->GetRenderer().VBlank();n->GetRenderer().SwapBuffers();++n->NumFrames;}
+                draw(); draw();
+            }
+            table.vkCmdCopyImageToBuffer=copy;
+            require(panel.deinitOpenGL() && !panel.vulkanGL,"imports survived deinit");
+            require(panel.initOpenGL(),"GL reinit failed");
+            draw();
+        }
+        passed=true;
+    }
+    catch(const std::exception& e) { std::fprintf(stderr,"external Screen FAIL: %s\n",e.what()); }
+    panel.glContext->beforeSwap=nullptr;panel.glContext->skipSwap=false;
+    panel.emuInstance->thread.active=false;panel.emuInstance->console=nullptr;
+    passed &= panel.deinitOpenGL();nds.reset();oracle.reset();
+    std::printf("external Screen: native1x/enhanced3x software pixels, redraw, renderer/context recreation %s\n",passed?"PASS":"FAIL");
+    return passed;
+}
+#endif
+
 namespace CoreLifetime
 {
 using ::renderer3D_Software;
@@ -835,7 +1003,10 @@ struct Instance
     Config& getGlobalConfig() { return cfg; }
     void osdAddMessage(u32, const char*, ...) {}
     bool makeCurrentGL() { return panel->glContext->MakeCurrent(); }
-    bool preserveFrame() { return true; } // Full Qt recovery probes actual frame snapshots.
+    int preserveCalls = 0;
+    bool preserveFrame() { ++preserveCalls; return true; } // Full Qt recovery probes actual frame snapshots.
+    void audioSuspendForHostWork() {}
+    void audioStartPending() {}
     bool deinitOpenGL(int) { return panel->deinitOpenGL(); }
 };
 struct EmuThread
@@ -931,6 +1102,38 @@ bool Check(ScreenPanelGL& panel, int renderer, bool failCurrent = false)
     panel.deinitOpenGL();
     return passed;
 }
+
+// Reports a render failure without needing a real Vulkan device failure.
+class FailedRenderer final : public SoftRenderer
+{
+public:
+    explicit FailedRenderer(NDS& nds) : SoftRenderer(nds) {}
+    bool HasRenderFailure() const override { return true; }
+};
+
+// A renderer whose external handoff already failed must not read GPU-only
+// pixels back (preserveFrame) during GL teardown, and must be demoted to
+// software before the context goes away.
+bool Recovery(ScreenPanelGL& panel)
+{
+    NDSArgs args; args.JIT = std::nullopt;
+    auto nds = std::make_unique<NDS>(std::move(args));
+    nds->Reset();
+    Instance instance{nds.get(), &panel};
+    EmuThread thread{&instance, renderer3D_Vulkan};
+    thread.lastVideoRenderer = renderer3D_Vulkan;
+    panel.initOpenGL();
+    nds->SetRenderer(std::make_unique<FailedRenderer>(*nds));
+    thread.retire(0);
+    const bool noPreserve = instance.preserveCalls == 0;
+    const bool software = typeid(nds->GetRenderer()) == typeid(SoftRenderer);
+    const bool demoted = thread.videoRenderer == renderer3D_Software &&
+        thread.lastVideoRenderer == renderer3D_Software && !thread.useOpenGL && !panel.glInited;
+    std::printf("deinit-recovery: no-preserve=%d software=%d demoted=%d %s\n",
+        noPreserve, software, demoted, (noPreserve && software && demoted) ? "PASS" : "FAIL");
+    nds.reset();
+    return noPreserve && software && demoted && panel.deinitOpenGL();
+}
 }
 
 int main(int argc, char** argv)
@@ -969,7 +1172,7 @@ int main(int argc, char** argv)
 
     if (argc > 1 && !native)
     {
-        bool passed = false;
+        bool passed = false, skipped = false;
         const int renderer = !std::strcmp(argv[1], "compute") ? CoreLifetime::renderer3D_OpenGLCompute : CoreLifetime::renderer3D_OpenGL;
         auto worker = std::unique_ptr<QThread>(QThread::create([&] {
             if (!std::strncmp(argv[1], "frame-lifetime-", 15)) passed = DisplayFrameLifecycle(panel, argv[1] + 15);
@@ -980,13 +1183,17 @@ int main(int argc, char** argv)
             else if (!std::strcmp(argv[1], "osd-reinit")) passed = InitFailure::OSD(panel);
             else if (!std::strcmp(argv[1], "runtime-current")) passed = RuntimeFailure(panel, true);
             else if (!std::strcmp(argv[1], "runtime-swap")) passed = RuntimeFailure(panel, false);
+            else if (!std::strcmp(argv[1], "deinit-recovery")) passed = CoreLifetime::Recovery(panel);
+#if defined(VULKANRENDERER_ENABLED) && defined(_WIN32)
+            else if (!std::strcmp(argv[1], "external-display")) passed = ExternalDisplayCheck(panel, skipped);
+#endif
             else if (!std::strcmp(argv[1], "retire-current")) passed = CoreLifetime::Check(panel, renderer, true);
             else passed = CoreLifetime::Check(panel, renderer);
         }));
         worker->start();
-        if (!worker->wait(15000)) std::_Exit(2);
+        if (!worker->wait(!std::strcmp(argv[1], "external-display") ? 45000 : 15000)) std::_Exit(2);
         SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit();
-        return passed ? 0 : 1;
+        return skipped ? 77 : (passed ? 0 : 1);
     }
 
     QSemaphore deinitialized, resume;

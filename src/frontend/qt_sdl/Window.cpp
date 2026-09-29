@@ -888,8 +888,8 @@ void MainWindow::createScreenPanel()
     panel = nullptr;
     if (oldpanel) delete oldpanel;
 
-    // A Vulkan presentation that cannot be created falls back to the native
-    // display as before.
+    // Prefer native Vulkan presentation. A Vulkan renderer can also share its
+    // output with GL when native WSI is unavailable (e.g. missing maintenance1).
     const int renderer = globalCfg.GetInt("3D.Renderer");
     const bool wantsVulkan = !RendererUsesOpenGL(renderer) &&
                              (globalCfg.GetBool("Screen.UseVulkan") || RendererImpliesVulkanDisplay(renderer));
@@ -924,7 +924,24 @@ void MainWindow::createScreenPanel()
         panel = panelNative;
         panel->show();
         if (wantsVulkan && !panelNative->initVulkan())
-            panelNative->osdAddMessage(0xFF8080, "Vulkan unavailable; using native display");
+        {
+#ifdef VULKANRENDERER_ENABLED
+            if (RendererImpliesVulkanDisplay(renderer))
+            {
+                auto* panelGL = new ScreenPanelGL(this);
+                panelGL->show();
+                if (panelGL->createContext())
+                {
+                    delete panelNative;
+                    panel = panelGL;
+                    hasOGL = true;
+                }
+                else delete panelGL;
+            }
+#endif
+            if (!hasOGL)
+                panelNative->osdAddMessage(0xFF8080, "Vulkan unavailable; using native display");
+        }
     }
     setCentralWidget(panel);
     panel->setPreservedFrame(emuInstance->preservedFrame, emuInstance->preservedFrameNumber);
@@ -2453,7 +2470,9 @@ bool MainWindow::applyVideoSettings(bool glchange, bool forceSoftware)
                 if (forceSoftware)
                 {
                     globalCfg.SetBool("Screen.UseGL", false);
-                    if (RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer")))
+                    globalCfg.SetBool("Screen.UseVulkan", false);
+                    if (RendererUsesOpenGL(globalCfg.GetInt("3D.Renderer")) ||
+                        RendererImpliesVulkanDisplay(globalCfg.GetInt("3D.Renderer")))
                         globalCfg.SetInt("3D.Renderer", renderer3D_Software);
                 }
                 for (auto* window : windows) window->createScreenPanel();

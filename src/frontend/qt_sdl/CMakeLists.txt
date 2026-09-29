@@ -343,6 +343,7 @@ if (ENABLE_OGLRENDERER)
 endif()
 
 if (TARGET vulkan-compute)
+    target_sources(melonDS PRIVATE ../graphics/gl/external_display.cpp)
     # Keep the MIT notice beside runtime output, including Windows builds.
     add_custom_command(TARGET melonDS POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:melonDS>/licenses"

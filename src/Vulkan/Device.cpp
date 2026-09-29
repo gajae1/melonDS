@@ -12,11 +12,63 @@
 #include <stdexcept>
 #include <vector>
 
+#if defined(_WIN32) && defined(VK_USE_PLATFORM_WIN32_KHR)
+#define MELONDS_VK_EXTERNAL_WIN32 1
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace melonDS::Vulkan {
 namespace {
 using Cost = RenderCostVulkanMeter;
 constexpr Cost::GpuStage GpuStages[] = {Cost::GpuUpload, Cost::Gpu3D, Cost::GpuNative,
     Cost::GpuFull, Cost::GpuCompose, Cost::GpuDisplayTransfer, Cost::GpuOther};
+#ifdef MELONDS_VK_EXTERNAL_WIN32
+constexpr auto ExternalHandleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+// EXT_external_objects issue 13: the full GL-visible usage union, tested 0x9f.
+constexpr VkImageUsageFlags ExternalDisplayUsage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+    VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+
+bool ExternalDisplayImageSupported(const volk::VolkInstanceTable& f, VkPhysicalDevice physical, uint32_t width, uint32_t height)
+{
+    constexpr VkFormatFeatureFlags features = VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    VkFormatProperties format{};
+    f.vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_R32_UINT, &format);
+    if ((format.optimalTilingFeatures & features) != features) return false;
+    VkPhysicalDeviceExternalImageFormatInfo external{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};
+    external.handleType = ExternalHandleType;
+    VkPhysicalDeviceImageFormatInfo2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, &external};
+    query.format = VK_FORMAT_R32_UINT; query.type = VK_IMAGE_TYPE_2D; query.tiling = VK_IMAGE_TILING_OPTIMAL;
+    query.usage = ExternalDisplayUsage; query.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    VkExternalImageFormatProperties exported{VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+    VkImageFormatProperties2 result{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, &exported};
+    if (f.vkGetPhysicalDeviceImageFormatProperties2(physical, &query, &result) != VK_SUCCESS) return false;
+    const auto& memory = exported.externalMemoryProperties;
+    constexpr auto need = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+    return result.imageFormatProperties.maxExtent.width >= width && result.imageFormatProperties.maxExtent.height >= height &&
+        (result.imageFormatProperties.sampleCounts & VK_SAMPLE_COUNT_1_BIT) && result.imageFormatProperties.maxMipLevels >= 1 &&
+        (memory.externalMemoryFeatures & need) == need && (memory.compatibleHandleTypes & ExternalHandleType) == ExternalHandleType;
+}
+
+bool ExternalBinarySemaphoreSupported(const volk::VolkInstanceTable& f, VkPhysicalDevice physical)
+{
+    // No VkSemaphoreTypeCreateInfo in the chain: this queries a binary semaphore.
+    VkPhysicalDeviceExternalSemaphoreInfo info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO};
+    info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    VkExternalSemaphoreProperties result{VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
+    f.vkGetPhysicalDeviceExternalSemaphoreProperties(physical, &info, &result);
+    constexpr auto need = VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
+    return (result.externalSemaphoreFeatures & need) == need &&
+        (result.compatibleHandleTypes & VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT);
+}
+#endif
 }
 void Device::Check(VkResult result,const char* operation)
 {
@@ -116,6 +168,8 @@ void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters, 
             const int rank=AdapterRank(props.deviceType);
             if((preferred.empty() && rank>bestRank) || (!preferred.empty() && candidateId==preferred)) {
                 physical=candidate;properties=props;family=i;id=candidateId;bestRank=rank;
+                std::copy(std::begin(ids.deviceUUID),std::end(ids.deviceUUID),deviceUuid.begin());
+                std::copy(std::begin(ids.driverUUID),std::end(ids.driverUUID),driverUuid.begin());
                 timestampBits=queues[i].timestampValidBits;
             }
             break;
@@ -147,6 +201,16 @@ void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters, 
             enabledExtensions.push_back(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
         }
     } else presentation = false;
+#ifdef MELONDS_VK_EXTERNAL_WIN32
+    // Independent of native WSI support; still only for callers requesting the presentation path.
+    externalImages = requestPresentation && has(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) &&
+        has(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME) &&
+        ExternalDisplayImageSupported(f, physical, 1, 1) && ExternalBinarySemaphoreSupported(f, physical);
+    if (externalImages) {
+        enabledExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+        enabledExtensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+    }
+#endif
     queueFamily = family;
     VkPhysicalDeviceFeatures enabled{};enabled.shaderStorageImageExtendedFormats=VK_TRUE;
     const float priority=1;
@@ -157,6 +221,10 @@ void Device::Init(const std::string& preferred, std::vector<Adapter>* adapters, 
     if (presentation) deviceInfo.pNext = &maintenance;
     Check(f.vkCreateDevice(physical,&deviceInfo,nullptr,&device),"Create compute device");
     volk::volkLoadDeviceTable(&functions,device);
+#ifdef MELONDS_VK_EXTERNAL_WIN32
+    if (externalImages && (!functions.vkGetMemoryWin32HandleKHR || !functions.vkGetSemaphoreWin32HandleKHR))
+        externalImages = false;
+#endif
     functions.vkGetDeviceQueue(device,family,0,&queue);
     f.vkGetPhysicalDeviceMemoryProperties(physical,&memoryProperties);
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};poolInfo.queueFamilyIndex=family;poolInfo.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -270,6 +338,7 @@ std::shared_ptr<Device::Image> Device::CreateImage(uint32_t width,uint32_t heigh
     VkMemoryRequirements req{};functions.vkGetImageMemoryRequirements(device,image->image,&req);
     VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};allocation.allocationSize=req.size;allocation.memoryTypeIndex=MemoryType(req.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     Check(functions.vkAllocateMemory(device,&allocation,nullptr,&image->memory),"Allocate compute image memory");
+    image->allocationSize=req.size;
     Check(functions.vkBindImageMemory(device,image->image,image->memory,0),"Bind compute image");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};view.image=image->image;view.format=format;
     view.viewType=arrayView||layers>1?VK_IMAGE_VIEW_TYPE_2D_ARRAY:VK_IMAGE_VIEW_TYPE_2D;view.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,layers};
@@ -283,6 +352,51 @@ Device::Image::~Image()
     if(view)f.vkDestroyImageView(d,view,nullptr);
     if(image)f.vkDestroyImage(d,image,nullptr);
     if(memory)f.vkFreeMemory(d,memory,nullptr);
+#ifdef MELONDS_VK_EXTERNAL_WIN32
+    if(externalHandle)CloseHandle(static_cast<HANDLE>(externalHandle));
+#endif
+}
+
+std::shared_ptr<Device::Image> Device::CreateExternalDisplayImage(uint32_t width,uint32_t height)
+{
+#ifdef MELONDS_VK_EXTERNAL_WIN32
+    if(!externalImages)throw std::runtime_error("Vulkan external display images are unsupported on this device");
+    if(!width||!height)throw std::invalid_argument("Zero-sized external Vulkan image");
+    if(!ExternalDisplayImageSupported(instanceFunctions,physical,width,height))
+        throw std::runtime_error("Vulkan external display image extent is unsupported");
+    auto image=std::shared_ptr<Image>(new Image(shared_from_this()));
+    image->width=width;image->height=height;image->format=VK_FORMAT_R32_UINT;image->usage=ExternalDisplayUsage;
+    VkExternalMemoryImageCreateInfo external{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
+    external.handleTypes=ExternalHandleType;
+    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,&external};
+    info.flags=VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;info.imageType=VK_IMAGE_TYPE_2D;info.format=VK_FORMAT_R32_UINT;
+    info.extent={width,height,1};info.mipLevels=1;info.arrayLayers=1;info.samples=VK_SAMPLE_COUNT_1_BIT;
+    info.tiling=VK_IMAGE_TILING_OPTIMAL;info.usage=ExternalDisplayUsage;info.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+    info.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;
+    Check(functions.vkCreateImage(device,&info,nullptr,&image->image),"Create external compute image");
+    VkMemoryRequirements req{};functions.vkGetImageMemoryRequirements(device,image->image,&req);
+    VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};dedicated.image=image->image;
+    VkExportMemoryAllocateInfo exported{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,&dedicated};
+    exported.handleTypes=ExternalHandleType;
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,&exported};
+    allocation.allocationSize=req.size;
+    allocation.memoryTypeIndex=MemoryType(req.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    Check(functions.vkAllocateMemory(device,&allocation,nullptr,&image->memory),"Allocate external compute image memory");
+    image->allocationSize=req.size;
+    Check(functions.vkBindImageMemory(device,image->image,image->memory,0),"Bind external compute image");
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};view.image=image->image;view.format=VK_FORMAT_R32_UINT;
+    view.viewType=VK_IMAGE_VIEW_TYPE_2D;view.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+    Check(functions.vkCreateImageView(device,&view,nullptr,&image->view),"Create external compute image view");
+    VkMemoryGetWin32HandleInfoKHR handle{VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
+    handle.memory=image->memory;handle.handleType=ExternalHandleType;
+    HANDLE native=nullptr;
+    Check(functions.vkGetMemoryWin32HandleKHR(device,&handle,&native),"Export external compute image memory");
+    image->externalHandle=native;
+    return image;
+#else
+    (void)width;(void)height;
+    throw std::runtime_error("Vulkan external display images require Win32");
+#endif
 }
 
 void Device::BeginCosts() noexcept

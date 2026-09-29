@@ -589,4 +589,49 @@ void DisplayCompositor::Complete()
         }
     pendingCopy = {};
 }
+
+void DisplayCompositor::EnableExternalOutputs()
+{
+    // The previous submission may still be writing the current outputs.
+    Complete();
+    if (externalOutputs) return;
+    const u32 width = 256 * scale, height = 192 * scale;
+    // Allocate every replacement before recording any GPU work: an allocation
+    // failure leaves the current outputs and the pipeline usable.
+    std::vector<std::shared_ptr<Device::Image>> next(outputs.size());
+    for (auto& image : next)
+        image = owner->CreateExternalDisplayImage(width, height);
+    const auto command = owner->Begin(Device::SubmitKind::Display);
+    for (size_t i = 0; i < next.size(); ++i)
+    {
+        ImageBarrier(f, command, next[i]->Handle(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+        if (!residentValid[i]) continue;
+        // Init left every output in GENERAL, but contents are meaningful only
+        // where residentValid is set. Carry those pixels into the replacement
+        // so the next composition keeps its Keep/partial rows.
+        ImageBarrier(f, command, outputs[i]->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        VkImageCopy copy{};
+        copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.extent = {width, height, 1};
+        f.vkCmdCopyImage(command, outputs[i]->Handle(), VK_IMAGE_LAYOUT_GENERAL,
+            next[i]->Handle(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+        ImageBarrier(f, command, next[i]->Handle(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    }
+    owner->SubmitAndWait();
+    // The fence confirms the copies: only now may the retired objects drop.
+    outputs.swap(next);
+    externalOutputs = true;
+}
+
+const std::shared_ptr<Device::Image>& DisplayCompositor::Output(u32 screen) const
+{
+    if (screen >= outputs.size()) throw std::out_of_range("Display output index");
+    return outputs[screen];
+}
 }

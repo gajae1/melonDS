@@ -436,23 +436,56 @@ std::shared_ptr<Vulkan::Device> VulkanRenderer::DisplayDevice() const
     return static_cast<const VulkanRenderer3D&>(*Rend3D).Device;
 }
 
-bool VulkanRenderer::EnableDirectDisplay()
+bool VulkanRenderer::EnableDirectDisplay(bool external)
 {
     if (DisplayScale == 1 && !NativePipeline)
     {
         DisplayStatus = "RAM display (1x)";
         return false;
     }
-    const auto& rasterizer = static_cast<const VulkanRenderer3D&>(*Rend3D);
+    auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
     if (DirectDisplayFailed) return false;
-    if ((!rasterizer.Compositor && !NativePipeline) || !rasterizer.Device || !rasterizer.Device->PresentationSupported())
+    if (external)
+    {
+        // Independent of native WSI: only the external-image capability and an
+        // active producer matter here.
+        if ((!rasterizer.Compositor && !NativePipeline) || !rasterizer.Device ||
+            !rasterizer.Device->ExternalImagesSupported() || rasterizer.Device->ExternalWorkFailed())
+        {
+            DisableDirectDisplay("Vulkan external display unavailable");
+            return false;
+        }
+        MigrateExternalOutputs();
+    }
+    else if ((!rasterizer.Compositor && !NativePipeline) || !rasterizer.Device || !rasterizer.Device->PresentationSupported())
     {
         DisableDirectDisplay("Vulkan presentation unavailable");
         return false;
     }
     DirectDisplay = true;
-    DisplayStatus = "GPU display (Vulkan)";
+    DisplayStatus = external ? "GPU display (Vulkan/GL)" : "GPU display (Vulkan)";
     return true;
+}
+
+void VulkanRenderer::MigrateExternalOutputs()
+{
+    auto& rasterizer = static_cast<VulkanRenderer3D&>(*Rend3D);
+    // Complete all producers before migrating or publishing output handles.
+    // Exceptions reach the GL caller, which latches allocation/import failures
+    // and materializes old resident pixels only when the device is still usable.
+    FinishDisplayComposition();
+    CompleteNative2D();
+    rasterizer.CompleteRender();
+    if (NativePipeline) NativePipeline->EnableExternalOutputs();
+    else if (rasterizer.Compositor) rasterizer.Compositor->EnableExternalOutputs();
+    for (u32 buffer = 0; buffer < 2; ++buffer)
+    for (u32 screen = 0; screen < 2; ++screen)
+    {
+        if (!ResidentImages[buffer][screen]) continue;
+        ResidentImages[buffer][screen] = NativePipeline
+            ? NativePipeline->Output(buffer, screen)
+            : rasterizer.Compositor->Output(buffer * 2 + screen);
+    }
 }
 
 void VulkanRenderer::DisableDirectDisplay(const std::string& reason, bool permanent)
@@ -527,6 +560,7 @@ void VulkanRenderer::ClearPipelineCache()
 
 bool VulkanRenderer::HasRenderFailure() const
 {
-    return static_cast<const VulkanRenderer3D&>(*Rend3D).HasFailed();
+    const auto& renderer = static_cast<const VulkanRenderer3D&>(*Rend3D);
+    return renderer.HasFailed() || (renderer.Device && renderer.Device->HasSubmissionFailed());
 }
 }

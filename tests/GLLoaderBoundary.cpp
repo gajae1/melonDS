@@ -442,7 +442,7 @@ int main(int argc, char** argv)
                     nativePanel ? 1 : 0, result->hasOpenGL() ? 1 : 0, Observe.VulkanInits, Observe.OsdMessages,
                     Observe.Roots, passed ? "PASS" : "FAIL");
 
-        // An unavailable presenter keeps the native display, as before.
+        // Vulkan rendering can share GPU images through a GL fallback panel.
         Observe.FailVulkanInit = true;
         Observe.VulkanInits = 0;
         Observe.OsdMessages = 0;
@@ -451,14 +451,22 @@ int main(int argc, char** argv)
         result->createScreenPanel();
         const bool fallbackNative = dynamic_cast<ScreenPanelNative*>(result->panel) != nullptr;
 #ifdef Q_OS_WIN
-        passed &= fallbackNative && !result->hasOpenGL() && Observe.VulkanInits == 1 && Observe.OsdMessages == 1 &&
-                  Observe.Roots == 0;
+        passed &= !fallbackNative && result->hasOpenGL() && Observe.VulkanInits == 1 && Observe.OsdMessages == 0 &&
+                  Observe.Roots == 1 && Observe.Shared == 0;
 #else
         passed &= !fallbackNative && result->hasOpenGL() && Observe.VulkanInits == 0 && Observe.Roots == 1;
 #endif
         std::printf("unavailable Vulkan presenter: native=%d has_ogl=%d vulkan_inits=%u osd=%u result=%s\n",
                     fallbackNative ? 1 : 0, result->hasOpenGL() ? 1 : 0, Observe.VulkanInits, Observe.OsdMessages,
                     passed ? "PASS" : "FAIL");
+#ifdef Q_OS_WIN
+        Observe.FailCreation = true;
+        Observe.VulkanInits = Observe.OsdMessages = Observe.Roots = Observe.Shared = 0;
+        result->createScreenPanel();
+        passed &= dynamic_cast<ScreenPanelNative*>(result->panel) && !result->hasOpenGL() &&
+                  Observe.VulkanInits == 1 && Observe.OsdMessages == 1 && Observe.Roots == 1;
+        std::printf("unavailable Vulkan and GL presenters: native fallback %s\n", passed ? "PASS" : "FAIL");
+#endif
         Observe.Recording = false;
         for (auto* reader : Observe.Readers) if (reader->isRunning()) reader->Finish();
         for (auto* instance : {&first, &second, &constructing})

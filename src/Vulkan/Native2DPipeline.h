@@ -78,6 +78,11 @@ public:
     // Replace display-scale storage between batches. Guest OBJ history and
     // descriptors survive; display frames must be read back first.
     void SetScale(uint32_t scale);
+    // Idempotent. Replaces every output with an exportable external image,
+    // carrying over initialized contents and keeping the initialized flags.
+    // Every replacement is allocated before any GPU work, so a failure leaves
+    // the previous outputs usable and rethrows.
+    void EnableExternalOutputs();
 private:
     // Leases for one submitted batch. The device's single pending submission
     // is this batch whenever active is set: every other Begin() completes it.
@@ -123,5 +128,6 @@ private:
     uint32_t rawWords = 0;
     uint32_t displayScale = 1;
     bool separateReadback = false;
+    bool externalOutputs = false;
 };
 }

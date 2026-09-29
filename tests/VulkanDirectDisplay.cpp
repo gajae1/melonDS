@@ -40,7 +40,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL LimitReadbackAllocation(VkDevice device,
     }
     return originalAllocate(device, info, callbacks, memory);
 }
-static void RunRenderer(const std::string& adapter) {
+static void RunRenderer(const std::string& adapter, bool external) {
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
@@ -48,9 +48,9 @@ static void RunRenderer(const std::string& adapter) {
     auto* renderer = dynamic_cast<VulkanRenderer*>(&nds->GetRenderer());
     Require(renderer, "renderer initialization failed");
     RendererSettings settings{1, false, false, false};
-    Require(renderer->SetRenderSettings(settings) && !renderer->EnableDirectDisplay(), "1x must retain RAM display");
+    Require(renderer->SetRenderSettings(settings) && !renderer->EnableDirectDisplay(external), "1x must retain RAM display");
     settings.ScaleFactor = 4;
-    Require(renderer->SetRenderSettings(settings) && renderer->EnableDirectDisplay(), "resident renderer unavailable");
+    Require(renderer->SetRenderSettings(settings) && renderer->EnableDirectDisplay(external), "resident renderer unavailable");
     nds->ARM9Write16(0x04000304, 0x020F);
     nds->ARM9Write32(0x04000000, 0x00010108);
     nds->GPU.ScreensEnabled = true;
@@ -92,6 +92,9 @@ static void RunRenderer(const std::string& adapter) {
         table.vkWaitForFences = originalWait;
         VulkanRenderer::ResidentFrame resident;
         Require(renderer->GetResidentFrame(resident), "renderer did not publish GPU frame");
+        if (external)
+            Require(resident.images[0]->ExternalHandle() && resident.images[1]->ExternalHandle(),
+                "compositor outputs are not exportable");
         Require(downloads == before, "renderer publication downloaded pixels");
         Renderer::DisplayFrame cpu;
         Require(renderer->GetDisplayFrame(cpu) && cpu.width == 1024, "CPU demand failed");
@@ -112,7 +115,7 @@ static void RunRenderer(const std::string& adapter) {
     Require(renderer->GetDisplayFrame(afterResize) &&
         static_cast<const u32*>(afterResize.top)[0] == 0, "reset retained old pixels");
     renderer->DisableDirectDisplay("test missing extension");
-    Require(!renderer->EnableDirectDisplay() && renderer->DirectDisplayStatus().find("test missing extension") != std::string::npos,
+    Require(!renderer->EnableDirectDisplay(external) && renderer->DirectDisplayStatus().find("test missing extension") != std::string::npos,
         "fallback did not retain RAM/status");
     auto& table = const_cast<volk::VolkDeviceTable&>(renderer->DisplayDevice()->Functions());
     const auto submit = table.vkQueueSubmit;
@@ -128,7 +131,7 @@ static void RunRenderer(const std::string& adapter) {
 // GPU-composited 2D: resident publication stays device-side, the first CPU
 // demand copies both screens in a single submission, and downloaded pixels
 // match an independent software-rendered frame.
-static void RunNative2D(const std::string& adapter, bool memoryPressure = false) {
+static void RunNative2D(const std::string& adapter, bool external, bool memoryPressure = false) {
     NDSArgs args; args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
     nds->Reset();
@@ -148,8 +151,13 @@ static void RunNative2D(const std::string& adapter, bool memoryPressure = false)
         if (memoryPressure && scale != 3) continue;
         RendererSettings settings{scale, false, false, false};
         settings.VulkanNative2D = true;
-        Require(renderer->SetRenderSettings(settings) && renderer->Native2DActive() &&
-            renderer->EnableDirectDisplay(), "native direct display unavailable");
+        Require(renderer->SetRenderSettings(settings) && renderer->Native2DActive(),
+            "native renderer unavailable");
+        // The GL panel can first request export after a completed ordinary frame.
+        // Exercise preservation of its pixels, not just fresh external outputs.
+        const bool lateExport = external && scale == 1 && !memoryPressure;
+        if (!lateExport)
+            Require(renderer->EnableDirectDisplay(external), "native direct display unavailable");
         auto& table = const_cast<volk::VolkDeviceTable&>(renderer->DisplayDevice()->Functions());
         const auto saved = table.vkCmdCopyImageToBuffer;
         table.vkCmdCopyImageToBuffer = Readback;
@@ -188,11 +196,24 @@ static void RunNative2D(const std::string& adapter, bool memoryPressure = false)
             oracle->VBlank();
             renderer->SwapBuffers();
             oracle->SwapBuffers();
+            if (lateExport && frame == 0)
+                Require(renderer->EnableDirectDisplay(true), "late output export failed");
             VulkanRenderer::ResidentFrame resident;
             Require(renderer->GetResidentFrame(resident) &&
                 resident.width == 256u * scale && resident.height == 192u * scale &&
                 resident.images[0] && resident.images[1],
                 "native resident frame was not published");
+            if (external)
+            {
+                Require(resident.images[0]->ExternalHandle() && resident.images[1]->ExternalHandle(),
+                    "native outputs are not exportable");
+                const auto migrationSubmits = renderer->TotalSubmissionCount();
+                Require(renderer->EnableDirectDisplay(true), "repeated export enable failed");
+                VulkanRenderer::ResidentFrame repeated;
+                Require(renderer->GetResidentFrame(repeated) && repeated.images == resident.images &&
+                    renderer->TotalSubmissionCount() == migrationSubmits,
+                    "repeated export enable replaced or copied images");
+            }
             Require(downloads == downloadsBefore, "native resident publication downloaded pixels");
             // Resident handoff already drained the deferred batch; CPU demand
             // must add exactly one submission holding both screen copies.
@@ -267,15 +288,22 @@ int main(int argc, char** argv) {
     int result=0;
     try {
         std::string reason;
-        auto device=Vulkan::Device::Create(reason,argc > 1 ? argv[1] : "",true); Require(bool(device),reason.c_str());
+        const bool external = argc > 1 && std::string(argv[1]) == "external";
+        const char* adapter = external ? (argc > 2 ? argv[2] : "") : (argc > 1 ? argv[1] : "");
+        auto device=Vulkan::Device::Create(reason,adapter,true); Require(bool(device),reason.c_str());
         std::printf("Vulkan=%s\n",device->Properties().deviceName);
+        if (external && !device->ExternalImagesSupported())
+        {
+            std::puts("SKIP: external display images unavailable");
+            return 77;
+        }
         // RunRenderer owns a device of its own. Patch this table first so the
         // counter's pristine entry point is valid for either adapter.
         auto& table=const_cast<volk::VolkDeviceTable&>(device->Functions());
         originalReadback=table.vkCmdCopyImageToBuffer; table.vkCmdCopyImageToBuffer=Readback;
-        RunRenderer(device->Id());
-        RunNative2D(device->Id());
-        RunNative2D(device->Id(), true);
+        RunRenderer(device->Id(), external);
+        RunNative2D(device->Id(), external);
+        RunNative2D(device->Id(), external, true);
         table.vkCmdCopyImageToBuffer=originalReadback;
     } catch(const std::exception& e) { std::fprintf(stderr,"Direct display FAIL: %s\n",e.what()); result=1; }
     return result;

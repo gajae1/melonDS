@@ -51,8 +51,8 @@ void VideoSettingsDialog::setEnabled()
 
     bool softwareRenderer = renderer == renderer3D_Software;
     const bool ramOutput = !RendererUsesOpenGL(renderer);
-    // Vulkan 3D always presents through the Vulkan display here, so the OpenGL
-    // display is not offered for it.
+    // Vulkan 3D selects its presentation path automatically, preferring native
+    // Vulkan and falling back to GL sharing or RAM when needed.
     const bool impliesVulkanDisplay = RendererImpliesVulkanDisplay(renderer);
     ui->cbGLDisplay->setEnabled(ramOutput && !cfg.GetBool("Screen.UseVulkan") && !impliesVulkanDisplay);
 #ifdef Q_OS_WIN
@@ -61,7 +61,7 @@ void VideoSettingsDialog::setEnabled()
     ui->cbVulkanDisplay->setEnabled(false);
 #endif
     {
-        // Show the display the selection actually uses. Stored preferences are
+        // Show the preferred display for this selection. Stored preferences are
         // not rewritten, so switching to another renderer restores them.
         const QSignalBlocker glBlocker(ui->cbGLDisplay);
         const QSignalBlocker vulkanBlocker(ui->cbVulkanDisplay);
@@ -230,7 +230,7 @@ void VideoSettingsDialog::refreshRendererStatus()
     QString text = tr("Selected: %1. Active: %2.").arg(name(selected), name(status.renderer));
     if (!status.gpuName.isEmpty()) text += tr("\nActive rendering GPU: %1").arg(status.gpuName);
     if (RendererImpliesVulkanDisplay(selected))
-        text += tr("\nVulkan 3D presents through the Vulkan display; the OpenGL display option does not apply to it.");
+        text += tr("\nVulkan 3D prefers the Vulkan display and automatically falls back to OpenGL or native display when needed.");
     if (!status.vulkanDisplay.isEmpty()) text += "\n" + status.vulkanDisplay;
     if (thread->hasGLFailure())
         text += tr("\nOpenGL display failed. Rendering is paused until recovery succeeds.");
@@ -302,6 +302,8 @@ void VideoSettingsDialog::on_VideoSettingsDialog_rejected()
 
 void VideoSettingsDialog::setVsyncControlEnable(bool hasOGL)
 {
+    if (RendererImpliesVulkanDisplay(emuInstance->getGlobalConfig().GetInt("3D.Renderer")))
+        hasOGL = emuInstance->usesOpenGL();
     ui->cbVSync->setEnabled(hasOGL);
     ui->sbVSyncInterval->setEnabled(hasOGL && ui->cbVSync->isChecked());
 }

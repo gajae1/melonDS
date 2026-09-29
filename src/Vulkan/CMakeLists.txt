@@ -85,7 +85,7 @@ add_custom_command(OUTPUT "${embedded_display_shaders}"
     COMMAND "${CMAKE_COMMAND}" "-DSHADER_DIR=${vulkan_shader_dir}" "-DOUTPUT_FILE=${embedded_display_shaders}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedDisplayShaders.cmake"
     DEPENDS ${display_spirv_files} EmbedDisplayShaders.cmake VERBATIM)
-add_library(vulkan-compute STATIC Device.cpp Loader.cpp ComputePipeline.cpp DisplayCompositor.cpp
+add_library(vulkan-compute STATIC Device.cpp ExternalDisplay.cpp Loader.cpp ComputePipeline.cpp DisplayCompositor.cpp
     Native2DMemory.cpp Native2DState.cpp Native2DPipeline.cpp Native2DQueue.cpp Native2DCapture.cpp TextureDecode.cpp TextureCache.cpp
     "${embedded_shaders}" "${embedded_display_shaders}")
 target_include_directories(vulkan-compute PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.."

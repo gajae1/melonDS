@@ -39,6 +39,7 @@
 #include "GPU3D_OpenGL.h"
 #ifdef VULKANRENDERER_ENABLED
 #include "GPU_Vulkan.h"
+#include "graphics/gl/external_display.h"
 #endif
 #include "Platform.h"
 #include "Config.h"
@@ -1200,6 +1201,15 @@ ScreenPanelGL::ScreenPanelGL(QWidget* parent) : ScreenPanel(parent)
 
 ScreenPanelGL::~ScreenPanelGL()
 {
+#ifdef VULKANRENDERER_ENABLED
+    // Normally deinitOpenGL already released imports on the worker. If context
+    // recovery failed, retain their owners instead of deleting without a context.
+    if (vulkanGL)
+    {
+        if (glContext && glContext->MakeCurrent()) vulkanGL.reset();
+        else (void)vulkanGL.release();
+    }
+#endif
     if (RenderCost.Enabled && RenderCost.Frames)
     {
         char line[512];
@@ -1217,7 +1227,7 @@ bool ScreenPanelGL::createContext()
     MainWindow* ourwin = (MainWindow*)parentWidget();
     MainWindow* parentwin = (MainWindow*)parentWidget()->parentWidget();
     //if (parentwin)
-    if (ourwin->getWindowID() != 0)
+    if (ourwin->getWindowID() != 0 && parentwin && parentwin->getOGLContext())
     {
         if (windowinfo.has_value())
             glContext = parentwin->getOGLContext()->CreateSharedContext(*windowinfo);
@@ -1372,6 +1382,12 @@ bool ScreenPanelGL::deinitOpenGL()
     if (!glContext || !glContext->MakeCurrent()) return false;
 
     RenderCost.Gpu.Shutdown();
+#ifdef VULKANRENDERER_ENABLED
+    vulkanGL.reset();
+    vulkanGLAttempt.reset();
+    glDeleteProgram(vulkanScreenShader);
+    vulkanScreenShader = 0;
+#endif
 
     glDeleteTextures(1, &screenTexture);
 
@@ -1540,6 +1556,83 @@ bool ScreenPanelGL::screensCoverWindow(float w, float h) const
     return true;
 }
 
+#ifdef VULKANRENDERER_ENABLED
+bool ScreenPanelGL::drawVulkanScreen(VulkanRenderer& renderer, int width, int height, float factor, bool& drawn)
+{
+    const auto device = renderer.DisplayDevice();
+    if (!device) return true;
+    if (device->HasSubmissionFailed()) return false;
+    try
+    {
+        if (vulkanGL && !vulkanGL->UsesDevice(device)) vulkanGL.reset();
+        // A failed capability/import attempt is latched for this device/context.
+        // A new renderer device or reinitialized panel can try again.
+        if (!vulkanGL && vulkanGLAttempt.lock() != device)
+        {
+            vulkanGLAttempt = device;
+            auto next = std::make_unique<GL::ExternalDisplay>(*glContext, device);
+            if (!vulkanScreenShader)
+            {
+                if (!OpenGL::CompileVertexFragmentProgram(vulkanScreenShader,
+                        kScreenVS, kScreenExternalFS, "VulkanScreenShader",
+                        {{"vPosition", 0}, {"vTexcoord", 1}}, {{"oColor", 0}}))
+                    throw std::runtime_error("Cannot compile Vulkan/GL screen shader");
+                glUseProgram(vulkanScreenShader);
+                glUniform1i(glGetUniformLocation(vulkanScreenShader, "TopScreenTex"), 0);
+                glUniform1i(glGetUniformLocation(vulkanScreenShader, "BottomScreenTex"), 1);
+                vulkanScreenTransform = glGetUniformLocation(vulkanScreenShader, "uTransform");
+                vulkanScreenSize = glGetUniformLocation(vulkanScreenShader, "uScreenSize");
+                vulkanScreenFilter = glGetUniformLocation(vulkanScreenShader, "uFilter");
+            }
+            vulkanGL = std::move(next);
+        }
+        if (!vulkanGL || !renderer.EnableDirectDisplay(true)) return true;
+        VulkanRenderer::ResidentFrame frame;
+        if (!renderer.GetResidentFrame(frame)) return true;
+
+        // EmuInstance holds renderLock across this entire call, including return
+        // ownership. GetDisplayFrame is deliberately not called on this path.
+        vulkanGL->Begin(frame.images);
+        glUseProgram(vulkanScreenShader);
+        glUniform2f(vulkanScreenSize, width / factor, height / factor);
+        for (unsigned screen = 0; screen < 2; ++screen)
+        {
+            glActiveTexture(GL_TEXTURE0 + screen);
+            glBindTexture(GL_TEXTURE_2D, vulkanGL->Texture(screen));
+        }
+        glActiveTexture(GL_TEXTURE0);
+        {
+            QMutexLocker lock(&screenSettingsLock);
+            glUniform1i(vulkanScreenFilter, filter);
+            if (!screensCoverWindow(width / factor, height / factor))
+                glClear(GL_COLOR_BUFFER_BIT);
+            glBindBuffer(GL_ARRAY_BUFFER, screenVertexBuffer);
+            glBindVertexArray(screenVertexArray);
+            for (int i = 0; i < numScreens; ++i)
+            {
+                glUniformMatrix2x3fv(vulkanScreenTransform, 1, GL_TRUE, screenMatrix[i]);
+                glDrawArrays(GL_TRIANGLES, screenKind[i] == 0 ? 0 : 6, 6);
+            }
+        }
+        vulkanGL->End();
+        screenTextureGeneration = 0;
+        RenderCost.UploadEnd(RenderCost.UploadStart(), 0);
+        drawn = true;
+        return true;
+    }
+    catch (const std::exception& error)
+    {
+        Platform::Log(Platform::LogLevel::Warn, "Vulkan/GL display failed: %s\n", error.what());
+        vulkanGL.reset();
+        // An ambiguous handoff retired the device and retained its resources.
+        // Reading RAM pixels from that same device would submit unsafe work.
+        if (device->HasSubmissionFailed()) return false;
+        renderer.DisableDirectDisplay("GL external display unavailable");
+        return true;
+    }
+}
+#endif
+
 bool ScreenPanelGL::drawScreen()
 {
     // Deinit is acknowledged before the GUI replaces or removes the panel.
@@ -1604,112 +1697,133 @@ bool ScreenPanelGL::drawScreen()
     {
         auto nds = emuInstance->getNDS();
 
-        glUseProgram(screenShaderProgram);
-        glUniform2f(screenShaderScreenSizeULoc, w / factor, h / factor);
-
-        using DisplayFrame = melonDS::Renderer::DisplayFrame;
-        DisplayFrame frame;
-        bool available = true;
-        if (!preservedFrame[0].isNull() && nds->NumFrames == preservedFrameNumber)
+        bool residentDrawn = false;
+#ifdef VULKANRENDERER_ENABLED
+        auto* renderer = dynamic_cast<VulkanRenderer*>(&nds->GetRenderer());
+        if (!renderer) vulkanGL.reset();
+        else if (preservedFrame[0].isNull() || nds->NumFrames != preservedFrameNumber)
         {
-            frame = {DisplayFrame::Kind::CpuBGRA, preservedFrame[0].constBits(),
-                preservedFrame[1].constBits(), u32(preservedFrame[0].width()),
-                u32(preservedFrame[0].height()), 0};
+            const bool healthy = drawVulkanScreen(*renderer, w, h, factor, residentDrawn);
+            emuThread->setVulkanDisplayStatus(QString::fromStdString(renderer->DirectDisplayStatus()));
+            if (!healthy)
+            {
+                RenderCost.Add(RenderCost.AccIssue, issue);
+                RenderCost.Gpu.End(span);
+                RenderCost.FrameEnd();
+                return false;
+            }
         }
+#endif
+        if (residentDrawn) clearPending = false;
         else
         {
-            preservedFrame = {};
-            available = nds->GetRenderer().GetDisplayFrame(frame);
-        }
-        if (available && frame.top && frame.width && frame.height &&
-            ((frame.kind == DisplayFrame::Kind::CpuBGRA && frame.bottom) ||
-             frame.kind == DisplayFrame::Kind::GLTexture2DArray))
-        {
-            const int frameWidth = frame.width, frameHeight = frame.height;
-            if (frame.kind == DisplayFrame::Kind::CpuBGRA)
-            {
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D_ARRAY, screenTexture);
+            glUseProgram(screenShaderProgram);
+            glUniform2f(screenShaderScreenSizeULoc, w / factor, h / factor);
 
-                glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-                glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-                if (frameWidth != screenTextureWidth || frameHeight != screenTextureHeight)
+            using DisplayFrame = melonDS::Renderer::DisplayFrame;
+            DisplayFrame frame;
+            bool available = true;
+            if (!preservedFrame[0].isNull() && nds->NumFrames == preservedFrameNumber)
+            {
+                frame = {DisplayFrame::Kind::CpuBGRA, preservedFrame[0].constBits(),
+                    preservedFrame[1].constBits(), u32(preservedFrame[0].width()),
+                    u32(preservedFrame[0].height()), 0};
+            }
+            else
+            {
+                preservedFrame = {};
+                available = nds->GetRenderer().GetDisplayFrame(frame);
+            }
+            if (available && frame.top && frame.width && frame.height &&
+                ((frame.kind == DisplayFrame::Kind::CpuBGRA && frame.bottom) ||
+                 frame.kind == DisplayFrame::Kind::GLTexture2DArray))
+            {
+                const int frameWidth = frame.width, frameHeight = frame.height;
+                if (frame.kind == DisplayFrame::Kind::CpuBGRA)
                 {
-                    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, frameWidth, frameHeight, 2,
-                        0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
-                    if (glGetError() != GL_NO_ERROR)
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D_ARRAY, screenTexture);
+
+                    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+                    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+                    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+                    if (frameWidth != screenTextureWidth || frameHeight != screenTextureHeight)
                     {
-                        // Do not upload using uncommitted dimensions after a failed
-                        // resize. The caller owns presentation fallback/recovery.
+                        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, frameWidth, frameHeight, 2,
+                            0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+                        if (glGetError() != GL_NO_ERROR)
+                        {
+                            // Do not upload using uncommitted dimensions after a failed
+                            // resize. The caller owns presentation fallback/recovery.
+                            screenTextureGeneration = 0;
+                            RenderCost.Add(RenderCost.AccIssue, issue);
+                            RenderCost.Gpu.End(span);
+                            RenderCost.FrameEnd();
+                            return false;
+                        }
+                        screenTextureWidth = frameWidth;
+                        screenTextureHeight = frameHeight;
+                        // Reallocation discards the previously uploaded pixels.
                         screenTextureGeneration = 0;
-                        RenderCost.Add(RenderCost.AccIssue, issue);
-                        RenderCost.Gpu.End(span);
-                        RenderCost.FrameEnd();
-                        return false;
                     }
-                    screenTextureWidth = frameWidth;
-                    screenTextureHeight = frameHeight;
-                    // Reallocation discards the previously uploaded pixels.
+                    // The same NDS instance publishing the same nonzero generation
+                    // at the same extent means the texture already holds it.
+                    const std::uint64_t cached = screenTextureGeneration;
+                    const bool reusable = cached != 0 &&
+                        cached == frame.generation &&
+                        screenTextureGenerationNDS == nds &&
+                        screenTextureGenerationTop == frame.top;
+                    if (reusable)
+                    {
+                        RenderCost.UploadEnd(RenderCost.UploadStart(), 0);
+                    }
+                    else
+                    {
+                        std::uint64_t upl = RenderCost.UploadStart();
+                        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, frameWidth, frameHeight, 1, GL_BGRA,
+                                        GL_UNSIGNED_BYTE, frame.top);
+                        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, frameWidth, frameHeight, 1, GL_BGRA,
+                                        GL_UNSIGNED_BYTE, frame.bottom);
+                        RenderCost.UploadEnd(upl, size_t(2) * frameWidth * frameHeight * 4);
+                        // Publish validity only after the upload is issued; 0
+                        // (preserved images) is never cacheable.
+                        screenTextureGenerationNDS = nds;
+                        screenTextureGenerationTop = frame.top;
+                        screenTextureGeneration = frame.generation;
+                    }
+                }
+                else if (frame.kind == DisplayFrame::Kind::GLTexture2DArray)
+                {
+                    const GLuint texid = *static_cast<const GLuint*>(frame.top);
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D_ARRAY, texid);
+                    // screenTexture no longer reflects any cached CpuBGRA frame.
                     screenTextureGeneration = 0;
                 }
-                // The same NDS instance publishing the same nonzero generation
-                // at the same extent means the texture already holds it.
-                const std::uint64_t cached = screenTextureGeneration;
-                const bool reusable = cached != 0 &&
-                    cached == frame.generation &&
-                    screenTextureGenerationNDS == nds &&
-                    screenTextureGenerationTop == frame.top;
-                if (reusable)
+
+                screenSettingsLock.lock();
+
+                GLint filter = this->filter ? GL_LINEAR : GL_NEAREST;
+                glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, filter);
+                glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, filter);
+
+                // Same lock hold as the draws, so both see one screenMatrix
+                // snapshot. Full coverage makes the clear redundant fill.
+                if (!screensCoverWindow(w / factor, h / factor))
+                    glClear(GL_COLOR_BUFFER_BIT);
+                clearPending = false;
+
+                glBindBuffer(GL_ARRAY_BUFFER, screenVertexBuffer);
+                glBindVertexArray(screenVertexArray);
+
+                for (int i = 0; i < numScreens; i++)
                 {
-                    RenderCost.UploadEnd(RenderCost.UploadStart(), 0);
+                    glUniformMatrix2x3fv(screenShaderTransformULoc, 1, GL_TRUE, screenMatrix[i]);
+                    glDrawArrays(GL_TRIANGLES, screenKind[i] == 0 ? 0 : 2 * 3, 2 * 3);
                 }
-                else
-                {
-                    std::uint64_t upl = RenderCost.UploadStart();
-                    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, frameWidth, frameHeight, 1, GL_BGRA,
-                                    GL_UNSIGNED_BYTE, frame.top);
-                    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, frameWidth, frameHeight, 1, GL_BGRA,
-                                    GL_UNSIGNED_BYTE, frame.bottom);
-                    RenderCost.UploadEnd(upl, size_t(2) * frameWidth * frameHeight * 4);
-                    // Publish validity only after the upload is issued; 0
-                    // (preserved images) is never cacheable.
-                    screenTextureGenerationNDS = nds;
-                    screenTextureGenerationTop = frame.top;
-                    screenTextureGeneration = frame.generation;
-                }
+
+                screenSettingsLock.unlock();
             }
-            else if (frame.kind == DisplayFrame::Kind::GLTexture2DArray)
-            {
-                const GLuint texid = *static_cast<const GLuint*>(frame.top);
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D_ARRAY, texid);
-                // screenTexture no longer reflects any cached CpuBGRA frame.
-                screenTextureGeneration = 0;
-            }
-
-            screenSettingsLock.lock();
-
-            GLint filter = this->filter ? GL_LINEAR : GL_NEAREST;
-            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, filter);
-            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, filter);
-
-            // Same lock hold as the draws, so both see one screenMatrix
-            // snapshot. Full coverage makes the clear redundant fill.
-            if (!screensCoverWindow(w / factor, h / factor))
-                glClear(GL_COLOR_BUFFER_BIT);
-            clearPending = false;
-
-            glBindBuffer(GL_ARRAY_BUFFER, screenVertexBuffer);
-            glBindVertexArray(screenVertexArray);
-
-            for (int i = 0; i < numScreens; i++)
-            {
-                glUniformMatrix2x3fv(screenShaderTransformULoc, 1, GL_TRUE, screenMatrix[i]);
-                glDrawArrays(GL_TRIANGLES, screenKind[i] == 0 ? 0 : 2 * 3, 2 * 3);
-            }
-
-            screenSettingsLock.unlock();
         }
     }
 

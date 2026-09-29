@@ -90,6 +90,8 @@ u64 ReadImportFile(void* data, u64 size, u64 count, FileHandle* file)
 
 struct FixtureConsole
 {
+    struct RendererState { bool HasRenderFailure() const { return false; } } renderer;
+    RendererState& GetRenderer() { return renderer; }
     struct OutputSettings
     {
         AudioInterpolation interpolation = AudioInterpolation::None;

@@ -58,7 +58,12 @@ public:
     int DisplayScaleFactor() const { return DisplayScale; }
     // True while 2D composition, captures and final display run on the GPU.
     bool Native2DActive() const { return NativePipeline != nullptr; }
-    bool EnableDirectDisplay();
+    // external=false keeps the native WSI presentation gate and behavior.
+    // external=true gates Device::ExternalImagesSupported() instead and makes
+    // the compositor/native outputs exportable before the GPU display is
+    // reported as (Vulkan/GL). A failed migration leaves the previous outputs
+    // and the CPU publication path in place.
+    bool EnableDirectDisplay(bool external = false);
     void DisableDirectDisplay(const std::string& reason, bool permanent = true);
     const std::string& DirectDisplayStatus() const { return DisplayStatus; }
     bool GetResidentFrame(ResidentFrame& frame);
@@ -160,6 +165,10 @@ private:
     bool CaptureBlendDisabled = false;
     bool CaptureBlendRow(u32 line, u32 scale, u32 eva, u32 evb,
         const u16* capturedB, const u16* nativeB);
+    // Makes the active producer's shown outputs exportable, repoints the
+    // published resident images, and propagates failure without enabling the
+    // GPU display path. Idempotent across repeated calls.
+    void MigrateExternalOutputs();
     // Drains the deferred dispatch into CaptureRow. False means the device
     // failed mid-row; the caller then recomputes the row on the CPU path.
     bool CaptureBlendFinish();

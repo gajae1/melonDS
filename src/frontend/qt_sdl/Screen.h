@@ -44,6 +44,10 @@ class MainWindow;
 class EmuInstance;
 
 namespace melonDS { class NDS; }
+#ifdef VULKANRENDERER_ENABLED
+namespace melonDS { class VulkanRenderer; }
+namespace GL { class ExternalDisplay; }
+#endif
 
 
 const struct { int id; float ratio; const char* label; } aspectRatios[] =
@@ -282,6 +286,14 @@ private:
 
     GLuint screenShaderProgram = 0;
     GLint screenShaderTransformULoc, screenShaderScreenSizeULoc;
+#ifdef VULKANRENDERER_ENABLED
+    bool drawVulkanScreen(melonDS::VulkanRenderer& renderer, int width, int height,
+                          float factor, bool& drawn);
+    std::unique_ptr<GL::ExternalDisplay> vulkanGL;
+    std::weak_ptr<melonDS::Vulkan::Device> vulkanGLAttempt;
+    GLuint vulkanScreenShader = 0;
+    GLint vulkanScreenTransform = -1, vulkanScreenSize = -1, vulkanScreenFilter = -1;
+#endif
 
     QMutex screenSettingsLock;
     WindowInfo windowInfo;

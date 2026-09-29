@@ -76,3 +76,5 @@ OpenGL은 직접 텍스처 표시, 변경 팔레트 구간 업로드, 중복 텍
 Vulkan의 다음 목표는 남은 CPU↔GPU 전송, 동기 대기와 셰이더 메모리 트래픽을 줄이는 것이다. 1.1.194~196에서 GPU2D의 입력 전송·스냅샷·제출과 같은 OBJ 이력의 직렬 의존성을 줄였고 1.1.198은 두 화면 CPU 읽기와 마지막 줄 캡처 대기를 개선했다. 의존 소비 시점의 대기와 CPU 2D 1배율 RAM 폴백은 남는다. 선택형 GPU 2D(1배율 포함)는 GPU 상주 표시를 지원한다. API가 더 낮은 수준이라는 사실만으로 OpenGL이나 Metal보다 빠르다고 판단하지 않는다. 같은 장면·해상도·출력 조건의 측정으로 채택하며, Mac Metal 상대 성능은 실제 Mac 측정 전에는 미검증으로 남긴다.
 
 1.1.236은 [SDL 3.4.16의 SDL_UpdateGamepads 구현](https://github.com/libsdl-org/SDL/blob/release-3.4.16/src/joystick/SDL_gamepad.c#L3176)을 확인해 포크의 중복 갱신 호출을 제거했다. 외부 코드를 복사하거나 새 라이브러리를 도입하지 않았다.
+
+1.1.237의 Vulkan→GL 공유는 [Khronos EXT_external_objects](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_external_objects.txt), [Win32 외부 객체](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_external_objects_win32.txt)와 Vulkan 큐 소유권 전환 규칙을 참고한 포크 자체 구현이다. 기존 GL 컨텍스트·화면 배치·OSD와 Vulkan 출력 파이프라인을 재사용했다. 새 외부 구현 코드나 라이브러리를 복사하지 않았다.

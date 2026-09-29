@@ -23,6 +23,8 @@ signals:
 };
 struct VideoInstance
 {
+    bool actualGL = false;
+    bool usesOpenGL() const { return actualGL; }
     Config::Table cfg = Config::GetGlobalTable();
     VideoWorker worker;
     Config::Table& getGlobalConfig() { return cfg; }
@@ -210,6 +212,11 @@ int main(int argc, char** argv)
                 vulkanDisplay->isChecked() && !dialog->UsesGL() && label->text().contains("Vulkan display"),
                 "Vulkan 3D did not imply the Vulkan display");
         Require(cfg.GetBool("Screen.UseGL"), "implying the Vulkan display rewrote the stored GL preference");
+        window.instance.actualGL = true;
+        publish();
+        Require(dialog->findChild<QCheckBox*>("cbVSync")->isEnabled(),
+                "Vulkan GL fallback hid the active swap-interval control");
+        window.instance.actualGL = false;
         dialog->findChild<QRadioButton*>("rb3DOpenGL")->click(); QApplication::processEvents();
         // The OpenGL renderer requires the OpenGL display, so the restored
         // stored value shows checked with the option greyed out as before.

@@ -50,6 +50,11 @@ public:
         VkFormat Format() const { return format; }
         VkImageUsageFlags Usage() const { return usage; }
         bool BelongsTo(const Device& device) const { return owner.get()==&device; }
+        // Win32 NT handle of a CreateExternalDisplayImage() image; nullptr for
+        // ordinary images. Owned by this Image and closed with it: a GL importer
+        // must retain its shared_ptr<Image> until the GL objects are deleted.
+        void* ExternalHandle() const { return externalHandle; }
+        VkDeviceSize AllocationSize() const { return allocationSize; }
     private:
         friend class Device;
         explicit Image(std::shared_ptr<Device> owner) : owner(std::move(owner)) {}
@@ -60,6 +65,8 @@ public:
         uint32_t width{}, height{};
         VkFormat format{};
         VkImageUsageFlags usage{};
+        void* externalHandle{};
+        VkDeviceSize allocationSize{};
     };
     struct Adapter { std::string id, name; VkPhysicalDeviceType type; };
     static std::vector<Adapter> Enumerate(std::string& error);
@@ -72,6 +79,17 @@ public:
     const volk::VolkDeviceTable& Functions() const { return functions; }
     const VkPhysicalDeviceProperties& Properties() const { return properties; }
     bool PresentationSupported() const { return presentation; }
+    // True only for Device::Create(requestPresentation=true) on Win32 when the
+    // chosen GPU exports/imports OPAQUE_WIN32 R32_UINT images and semaphores.
+    bool ExternalImagesSupported() const { return externalImages; }
+    // External presentation uses a separate command pool after core work has
+    // completed. If its completion becomes unknown, retained images/session
+    // keep this device alive; never submit again or idle-wait during fallback.
+    void RetireExternalWork() noexcept { externalWorkFailed = true; failed = true; }
+    bool ExternalWorkFailed() const { return externalWorkFailed; }
+    bool HasSubmissionFailed() const { return failed; }
+    const std::array<uint8_t,VK_UUID_SIZE>& DeviceUUID() const { return deviceUuid; }
+    const std::array<uint8_t,VK_UUID_SIZE>& DriverUUID() const { return driverUuid; }
     VkInstance Instance() const { return instance; }
     VkPhysicalDevice PhysicalDevice() const { return physical; }
     uint32_t QueueFamily() const { return queueFamily; }
@@ -81,6 +99,9 @@ public:
         VkMemoryPropertyFlags preferred = 0, VkMemoryPropertyFlags additionalRequired = 0);
     std::shared_ptr<Image> CreateImage(uint32_t width,uint32_t height,uint32_t layers,
         VkFormat format,VkImageUsageFlags usage,bool arrayView=false);
+    // Dedicated, exportable, optimal R32_UINT output image (usage 0x9f, mutable
+    // format) for GL external-memory import. Throws if unsupported.
+    std::shared_ptr<Image> CreateExternalDisplayImage(uint32_t width,uint32_t height);
     // Buffers may be reused after successful SubmitAndWait. A submission failure
     // retires this device; create a new device instead of resetting pending work.
     enum class SubmitKind { Other, Upload, ThreeD, FullReadback, Display };
@@ -112,6 +133,9 @@ private:
     Device() = default;
     void Init(const std::string& preferred, std::vector<Adapter>* adapters = nullptr, bool requestPresentation = false);
     bool presentation = false;
+    bool externalImages = false;
+    bool externalWorkFailed = false;
+    std::array<uint8_t,VK_UUID_SIZE> deviceUuid{}, driverUuid{};
     uint32_t queueFamily = 0;
     std::string id;
     uint32_t MemoryType(uint32_t bits,VkMemoryPropertyFlags required,

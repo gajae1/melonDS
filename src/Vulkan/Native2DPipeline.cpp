@@ -127,14 +127,51 @@ void Pipeline::SetScale(uint32_t scale)
     Complete();
     decltype(outputs) next;
     for (auto& image : next)
-        image = owner->CreateImage(256 * scale, 192 * scale, 1, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT |
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        image = externalOutputs ? owner->CreateExternalDisplayImage(256 * scale, 192 * scale)
+            : owner->CreateImage(256 * scale, 192 * scale, 1, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     outputs = std::move(next);
     initialized.fill(false);
     scaledRaw.reset();
     scaledHistory.reset();
     displayScale = scale;
     separateReadback = false;
+}
+
+void Pipeline::EnableExternalOutputs()
+{
+    Complete();
+    if (externalOutputs) return;
+    // Allocate every replacement first; a failure leaves the current outputs
+    // and the initialized flags untouched.
+    decltype(outputs) next;
+    for (auto& image : next)
+        image = owner->CreateExternalDisplayImage(256 * displayScale, 192 * displayScale);
+    const auto command = owner->Begin(Device::SubmitKind::Display);
+    for (size_t i = 0; i < next.size(); ++i)
+    {
+        ImageBarrier(command, *next[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+        if (!initialized[i]) continue;
+        // An initialized output holds visible pixels in GENERAL; carry them over
+        // so the next partial-row update still keeps the earlier content.
+        ImageBarrier(command, *outputs[i], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        VkImageCopy copy{};
+        copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.extent = {256 * displayScale, 192 * displayScale, 1};
+        owner->Functions().vkCmdCopyImage(command, outputs[i]->Handle(), VK_IMAGE_LAYOUT_GENERAL,
+            next[i]->Handle(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+        ImageBarrier(command, *next[i], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    }
+    owner->SubmitAndWait();
+    // The fence confirms the copies: only now may the retired objects drop.
+    outputs = std::move(next);
+    externalOutputs = true;
 }
 void Pipeline::Cleanup()
 {

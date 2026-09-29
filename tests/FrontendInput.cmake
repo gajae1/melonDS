@@ -1035,6 +1035,14 @@ if (MELONDS_TEST_GPU)
             "from pathlib import Path; p=Path(r'${presentation_osd}'); p.write_text(Path(str(p)+'.raw').read_text().replace('ScreenPanel::osdUpdate', 'ScreenPanelGL::osdUpdate'))"
         DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
     target_sources(GLPresentation PRIVATE "${presentation_osd}")
+    set(presentation_vulkan_draw "${CMAKE_CURRENT_BINARY_DIR}/presentationVulkanDraw.inc")
+    add_custom_command(OUTPUT "${presentation_vulkan_draw}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Screen.cpp"
+            "bool ScreenPanelGL::drawVulkanScreen(VulkanRenderer& renderer, int width, int height, float factor, bool& drawn)"
+            "${presentation_vulkan_draw}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/ExtractFunction.py" Screen.cpp VERBATIM)
+    target_sources(GLPresentation PRIVATE "${presentation_vulkan_draw}")
     set(presentation_handler_script "${CMAKE_CURRENT_BINARY_DIR}/presentationHandler.py")
     file(GENERATE OUTPUT "${presentation_handler_script}" CONTENT [=[
 from pathlib import Path
@@ -1064,6 +1072,11 @@ Path(sys.argv[2]).write_text(body, encoding="utf-8")
         add_test(NAME gl-presentation-frame-lifetime-vulkan COMMAND GLPresentation frame-lifetime-vulkan)
         set_tests_properties(gl-presentation-frame-lifetime-vulkan PROPERTIES
             TIMEOUT 30 RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
+        if (WIN32)
+            add_test(NAME gl-presentation-external-display COMMAND GLPresentation external-display)
+            set_tests_properties(gl-presentation-external-display PROPERTIES
+                TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
+        endif()
     endif()
     add_test(NAME gl-presentation-scaled-display COMMAND GLPresentation scaled-display)
     set_tests_properties(gl-presentation-scaled-display PROPERTIES TIMEOUT 20 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" SKIP_RETURN_CODE 77)
@@ -1075,6 +1088,10 @@ Path(sys.argv[2]).write_text(body, encoding="utf-8")
     target_include_directories(GLPresentation PRIVATE "${CMAKE_SOURCE_DIR}/src"
         "${CMAKE_SOURCE_DIR}/src/frontend" "${CMAKE_CURRENT_BINARY_DIR}")
     target_link_libraries(GLPresentation PRIVATE core ${QT_LINK_LIBS} PkgConfig::SDL2 Threads::Threads)
+    if (TARGET vulkan-compute)
+        # GL ExternalDisplay: imports a Vulkan device's external screen images.
+        target_sources(GLPresentation PRIVATE ../graphics/gl/external_display.cpp)
+    endif()
     if (WIN32)
         target_sources(GLPresentation PRIVATE ../graphics/gl/context.cpp ../graphics/gl/context_wgl.cpp ../glad/glad_wgl.c)
         target_link_libraries(GLPresentation PRIVATE opengl32)
@@ -1085,7 +1102,7 @@ Path(sys.argv[2]).write_text(body, encoding="utf-8")
     add_test(NAME gl-presentation-deinit COMMAND GLPresentation)
     set_tests_properties(gl-presentation-deinit PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
         RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(mode IN ITEMS fail-screen fail-osd fail-current osd-reinit runtime-current runtime-swap retire-current)
+    foreach(mode IN ITEMS fail-screen fail-osd fail-current osd-reinit runtime-current runtime-swap retire-current deinit-recovery)
         add_test(NAME gl-presentation-${mode} COMMAND GLPresentation ${mode})
         set_tests_properties(gl-presentation-${mode} PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77
             RUN_SERIAL TRUE ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
