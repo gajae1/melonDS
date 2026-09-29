@@ -65,6 +65,8 @@
 
 1.1.234의 화면 쌍 합성은 기존 Vulkan command buffer·descriptor set 구조를 이용한 포크 자체 수정이다. 새 외부 코드나 라이브러리는 도입하지 않았다.
 
+1.1.235의 RAM 화면 쌍 합성은 1.1.234의 작업 세트와 기존 직접 출력 버퍼를 재사용한 포크 자체 수정이다. 새 외부 코드나 라이브러리는 도입하지 않았다.
+
 근거: [참고 자료 원목록](Reference_Notes_2026-09-11.md), [작업 카탈로그](Task_Catalog.md), [진행 기록](Execution_Order.md), [현재 상태](Current_Status.md), [버전별 기록](releases/), [계수 출처·재생성](../src/audio_interpolation/README.md). 코드 연결점은 `src/jit/`, `src/ARMJIT_Memory.cpp`, `src/AudioInterpolationRenderer.cpp`, `src/frontend/qt_sdl/AudioTimeStretch.cpp`, `src/frontend/qt_sdl/AudioOutput.cpp`, `src/FATStorage.cpp`, `src/DSi_NAND.cpp`다.
 
 ## OpenGL·Vulkan의 다음 범위
