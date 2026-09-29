@@ -2,7 +2,7 @@
 <h2 align="center"><b>melonDS</b></h2>
 <p align="center">
 <a href="http://melonds.kuribo64.net/" alt="melonDS website"><img src="https://img.shields.io/badge/website-melonds.kuribo64.net-%2331352e.svg"></a>
-<a href="plans/Current_Status.md" alt="Fork release: 1.1.217"><img src="https://img.shields.io/badge/fork_release-1.1.217-%235c913b.svg"></a>
+<a href="plans/Current_Status.md" alt="Fork release: 1.1.218"><img src="https://img.shields.io/badge/fork_release-1.1.218-%235c913b.svg"></a>
 <a href="https://www.gnu.org/licenses/gpl-3.0" alt="License: GPLv3"><img src="https://img.shields.io/badge/License-GPL%20v3-%23ff554d.svg"></a>
 <a href="https://kiwiirc.com/client/irc.badnik.net/?nick=IRC-Source_?#melonds" alt="IRC channel: #melonds"><img src="https://img.shields.io/badge/IRC%20chat-%23melonds-%23dd2e44.svg"></a>
 <a href="https://discord.gg/pAMAtExcqV" alt="Discord"><img src="https://img.shields.io/badge/Discord-Kuribo64-7289da?logo=discord&logoColor=white"></a>
@@ -19,7 +19,7 @@ The goal is to do things right and fast, akin to blargSNES (but hopefully better
 
 ## Fork status
 
-The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.217 release record](plans/releases/1.1.217.md). 1.1.217 prepares SDL3 audio scratch storage before playback and avoids opening unrelated joystick models just to read their serial numbers during identity retries. Audio delivery, controller selection rules, and the optional clock correction default remain unchanged. These are reductions in callback allocation and device-open work; physical latency and frame-time gains have not been measured. GPU 2D remains opt-in; a universal Vulkan advantage over OpenGL or Metal has not been established.
+The default Windows build uses SDL3; a separate SDL2 package is retained for compatibility. This fork includes direct Vulkan presentation, Sinc audio interpolation and JIT/core optimizations. See [current implementation and validation limits](plans/Current_Status.md), [reference-project adoption](plans/Reference_Adoption.md), and the [1.1.218 release record](plans/releases/1.1.218.md). 1.1.218 skips per-frame device-list lookups and futile open retries after an unbound controller selection has finished legacy migration. SDL device updates, keyboard and hotkey sampling, explicit selection and known-device reconnection remain active. This removes unnecessary discovery work for unbound input; physical latency and frame-time gains have not been measured. GPU 2D remains opt-in; a universal Vulkan advantage over OpenGL or Metal has not been established.
 
 ## How to use
 
