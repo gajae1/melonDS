@@ -8,6 +8,7 @@
 #include "AudioLowPass.h"
 #include "AudioOutputRamp.h"
 #include "AudioDiagnostics.h"
+#include "AudioClockCorrection.h"
 
 // Optional device-delivery probe using the production callback and sync method.
 // The final device submission is silenced; this measures supply, not listening
@@ -22,6 +23,8 @@ struct SmokeAudio
     AudioLowPass audioLowPass;
     AudioOutputRamp audioOutputRamp;
     AudioDiagnostics audioDiagnostics;
+    AudioClockDelivery audioClockDelivery;
+    std::atomic<bool> doAudioClockCorrection{false};
     std::atomic<int> audioLowPassCutoff{0}, audioVolume{256};
     bool audioMutedByWindowFocus = false, audioMutedToggle = false, audioMutedByFastForward = false;
     bool Started = false;
